@@ -266,7 +266,8 @@ def test_a_worktree_sessions_own_commit_during_the_run_is_left_alone(vault: Vaul
 @pytest.mark.parametrize("status", [None, "off", "unavailable", "conflict", "ENFORCED"])
 def test_without_an_enforced_sandbox_no_worktree_vouches(vault: Vault, status: str | None) -> None:
     # With the sandbox off the run could have written the worktree's HEAD and index itself, so the session's
-    # commit is put back as before (the pre-fix behaviour, a false positive the owner can read in the log).
+    # commit still counts as the run's (a false positive the owner can read in the log). The branch is checked out
+    # in the session's worktree, though, so it is reported and never rewritten under that session.
     if status is not None:
         vault.env["SCOUT_SANDBOX_STATUS"] = status
     wt = _session_worktree(vault)
@@ -275,12 +276,15 @@ def test_without_an_enforced_sandbox_no_worktree_vouches(vault: Vault, status: s
     (wt / AGENT_SETTINGS).write_text("{}\n", encoding="utf-8")
     _wt_git(vault, wt, "add", "-f", AGENT_SETTINGS)
     _wt_git(vault, wt, "commit", "-qm", "session: settings")
+    session_tip = _wt_git(vault, wt, "rev-parse", "HEAD").strip()
 
     result = vault.verify(snap)
 
-    assert result.status == "restored"
-    assert set(result.restored) == {f"refs/heads/{SESSION_BRANCH}"}
-    assert result.left_alone == {}
+    assert (result.status, result.exit_code) == ("unrestored", 11)
+    assert result.restored == {} and result.left_alone == {}
+    assert result.held_by == {f"refs/heads/{SESSION_BRANCH}": "session-a"}
+    assert vault.git("rev-parse", f"refs/heads/{SESSION_BRANCH}").strip() == session_tip
+    assert _wt_git(vault, wt, "status", "--porcelain") == ""
 
 
 def _plant_on_branch(vault: Vault, branch: str, rel: str, text: str) -> str:
@@ -298,21 +302,38 @@ def _plant_on_branch(vault: Vault, branch: str, rel: str, text: str) -> str:
     return planted
 
 
-def test_a_run_moving_a_worktree_sessions_branch_is_still_put_back(vault: Vault) -> None:
+def test_a_run_moving_a_worktree_sessions_branch_is_reported_not_rewritten(vault: Vault) -> None:
+    # The planted change is the run's (the session's index doesn't vouch for it), but the branch is checked out in
+    # the session's worktree: health goes red and the log names the worktree; no commit lands under the session.
     _enforced(vault)
     wt = _session_worktree(vault)
-    start_blob = vault.blob(SESSION_BRANCH, RUNNER_SCRIPT)
     snap = vault.snapshot()
     planted = _plant_on_branch(vault, SESSION_BRANCH, RUNNER_SCRIPT, "#!/bin/sh\necho planted\n")
 
     result = vault.verify(snap)
 
-    assert result.status == "restored"
-    assert set(result.restored) == {f"refs/heads/{SESSION_BRANCH}"}
-    assert result.left_alone == {}
-    assert vault.git("rev-parse", f"{SESSION_BRANCH}^").strip() == planted
-    assert vault.blob(SESSION_BRANCH, RUNNER_SCRIPT) == start_blob
+    assert (result.status, result.exit_code) == ("unrestored", 11)
+    assert result.changed == {f"refs/heads/{SESSION_BRANCH}": [RUNNER_SCRIPT]}
+    assert result.restored == {} and result.left_alone == {}
+    assert vault.git("rev-parse", SESSION_BRANCH).strip() == planted
+    held = [line for line in result.lines() if "still holds the change" in line]
+    assert held and "'session-a'" in held[0] and RUNNER_SCRIPT in held[0]
     assert wt.is_dir()
+
+
+def test_a_run_moving_a_branch_no_worktree_has_checked_out_is_still_put_back(vault: Vault) -> None:
+    _enforced(vault)
+    vault.git("branch", "-q", "parked")
+    start_blob = vault.blob("parked", RUNNER_SCRIPT)
+    snap = vault.snapshot()
+    planted = _plant_on_branch(vault, "parked", RUNNER_SCRIPT, "#!/bin/sh\necho planted\n")
+
+    result = vault.verify(snap)
+
+    assert result.status == "restored"
+    assert set(result.restored) == {"refs/heads/parked"}
+    assert vault.git("rev-parse", "parked^").strip() == planted
+    assert vault.blob("parked", RUNNER_SCRIPT) == start_blob
 
 
 def test_a_worktree_session_doesnt_cover_the_runs_change_on_main(vault: Vault) -> None:
@@ -350,8 +371,9 @@ def test_a_session_whose_index_differs_from_its_branch_tip_isnt_trusted(vault: V
 
     result = vault.verify(snap)
 
-    assert result.status == "restored"
-    assert set(result.restored) == {f"refs/heads/{SESSION_BRANCH}"}
+    assert result.status == "unrestored"
+    assert result.changed == {f"refs/heads/{SESSION_BRANCH}": [AGENT_SETTINGS]}
+    assert result.held_by == {f"refs/heads/{SESSION_BRANCH}": "session-a"}
 
 
 def test_a_worktree_made_after_the_snapshot_isnt_trusted(vault: Vault) -> None:
@@ -368,8 +390,11 @@ def test_a_worktree_made_after_the_snapshot_isnt_trusted(vault: Vault) -> None:
 
     result = vault.verify(snap)
 
-    assert result.status == "restored"
-    assert set(result.restored) == {f"refs/heads/{SESSION_BRANCH}"}
+    # Not vouched for, so the change is the run's as far as this check can tell; but the branch is that new
+    # worktree's, so it is reported, not rewritten.
+    assert result.status == "unrestored"
+    assert result.changed == {f"refs/heads/{SESSION_BRANCH}": [AGENT_SETTINGS]}
+    assert result.held_by == {f"refs/heads/{SESSION_BRANCH}": "session-a"}
 
 
 def test_a_worktree_that_moved_to_another_branch_doesnt_vouch_for_the_old_one(vault: Vault) -> None:
@@ -383,9 +408,10 @@ def test_a_worktree_that_moved_to_another_branch_doesnt_vouch_for_the_old_one(va
 
     result = vault.verify(snap)
 
-    assert result.status == "restored"
-    assert set(result.restored) == {"refs/heads/other"}
-    assert vault.git("rev-parse", "other^").strip() == planted
+    assert result.status == "unrestored"
+    assert result.changed == {"refs/heads/other": [AGENT_SETTINGS]}
+    assert result.held_by == {"refs/heads/other": "session-a"}
+    assert vault.git("rev-parse", "other").strip() == planted
 
 
 def test_a_worktree_with_the_vaults_own_branch_checked_out_doesnt_vouch_for_it(vault: Vault) -> None:
@@ -448,6 +474,293 @@ def test_the_proof_rests_on_the_sandbox_denying_other_worktrees_head_and_index(v
     vault.git(f"--git-dir={admin}", "update-index", "--add", "--cacheinfo", f"100644,{blob},{AGENT_SETTINGS}")
 
     assert vault.verify(snap).left_alone == {f"refs/heads/{SESSION_BRANCH}": [AGENT_SETTINGS]}
+
+
+# -- who made it: the broker's record (Phase 1d) -------------------------------------------------------------------
+#
+# The 2026-11-22 case, synthetic: during a dreaming run another (owner) session fast-forwarded the vault's main with
+# a commit changing .claude/settings.json, and a dozen more sessions then made new worktrees and branches from it.
+# The check blamed the run for all of it and wrote restore commits onto every one of those branches.
+
+SETTINGS = ".claude/settings.json"
+OWNER = {"GIT_AUTHOR_NAME": "Sam", "GIT_AUTHOR_EMAIL": "sam@example.com"}
+
+
+def _commit(vault: Vault, cwd: Path, rel: str, text: str, message: str, **ident: str) -> str:
+    """A plain commit in ``cwd`` (the vault or one of its worktrees); returns its sha."""
+    env = {**vault.env, **ident}
+    (cwd / rel).parent.mkdir(parents=True, exist_ok=True)
+    (cwd / rel).write_text(text, encoding="utf-8")
+    for args in (["add", "-f", rel], ["commit", "-qm", message]):
+        subprocess.run(["git", "-C", str(cwd), *args], env=env, check=True, capture_output=True)
+    return subprocess.run(
+        ["git", "-C", str(cwd), "rev-parse", "HEAD"], env=env, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _worktree(vault: Vault, name: str, branch: str, start: str = "HEAD") -> Path:
+    wt = vault.path / ".claude" / "worktrees" / name
+    vault.git("worktree", "add", "-q", "-b", branch, str(wt), start)
+    return wt
+
+
+def _broker(*shas: str) -> integrity.BrokerRecord:
+    """What the run's broker recorded: the commits it made for the run, and nothing else."""
+    return integrity.BrokerRecord(frozenset(shas))
+
+
+def _brokered(vault: Vault, snap: dict, *shas: str) -> integrity.Result:
+    return integrity.verify(vault.path, snap, vault.env, label="dreaming", record=_broker(*shas))
+
+
+def _tips(vault: Vault) -> dict[str, str]:
+    return dict(
+        line.split(" ", 1)[::-1]
+        for line in vault.git("for-each-ref", "--format=%(objectname) %(refname)", "refs/heads").splitlines()
+    )
+
+
+def _the_night(vault: Vault) -> tuple[dict, list[str], dict[str, Path]]:
+    """The run's snapshot, its two broker commits, and the owner sessions' worktrees by branch."""
+    _enforced(vault)
+    vault.write(SETTINGS, '{"permissions": {}}\n')
+    vault.git("add", "-f", SETTINGS)
+    vault.git("commit", "-qm", "settings")
+    trees = {"claude/older": _worktree(vault, "older", "claude/older")}  # there before the run
+    snap = vault.snapshot()
+    run1 = _commit(vault, vault.path, "notes/dream-1.md", "one\n", "dreaming: notes")
+    # 22:32: an owner session commits the settings change in its worktree, then fast-forwards main in the vault.
+    trees["claude/owner"] = _worktree(vault, "owner", "claude/owner")
+    _commit(vault, trees["claude/owner"], SETTINGS, '{"permissions": {"allow": ["x"]}}\n', "settings: allow x", **OWNER)
+    vault.git("merge", "-q", "--ff-only", "claude/owner")
+    run2 = _commit(vault, vault.path, "notes/dream-2.md", "two\n", "dreaming: more notes")
+    # More owner sessions start from the new main.
+    for i in range(3):
+        trees[f"claude/new-{i}"] = _worktree(vault, f"new-{i}", f"claude/new-{i}")
+    # The older session commits the same change on its own branch.
+    _commit(vault, trees["claude/older"], SETTINGS, '{"permissions": {"allow": ["x"]}}\n', "settings", **OWNER)
+    return snap, [run1, run2], trees
+
+
+def test_the_night_with_the_brokers_record_blames_nobody_and_writes_nothing(vault: Vault) -> None:
+    snap, run_commits, trees = _the_night(vault)
+    before = _tips(vault)
+
+    result = _brokered(vault, snap, *run_commits)
+
+    assert (result.status, result.exit_code) == ("clean", 0)
+    assert _tips(vault) == before  # no restore commit anywhere
+    assert result.changed == {} and result.restored == {} and result.unrestored == []
+    branches = {"refs/heads/main", "refs/heads/claude/older", "refs/heads/claude/owner"}
+    branches |= {f"refs/heads/claude/new-{i}" for i in range(3)}
+    assert result.foreign == {**dict.fromkeys(branches, [SETTINGS]), "index": [SETTINGS]}
+    # The owner's fast-forward updated this checkout's index and tree together; the index is left as it is.
+    assert vault.staged(SETTINGS) == vault.blob("main", SETTINGS)
+    assert vault.git("status", "--porcelain", "--", SETTINGS) == ""
+    for wt in trees.values():
+        assert _wt_git(vault, wt, "status", "--porcelain") == ""
+    lines = result.lines()
+    assert lines[-1] == "integrity check: this run changed no protected file"
+    assert any(line.startswith("integrity check: refs/heads/main changed protected file during") for line in lines)
+    assert not any("restored them" in line or "still holds" in line for line in lines)
+
+
+def test_the_night_without_a_record_still_blames_main_but_writes_on_no_sessions_branch(vault: Vault) -> None:
+    # No broker record (Phase 1c, or the record isn't trustworthy): the conservative check as before. main, the
+    # vault's own branch, is put back and the run is blamed; the older session is vouched for by its worktree; the
+    # branches checked out in the newer sessions' worktrees are reported, never rewritten.
+    snap, _, trees = _the_night(vault)
+    before = _tips(vault)
+
+    result = vault.verify(snap)
+
+    assert result.status == "unrestored"
+    assert set(result.restored) == {"refs/heads/main"}
+    assert set(result.left_alone) == {"refs/heads/claude/older"}
+    held = {"refs/heads/claude/owner", *(f"refs/heads/claude/new-{i}" for i in range(3))}
+    assert set(result.held_by) == held == set(result.unrestored)
+    after = _tips(vault)
+    assert {r: after[r] for r in held} == {r: before[r] for r in held}
+    for branch, wt in trees.items():
+        assert _wt_git(vault, wt, "status", "--porcelain") == "", branch
+
+
+def test_a_runs_own_commit_editing_a_protected_file_is_put_back_with_health_red(vault: Vault) -> None:
+    _enforced(vault)
+    start_blob = vault.blob("HEAD", RUNNER_SCRIPT)
+    snap = vault.snapshot()
+    run = _commit(vault, vault.path, RUNNER_SCRIPT, "#!/bin/sh\necho changed\n", "dreaming: tidy")
+
+    result = _brokered(vault, snap, run)
+
+    assert (result.status, result.exit_code) == ("restored", 10)
+    # Its commit staged the file too, so the index entry goes back with the branch.
+    assert result.changed == {"refs/heads/main": [RUNNER_SCRIPT], "index": [RUNNER_SCRIPT]}
+    assert result.foreign == {}
+    assert vault.blob("main", RUNNER_SCRIPT) == start_blob == vault.staged(RUNNER_SCRIPT)
+    assert vault.git("rev-parse", "main^").strip() == run
+
+
+def test_a_forged_owner_author_and_message_dont_make_the_runs_commit_the_owners(vault: Vault) -> None:
+    _enforced(vault)
+    start_blob = vault.blob("HEAD", RUNNER_SCRIPT)
+    snap = vault.snapshot()
+    forged = {**OWNER, "GIT_COMMITTER_NAME": "Sam", "GIT_COMMITTER_EMAIL": "sam@example.com"}
+    run = _commit(vault, vault.path, RUNNER_SCRIPT, "#!/bin/sh\necho x\n", "settings: approved by Sam", **forged)
+
+    assert _brokered(vault, snap, run).status == "restored"
+    assert vault.blob("main", RUNNER_SCRIPT) == start_blob
+    # Without a record, the same commit is the run's too (everything is).
+    vault.git("reset", "-q", "--hard", run)
+    assert vault.verify(snap).status == "restored"
+
+
+def test_an_owner_commit_on_top_doesnt_launder_the_runs_change(vault: Vault) -> None:
+    _enforced(vault)
+    start_blob = vault.blob("HEAD", RUNNER_SCRIPT)
+    snap = vault.snapshot()
+    run = _commit(vault, vault.path, RUNNER_SCRIPT, "#!/bin/sh\necho run\n", "dreaming: tidy")
+    _commit(vault, vault.path, RUNNER_SCRIPT, "#!/bin/sh\necho owner\n", "owner edit", **OWNER)
+
+    result = _brokered(vault, snap, run)
+
+    assert result.status == "restored"
+    # Fail closed: back to its start content, in the branch and the index.
+    assert result.changed == {"refs/heads/main": [RUNNER_SCRIPT], "index": [RUNNER_SCRIPT]}
+    assert vault.blob("main", RUNNER_SCRIPT) == start_blob == vault.staged(RUNNER_SCRIPT)
+
+
+def test_only_the_paths_the_runs_commits_touched_are_put_back(vault: Vault) -> None:
+    _enforced(vault)
+    vault.write(SETTINGS, "{}\n")
+    vault.git("add", "-f", SETTINGS)
+    vault.git("commit", "-qm", "settings")
+    start_blob = vault.blob("HEAD", RUNNER_SCRIPT)
+    snap = vault.snapshot()
+    owner = _commit(vault, vault.path, SETTINGS, '{"a": 1}\n', "owner settings", **OWNER)
+    run = _commit(vault, vault.path, RUNNER_SCRIPT, "#!/bin/sh\necho run\n", "dreaming: tidy")
+
+    result = _brokered(vault, snap, run)
+
+    assert result.changed == {"refs/heads/main": [RUNNER_SCRIPT], "index": [RUNNER_SCRIPT]}
+    assert result.foreign == {"refs/heads/main": [SETTINGS], "index": [SETTINGS]}
+    assert vault.blob("main", RUNNER_SCRIPT) == start_blob == vault.staged(RUNNER_SCRIPT)
+    # The owner's change stays, committed and staged.
+    assert vault.blob("main", SETTINGS) == vault.blob(owner, SETTINGS) == vault.staged(SETTINGS)
+
+
+def test_a_ref_moved_onto_a_commit_the_run_made_elsewhere_is_still_the_runs(vault: Vault) -> None:
+    # The run's broker commit sits off main (as if made elsewhere); main and a new session-looking branch are then
+    # pointed at it. Whoever moved them, the commit is the run's: main is put back; the branch a worktree has
+    # checked out is reported.
+    _enforced(vault)
+    start_blob = vault.blob("HEAD", RUNNER_SCRIPT)
+    snap = vault.snapshot()
+    vault.git("checkout", "-q", "--detach")
+    run = _commit(vault, vault.path, RUNNER_SCRIPT, "#!/bin/sh\necho elsewhere\n", "notes")
+    vault.git("checkout", "-q", "main")
+    vault.git("update-ref", "refs/heads/main", run)
+    vault.git("reset", "-q", "--hard")
+    wt = _worktree(vault, "decoy", "claude/decoy", run)
+
+    result = _brokered(vault, snap, run)
+
+    assert result.status == "unrestored"
+    assert set(result.restored) == {"refs/heads/main"}
+    assert vault.blob("main", RUNNER_SCRIPT) == start_blob
+    assert result.held_by == {"refs/heads/claude/decoy": "decoy"}
+    assert vault.git("rev-parse", "claude/decoy").strip() == run
+    assert _wt_git(vault, wt, "status", "--porcelain") == ""
+
+
+def test_a_commit_in_a_worktree_the_run_made_itself_isnt_vouched_for(vault: Vault) -> None:
+    # Without a broker record (the run could write git): a worktree made during the run vouches for nothing, so its
+    # branch's change counts as the run's and health goes red, without a write under that worktree; moving main
+    # onto it gets main put back.
+    _enforced(vault)
+    start_blob = vault.blob("HEAD", RUNNER_SCRIPT)
+    snap = vault.snapshot()
+    wt = _worktree(vault, "mine", "claude/mine")
+    tampered = _commit(vault, wt, RUNNER_SCRIPT, "#!/bin/sh\necho mine\n", "settings: approved", **OWNER)
+    vault.git("merge", "-q", "--ff-only", "claude/mine")
+
+    result = vault.verify(snap)
+
+    assert result.status == "unrestored"
+    assert set(result.restored) == {"refs/heads/main"} and result.left_alone == {}
+    assert vault.blob("main", RUNNER_SCRIPT) == start_blob
+    assert result.held_by == {"refs/heads/claude/mine": "mine"}
+    assert vault.git("rev-parse", "claude/mine").strip() == tampered
+    # Under Phase 1d that worktree can't be the run's: the tightened profile denies every write in the git dir,
+    # a new worktree's admin dir included (pinned on the kernel in tests/integration/test_run_sandbox_kernel.py).
+    rules = sbx.build_rules(vault.path, vault.env) + sbx.broker_rules(vault.path, vault.path.parent / "b", vault.env)
+    for rel in ("worktrees/mine2/HEAD", "refs/heads/main", "index", "objects/ab/cd", "HEAD"):
+        assert sbx.decide(rules, str(vault.path / ".git" / rel)) == "deny", rel
+
+
+def test_a_detached_head_with_someone_elses_change_is_left_alone(vault: Vault) -> None:
+    _enforced(vault)
+    snap = vault.snapshot()
+    vault.git("checkout", "-q", "--detach")
+    owner = _commit(vault, vault.path, RUNNER_SCRIPT, "#!/bin/sh\necho owner\n", "owner", **OWNER)
+
+    result = _brokered(vault, snap)
+
+    assert result.status == "clean"
+    assert result.foreign == {"HEAD": [RUNNER_SCRIPT], "index": [RUNNER_SCRIPT]}
+    assert vault.git("rev-parse", "HEAD").strip() == owner
+
+
+def test_too_many_new_commits_to_sort_are_all_the_runs(vault: Vault, monkeypatch: pytest.MonkeyPatch) -> None:
+    _enforced(vault)
+    snap = vault.snapshot()
+    _commit(vault, vault.path, "notes/a.md", "a\n", "a")
+    _commit(vault, vault.path, RUNNER_SCRIPT, "#!/bin/sh\necho owner\n", "owner", **OWNER)
+    monkeypatch.setattr(integrity, "MAX_NEW_COMMITS", 1)
+
+    assert _brokered(vault, snap).status == "restored"
+
+
+def test_a_start_commit_git_cant_read_makes_every_change_the_runs(vault: Vault) -> None:
+    _enforced(vault)
+    snap = vault.snapshot()
+    _commit(vault, vault.path, RUNNER_SCRIPT, "#!/bin/sh\necho owner\n", "owner", **OWNER)
+    snap["trees"]["0" * 40] = {}
+
+    assert _brokered(vault, snap).status == "restored"
+
+
+def test_a_root_commit_from_the_broker_counts_everything_it_holds(vault: Vault) -> None:
+    # An orphan branch the run's broker started: every path in it is the run's.
+    _enforced(vault)
+    snap = vault.snapshot()
+    vault.git("checkout", "-q", "--orphan", "fresh")
+    vault.git("rm", "-rq", "--cached", ".")
+    root = _commit(vault, vault.path, RUNNER_SCRIPT, "#!/bin/sh\necho root\n", "root")
+    vault.git("checkout", "-q", "-f", "main")
+
+    result = _brokered(vault, snap, root)
+
+    assert "refs/heads/fresh" in result.restored
+
+
+def test_a_branch_the_main_work_tree_has_checked_out_isnt_rewritten(vault: Vault) -> None:
+    # The run's vault is itself a linked worktree: the main work tree is another session's.
+    run_wt = _worktree(vault, "run", "run-branch")
+    snap = integrity.snapshot(run_wt, vault.env)
+    _plant_on_branch(vault, "main", RUNNER_SCRIPT, "#!/bin/sh\necho planted\n")
+
+    result = integrity.verify(run_wt, snap, vault.env, record=None)
+
+    assert result.status == "unrestored"
+    assert result.held_by == {"refs/heads/main": "main work tree"}
+
+
+def test_the_broker_record_is_trusted_only_under_an_enforced_sandbox(vault: Vault) -> None:
+    snap = vault.snapshot()
+    assert integrity.broker_record(vault.path, snap, vault.env) is None
+    _enforced(vault)
+    assert integrity.broker_record(vault.path, snap, vault.env) is None  # no ledger reader in this build
 
 
 def test_the_git_env_drops_what_would_point_git_elsewhere() -> None:
