@@ -96,6 +96,7 @@ the staged file, a line number and the rule id. The hook runs
 
 from __future__ import annotations
 
+import posixpath
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -183,6 +184,12 @@ _MESSAGES = {
     "is missing or out of date, so the move can't be checked against it. A scheduled run must not run scoutctl "
     "repo sync after this commit: leave it to the owner. Owner: run scoutctl repo sync yourself; it refuses to "
     "push a move out of a path Agnes keeps local-only, and says how to allow one",
+    "link-leaves-scope": "this symlink points outside what its own path shares or uploads: at a private, "
+    "local-only or less widely shared file, or outside the vault. Git stores a link as its target's path, so "
+    "whoever gets the link reads that name; point it inside the same share, or remove it",
+    "link-widening": "a scheduled run may not add or retarget a symlink that points outside what its own path "
+    "shares or uploads (a private, local-only or less widely shared file, or a path outside the vault) — leave "
+    "that to the owner",
     "privacy-overlay-unreadable": "scout-config.yaml doesn't parse, so the engine's default privacy policy applies, "
     "plus the stricter settings in its privacy: block if that part reads cleanly; "
     "a scheduled run's commit is refused until it does",
@@ -381,6 +388,8 @@ def privacy_staged(repo: Path, *, env: Mapping[str, str]) -> list[Finding]:
         if rel == CONFIG_FILE:
             out += _config_findings(ctx, sp)
             continue
+        if sp.symlink:
+            out += _link_findings(ctx, sp)
         staged: str | None = None
         if not in_privacy_scope(rel, ctx.shared_globs):
             if not _md(rel):
@@ -395,6 +404,50 @@ def privacy_staged(repo: Path, *, env: Mapping[str, str]) -> list[Finding]:
         # Deleting the config drops its privacy: block (staged_paths lists no deletions).
         out.append(Finding(CONFIG_FILE, "privacy-widening", True, _MESSAGES["config-widening"]))
     return out
+
+
+def _link_findings(ctx: _Ctx, sp: StagedPath) -> list[Finding]:
+    """A staged symlink whose target leaves the link's own scope (#606).
+
+    Git stores a link as its target's path, and repo sync mirrors it as that
+    name, never the file behind it. So the link is labelled by its path alone,
+    and its target must be at least as open: a link that uploads may not name a
+    local-only path or one outside the vault, and a shared link may not name a
+    private note, a file no share covers, or one shared with fewer people. A
+    link in a local-only path stays home, so it may point anywhere. A scheduled
+    run's link blocks; the owner gets a warning. The link's text is still
+    checked as the file's content by the callers, as before.
+    """
+    rel = sp.rel
+    link = classify(rel, None, ctx.policy)
+    if link.local_only:
+        return []
+    target = _as_text(staged_blob(ctx.repo, rel))
+    if target is not None and not target.startswith("/"):
+        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(rel), target))
+        if resolved not in (".", "..") and not resolved.startswith("../"):
+            text = index_text_lossy(ctx.repo, resolved)
+            # No file by that name in the commit: a folder link (judged by what a file in it would be), or dangling.
+            names = [resolved] if text is not None else [resolved, f"{resolved}/x"]
+            if any(_as_open(ctx, link, n, classify(n, _head_window(n, text), ctx.policy)) for n in names):
+                return []
+    if ctx.scheduled:
+        return [Finding(rel, "privacy-widening", True, _MESSAGES["link-widening"])]
+    return [Finding(rel, "link-leaves-scope", False, _MESSAGES["link-leaves-scope"])]
+
+
+def _as_open(ctx: _Ctx, link: Label, rel: str, label: Label) -> bool:
+    """Whether everyone who gets the symlink labelled ``link`` may also see ``rel`` (labelled ``label``)."""
+    if label.local_only:
+        return False
+    link_shared_file = ctx.is_shared(link.path, link)
+    if not link_shared_file and link.federation_scope == "none":
+        return True  # a link nobody else reads: the mirror gets its name, as it would the target's own
+    if label.visibility == "private":
+        return False
+    if link_shared_file and not ctx.is_shared(rel, label):
+        return False
+    return not _widens(label.federation_scope, link.federation_scope)
 
 
 def _local_only_moves(ctx: _Ctx, paths: list[StagedPath]) -> list[Finding]:

@@ -1154,6 +1154,122 @@ def test_an_uppercase_md_note_is_in_the_privacy_scope(vault: Path) -> None:
     assert checks(vault) == [(rel, "private-link", True, 3)]
 
 
+def test_an_uppercase_md_note_renamed_from_lowercase_is_still_checked(vault: Path) -> None:
+    """#605: a rename .md -> .MD, and an append after it, are checked like any shared note."""
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    upper = PLAIN[:-3] + ".MD"
+    git(vault, "mv", PLAIN, "knowledge-base/topics/misc/plain-tmp.md")  # two steps: a case-only rename
+    git(vault, "mv", "knowledge-base/topics/misc/plain-tmp.md", upper)  # needs them on macOS
+    assert checks(vault) == [] and checks(vault, RUN) == []  # a pure rename adds nothing
+    n = append(vault, upper, "See [[sam]] for the details.")
+    assert checks(vault) == checks(vault, RUN) == [(upper, "private-link", True, n)]
+    commit(vault, "rename to .MD and append")  # the owner's commit; the hook isn't run here
+    n = append(vault, upper, "Sammy has the notes.")
+    assert checks(vault) == checks(vault, RUN) == [(upper, "private-mention", True, n)]
+
+
+def test_a_new_uppercase_md_note_is_checked_in_a_run_too(vault: Path) -> None:
+    """#605: a run's new ``.MD`` in a shared folder gets the note's checks, not the non-note path's."""
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    rel = "knowledge-base/topics/misc/Plan.MD"
+    stage(vault, rel, "---\nvisibility: private\nfederation_scope: org\n---\nSee [[sam]].\n")
+    found = checks(vault, RUN)
+    assert (rel, "privacy-contradiction", False, None) in found  # its frontmatter is read, as a note's is
+    assert (rel, "privacy-widening", True, None) in found
+
+
+# ----- symlinks and type changes (#606) --------------------------------------------
+
+
+def stage_link(vault: Path, rel: str, target: str) -> None:
+    path = vault / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink() or path.exists():
+        path.unlink()
+    path.symlink_to(target)
+    git(vault, "add", "--", rel)
+
+
+LINK = "knowledge-base/topics/misc/link.md"
+_LINK = "link-leaves-scope"
+
+
+def test_a_shared_note_replaced_by_a_symlink_is_checked_like_a_modification(vault: Path) -> None:
+    """A type change (git status T) wasn't listed at all, so nothing looked at it."""
+    _share(vault, _SHARE_TOPICS + REFUSE)
+    stage(vault, "knowledge-base/topics/misc/other.md", "# Other\n\nA stand-in note.\n")
+    commit(vault, "share topics/misc with Priya")
+    stage_link(vault, PLAIN, "other.md")  # the target stays in the share: only the change itself counts
+    assert checks(vault) == []
+    # As any run's edit to a shared note is under `shared_edits: refuse`: the link's text is its one new line.
+    assert checks(vault, RUN) == [(PLAIN, "privacy-widening", True, 1)]
+
+
+def test_a_shared_file_replaced_by_a_symlink_to_a_private_note_blocks(vault: Path) -> None:
+    stage_link(vault, DRAFT, "../knowledge-base/people/sam.md")
+    assert (DRAFT, _LINK, False, None) in checks(vault)
+    found = checks(vault, RUN)
+    assert found and all(f[:3] == (DRAFT, "privacy-widening", True) for f in found)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param("../../people/sam.md", id="a private note"),
+        pytest.param("../../people", id="a folder that isn't shared"),
+        pytest.param("../other/rollout.md", id="a note outside the share"),
+        pytest.param("../../../trading/positions.md", id="a local-only file"),
+        pytest.param("../../../../elsewhere/notes.md", id="outside the vault"),
+        pytest.param("/etc/hosts", id="an absolute path"),
+    ],
+)
+def test_a_shared_symlink_whose_target_leaves_the_share_is_reported(vault: Path, target: str) -> None:
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    stage_link(vault, LINK, target)
+    assert (LINK, _LINK, False, None) in checks(vault)  # the owner is told
+    assert (LINK, "privacy-widening", True, None) in checks(vault, RUN)  # a run is stopped
+    rc, out = hook(vault, RUN)
+    assert rc == 1 and "symlink" in out
+    assert_no_private_words(out)
+
+
+@pytest.mark.parametrize("target", ["plain.md", "../misc/plain.md", "."])
+def test_a_shared_symlink_whose_target_stays_in_the_share_passes(vault: Path, target: str) -> None:
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    stage_link(vault, LINK, target)
+    assert checks(vault) == [] and checks(vault, RUN) == []
+
+
+@pytest.mark.parametrize(
+    ("rel", "target", "reported"),
+    [
+        pytest.param("notes/positions", "../trading/positions.md", True, id="out of a path that uploads"),
+        pytest.param("notes/elsewhere", "../../elsewhere", True, id="out of the vault"),
+        pytest.param("notes/plain", "../knowledge-base/topics/misc/plain.md", False, id="to a note that uploads"),
+        pytest.param("notes/sam", "../knowledge-base/people/sam.md", False, id="unshared link to a private note"),
+        pytest.param("trading/latest", "../../elsewhere/positions.md", False, id="the link itself is local-only"),
+    ],
+)
+def test_a_symlink_into_a_local_only_path_is_reported(vault: Path, rel: str, target: str, reported: bool) -> None:
+    """A link that uploads names its target: one in a local-only path, or outside the vault, is reported."""
+    stage_link(vault, rel, target)
+    assert checks(vault) == ([(rel, _LINK, False, None)] if reported else [])
+    assert checks(vault, RUN) == ([(rel, "privacy-widening", True, None)] if reported else [])
+
+
+def test_a_local_only_file_replaced_by_a_symlink_is_listed(vault: Path) -> None:
+    """The type change in a local-only path is seen (it adds nothing to check: the link stays home)."""
+    from scout.kb.git_io import staged_paths
+
+    stage_link(vault, POSITIONS, "archive/positions.md")
+    assert [(sp.rel, sp.head_rel, sp.symlink) for sp in staged_paths(vault)] == [(POSITIONS, POSITIONS, True)]
+    assert checks(vault) == [] and checks(vault, RUN) == []
+
+
 # ----- a run changing a non-note file in a share (#594) ---------------------------
 
 SHARED = "knowledge-base/topics/misc/"

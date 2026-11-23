@@ -976,6 +976,9 @@ def test_other_options_prefixes_and_broken_quotes_are_not_flagged(command: str) 
         "bash -c 'git commit -m x &'",
         "cat <<'EOF' > /tmp/x\nbody\nEOF\nnohup git commit -m x",
         "cat <<'EOF' > /tmp/x\nbody\nEOF\ngit commit -m x &",
+        "cat <&3 &",  # the descriptor duplicate isn't a background, the trailing "&" is
+        "git commit -m x <&3 & disown",
+        "cat < notes/a.md & git commit -m x",
     ],
 )
 def test_commands_that_detach_are_flagged(command: str) -> None:
@@ -1030,6 +1033,9 @@ SCOUT_WRAP"""
         "git commit -m x$$'R&D'",
         "git commit -m 'a#b' -m 'R&D'",
         "echo a#b 'R&D'",  # "#" inside a word starts no comment
+        "cat <&3",  # #618: "<&" duplicates a descriptor, it backgrounds nothing
+        "exec 3<&0; cat <&3; exec 3<&-",
+        'read -r line <&3 && echo "$line"',
     ],
 )
 def test_ordinary_commands_and_reads_are_not_flagged(command: str) -> None:

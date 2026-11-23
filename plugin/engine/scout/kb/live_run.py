@@ -338,8 +338,8 @@ def _alive(pid: int) -> bool:
 
 RUN_VARS = ("SCOUT_MODE", "SCOUT_READER")
 _SEGMENTS = re.compile(r"&&|\|\||[;\n`]|(?<!>)\||\$\(|\(|\)")  # ">|" is a redirect, not a pipe
-# A lone "&" (background), not "&&", "&>", ">&", "|&" or "2>&1".
-_BACKGROUND = re.compile(r"(?<![&>|])&(?![&>])")
+# A lone "&" (background), not "&&", "&>", ">&", "<&" (`cat <&3`), "|&" or "2>&1".
+_BACKGROUND = re.compile(r"(?<![&>|<])&(?![&>])")
 _HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)\s*(?:'([^']+)'|\"([^\"]+)\"|\\?([A-Za-z_][\w.-]*))")
 _ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
 _DETACH = {

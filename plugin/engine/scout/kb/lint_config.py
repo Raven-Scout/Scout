@@ -84,6 +84,7 @@ WARNING_CHECKS = frozenset(
         "frontmatter-unparseable",
         "privacy-overlay-unreadable",
         "local-only-unchecked",
+        "link-leaves-scope",
         "page-config",
         "lab-understanding-size",
     }
@@ -323,7 +324,10 @@ class LintConfig:
         return f"{self.mode}, per path" if self.path_modes else self.mode
 
     def in_scope(self, rel: str) -> bool:
-        return rel.endswith(".md") and rel.startswith(_SCOPE_PREFIXES) and not any_match(self.exclude_globs, rel)
+        # Any case of `.md`, as in_privacy_scope and the classifier read it (#605): `x.MD` is a note too.
+        return (
+            rel.lower().endswith(".md") and rel.startswith(_SCOPE_PREFIXES) and not any_match(self.exclude_globs, rel)
+        )
 
     def budget_for(self, rel: str) -> int | None:
         for b in self.budgets:

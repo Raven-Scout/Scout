@@ -46,10 +46,17 @@ def main_root(repo: Path) -> Path:
     return Path(common_dir).resolve().parent
 
 
+SYMLINK_MODE = "120000"
+
+
 @dataclass(frozen=True)
 class StagedPath:
+    """One staged path: ``head_rel`` is where its content was at HEAD (None for a new file or a copy),
+    ``symlink`` whether the staged entry is a symbolic link (its blob is then the target path)."""
+
     rel: str
     head_rel: str | None
+    symlink: bool = False
 
 
 def _has_head(repo: Path) -> bool:
@@ -57,19 +64,23 @@ def _has_head(repo: Path) -> bool:
 
 
 def staged_paths(repo: Path) -> list[StagedPath]:
-    out = git(repo, "diff", "--cached", "--name-status", "-z", "-M", "--diff-filter=ACMR").stdout
+    """What the commit adds, changes, renames or copies. A type change (``T``: a file replaced by a
+    symlink, or the reverse) is a modification: the path existed at HEAD and its content is new (#606)."""
+    out = git(repo, "diff", "--cached", "--raw", "-z", "-M", "--abbrev=1", "--diff-filter=ACMRT").stdout
     parts = [p for p in out.split("\0") if p]
     result: list[StagedPath] = []
     i = 0
     while i < len(parts):
-        status = parts[i]
+        # ":<HEAD mode> <staged mode> <HEAD sha> <staged sha> <status>[score]", then the path or paths.
+        _, mode, _, _, status = parts[i].split(" ")
+        symlink = mode == SYMLINK_MODE
         if status[0] in "RC":
             src, dst = parts[i + 1], parts[i + 2]
-            result.append(StagedPath(dst, src if status[0] == "R" else None))
+            result.append(StagedPath(dst, src if status[0] == "R" else None, symlink))
             i += 3
         else:
             rel = parts[i + 1]
-            result.append(StagedPath(rel, rel if status[0] == "M" else None))
+            result.append(StagedPath(rel, rel if status[0] in "MT" else None, symlink))
             i += 2
     return result
 
