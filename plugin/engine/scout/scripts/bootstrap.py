@@ -103,6 +103,8 @@ class UpgradeResult:
     skipped: list[str] = field(default_factory=list)
     # Brain files whose live copy still holds conflict markers: left alone.
     conflict_markers: list[str] = field(default_factory=list)
+    # Brain files missing from the vault that the upgrade wrote from the assembly.
+    installed: list[str] = field(default_factory=list)
     # Every vault edit to a managed file the upgrade kept, merged, or parked.
     vault_edits: list[VaultEdit] = field(default_factory=list)
     pointer: Path | None = None
@@ -620,6 +622,7 @@ class _Cat4Outcome:
     skipped: list[str] = field(default_factory=list)  # already-pending sidecars
     held: list[str] = field(default_factory=list)  # live files that still hold conflict markers
     backups: list[str] = field(default_factory=list)  # parked copies of live files replaced on the fingerprint alone
+    installed: list[str] = field(default_factory=list)  # live files that were missing and got the assembly
 
 
 def _stage_cat4_upgrade(
@@ -662,7 +665,11 @@ def _stage_cat4_upgrade(
         name = f"{kind}.md"
         ours = _assemble(cfg, kind, custom=custom)
         live = cfg.vault / name
-        theirs = live.read_text(encoding="utf-8") if live.exists() else ours
+        # A missing live file (a brain kind new to this vault, or one an
+        # earlier engine recorded as installed without writing it) reads as
+        # ``ours``, so decide() advances and the write below installs it.
+        live_exists = live.exists()
+        theirs = live.read_text(encoding="utf-8") if live_exists else ours
         snap = snapshot_dir / name
         base = snap.read_text(encoding="utf-8") if snap.exists() else None
         proposed_path = _proposed_path(snapshot_dir, name)
@@ -692,7 +699,7 @@ def _stage_cat4_upgrade(
                 proposal = result.content
             else:
                 new_live = result.content
-        # ADVANCE: live already equals ours.
+        # ADVANCE: live already equals ours (or is missing, and gets ours).
 
         if proposal is not None:
             # The assembly is kept so `bootstrap resolve` can make it the base.
@@ -700,14 +707,16 @@ def _stage_cat4_upgrade(
             _atomic_write(sidecar, proposal)
             out.conflicts.append(sidecar.name)
             continue
-        if new_live != theirs:
-            if prov.snapshot is None and theirs != proposed:
+        if not live_exists or new_live != theirs:
+            if live_exists and prov.snapshot is None and theirs != proposed:
                 # Only the fingerprint vouches for the base (a vault from before
                 # provenance): park the file being replaced, once, like any
                 # vault copy an upgrade replaces.
                 parked = vault_drift.park_vault_copy(cfg.vault, name, theirs)
                 out.backups.append(parked.relative_to(cfg.vault).as_posix())
             _atomic_write(live, new_live)
+            if not live_exists:
+                out.installed.append(name)
         # Live has absorbed ``ours``: it becomes the merge base.
         _atomic_write(snap, ours)
         records[name] = brain_merge.Provenance.assembled(ours)
@@ -1468,6 +1477,7 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         backups=_parked_copies(vault_edits) + cat4.backups,
         skipped=cat4.skipped,
         conflict_markers=cat4.held,
+        installed=cat4.installed,
         vault_edits=vault_edits,
         pointer=pointer,
     )
