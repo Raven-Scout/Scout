@@ -627,6 +627,50 @@ def test_a_data_file_search_kept_out_of_the_kb_is_allowed(command: str) -> None:
     assert not judged(command)
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        # ripgrep ignores -t when an include glob is given: these search the glob's files
+        "rg x -g '*.md' -tpy",
+        "rg -t py -g '*.md' x",
+        "rg -tpy -g '*.yaml' x",
+        "rg x --type=py --glob='*.json'",
+        "rg x --type py --iglob '*.MD'",
+        # an html page the KB keeps
+        "rg x -g '*.html'",
+        "rg -t html x",
+    ],
+)
+def test_an_rg_type_does_not_bound_an_include_glob_that_reaches_the_kb(command: str) -> None:
+    assert judged(command)
+    assert judged(command, cwd="/home/alex")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rg -tpy x",
+        "rg -t py x -g '!knowledge-base/**'",  # a negated glob is no include: the type still bounds it
+        "rg -t py -g '*.py' x",
+    ],
+)
+def test_an_rg_type_bounds_a_search_with_no_include_glob(command: str) -> None:
+    assert not judged(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ag Priya knowledge-base",
+        "ack Priya knowledge-base/people.md",
+        "fd people knowledge-base",
+        "ugrep -r x knowledge-base",
+    ],
+)
+def test_other_search_tools_naming_the_kb_are_flagged(command: str) -> None:
+    assert raw_kb_read(command)
+
+
 def test_a_data_file_search_below_the_vault_root_is_allowed() -> None:
     assert not judged("grep -r Priya . --include='*.yaml'", cwd=f"{VAULT}/scripts")
     assert judged("grep -r Priya . --include='*.yaml'", cwd=f"{VAULT}/knowledge-base/ontology")
