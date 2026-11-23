@@ -517,6 +517,34 @@ def cli_engagement(
     )
 
 
+@changes_app.command("digest")
+def cli_changes_digest(
+    json_out: bool = typer.Option(False, "--json", help="Emit the versioned JSON document the app reads."),
+) -> None:
+    """'What Scout is working on': this week's engagement, tests, shipped changes and what is next."""
+    import json as _json
+    import os
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout import paths as _paths
+    from scout.changes.digest import build_digest, render_text
+    from scout.changes.vault import installed_vault
+    from scout.config import resolve_timezone
+
+    try:
+        vault = _paths.data_dir()
+        owner = installed_vault(os.environ)
+    except ValueError as e:  # no home directory to find the vault from
+        typer.echo(f"scoutctl changes digest: {e}", err=True)
+        raise typer.Exit(code=2) from None
+    if not vault.is_dir():
+        typer.echo("scoutctl changes digest: vault directory missing", err=True)
+        raise typer.Exit(code=2)
+    doc = build_digest(vault, os.environ, now=_dt.now(UTC), tz=resolve_timezone(vault), owner_vault=owner)
+    typer.echo(_json.dumps(doc) if json_out else render_text(doc))
+
+
 @changes_app.command("scan")
 def cli_changes_scan(
     since: str | None = typer.Option(

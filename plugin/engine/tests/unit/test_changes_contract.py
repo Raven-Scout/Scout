@@ -33,6 +33,7 @@ REGEN = os.environ.get("SCOUT_REGEN_CONTRACT") == "1"
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "contract"
 CANONICAL_CHANGES = FIXTURES / "changes.json"
 CANONICAL_ENGAGEMENT = FIXTURES / "engagement.json"
+CANONICAL_DIGEST = FIXTURES / "changes-digest.json"
 
 
 def _ts(days_ago: float) -> datetime:
@@ -274,6 +275,26 @@ def test_engagement_contract_has_every_day(tmp_path):
         for field in ("feedback", "reliance", "noise"):
             assert sum(d["by_surface"][field].values()) == d[field]
     _check_or_regen(CANONICAL_ENGAGEMENT, _text(doc))
+
+
+def test_digest_contract_matches_canonical(tmp_path):
+    from scout.changes.digest import build_digest
+
+    vault, _, env = _build(tmp_path)
+    folder = vault / "docs" / "wishlist"
+    folder.mkdir(parents=True)
+    (folder / "gmail-empty-check.md").write_text(
+        "---\ntitle: Say so when a Gmail search finds nothing\nstatus: open\npriority: high\ndate: 2026-11-10\n---\n",
+        encoding="utf-8",
+    )
+    (folder / "shipped-one.md").write_text("---\ntitle: Shipped\nstatus: done\npriority: high\n---\n", encoding="utf-8")
+    doc = build_digest(vault, env, now=NOW, tz=PRAGUE)
+    assert doc["schema_version"] == 1 and doc["week_of"] == "2026-11-16" and len(doc["days"]) == 7
+    assert doc["needs_ok"] == 1 and doc["up_next"] == [
+        {"slug": "gmail-empty-check", "title": "Say so when a Gmail search finds nothing"}
+    ]
+    assert str(vault) not in json.dumps(doc) and "/Users/" not in json.dumps(doc)
+    _check_or_regen(CANONICAL_DIGEST, _text(doc))
 
 
 def test_reports_carry_no_absolute_paths(tmp_path):
