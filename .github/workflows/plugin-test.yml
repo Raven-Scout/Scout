@@ -74,16 +74,16 @@ jobs:
   # floor (each sees only part of the data); `coverage report` does, on the
   # combined total.
   #
-  # `workers` is more than the runner's cores (ubuntu-latest 4, macos-latest
-  # 3). When this was set (#439) most of the suite waited on subprocesses and
-  # twice the cores won: the coverage leg's parallel step went 278s -> 145s
+  # `workers` is twice the runner's cores (ubuntu-latest 4, macos-latest 3).
+  # When this was set (#439) most of the suite waited on subprocesses and the
+  # oversubscription won: the coverage leg's parallel step went 278s -> 145s
   # and macOS 323s -> 263s against `-n auto`. Measured again on 2026-11-22
   # with the suite four times the size, both runners are CPU-bound (Ubuntu
-  # 95-99% busy at 8 workers, macOS 90% at 3). On Ubuntu 4, 8 and 12 workers
-  # and `--dist worksteal` all land inside the spread between two runners
-  # (the same leg took 386-641 s over six runs), so it stays at 8. macOS is
-  # steady (1189-1285 s over six runs at 6 workers) and took 1139 s at 4 and
-  # 1301 s at 3, so it runs 4.
+  # 95-99% busy, macOS 90%) and the count no longer matters either way: on
+  # Ubuntu 4, 8 and 12 workers and `--dist worksteal` all land inside the
+  # spread between two runners (the same leg took 386-641 s over six runs);
+  # on macOS 4 workers took 1139 s and 1362 s, 3 took 1301 s, against
+  # 1189-1285 s over six runs at 6. So the counts stay as they were.
   test:
     needs: changes
     if: needs.changes.outputs.run == 'true'
@@ -103,7 +103,7 @@ jobs:
           - os: macos-latest
             python: "3.12"
             extras: dev
-            workers: 4
+            workers: 6
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     defaults:
