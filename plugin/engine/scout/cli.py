@@ -545,6 +545,24 @@ def cli_changes_digest(
     typer.echo(_json.dumps(doc) if json_out else render_text(doc))
 
 
+@changes_app.command("diff")
+def cli_changes_diff(change_id: str = typer.Argument(..., metavar="CHG-ID", help="A change id, chg-<12 hex>.")) -> None:
+    """Print what a change's commit did to its own files (the diff the app's detail view shows)."""
+    from scout import paths as _paths
+    from scout.changes.report import change_diff
+
+    try:
+        vault = _paths.data_dir()
+    except ValueError as e:  # no home directory to find the vault from
+        typer.echo(f"scoutctl changes diff: {e}", err=True)
+        raise typer.Exit(code=2) from None
+    text = change_diff(vault, change_id) if vault.is_dir() else None
+    if text is None:
+        typer.echo(f"scoutctl changes diff: no such change {change_id}", err=True)
+        raise typer.Exit(code=2)
+    typer.echo(text, nl=not text.endswith("\n"))
+
+
 @changes_app.command("scan")
 def cli_changes_scan(
     since: str | None = typer.Option(

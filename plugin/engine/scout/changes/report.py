@@ -12,8 +12,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from scout.changes.models import CHANGE_KINDS, SCHEMA_VERSION, Change, Signal
-from scout.changes.scan import derive
+from scout.changes.inline import inline_comments, merge_inline
+from scout.changes.models import CHANGE_ID_RE, CHANGE_KINDS, SCHEMA_VERSION, Change, Signal
+from scout.changes.scan import _git_bytes, derive, name_status, own_paths
 from scout.changes.store import read_changes, read_signals
 
 FEEDBACK_KINDS = frozenset({"dm-reply", "dm-reaction", "inline-comment", "app-edit", "verdict-wrong"})
@@ -85,6 +86,7 @@ def changes_report(
     # clock, plus a DST hour), and what rolls it back comes after it, so older rows can't change what is shown.
     # Leaving them out bounds the work a stale or forged row can cause.
     floor = since - timedelta(days=settings.review_days + 2)
+    signals = merge_inline(signals, inline_comments(vault, since=floor, now=now))
     tests = evaluate([c for c in unique.values() if floor <= c.ts <= now], signals, now=now, tz=tz, settings=settings)
     pending, pending_skipped = read_pending(vault)
     needs_ok = [
@@ -206,6 +208,7 @@ def engagement_report(vault: Path, env: Mapping[str, str], *, now: datetime, sin
     session's reliance on one surface counts once per local day, so a duplicated row never inflates the rate.
     ``pending.dm_sent`` counts DMs under 48 h old with no answer yet; they are not noise until the window closes."""
     signals, skipped = read_signals(vault, env)
+    signals = merge_inline(signals, inline_comments(vault, since=since, now=now))
     rows = list(daily_counts(signals, since=since, now=now, tz=tz).values())
     return {
         "schema_version": SCHEMA_VERSION,
@@ -216,3 +219,31 @@ def engagement_report(vault: Path, env: Mapping[str, str], *, now: datetime, sin
         "totals": {f: sum(r[f] for r in rows) for f in FIELDS},
         "pending": {"dm_sent": pending_dm_count(signals, since=since, now=now)},
     }
+
+
+DIFF_MAX_BYTES = 256 * 1024
+DIFF_CUT_NOTE = "… (diff cut at 256 KB)"
+
+
+def change_diff(vault: Path, change_id: str) -> str | None:
+    """What the change's commit did to its own paths (``scan.own_paths``), as ``git show`` prints it, cut at 256 KiB.
+
+    None unless ``change_id`` is a ledger row's id and git confirms that row's commit is still a self-change (the same
+    check :func:`changes_report` makes), or when git can't read the commit."""
+    if not isinstance(change_id, str) or not CHANGE_ID_RE.match(change_id):
+        return None
+    shas = [c.commit for c in read_changes(vault)[0] if c.id == change_id and change_id == f"chg-{c.commit[:12]}"]
+    if not shas:
+        return None
+    sha = shas[0]
+    derived = derive(vault, [sha])
+    entries = name_status(vault, sha)
+    if not derived or derived.get(sha) is None or entries is None:
+        return None
+    raw = _git_bytes(vault, "show", "--format=", "-M", sha, "--", *own_paths(entries))
+    if raw is None:
+        return None
+    if len(raw) <= DIFF_MAX_BYTES:
+        return raw.decode("utf-8", errors="replace")
+    cut = raw[:DIFF_MAX_BYTES].decode("utf-8", errors="replace").rstrip("\n")
+    return f"{cut}\n{DIFF_CUT_NOTE}"
