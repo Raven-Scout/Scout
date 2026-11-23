@@ -17,6 +17,7 @@ from pathlib import Path
 import yaml
 
 from scout.plural import noun
+from scout.scripts.connector_probes import normalize_connector_keys
 
 # Connectors whose ``slot: notification`` section carries the run's wrap message.
 # With no ``notify.wrap_channels`` in scout-config.yaml, every enabled one gets it.
@@ -41,6 +42,22 @@ def parse_wrap_channels(value: object) -> frozenset[str] | None:
             f"expected any of {', '.join(WRAP_CHANNELS)}"
         )
     return frozenset(value)
+
+
+def wrap_channels_problem(wrap_channels: Collection[str] | None, enabled_connectors: Collection[str]) -> str | None:
+    """Why a vault's ``notify.wrap_channels`` choice leaves its runs with no wrap, or None.
+
+    The choice only narrows the enabled wrap channels, so naming none that is
+    enabled assembles no notification section at all: the run finishes, exits 0
+    and sends nothing (#559). ``enabled_connectors`` may hold legacy or roster
+    spellings (``notify:telegram``).
+    """
+    if wrap_channels is None or set(wrap_channels) & normalize_connector_keys(set(enabled_connectors)):
+        return None
+    return (
+        f"scout-config.yaml: notify.wrap_channels ({', '.join(sorted(wrap_channels))}) "
+        f"names no enabled connector among {', '.join(WRAP_CHANNELS)}: runs will send no wrap notification"
+    )
 
 
 @dataclass(frozen=True)
@@ -144,7 +161,9 @@ def select_sections(
     """Filter sections by connector, slot, and mode.
 
     Kept when ALL of the following hold:
-      - ``requires`` is null OR is an enabled connector
+      - ``requires`` is null OR is an enabled connector. The match is exact:
+        ``BootstrapConfig`` normalizes legacy and roster spellings
+        (``CONNECTOR_KEY_ALIASES``) before any caller gets here
       - ``slot`` is None OR matches the section's slot
       - ``modes`` is None OR the section's mode is empty (applies to every
         target) OR the section's mode list intersects ``modes``
