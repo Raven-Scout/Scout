@@ -703,17 +703,29 @@ def is_owner_only(policy: Policy, surface: str) -> bool:
     return surface_class(policy, surface) == "owner_only"
 
 
+def outbound_terms(vault: Path, surface: str) -> PrivateTerms | None:
+    """What may not go to ``surface``, or ``None`` for an owner-only one (nothing is checked there).
+
+    For a caller with several texts for one surface (the outbound gate checks a
+    tool call's every field): building this walks the vault each time, cache or
+    not, so build it once and give each text to :func:`find_mentions`. An
+    unknown surface id is shared (fail closed).
+    """
+    root = vault.resolve()
+    policy = load_policy(root)
+    if is_owner_only(policy, surface):
+        return None
+    return with_shared(private_terms(root, policy), root)
+
+
 def check_outbound(vault: Path, text: str, surface: str) -> list[int]:
     """Lines of ``text`` that may not go to ``surface``: ``[]`` for an owner-only one.
 
     An unknown surface id is shared (fail closed). Markers are ignored: a send
     is never allowed by one.
     """
-    root = vault.resolve()
-    policy = load_policy(root)
-    if is_owner_only(policy, surface):
-        return []
-    return find_mentions(text, with_shared(private_terms(root, policy), root), allow_markers=False)
+    terms = outbound_terms(vault, surface)
+    return [] if terms is None else find_mentions(text, terms, allow_markers=False)
 
 
 def _checked(vault: Path, text: str, surface: str) -> list[int]:

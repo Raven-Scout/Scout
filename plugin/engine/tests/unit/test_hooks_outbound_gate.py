@@ -326,3 +326,32 @@ def test_the_deadline_sits_inside_the_hooks_timeout():
     hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]["PreToolUse"]
     (entry,) = [e for e in hooks if "hook outbound-gate" in e["hooks"][0]["command"]]
     assert gate.DEADLINE_S + 3 <= entry["hooks"][0]["timeout"]
+
+
+# --- cost: the private terms are built once per tool call, not once per field ------------
+
+
+def test_many_fields_build_the_private_terms_once(vault, monkeypatch):
+    """Each build walks the vault, so a call with eleven strings ran past DEADLINE_S on a real vault."""
+    calls = {"terms": 0, "shared": 0}
+    real_terms, real_shared = outbound.private_terms, outbound.with_shared
+
+    def counted_terms(*a, **k):
+        calls["terms"] += 1
+        return real_terms(*a, **k)
+
+    def counted_shared(*a, **k):
+        calls["shared"] += 1
+        return real_shared(*a, **k)
+
+    monkeypatch.setattr(outbound, "private_terms", counted_terms)
+    monkeypatch.setattr(outbound, "with_shared", counted_shared)
+    tool_input = {f"field_{i}": CLEAN for i in range(11)} | {"text": PRIVATE}
+
+    assert gate.flagged_fields(vault, tool_input, "slack") == {"text": [2]}
+    assert calls == {"terms": 1, "shared": 1}
+
+
+def test_an_owner_only_surface_flags_nothing_and_builds_no_terms(vault, monkeypatch):
+    monkeypatch.setattr(outbound, "private_terms", lambda *a, **k: pytest.fail("terms were built"))
+    assert gate.flagged_fields(vault, {"text": PRIVATE}, "vault") == {}
