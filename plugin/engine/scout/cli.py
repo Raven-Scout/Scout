@@ -305,6 +305,10 @@ def cli_sandbox_verify(
     except integrity.IntegrityError as e:
         result = integrity.Result("error", reason=str(e))
     else:
+        from scout.changes import run_commits
+
+        # Before the check makes its restore commits, so those are never counted as the run's. Best-effort.
+        run_commits.record(data_dir, start, label=label)
         result = integrity.verify(data_dir, start, label=label)
     for line in result.lines():
         typer.echo(line)

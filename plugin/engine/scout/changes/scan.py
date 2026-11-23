@@ -8,11 +8,13 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from scout.changes import run_commits
 from scout.changes.models import CHANGE_ID_RE, SUMMARY_MAX, WHY_TYPES, Change, Why
+from scout.changes.run_commits import RunCommit
 from scout.changes.store import append_change, read_changes, read_scan_mark, write_scan_mark
 
 # One git call may take this long; past it the scan records nothing and the watermark stays put.
@@ -71,7 +73,19 @@ def own_paths(entries: Sequence[tuple[str, Sequence[str]]]) -> list[str]:
     return sorted(out)
 
 
-def lane_of(subject: str) -> str | None:
+def lane_of(subject: str, run: RunCommit | None = None) -> str | None:
+    """The lane that made the commit, or None when it is not Scout's (a trading session's).
+
+    ``run`` is the commit's row in the run-commit ledger (scout.changes.run_commits), which the runner writes and a
+    run can't: a commit a run made is in that run's lane whatever its subject says, the lane its mode names, else
+    the one its prefix names, else the generic ``run`` lane; never ``interactive``, ``update`` or None. A commit
+    with no ledger row, or one an owner worktree vouched for, is classified by its subject prefix: history from
+    before the ledger existed, and the owner's own commits."""
+    if run is not None and run.by == "run":
+        lane = run_commits.mode_lane(run.mode)
+        if lane == "run":
+            lane = next((p for p in _PHASE_LANES if subject.startswith(f"{p} [")), lane)
+        return lane
     if subject.startswith("trading ["):
         return None
     for lane in _PHASE_LANES:
@@ -88,11 +102,14 @@ def classify(
     diff_of: Callable[[str], str],
     *,
     rollback: bool = False,
+    lane: str | None = None,
 ) -> str | None:
-    """The commit's kind. ``rollback`` says git showed it undid the change it names (:func:`_rolls_back`); a
-    ``Scout-Change-Reverts:`` trailer or a ``Revert`` subject alone never makes one, so the commit is classified by
-    what it touched, tested and undoable like any other."""
-    if lane_of(subject) == "update":
+    """The commit's kind. ``lane`` is the commit's :func:`lane_of` (from its subject when not given): only the
+    ``update`` lane makes an upgrade, so a run's commit titled ``scout-update: ...`` is still judged. ``rollback``
+    says git showed it undid the change it names (:func:`_rolls_back`); a ``Scout-Change-Reverts:`` trailer or a
+    ``Revert`` subject alone never makes one, so the commit is classified by what it touched, tested and undoable
+    like any other."""
+    if (lane_of(subject) if lane is None else lane) == "update":
         return "upgrade"
     if rollback:
         return "rollback"
@@ -309,9 +326,11 @@ def _change_from_commit(
     renames: Sequence[tuple[str, str]],
     *,
     backfilled: bool,
+    runs: Mapping[str, RunCommit],
 ) -> Change | None:
-    """The row the scanner writes for one commit, or None when it is not a self-change."""
-    lane = lane_of(subject)
+    """The row the scanner writes for one commit, or None when it is not a self-change. ``runs`` is the run-commit
+    ledger (scout.changes.run_commits.read)."""
+    lane = lane_of(subject, runs.get(sha))
     if lane is None:
         return None
 
@@ -322,7 +341,7 @@ def _change_from_commit(
     reverts = (
         _rolls_back(vault, sha, trailers, body) if "reverts" in trailers or _REVERTS_BODY_RE.search(body) else None
     )
-    kind = classify(paths, subject, diff_of, rollback=reverts is not None)
+    kind = classify(paths, subject, diff_of, rollback=reverts is not None, lane=lane)
     if kind is None:
         return None
     files = tuple(p for _, p in paths)
@@ -359,6 +378,7 @@ def derive(vault: Path, shas: Sequence[str]) -> dict[str, Change | None] | None:
     out.update({s: None for s in dict.fromkeys(shas) if isinstance(s, str)})
     if not valid:
         return out
+    runs = run_commits.read()
     for i in range(0, len(valid), DERIVE_CHUNK):
         raw = _git(
             vault,
@@ -375,7 +395,7 @@ def derive(vault: Path, shas: Sequence[str]) -> dict[str, Change | None] | None:
         if raw is None:
             return None
         for sha, ts, subject, body, paths, renames in _parse_log(raw):  # git lists only the shas it was given
-            out[sha] = _change_from_commit(vault, sha, ts, subject, body, paths, renames, backfilled=False)
+            out[sha] = _change_from_commit(vault, sha, ts, subject, body, paths, renames, backfilled=False, runs=runs)
     return out
 
 
@@ -385,11 +405,12 @@ def _record(vault: Path, revs: list[str], *, backfilled: bool) -> list[Change] |
     if raw is None:
         return None
     known = {c.id for c in read_changes(vault)[0]}
+    runs = run_commits.read()
     new: list[Change] = []
     for sha, ts, subject, body, paths, renames in reversed(_parse_log(raw)):
         if f"chg-{sha[:12]}" in known:
             continue
-        change = _change_from_commit(vault, sha, ts, subject, body, paths, renames, backfilled=backfilled)
+        change = _change_from_commit(vault, sha, ts, subject, body, paths, renames, backfilled=backfilled, runs=runs)
         if change is None:
             continue
         append_change(vault, change)

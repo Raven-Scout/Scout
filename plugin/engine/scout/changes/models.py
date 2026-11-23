@@ -13,7 +13,8 @@ SUMMARY_MAX = 120
 
 CHANGE_KINDS = frozenset({"brain-edit", "driver", "phase", "kb-structure", "wishlist-done", "upgrade", "rollback"})
 WHY_TYPES = frozenset({"pattern", "owner-ask", "wishlist", "research", "verdict", "unknown"})
-LANES = frozenset({"briefing", "consolidation", "dreaming", "research", "work", "interactive", "update"})
+# ``run``: a Scout run whose mode names no other lane (manual, respond, a custom slot); see scout.changes.run_commits.
+LANES = frozenset({"briefing", "consolidation", "dreaming", "research", "work", "run", "interactive", "update"})
 OWNER_KINDS = frozenset({"session-reliance", "app-edit", "inline-comment", "approval", "verdict-wrong"})
 RUN_KINDS = frozenset({"dm-reply", "dm-reaction", "dm-sent", "red-carried", "recurrence", "owner-away"})
 # Kinds whose row means nothing without an id to dedupe on and to join to: the CLI refuses them without --ref.

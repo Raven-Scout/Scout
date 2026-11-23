@@ -152,6 +152,16 @@ as the run ledger (`scoutctl runs --json`, #661).
   so drift is visible rather than hidden.
 - **Interactive commits** (owner sessions) are recorded with `author_lane: interactive`.
   They are shown on the map but not tested or rolled back by Scout.
+- **Who made a commit is the runner's record, not the subject's.** Nothing enforces a run's
+  subject prefix, so `scoutctl sandbox verify` (outside the sandbox, after claude exits, before
+  any integrity restore commit) appends every commit the run made to `run-commits.jsonl` in
+  the owner store, which a sandboxed run can't write (`scout/changes/run_commits.py`). A commit
+  there is in the run's lane whatever its subject: the lane the run's mode names, else its
+  prefix's run lane, else the generic tested `run` lane. The owner's own commits from another
+  linked worktree during a run are vouched for by the integrity check's rule and stay
+  interactive, under an enforced sandbox only. Cutover: commits from before the release that
+  added the ledger, and any run whose start snapshot couldn't be taken, are classified by
+  subject prefix as before.
 - **Must work under the run brokers and write sandbox** (Phase 1c/1d, v0.18.14–15): runs
   commit through `git-safe-commit` / the commit broker, so the detector hooks in there, not in
   a path a sandboxed run can't write.
