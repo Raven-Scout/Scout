@@ -105,7 +105,11 @@ jobs:
             extras: dev
             workers: 6
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    # The cap is there to stop a hung job, not to bound a healthy one. At 25
+    # the macOS leg (23.8-24.9 min over six runs on 2026-11-22) was cancelled
+    # on healthy runs and had to be rerun in full on a scarce runner. 35 is
+    # about ten minutes over the slowest leg seen.
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: plugin/engine
