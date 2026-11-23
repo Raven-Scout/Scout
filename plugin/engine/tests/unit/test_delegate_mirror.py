@@ -778,7 +778,7 @@ def test_the_config_and_policy_document_name_no_hidden_folder_or_note(vault: Pat
     policy_doc = _show(bare, rs.POLICY_PATH)
     for name in ("hush-folder", "secret-garden", "trading", "Sammy", "unknown_key"):
         assert name not in mirrored and name not in policy_doc, name
-    assert yaml.safe_load(mirrored)["team"] == ["Priya"]
+    assert set(yaml.safe_load(mirrored)) <= {"privacy", "user", "kb_structure"}  # team, projects stay home
     assert "secret-garden/plan.md" not in _head_files(bare)
 
 
@@ -945,13 +945,13 @@ def test_gh_asks_github_com_whatever_the_environment_says(monkeypatch: pytest.Mo
     assert seen[0]["GH_HOST"] == "github.com" and "GH_REPO" not in seen[0]
 
 
-def test_config_keys_that_name_a_hidden_note_are_dropped_but_a_broken_privacy_block_refuses(vault: Path) -> None:
+def test_config_values_that_name_a_hidden_note_are_dropped_but_a_broken_privacy_block_refuses(vault: Path) -> None:
     scan = dm.Scanner(_terms())  # type: ignore[arg-type]
-    text = "privacy:\n  surfaces: {owner_only: [x]}\nSammy: 1\nnotes: [Sam Lee]\nok: yes\n"
+    text = "privacy:\n  surfaces: {owner_only: [x]}\nSammy: 1\nnotes: [Sam Lee]\nok: yes\nuser: {name: Sam Lee}\n"
     out = yaml.safe_load(dm.mirror_config(text, "d", False, [], scan))
-    assert set(out) == {"privacy", "ok"} and out["privacy"]["delegates"] == {"d": {}}
+    assert out == {"privacy": {"delegates": {"d": {}}}}
     with pytest.raises(rs.RepoSyncError) as e:
-        dm.mirror_config("privacy:\n  surfaces: {owner_only: [Sam Lee]}\n", "d", False, [], scan)
+        dm.mirror_config("privacy:\n  local_only_add: [x/Sammy/**]\n", "d", False, ["x/Sammy/a.md"], scan)
     assert e.value.code == "config_names_hidden"
     two = "privacy:\n  local_only_add: [a/**, b/**]\n"
     scoped = yaml.safe_load(dm.mirror_config(two, "d", False, ["a/1.md"], scan))
@@ -973,8 +973,145 @@ def test_the_mirror_config_drops_unknown_privacy_keys_and_fields(vault: Path) ->
         out = dm.mirror_config(text, "d", False, ["a/1.md"], scan, privacy_only=privacy_only)
         assert b"token" not in out and b"example.com" not in out, out
         block = yaml.safe_load(out)["privacy"]
-        assert block["federation"] == {"enabled": False} and "sync_only" not in block and "notes" not in block
+        assert set(block) == {"visibility_defaults", "delegates"}, block
         assert block["visibility_defaults"] == [{"glob": "a/**", "visibility": "private"}]
+
+
+# ----- the mirror's config is an allowlist, at every level --------------------------------------------------
+
+_JUNK_CONFIG = """\
+timezone: Europe/Prague
+shared: {secret: token-ABC123}
+api_key: sk-live-ABC123
+connectors:
+  inputs: {github_username: example-bot, user_slack_id: U0123456789}
+  slack: {token: xoxb-ABC123, channel: C0123456789}
+models: {briefing: {model: x, key: token-ABC123}}
+user:
+  name: Alex
+  display_name: Alex P
+  email: alex@example.com
+  slack_user_id: U0123456789
+  password: token-ABC123
+  extra: {nested: token-ABC123}
+kb_structure:
+  projects_dir: kb/projects/
+  skip_projects: [widget, gone, ../up, a/b, 7]
+  required_sections: [token-ABC123]
+  narration_markers: [{pattern: x, label: token-ABC123}]
+privacy:
+  visibility_defaults: [{glob: "kb/**", visibility: normal, note: token-ABC123}]
+  surfaces: {owner_only: ["telegram:123456789"], shared: [alex@example.com]}
+  federation: {enabled: true}
+  federation_defaults: [{glob: "kb/**", scope: ["person:alex@example.com"]}]
+  federation_ceilings: [{glob: "kb/**", ceiling: org}]
+  delegates: {d: {include_private: true, token: token-ABC123}, other: {}}
+  notes: {deep: {deeper: token-ABC123}}
+"""
+_JUNK_MIRRORED = ["kb/projects/widget/widget.md", "kb/projects/widget/notes.md", "kb/a.md"]
+_LEAKS = (b"token", b"example.com", b"example-bot", b"U0123", b"C0123", b"xoxb", b"sk-live", b"telegram", b"other")
+
+
+@pytest.mark.parametrize("privacy_only", [False, True])
+def test_the_mirror_config_holds_only_the_allowlisted_keys(vault: Path, privacy_only: bool) -> None:
+    """Junk and secret-looking keys, at the top level and nested, never reach the mirror, in either mode."""
+    scan = dm.Scanner(_terms())  # type: ignore[arg-type]
+    out = dm.mirror_config(_JUNK_CONFIG, "d", False, _JUNK_MIRRORED, scan, privacy_only=privacy_only)
+    assert not [leak for leak in _LEAKS if leak in out], out
+    privacy = {"visibility_defaults": [{"glob": "kb/**", "visibility": "normal"}], "delegates": {"d": {}}}
+    expected: dict[str, object] = {"privacy": privacy}
+    if not privacy_only:
+        expected["user"] = {"timezone": "Europe/Prague", "name": "Alex", "display_name": "Alex P"}
+        expected["kb_structure"] = {"projects_dir": "kb/projects", "skip_projects": ["widget"]}
+    assert yaml.safe_load(out) == expected
+    # The engine in the clone reads it as the owner's engine reads those keys.
+    assert policy_from_config_text(out.decode()).delegate("delegate:d") is not None
+
+
+def test_the_mirror_config_keeps_a_zone_only_when_it_is_one(vault: Path) -> None:
+    scan = dm.Scanner(_terms())  # type: ignore[arg-type]
+
+    def user(text: str) -> object:
+        return yaml.safe_load(dm.mirror_config(text, "d", False, [], scan)).get("user")
+
+    assert user("timezone: Europe/Prague\n") == {"timezone": "Europe/Prague"}  # the legacy key, as load_config
+    assert user("user: {timezone: UTC}\ntimezone: Europe/Prague\n") == {"timezone": "UTC"}
+    # Not a zone: the engine falls back to the host's, and so does the clone, so the value stays home.
+    assert user("user: {timezone: token-ABC123}\ntimezone: Europe/Prague\n") is None
+    assert user("user: {timezone: ../../etc/passwd}\n") is None
+    assert user("user: nope\ntimezone: [x]\n") is None
+
+
+def test_the_mirror_config_keeps_kb_structure_only_for_mirrored_folders(vault: Path) -> None:
+    scan = dm.Scanner(_terms())  # type: ignore[arg-type]
+
+    def structure(text: str, mirrored: list[str]) -> object:
+        return yaml.safe_load(dm.mirror_config(text, "d", False, mirrored, scan)).get("kb_structure")
+
+    widget = ["knowledge-base/projects/widget/widget.md"]
+    assert structure("kb_structure: {skip_projects: [widget, hidden]}\n", widget) == {"skip_projects": ["widget"]}
+    assert structure("kb_structure: {projects_dir: clients/secret/projects}\n", widget) is None
+    assert structure("kb_structure: {projects_dir: ../out, skip_projects: [widget]}\n", widget) is None
+    assert structure("kb_structure: {page_budget_bytes: 1, skip_projects: [gone]}\n", widget) is None
+    sammy = ["knowledge-base/projects/Sammy/Sammy.md"]  # a folder named for a hidden note: the name stays home
+    assert structure("kb_structure: {skip_projects: [Sammy]}\n", sammy) is None
+    assert structure("kb_structure: [projects_dir]\n", widget) is None
+
+
+@pytest.mark.parametrize("allowlist", [False, True])
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"shared": {"secret": "token-ABC123"}},
+        {"user": {"name": "Alex", "email": "alex@example.com"}},
+        {"privacy_note": "x"},
+    ],
+    ids=["top-level", "nested", "plain"],
+)
+def test_check_tree_refuses_a_mirror_config_with_a_key_the_allowlist_drops(
+    vault: Path, allowlist: bool, extra: dict[str, object]
+) -> None:
+    if allowlist:
+        _sync_only_kb(vault)
+    head = rs._head(vault)
+    blobs = rs.BlobReader(vault)
+    try:
+        planned = dm.plan(vault, head, "grok-personal", blobs)[0]
+        mirrored = next(f for f in planned.files if f.path == "scout-config.yaml")
+    finally:
+        blobs.close()
+    commit, head = _tampered(vault, "grok-personal", {})
+    dm.check_tree(vault, commit, "grok-personal", head)  # the control: the regenerated config passes
+    edited = {**yaml.safe_load(mirrored.data or b""), **extra}
+    commit, head = _tampered(vault, "grok-personal", {"scout-config.yaml": yaml.safe_dump(edited).encode()})
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.check_tree(vault, commit, "grok-personal", head)
+    assert e.value.code == "delegate_mirror_unsafe"
+
+
+def test_a_junk_vault_config_links_a_mirror_with_only_the_allowlisted_keys(vault: Path, tmp_path: Path) -> None:
+    """End to end: the owner's connectors, tokens and addresses stay home; the clone reads its delegate."""
+    config = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    junk = (
+        "shared: {secret: token-ABC123}\n"
+        "connectors: {slack: {token: xoxb-ABC123}}\n"
+        "user_extra: {email: alex@example.com}\n"
+    )
+    config = config.replace("user:\n  name: Alex\n", "user:\n  name: Alex\n  email: alex@example.com\n") + junk
+    config = config.replace("privacy:\n", 'privacy:\n  surfaces: {owner_only: ["telegram:123456789"]}\n', 1)
+    _commit_files(vault, {"scout-config.yaml": config.encode()}, "junk in the config")
+    privacy_migrate.accept(vault)
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    text = _show(bare, "scout-config.yaml")
+    assert not [leak for leak in ("token", "example.com", "telegram", "xoxb") if leak in text], text
+    mirrored = yaml.safe_load(text)
+    assert set(mirrored) == {"privacy", "user"} and mirrored["user"] == {"name": "Alex"}
+    assert mirrored["privacy"]["delegates"] == {"grok-personal": {}}
+    # A later sync checks the mirror again (check_tree) and passes.
+    _commit(vault, "knowledge-base/topics/later.md", "---\ntitle: Later\n---\n\nA later note.\n", "later")
+    assert not dm.sync(vault, "grok-personal").unchanged
+    assert yaml.safe_load(_show(bare, "scout-config.yaml")) == mirrored
 
 
 def _tampered(vault: Path, delegate: str, swap: dict[str, bytes]) -> tuple[str, str]:
@@ -1510,7 +1647,7 @@ def test_sync_only_with_the_knowledge_base_symlink_keeps_every_kb_note(vault: Pa
         f.startswith(("knowledge-base/", ".scout-state/")) or f == "scout-config.yaml" or f in dm.GUIDE_PATHS
         for f in files
     ), files
-    # The allowlist lists the config, so the mirror's keeps its other keys, but never the allowlist itself.
+    # The allowlist lists the config, so the mirror's keeps the other keys the clone reads, never the allowlist.
     mirrored = yaml.safe_load(_show(bare, "scout-config.yaml"))
     assert mirrored["user"] == {"name": "Alex"} and "sync_only" not in mirrored["privacy"]
 

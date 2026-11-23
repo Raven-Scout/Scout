@@ -906,26 +906,37 @@ def test_overlay_for_mirror_keeps_only_what_the_policy_reads_in_canonical_form()
             {"glob": "a/p/**", "visibility": "private"},
             {"glob": "a/n/**", "visibility": "private"},
         ],
-        "surfaces": {"owner_only": ["slack"], "shared": ["mail"]},
-        "federation": {"enabled": False},
-        "federation_ceilings": [{"glob": "a/**", "ceiling": "none"}],
-        "federation_defaults": [{"glob": "a/**", "scope": ["group:abc"]}],
     }
     assert "token" not in yaml.safe_dump(out) and "example.com" not in yaml.safe_dump(out)
     assert privacy.overlay_for_mirror("not a mapping", lambda g: True) == {}
-    assert privacy.overlay_for_mirror({"surfaces": {"owner_only": [1]}, "federation": {}}, lambda g: True) == {
-        "federation": {}
-    }
+    assert privacy.overlay_for_mirror({"surfaces": {"owner_only": [1]}, "federation": {}}, lambda g: True) == {}
 
 
-def test_overlay_for_mirror_builds_the_same_policy_bar_sync_only_and_delegates() -> None:
+_NOT_FOR_DELEGATES = (
+    "sync_only",
+    "delegates",
+    "warnings",
+    "surfaces",
+    "federation",
+    "federation_ceilings",
+    "federation_ceilings_overlay",
+    "federation_defaults",
+)
+
+
+def test_overlay_for_mirror_builds_the_same_policy_bar_what_no_delegate_reads() -> None:
+    """Every key a delegate's labels read comes through; surfaces and federation take the engine defaults."""
+
     def shape(p: Policy) -> dict[str, object]:
         out = p.to_json()
-        for key in ("sync_only", "delegates", "warnings"):
+        for key in _NOT_FOR_DELEGATES:
             out.pop(key, None)
         return out
 
+    default = privacy.policy_from_overlay({}).to_json()
     for overlay in (_MESSY_OVERLAY, {"federation": {"enabled": True}}, {}):
         mirrored = privacy.overlay_for_mirror(overlay, lambda g: True)
         assert shape(privacy.policy_from_overlay(mirrored)) == shape(privacy.policy_from_overlay(overlay))
-        assert privacy.policy_from_overlay(mirrored).sync_only is None
+        got = privacy.policy_from_overlay(mirrored)
+        assert got.sync_only is None
+        assert {k: got.to_json()[k] for k in _NOT_FOR_DELEGATES[3:]} == {k: default[k] for k in _NOT_FOR_DELEGATES[3:]}
