@@ -30,6 +30,8 @@ struct TaskCardView: View {
     /// Set when the caller decides the starting state (an opened done row);
     /// a density change then leaves the card alone.
     private let startsExpandedOverride: Bool?
+    /// Where the card's unsent comments are kept while it is collapsed.
+    private let drafts: CommentDraftStore
 
     @State private var inlineError: String?
     @State private var expanded: Bool
@@ -52,6 +54,7 @@ struct TaskCardView: View {
         onCollapse: (() -> Void)? = nil,
         density: ActionItemsDisplay.Density = .comfortable,
         fields: ActionItemsDisplay.Fields = .init(),
+        drafts: CommentDraftStore = .shared,
         onOp: @escaping @MainActor (WriteOp, Int?) async throws -> Void
     ) {
         self.task = task
@@ -64,6 +67,7 @@ struct TaskCardView: View {
         self.density = density
         self.fields = fields
         self.startsExpandedOverride = startsExpanded
+        self.drafts = drafts
         _expanded = State(initialValue: startsExpanded
             ?? Self.startsExpanded(kind: task.snoozedFromKind ?? kind, density: density))
     }
@@ -162,6 +166,9 @@ struct TaskCardView: View {
                     // button inside ("Mark done, selected").
                     .accessibilityAddTraits(isCursor ? .isSelected : [])
                 if !expanded { quickActions }
+                if Self.showsDraftMarker(expanded: expanded, hasDraft: drafts.mark(for: draftTaskKey).isDrafted) {
+                    draftMarker
+                }
                 trailingStatus
                 chevron
             }
@@ -181,6 +188,22 @@ struct TaskCardView: View {
         }
         .padding(density == .compact ? 8 : 14)
         .contentShape(Rectangle())
+    }
+
+    /// The kept comment draft's marker (`CommentDraftStore`): on a collapsed
+    /// card only, where the draft itself isn't on screen.
+    static func showsDraftMarker(expanded: Bool, hasDraft: Bool) -> Bool {
+        !expanded && hasDraft
+    }
+
+    private var draftTaskKey: CommentDraftTaskKey {
+        CommentDraftTaskKey(task: task, displayedDate: displayedDate)
+    }
+
+    private var draftMarker: some View {
+        DSPill("Draft", tone: .accent, symbol: "square.and.pencil")
+            .help("An unsent comment is kept here: open the card to send or cancel it")
+            .accessibilityLabel("Unsent comment draft")
     }
 
     private var chevron: some View {
@@ -526,7 +549,10 @@ struct TaskCardView: View {
                 CommentListView(
                     comments: task.comments,
                     onEdit: editCommentHandler,
-                    onDelete: deleteCommentHandler
+                    onDelete: deleteCommentHandler,
+                    draftTask: draftTaskKey,
+                    drafts: drafts,
+                    task: task
                 )
             }
 
@@ -546,7 +572,7 @@ struct TaskCardView: View {
             }
 
             if Self.canComment(task) {
-                CommentComposerView(task: task, displayedDate: displayedDate) { text in
+                CommentComposerView(task: task, displayedDate: displayedDate, drafts: drafts) { text in
                     let author = CommentAuthor.configuredName()
                     return await runOp(.addComment(
                         subject: task.matchableSubject,

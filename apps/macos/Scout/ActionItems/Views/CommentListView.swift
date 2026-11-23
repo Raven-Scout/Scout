@@ -17,6 +17,12 @@ struct CommentListView: View {
     /// Invoked when the user clicks delete on a comment. The closure
     /// receives the 1-based index of the comment.
     var onDelete: ((Int) async -> Void)? = nil
+    /// The task the comments are on, for keeping an edit's draft in `drafts`
+    /// while the card is collapsed. Nil keeps none.
+    var draftTask: CommentDraftTaskKey? = nil
+    var drafts: CommentDraftStore = .shared
+    /// The card's task, which the kept draft names.
+    var task: ActionTask? = nil
 
     /// Edit and delete show only for a comment `scoutctl` can reach by
     /// `--index`. For any other form (an inline `//==<< … >>==//` note, a
@@ -36,7 +42,8 @@ struct CommentListView: View {
                         index: index + 1,
                         comment: c,
                         onEdit: onEdit,
-                        onDelete: onDelete
+                        onDelete: onDelete,
+                        keeping: draftTask.flatMap { key in task.map { (drafts, key, $0) } }
                     )
                 }
             }
@@ -56,13 +63,33 @@ private struct CommentRow: View {
     let comment: TaskComment
     let onEdit: ((Int, String) async -> Bool)?
     let onDelete: ((Int) async -> Void)?
+    /// Where an edit's text is kept while the card is collapsed, as for the
+    /// composer (`CommentDraftStore`).
+    private let keeper: (store: CommentDraftStore, key: CommentDraftKey, task: ActionTask)?
 
     @State private var hovering = false
-    @State private var editing = false
-    @State private var draft = ""
+    @State private var editing: Bool
+    @State private var draft: String
     @State private var submitting = false
     @State private var confirmingDelete = false
     @FocusState private var editorFocused: Bool
+
+    init(index: Int, comment: TaskComment, onEdit: ((Int, String) async -> Bool)?,
+         onDelete: ((Int) async -> Void)?,
+         keeping: (CommentDraftStore, CommentDraftTaskKey, ActionTask)?) {
+        self.index = index
+        self.comment = comment
+        self.onEdit = onEdit
+        self.onDelete = onDelete
+        keeper = keeping.map { store, task, actionTask in
+            (store, CommentDraftKey(task: task, target: .edit(index: index, original: comment.text)), actionTask)
+        }
+        // An edit kept from before the card collapsed opens again as it was.
+        // Only while editing is allowed: with writes off there's no Save.
+        let kept = onEdit == nil ? nil : keeper.flatMap { $0.store.text(for: $0.key) }
+        _editing = State(initialValue: kept != nil)
+        _draft = State(initialValue: kept ?? "")
+    }
     @Environment(\.cardClickFocus) private var clickFocus
 
     var body: some View {
@@ -89,6 +116,10 @@ private struct CommentRow: View {
                 }
                 if editing {
                     editor
+                        .onChange(of: draft) { _, text in
+                            guard let keeper else { return }
+                            keeper.store.update(text, for: keeper.key, task: keeper.task)
+                        }
                 } else {
                     InlineMarkdownText(comment.text)
                         .dsFont(.body, .serif)
@@ -149,6 +180,7 @@ private struct CommentRow: View {
                 EditorialActionButton("Cancel") {
                     draft = ""
                     editing = false
+                    if let keeper { keeper.store.discard(keeper.key) }
                 }
                 // ⌘↵ saves only while this editor has focus (see the composer).
                 EditorialActionButton(
@@ -168,11 +200,13 @@ private struct CommentRow: View {
         let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !submitting, trimmed != comment.text, let onEdit else { return }
         submitting = true
+        let keeper = keeper
         Task { @MainActor in
             // A failed write keeps the editor open with the text intact.
             let landed = await onEdit(index, trimmed)
             submitting = false
             guard landed else { return }
+            if let keeper { keeper.store.discard(keeper.key) }
             editing = false
             draft = ""
         }

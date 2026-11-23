@@ -29,17 +29,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         false
     }
 
-    /// Unsaved KB drafts (`KBDraftStore`) and slot-form drafts
-    /// (`SlotDraftStore`) live in memory, so quitting would lose them. Ask
+    /// Unsaved KB drafts (`KBDraftStore`), slot-form drafts
+    /// (`SlotDraftStore`) and unsent Action Items comments
+    /// (`CommentDraftStore`) live in memory, so quitting would lose them. Ask
     /// first.
     func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
         let notes = KBDraftStore.shared.unsavedFileNames
         let slots = SlotDraftStore.shared.unsavedSlotNames
-        guard !notes.isEmpty || !slots.isEmpty else { return .terminateNow }
+        let comments = CommentDraftStore.shared.unsavedTaskNames
+        guard !notes.isEmpty || !slots.isEmpty || !comments.isEmpty else { return .terminateNow }
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "You have unsaved changes"
-        alert.informativeText = Self.unsavedDraftsMessage(notes: notes, slots: slots)
+        alert.informativeText = Self.unsavedDraftsMessage(notes: notes, slots: slots, comments: comments)
         alert.addButton(withTitle: "Keep Editing")   // first = default, Return
         alert.addButton(withTitle: "Quit Anyway")
         return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
@@ -49,7 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         unsavedDraftsMessage(notes: names, slots: [])
     }
 
-    static func unsavedDraftsMessage(notes: [String], slots: [String]) -> String {
+    static func unsavedDraftsMessage(notes: [String], slots: [String], comments: [String] = []) -> String {
         var parts: [String] = []
         if !notes.isEmpty {
             parts.append(listed(notes, one: "knowledge-base note has", many: "knowledge-base notes have"))
@@ -57,13 +59,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if !slots.isEmpty {
             parts.append(listed(slots, one: "schedule has", many: "schedules have"))
         }
+        if !comments.isEmpty {
+            parts.append(listed(comments, one: "action item has", many: "action items have",
+                                what: "an unsent comment", whats: "unsent comments"))
+        }
         return parts.joined(separator: ", and ") + ". Quitting discards them."
     }
 
-    private static func listed(_ names: [String], one: String, many: String) -> String {
+    private static func listed(_ names: [String], one: String, many: String,
+                               what: String = "unsaved edits", whats: String = "unsaved edits") -> String {
         let shown = names.prefix(5).joined(separator: ", ")
         let more = names.count > 5 ? " and \(names.count - 5) more" : ""
-        return "\(names.count) \(names.count == 1 ? one : many) unsaved edits (\(shown)\(more))"
+        return "\(names.count) \(names.count == 1 ? one : many) \(names.count == 1 ? what : whats) (\(shown)\(more))"
     }
 
     func userNotificationCenter(
