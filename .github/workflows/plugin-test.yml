@@ -74,10 +74,16 @@ jobs:
   # floor (each sees only part of the data); `coverage report` does, on the
   # combined total.
   #
-  # `workers` is twice the runner's cores (ubuntu-latest 4, macos-latest 3):
-  # most of the suite waits on subprocesses (shell runners, git, fake claude),
-  # not the CPU. Measured on #439: the coverage leg's parallel step went 278s
-  # -> 145s and macOS 323s -> 263s against `-n auto`.
+  # `workers` is more than the runner's cores (ubuntu-latest 4, macos-latest
+  # 3). When this was set (#439) most of the suite waited on subprocesses and
+  # twice the cores won: the coverage leg's parallel step went 278s -> 145s
+  # and macOS 323s -> 263s against `-n auto`. Measured again on 2026-11-22
+  # with the suite four times the size, both runners are CPU-bound (Ubuntu
+  # 95-99% busy at 8 workers, macOS 90% at 3). On Ubuntu 4, 8 and 12 workers
+  # and `--dist worksteal` all land inside the spread between two runners
+  # (the same leg took 386-641 s over six runs), so it stays at 8. macOS is
+  # steady (1189-1285 s over six runs at 6 workers) and took 1139 s at 4 and
+  # 1301 s at 3, so it runs 4.
   test:
     needs: changes
     if: needs.changes.outputs.run == 'true'
@@ -97,7 +103,7 @@ jobs:
           - os: macos-latest
             python: "3.12"
             extras: dev
-            workers: 6
+            workers: 4
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     defaults:
@@ -126,8 +132,16 @@ jobs:
       # broken down by file afterwards, not only by the 30 slowest tests.
       - name: Pytest (parallel)
         run: .venv/bin/pytest tests/ -n ${{ matrix.workers }} -m "not perf" --durations=30 --junitxml="$RUNNER_TEMP/junit/parallel.xml" ${{ matrix.coverage && '--cov --cov-report= --cov-fail-under=0' || '' }}
+      # `--basetemp`: without it this session ends by deleting the parallel
+      # step's temp tree. pytest keeps only the three newest pytest-N folders
+      # under the system temp dir and removes older ones when a session ends;
+      # by this step the suite's own folder (3.6 GB, ~760k entries) is an
+      # older one. Profiled on Ubuntu: 78 s of a 119 s perf step inside
+      # pytest's cleanup_numbered_dir; the step ran ~55 s (Ubuntu) to ~140 s
+      # (macOS) longer than its tests. A session given its own base folder
+      # removes nothing else, and the runner is thrown away after the job.
       - name: Pytest (perf, serial)
-        run: .venv/bin/pytest tests/ -m perf -p no:xdist -rP --junitxml="$RUNNER_TEMP/junit/perf.xml" ${{ matrix.coverage && '--cov --cov-append --cov-report= --cov-fail-under=0' || '' }}
+        run: .venv/bin/pytest tests/ -m perf -p no:xdist -rP --basetemp="$RUNNER_TEMP/pytest-perf" --junitxml="$RUNNER_TEMP/junit/perf.xml" ${{ matrix.coverage && '--cov --cov-append --cov-report= --cov-fail-under=0' || '' }}
       - name: Keep test timings
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
