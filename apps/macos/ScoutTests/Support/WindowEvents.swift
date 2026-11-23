@@ -8,6 +8,19 @@ enum WindowEvents {
     static let tab = ("\t", UInt16(48))
     static let down = ("\u{F701}", UInt16(125))
 
+    /// Whether Keyboard navigation (System Settings ▸ Keyboard) is on, as
+    /// `NSApplication.isFullKeyboardAccessEnabled` reads it, for
+    /// `.enabled(if:)`: tests that Tab onto buttons are skipped without it.
+    nonisolated static var keyboardNavigationOn: Bool {
+        let global = UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain)
+        return ((global?["AppleKeyboardUIMode"] as? Int) ?? 0) & 2 != 0
+    }
+
+    /// Types `text` into the window, one key event pair per character.
+    static func type(_ text: String, in window: NSWindow) {
+        for character in text { press((String(character), 0), in: window) }
+    }
+
     static func press(_ key: (String, UInt16), in window: NSWindow) {
         for type in [NSEvent.EventType.keyDown, .keyUp] {
             guard let event = NSEvent.keyEvent(
@@ -20,15 +33,24 @@ enum WindowEvents {
         }
     }
 
-    /// A left click at `point`, in the window's coordinates.
+    /// A left click at `point`, in the window's coordinates. The mouse-up goes
+    /// into the event queue before the mouse-down is sent: a view that tracks
+    /// the mouse (a text view selecting) waits for it there in a loop of its
+    /// own, which a mouse-up sent after the mouse-down returns never ends.
+    /// When no view took it, it comes back out of the queue and goes to the
+    /// window directly, where SwiftUI's tap gestures look for it.
     static func click(_ point: NSPoint, in window: NSWindow) {
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            guard let event = NSEvent.mouseEvent(
+        func event(_ type: NSEvent.EventType) -> NSEvent? {
+            NSEvent.mouseEvent(
                 with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                 windowNumber: window.windowNumber, context: nil, eventNumber: 0,
-                clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0
-            ) else { continue }
-            window.sendEvent(event)
+                clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)
+        }
+        guard let down = event(.leftMouseDown), let up = event(.leftMouseUp) else { return }
+        NSApp.postEvent(up, atStart: false)
+        window.sendEvent(down)
+        if let queued = NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .default, dequeue: true) {
+            window.sendEvent(queued)
         }
     }
 

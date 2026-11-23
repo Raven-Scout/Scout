@@ -94,7 +94,12 @@ private struct AnyButtonStyle: ButtonStyle {
 /// every DS control inside it, a button Tab landed on never rang, and the
 /// arrows moved a cursor from a focused button. Real key events into one
 /// in-process window; nothing reaches other apps.
-@Suite("Focusable containers in a window", .serialized)
+///
+/// A click that opens a menu runs its tracking loop on the main thread, which
+/// no test time limit can stop. Run these suites locally under an outer
+/// timeout (`timeout 900 xcodebuild test …`): two such runs once hung for
+/// hours.
+@Suite("Focusable containers in a window", .serialized, .timeLimit(.minutes(1)))
 @MainActor
 struct FocusContainerWindowTests {
     private func press(_ characters: String, keyCode: UInt16, in window: NSWindow) {
@@ -131,9 +136,9 @@ struct FocusContainerWindowTests {
         }
     }
 
-    @Test("Tab: the list's stop rings its current item; a button inside rings alone and the arrows leave the cursor")
+    @Test("Tab: the list's stop rings its current item; a button inside rings alone and the arrows leave the cursor",
+          .enabled(if: WindowEvents.keyboardNavigationOn, "needs Keyboard navigation on"))
     func tabStops() async throws {
-        guard NSApplication.shared.isFullKeyboardAccessEnabled else { return }
         try await KeyWindowGate.run {
             let log = RingLog()
             let window = try await open(log, focusOnAppear: false)

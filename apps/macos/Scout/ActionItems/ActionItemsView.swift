@@ -43,6 +43,8 @@ struct ActionItemsView: View {
     @State private var commentEditorFocused = false
     @State private var toggleRequest: ActionItemsKeyboardContext.ToggleRequest?
     @FocusState private var listFocused: Bool
+    /// A click on a card gives the list the keys once its actions have run.
+    @State private var clickFocus = CardClickFocus()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.openSettings) private var openSettings
 
@@ -209,6 +211,9 @@ struct ActionItemsView: View {
                 })
                 .environment(\.highlightedTaskID, highlightedTaskID)
                 .environment(\.actionItemsKeyboard, keyboardContext)
+                .environment(\.cardClickFocus, clickFocus)
+                .onAppear { clickFocus.start() }
+                .onDisappear { clickFocus.stop() }
                 .onPreferenceChange(CommentEditorFocusedKey.self) { focused in
                     // A comment sent or cancelled takes its editor (and the
                     // focus) away: hand the keys back to the list unless
@@ -226,7 +231,10 @@ struct ActionItemsView: View {
                 .keyboardListNavigation(
                     when: listOwnsKeys,
                     ids: { navigableRows.map(\.id) },
-                    selection: $cursorTaskID
+                    selection: $cursorTaskID,
+                    announce: { id in
+                        navigableRows.first { $0.id == id }.map { ActionItemsParser.plainSubject($0.subject) }
+                    }
                 ) { id in
                     scroll(to: id, proxy: proxy, anchor: nil)
                 }
@@ -255,10 +263,7 @@ struct ActionItemsView: View {
             commitKeyFree: !commentEditorFocused && !searchFocused,
             toggleRequest: toggleRequest,
             focusCard: StableAction { id in
-                cursorTaskID = id
-                if ActionItemsKeyboardContext.clickTakesListFocus(firstResponder: NSApp.keyWindow?.firstResponder) {
-                    listFocused = true
-                }
+                clickFocus.clicked(id, setCursor: { cursorTaskID = $0 }, focusList: { listFocused = true })
             })
     }
 

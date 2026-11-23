@@ -16,3 +16,6 @@
 - **Action Items: a ref link is one Tab stop.** A card's link to a note sat under the description as a second
   Tab stop for the same link as the chip in the card's header. While the header shows its ref chips, that
   chip is the link's one stop.
+- **VoiceOver names the item the arrow keys reach.** In the Schedules list, the Action Items list and the
+  Knowledge Base tree, ↑ ↓ now read out the new current item, which a list's single Tab stop otherwise left
+  silent.

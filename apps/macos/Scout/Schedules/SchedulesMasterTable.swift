@@ -23,6 +23,11 @@ struct SchedulesMasterTable: View {
 
     /// The rows in the order drawn: the new draft first, then the slots. The
     /// arrow keys walk this (UI audit #57); the Cards view shares it.
+    /// The schedule VoiceOver names as the arrow keys reach `key`.
+    static func name(of key: String, slots: [Slot], newDraftSlot: Slot?) -> String? {
+        ((newDraftSlot.map { [$0] } ?? []) + slots).first { $0.key == key }?.displayName
+    }
+
     static func keyboardOrder(slots: [Slot], newDraftSlot: Slot?) -> [String] {
         (newDraftSlot.map { [$0.key] } ?? []) + slots.map(\.key)
     }
@@ -63,7 +68,8 @@ struct SchedulesMasterTable: View {
             .keyboardListNavigation(
                 when: tableFocused,
                 ids: { Self.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot) },
-                selection: $selectedSlotKey
+                selection: $selectedSlotKey,
+                announce: { Self.name(of: $0, slots: slots, newDraftSlot: newDraftSlot) }
             ) { key in
                 proxy.scrollTo(key)
             }
@@ -117,8 +123,9 @@ struct SchedulesMasterTable: View {
     private func row(for slot: Slot, columns: SchedulesColumns, mode: SchedulesColumns.Mode, nameWidth: CGFloat,
                      ringed: String?) -> some View {
         let isSelected = selectedSlotKey == slot.key
-        // A button, not a tap gesture, so rows take keyboard focus and
-        // VoiceOver reads each one as a selectable button.
+        // A button, not a tap gesture, so VoiceOver reads each row as a
+        // selectable button. No Tab stop of its own: the table's is
+        // (`dsContainerItem`), and the arrow keys reach the rows.
         Button {
             selectedSlotKey = slot.key
             tableFocused = true

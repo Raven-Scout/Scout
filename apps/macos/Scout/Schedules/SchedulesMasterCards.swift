@@ -38,7 +38,8 @@ struct SchedulesMasterCards: View {
                     .keyboardListNavigation(
                         when: cardsFocused,
                         ids: { SchedulesMasterTable.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot) },
-                        selection: $selectedSlotKey
+                        selection: $selectedSlotKey,
+                        announce: { SchedulesMasterTable.name(of: $0, slots: slots, newDraftSlot: newDraftSlot) }
                     ) { key in
                         proxy.scrollTo(key)
                     }

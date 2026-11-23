@@ -47,6 +47,9 @@ struct KBTreeView: View {
                 let out = KBTreeKeyboard.handle(key, cursor: cursor ?? selectedPath, nodes: nodes, expanded: expanded)
                 guard out.changed else { return .ignored }
                 expanded = out.expanded
+                if out.cursor != cursor, let row = out.cursor {
+                    ListCursorAnnouncement.post(URL(fileURLWithPath: row).deletingPathExtension().lastPathComponent)
+                }
                 cursor = out.cursor
                 if let open = out.open { selectedPath = open }
                 if let row = out.cursor { proxy.scrollTo(row) }
