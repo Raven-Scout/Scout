@@ -471,24 +471,45 @@ def test_the_fixture_is_the_inline_hooks_json() -> None:
 # ----- the differential runs ------------------------------------------------------------------
 
 
-@pytest.mark.slow
-def test_bash_corpus_reaches_python_exactly_as_before(world: World) -> None:
-    corpus = list(dict.fromkeys([*DESCRIBED_FORMS, *(form for form, _ in KNOWN_MISSED_FORMS), *_harvested()]))
-    assert len(corpus) > 500
-    cases = [Case(f"bash[{i}] {c!r}", "kb-read-gate", _bash(c), RUN, "vault") for i, c in enumerate(corpus)]
-    assert _differences(world, cases) == []
+def _matching_lines(pattern: str, lines: list[str]) -> set[int]:
+    """The 1-based numbers of the ``lines`` that ``grep -E pattern`` matches, in one grep process."""
+    out = subprocess.run(
+        ["grep", "-nE", pattern],
+        input="".join(f"{line}\n" for line in lines),
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+        check=False,
+    )
+    assert out.returncode in (0, 1), out.stderr
+    return {int(line.split(":", 1)[0]) for line in out.stdout.splitlines()}
 
+
+def test_bash_corpus_matches_the_old_pattern_exactly() -> None:
+    """Every string of the gate tests, as the hook sees it (the payload's JSON-escaped command value, one
+    line each), through the old pattern and the new one. One grep per pattern, so the whole corpus costs
+    two processes; the end-to-end runs below cover the shell around the pattern."""
+    corpus = list(dict.fromkeys([*DESCRIBED_FORMS, *(form for form, _ in KNOWN_MISSED_FORMS), *_harvested()]))
+    assert len(corpus) > 1000
+    values = ['"command": ' + json.dumps(c) for c in corpus]
+    assert all("\n" not in v for v in values)
+    new_pattern = subprocess.run(
+        ["/bin/sh", str(PREFILTER), "print-bash-pattern"], capture_output=True, text=True, check=True
+    ).stdout.rstrip("\n")
+
+    old, new = _matching_lines(_pattern(OLD["kb-read-gate"]), values), _matching_lines(new_pattern, values)
+    assert old == new, sorted(corpus[n - 1] for n in old ^ new)
     # The corpus exercises both answers, or the comparison above proves little.
-    started = [bool(world.run(NEW["kb-read-gate"], case).python) for case in cases[: len(DESCRIBED_FORMS)]]
-    assert started.count(True) > 100 and started.count(False) >= 12
+    assert len(new) > 300 and len(values) - len(new) > 300
 
 
 @pytest.mark.slow
 def test_bash_forms_under_every_reader_shell_and_failure(world: World) -> None:
     cases = []
-    readers = ({}, {"SCOUT_READER": "owner"}, {"SCOUT_READER": "agent:helper"}, {"SCOUT_READER": ""})
-    for i, command in enumerate(DESCRIBED_FORMS):
-        for j, env in enumerate(readers):  # this filter asks only "is it a run?"
+    # This filter asks only "is it a run?"; owner sessions are covered by the entry matrix below.
+    readers = ({"SCOUT_READER": "agent:helper"},)
+    for i, command in enumerate((*DESCRIBED_FORMS, *(form for form, _ in KNOWN_MISSED_FORMS))):
+        for j, env in enumerate(readers):
             cases.append(
                 Case(f"bash[{i}] env[{j}] {command!r}", "kb-read-gate", _bash(command, compact=True), env, "deep")
             )
@@ -532,12 +553,14 @@ TOOL_PAYLOADS = (
 @pytest.mark.slow
 def test_every_entry_under_every_reader_place_and_failure(world: World) -> None:
     cases = []
+    reads_payload = {"kb-read-gate", "kb-read-gate-read", "kb-read-label", "front-page-reads"}
     for entry in ENTRIES:
-        for i, payload in enumerate(TOOL_PAYLOADS):
+        payloads = TOOL_PAYLOADS if entry in reads_payload else TOOL_PAYLOADS[:: len(TOOL_PAYLOADS) // 3]
+        for i, payload in enumerate(payloads):
             for j, env in enumerate(READERS):
-                # Every reader in a vault; Python failing, and no vault, for one reader of each kind.
+                # Every reader in a vault; Python failing, and no vault, for a run and for the owner.
                 combos = [("vault", 0)]
-                if env in ({}, RUN, {"SCOUT_READER": "agent:helper"}, {"SCOUT_READER": "delegate:d1"}):
+                if env in ({}, RUN):
                     combos += [("vault", 1), ("outside", 0)]
                 for where, stub_exit in combos:
                     cid = f"{entry} payload[{i}] env[{j}] {where} exit={stub_exit}"
