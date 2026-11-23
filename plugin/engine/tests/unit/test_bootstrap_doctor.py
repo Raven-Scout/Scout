@@ -322,6 +322,36 @@ def test_missing_live_brain_file_is_yellow_with_the_fix(tmp_path, name):
     [warning] = [w for w in report.warnings if w.startswith("brain file missing")]
     assert f"{name}.md" in warning
     assert "scoutctl bootstrap upgrade" in warning
+    assert "deleted in vault commit" not in warning  # not a git repo
+
+
+def test_missing_brain_file_deleted_in_git_names_the_commit(tmp_path):
+    """An owner who deleted a brain file is told that doesn't switch the run off, and that upgrades restore it."""
+    import subprocess
+
+    _populate_minimal_vault(tmp_path)
+
+    def git(*args):
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "-c", "user.name=Alex", "-c", "user.email=alex@example.com", *args],
+            check=True,
+            capture_output=True,
+        )
+
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-qm", "seed")
+    (tmp_path / "RESPOND.md").unlink()
+    git("commit", "-qam", "drop the reply brain")
+    sha = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "--short", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    report = run_doctor(vault=tmp_path, check_jobs=False)
+    [warning] = [w for w in report.warnings if w.startswith("brain file missing")]
+    assert f"RESPOND.md — deleted in vault commit {sha}" in warning
+    assert "doesn't switch its run off" in warning
+    assert "triggers.yaml" in warning
 
 
 # ---------------------------------------------------------------------------

@@ -4716,6 +4716,8 @@ def _register_bootstrap() -> None:
                 f"unfinished merge. Remove them (then `scoutctl bootstrap resolve {held}` if a sidecar was behind it)",
                 err=True,
             )
+        for name in payload.get("installed", []):
+            typer.echo(f"  installed (was missing): {name} — written from this release's assembly", err=True)
         # migrate-legacy prints these on stdout (its pre-E3 quirk), upgrade on stderr.
         to_err = action != "migrate-legacy"
         edits = payload.get("vault_edits") or []

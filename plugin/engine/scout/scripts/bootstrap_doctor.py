@@ -93,6 +93,40 @@ _REQUIRED_CAT1_FILES = (
 _MACOS_TCC_PROTECTED_DIRS = ("Documents", "Desktop", "Downloads")
 
 
+def _git_deleted_in(vault: Path, rel: str) -> str | None:
+    """The short SHA of the vault commit that last deleted ``rel``, or None (no git, never deleted)."""
+    if not (vault / ".git").exists():
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(vault), "log", "-1", "--diff-filter=D", "--format=%h", "--", rel],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def _missing_brain_warning(vault: Path, name: str) -> str:
+    """A live brain file is missing. Upgrades write it from the assembly, so say so, and say
+    when the vault's git history shows someone deleted it (a deletion doesn't switch a run off)."""
+    fix = "`/scout-update` (or `scoutctl bootstrap upgrade`) installs it"
+    sha = _git_deleted_in(vault, name)
+    if sha is None:
+        return f"brain file missing: {name} — runs that use it go without their instructions; {fix}"
+    return (
+        f"brain file missing: {name} — deleted in vault commit {sha}. Deleting a brain file doesn't switch its "
+        f"run off, the run goes without its instructions; turn the run off in `.scout-state/schedule.yaml` "
+        f"(Telegram replies: `.scout-state/triggers.yaml`) instead. {fix} again"
+    )
+
+
 def _check_macos_plist_scoutctl_bin(*, home: Path, vault: Path | None = None) -> tuple[list[str], list[str]]:
     """Inspect the installed schedule-tick plist's scoutctl path.
 
@@ -1445,10 +1479,7 @@ def run_doctor(
     # (RESPOND.md) as installed without writing it; the next upgrade installs it.
     for name in BRAIN_KINDS:
         if not (vault / f"{name}.md").exists():
-            warnings.append(
-                f"brain file missing: {name}.md — runs that use it go without their instructions; "
-                f"`/scout-update` (or `scoutctl bootstrap upgrade`) installs it"
-            )
+            warnings.append(_missing_brain_warning(vault, f"{name}.md"))
 
     # Pending brain-file sidecars (yellow): upgrades skip that file, so it is
     # not receiving plugin changes until the sidecar is resolved.

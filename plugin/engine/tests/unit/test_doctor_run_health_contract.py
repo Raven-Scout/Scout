@@ -66,6 +66,7 @@ def _build_vault(root: Path) -> Path:
     logs.mkdir()
     for name in ("SKILL", "DREAMING", "RESEARCH", "RESPOND"):
         (state / "last-assembled" / f"{name}.md").write_text("x\n", encoding="utf-8")
+        (v / f"{name}.md").write_text("x\n", encoding="utf-8")
     (state / "schedule.yaml").write_text(SCHEDULE, encoding="utf-8")
     old = (NOW - timedelta(days=60)).timestamp()
     os.utime(state / "schedule.yaml", (old, old))

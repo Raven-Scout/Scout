@@ -693,6 +693,7 @@ def test_an_upgrade_installs_a_brain_kind_new_to_the_vault(tmp_path: Path) -> No
     assert _records(vault)["RESPOND.md"]["snapshot"] == "assembled"
     # Nothing was replaced, so nothing is parked (no record is the pre-provenance shape).
     assert result.backups == [] and result.conflicts == [] and result.skipped == []
+    assert result.installed == ["RESPOND.md"]
     assert not (vault / "RESPOND.md.proposed-merge").exists()
     assert not any("brain file missing" in w for w in result.doctor.warnings)
 
@@ -719,5 +720,8 @@ def test_an_upgrade_repairs_a_brain_file_recorded_as_installed_but_missing(
     assert ("Step three: added by the plugin." in live) is plugin_changed
     assert _snapshot(vault, "RESPOND").read_text() == live
     assert result.backups == [] and result.conflicts == [] and result.skipped == []
+    assert result.installed == ["RESPOND.md"]
+    # A second upgrade finds it in place and installs nothing.
+    assert upgrade(_config(vault, plugin, "0.4.2")).installed == []
     assert _bytes(vault / "SKILL.md", vault / "DREAMING.md", vault / "RESEARCH.md") == other_brains
     assert not any("brain file missing" in w for w in result.doctor.warnings)
