@@ -7,6 +7,11 @@ Two writers append to it, often at the same moment: the PostToolUse hook
 report (``scripts/connector_health_report``); run health reads the run ledger
 and runner logs, not these files.
 
+A row carries the call's ``tool_use`` id as ``id`` when the writer knows it.
+The Stop hook skips a call whose id is already in the ledger for its session,
+so a call is one row however many times Stop fires and whichever writer got
+there first. Rows from an older engine have no ``id``.
+
 Bounds (#66), the same for every vault:
 
 - **Retention:** files dated more than :data:`RETAIN_DAYS` (30) days ago are
