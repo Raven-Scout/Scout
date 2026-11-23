@@ -1489,6 +1489,66 @@ def test_sync_only_with_the_knowledge_base_symlink_keeps_every_kb_note(vault: Pa
         f.startswith(("knowledge-base/", ".scout-state/")) or f == "scout-config.yaml" or f in dm.GUIDE_PATHS
         for f in files
     ), files
+    # The allowlist lists the config, so the mirror's keeps its other keys.
+    assert yaml.safe_load(_show(bare, "scout-config.yaml"))["user"] == {"name": "Alex"}
+
+
+def _sync_only_kb(vault: Path) -> None:
+    """An allowlist of the KB alone: the config isn't on it."""
+    config = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    config += '  sync_only: ["knowledge-base/**"]\n'
+    _commit_files(vault, {"scout-config.yaml": config.encode()}, "sync only the KB")
+    privacy_migrate.accept(vault)
+
+
+def test_sync_only_without_the_config_mirrors_its_privacy_block_alone(vault: Path, tmp_path: Path) -> None:
+    """The config is the one file sync_only can't keep home, and then the mirror's holds only privacy."""
+    _sync_only_kb(vault)
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert "scout-config.yaml" in files
+    assert any(f.startswith("knowledge-base/") for f in files)
+    assert all(
+        f.startswith(("knowledge-base/", ".scout-state/")) or f == "scout-config.yaml" or f in dm.GUIDE_PATHS
+        for f in files
+    ), files
+    text = _show(bare, "scout-config.yaml")
+    mirrored = yaml.safe_load(text)
+    assert set(mirrored) == {"privacy"}, mirrored
+    assert mirrored["privacy"]["delegates"] == {"grok-personal": {}}
+    assert "Alex" not in text and "user" not in mirrored
+    # A later sync checks the mirror again (check_tree) and passes.
+    _commit(vault, "knowledge-base/topics/later.md", "---\ntitle: Later\n---\n\nA later note.\n", "later")
+    assert not dm.sync(vault, "grok-personal").unchanged
+    assert set(yaml.safe_load(_show(bare, "scout-config.yaml"))) == {"privacy"}
+
+
+def test_check_tree_refuses_a_full_config_where_sync_only_keeps_it_home(vault: Path) -> None:
+    _sync_only_kb(vault)
+    config = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    head = rs._head(vault)
+    blobs = rs.BlobReader(vault)
+    try:
+        planned = dm.plan(vault, head, "grok-personal", blobs)[0]
+        mirrored = next(f for f in planned.files if f.path == "scout-config.yaml")
+    finally:
+        blobs.close()
+    widened = {**yaml.safe_load(mirrored.data or b""), "user": config["user"]}
+    commit, head = _tampered(vault, "grok-personal", {"scout-config.yaml": yaml.safe_dump(widened).encode()})
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.check_tree(vault, commit, "grok-personal", head)
+    assert e.value.code == "delegate_mirror_unsafe"
+
+
+def test_a_hidden_note_named_scout_keeps_the_config_in_the_mirror(vault: Path, tmp_path: Path) -> None:
+    """scout-config.yaml is Scout's own name for it, so a hidden note titled Scout doesn't keep it out."""
+    page = "---\ntitle: Scout\nvisibility: private\n---\n\nThe project page.\n"
+    _commit(vault, "knowledge-base/projects/scout/scout.md", page, "a private Scout page")
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert "scout-config.yaml" in files and "knowledge-base/projects/scout/scout.md" not in files
 
 
 def test_path_terms_match_exactly_and_skip_symlinks_and_bare_root_names() -> None:
