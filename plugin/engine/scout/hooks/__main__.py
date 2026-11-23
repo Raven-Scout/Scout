@@ -14,6 +14,7 @@ The ``scoutctl hook …`` commands stay as they are, for a direct call.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from importlib import import_module
 
@@ -49,18 +50,49 @@ def _deny_mcp_call(exc: Exception) -> int:
 
     hooks.json execs this hook with no shell fallback, and Claude Code lets a call through when its
     hook exits 1, so a traceback here would lift every ``restrict_tools`` restriction. As in
-    ``mcp_tool_gate.run``, a payload that is not an MCP tool call is left alone.
+    ``mcp_tool_gate.run``, a payload that is not an MCP tool call is left alone, and so is a session
+    in no vault: hooks.json is plugin-wide, and a broken engine must not block MCP everywhere.
     """
     try:
-        tool_name = json.load(sys.stdin).get("tool_name")
+        payload = json.load(sys.stdin)
+        tool_name = payload.get("tool_name")
     except Exception:
         return 0
     if not isinstance(tool_name, str) or not tool_name.startswith("mcp__"):
         return 0
-    reason = f"Scout's MCP tool gate could not start ({type(exc).__name__}), so {tool_name} is blocked in this session."
+    if not _may_be_in_a_vault(payload):
+        return 0
+    reason = (
+        f"Scout's MCP tool gate could not start ({type(exc).__name__}), so {tool_name} is blocked in this vault's "
+        "sessions. To fix it, run /scout-update or `scoutctl bootstrap doctor`."
+    )
     decision = {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}
     print(json.dumps({"hookSpecificOutput": decision}))
     return 0
+
+
+def _may_be_in_a_vault(payload: dict[str, object]) -> bool:
+    """Whether the gate would find a vault for this session: ``mcp_tool_gate.session_vault``, stdlib only.
+
+    No scout import, so it can't fail the way the gate's import just did. SCOUT_DATA_DIR, else a
+    ``scout-config.yaml`` at or above the payload's cwd. True when that can't be decided (no cwd, an
+    OS error): unknown stays closed.
+    """
+    if os.environ.get("SCOUT_DATA_DIR"):
+        return True
+    cwd = payload.get("cwd")
+    if not isinstance(cwd, str) or not cwd:
+        return True
+    try:
+        here = os.path.realpath(os.path.expanduser(cwd))
+        while not os.path.isfile(os.path.join(here, "scout-config.yaml")):
+            parent = os.path.dirname(here)
+            if parent == here:
+                return False
+            here = parent
+    except Exception:
+        return True
+    return True
 
 
 if __name__ == "__main__":

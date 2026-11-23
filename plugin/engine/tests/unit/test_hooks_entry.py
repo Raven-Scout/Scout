@@ -181,15 +181,57 @@ def _broken_import(monkeypatch, name: str) -> None:
     monkeypatch.setitem(HOOKS, name, "scout.hooks.no_such_module")
 
 
-def test_the_mcp_tool_gate_denies_when_its_module_cannot_be_imported(monkeypatch, capsys):
-    # hooks.json execs it with no shell fallback, and exit 1 lets the call through: the entry must deny (#542).
+def _broken_gate_call(monkeypatch, capsys, payload: dict[str, object]) -> str:
     _broken_import(monkeypatch, "mcp-tool-gate")
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"tool_name": "mcp__knowledge__remember"})))
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     assert entry.main(["mcp-tool-gate"]) == 0
-    spec = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
-    assert spec["hookEventName"] == "PreToolUse" and spec["permissionDecision"] == "deny"
-    reason = spec["permissionDecisionReason"]
-    assert "ModuleNotFoundError" in reason and "mcp__knowledge__remember" in reason
+    return capsys.readouterr().out
+
+
+def test_the_mcp_tool_gate_denies_in_a_vault_when_its_module_cannot_be_imported(monkeypatch, capsys, gate_vault):
+    # hooks.json execs it with no shell fallback, and exit 1 lets the call through: the entry must deny (#542).
+    monkeypatch.delenv("SCOUT_DATA_DIR", raising=False)
+    sub = gate_vault / "knowledge-base" / "deep"
+    sub.mkdir(parents=True, exist_ok=True)
+    for cwd in (gate_vault, sub):
+        out = _broken_gate_call(monkeypatch, capsys, {"tool_name": "mcp__knowledge__remember", "cwd": str(cwd)})
+        spec = json.loads(out)["hookSpecificOutput"]
+        assert spec["hookEventName"] == "PreToolUse" and spec["permissionDecision"] == "deny"
+        reason = spec["permissionDecisionReason"]
+        assert "ModuleNotFoundError" in reason and "mcp__knowledge__remember" in reason
+        assert "/scout-update" in reason and "scoutctl bootstrap doctor" in reason
+
+
+def test_a_broken_mcp_tool_gate_allows_a_session_in_no_vault(monkeypatch, capsys, tmp_path):
+    # As the gate does (session_vault is None). hooks.json is plugin-wide: a broken engine must not
+    # block MCP in every session.
+    monkeypatch.delenv("SCOUT_DATA_DIR", raising=False)
+    payload = {"tool_name": "mcp__knowledge__remember", "cwd": str(tmp_path)}
+    assert _broken_gate_call(monkeypatch, capsys, payload) == ""
+
+
+@pytest.mark.parametrize("cwd", [None, "", 3], ids=["absent", "empty", "not-a-string"])
+def test_a_broken_mcp_tool_gate_denies_when_it_cannot_tell_where_the_session_is(monkeypatch, capsys, cwd):
+    monkeypatch.delenv("SCOUT_DATA_DIR", raising=False)
+    payload = {"tool_name": "mcp__knowledge__remember", **({} if cwd is None else {"cwd": cwd})}
+    assert '"deny"' in _broken_gate_call(monkeypatch, capsys, payload)
+
+
+def test_a_broken_mcp_tool_gate_denies_when_the_vault_walk_fails(monkeypatch, capsys, tmp_path):
+    def boom(_path: str) -> bool:
+        raise OSError("gone")
+
+    monkeypatch.delenv("SCOUT_DATA_DIR", raising=False)
+    monkeypatch.setattr(entry.os.path, "isfile", boom)
+    payload = {"tool_name": "mcp__knowledge__remember", "cwd": str(tmp_path)}
+    assert '"deny"' in _broken_gate_call(monkeypatch, capsys, payload)
+
+
+def test_a_broken_mcp_tool_gate_denies_under_scout_data_dir_whatever_the_cwd(monkeypatch, capsys, tmp_path):
+    # session_vault takes SCOUT_DATA_DIR first; so does the fallback.
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "vault"))
+    payload = {"tool_name": "mcp__knowledge__remember", "cwd": str(tmp_path)}
+    assert '"deny"' in _broken_gate_call(monkeypatch, capsys, payload)
 
 
 @pytest.mark.parametrize("raw", ["not json", "[]", '{"tool_name": 3}', '{"tool_name": "Read"}'])
