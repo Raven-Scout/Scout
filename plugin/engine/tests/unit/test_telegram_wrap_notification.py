@@ -292,20 +292,28 @@ def test_either_telegram_key_assembles_every_telegram_section(
     assert f"{send} --reply-to <newest id> --covers <all ids>" in respond
 
 
-def test_select_sections_reads_the_roster_key_as_telegram() -> None:
-    """The alias holds in the filter itself, not only where a config is built."""
-    assert _notification_names("SKILL", {"notify:telegram"}) == ["telegram"]
-    assert _notification_names("SKILL", {"notify:telegram"}, {"telegram"}) == ["telegram"]
-    assert _notification_names("RESEARCH", {"slack", "notify:telegram"}, {"telegram"}) == [
-        "Telegram Research Notification"
-    ]
-    assert _notification_names("SKILL", {"slack", "notify:telegram"}, {"slack"}) == ["slack"]
-
-
 def test_the_roster_key_normalizes_to_the_key_setup_writes() -> None:
-    """Like `gmail` → `email`: `/scout-setup` writes the probe key, `telegram`."""
+    """Like `gmail` → `email`: `/scout-setup` writes the probe key, `telegram`. Every config
+    is normalized where it is built (`BootstrapConfig`); `select_sections` matches exactly."""
+    from scout.scripts.bootstrap import BootstrapConfig
     from scout.scripts.connector_probes import normalize_connector_keys
 
+    cfg = BootstrapConfig(
+        vault=Path("/nonexistent"),
+        plugin_root=REPO_ROOT,
+        instance_name="Scout",
+        instance_name_lower="scout",
+        user_name="Alex",
+        user_email="",
+        timezone="",
+        platform="macos",
+        plugin_version="0.0.0",
+        enabled_connectors={"slack", "notify:telegram"},
+        connector_inputs={},
+    )
+    assert cfg.enabled_connectors == {"slack", "telegram"}
+    assert _notification_names("SKILL", cfg.enabled_connectors, {"telegram"}) == ["telegram"]
+    assert _notification_names("SKILL", {"notify:telegram"}) == []  # exact match, as for `gmail`
     assert "telegram" in load_registry(REPO_ROOT / "templates" / "connector-probes.yaml")
     assert normalize_connector_keys({"notify:telegram", "slack"}) == {"telegram", "slack"}
     assert normalize_connector_keys({"notify:telegram", "telegram"}) == {"telegram"}

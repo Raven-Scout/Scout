@@ -161,8 +161,9 @@ def select_sections(
     """Filter sections by connector, slot, and mode.
 
     Kept when ALL of the following hold:
-      - ``requires`` is null OR is an enabled connector (a legacy or roster
-        spelling in ``enabled_connectors`` counts: ``CONNECTOR_KEY_ALIASES``)
+      - ``requires`` is null OR is an enabled connector. The match is exact:
+        ``BootstrapConfig`` normalizes legacy and roster spellings
+        (``CONNECTOR_KEY_ALIASES``) before any caller gets here
       - ``slot`` is None OR matches the section's slot
       - ``modes`` is None OR the section's mode is empty (applies to every
         target) OR the section's mode list intersects ``modes``
@@ -176,7 +177,6 @@ def select_sections(
     before mode filtering was enforced).
     """
     out: list[PhaseSection] = []
-    enabled_connectors = normalize_connector_keys(enabled_connectors)
     for s in sections:
         if s.requires is not None and s.requires not in enabled_connectors:
             continue
