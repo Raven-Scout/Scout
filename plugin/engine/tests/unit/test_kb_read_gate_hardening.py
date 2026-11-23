@@ -679,3 +679,65 @@ def test_a_data_file_search_below_the_vault_root_is_allowed() -> None:
 def test_a_data_file_search_from_the_vault_root_is_denied_by_the_hook(vault) -> None:  # noqa: F811
     assert _denied(_decision(vault, "Bash", {"command": "grep -r Priya . --include='*.yaml'"}))
     assert _decision(vault, "Bash", {"command": "grep -r Priya scripts --include='*.yaml'"}) is None
+
+
+# ----- ag, ack, fd, ugrep from the vault root ------------------------------------------------
+
+OTHER_TOOL_ROOT_FORMS = [
+    "ag Priya",
+    "ag Priya .",
+    "ag -l Priya",
+    "ag -g people",
+    "ack Priya",
+    "ack -f",
+    "fd people",
+    "fd",
+    "fd . -X cat",
+    "fd -e yaml -x cat {}",
+    "fd -e md people",
+    "ugrep -r Priya .",
+    "ugrep -r Priya . --include='*.yaml'",
+    "ugrep -rn Priya -g '*.json'",
+]
+
+
+@pytest.mark.parametrize("command", OTHER_TOOL_ROOT_FORMS)
+def test_other_search_tools_from_the_vault_root_are_flagged(command: str) -> None:
+    assert judged(command)
+    assert judged(command, cwd="/home/alex")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ag Priya scripts",
+        "ack Priya scripts/",
+        "fd people scripts",
+        "fd people --search-path scripts",
+        "fd -e py",
+        "fd -e sh -X cat",
+        "ugrep -r Priya scripts",
+        "ugrep -r Priya . --include='*.py'",
+        "ugrep Priya notes.txt",
+    ],
+)
+def test_other_search_tools_kept_out_of_the_kb_are_allowed(command: str) -> None:
+    assert not judged(command)
+
+
+def test_other_search_tools_below_the_vault_root_are_allowed() -> None:
+    assert not judged("ag Priya", cwd=f"{VAULT}/scripts")
+    assert not judged("fd . -X cat", cwd=f"{VAULT}/scripts")
+    assert judged("fd . -X cat", cwd=f"{VAULT}/knowledge-base")
+
+
+@pytest.mark.parametrize("command", ["ag Priya", "ack Priya", "fd people", "ugrep -r Priya ."])
+def test_the_shell_sends_other_search_tools_to_python(vault, tmp_path, command: str) -> None:  # noqa: F811
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 2  # Python was needed (and, missing here, fails closed)
+
+
+def test_an_ag_search_from_the_vault_root_is_denied_by_the_hook(vault) -> None:  # noqa: F811
+    assert _denied(_decision(vault, "Bash", {"command": "ag Priya"}))
+    assert _decision(vault, "Bash", {"command": "ag Priya scripts"}) is None

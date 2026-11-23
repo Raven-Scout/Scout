@@ -83,8 +83,8 @@ WHOLE_VAULT_GLOBS = {"*", "**", "**/*", "*.md", "**/*.md", "**/*.*"}
 # the CSV and JSON tables an ingestion writes). A file filter naming one of these does not keep a
 # search rooted at the vault out of the KB (#541). Code (``*.py``, ``*.sh``) and logs do.
 KB_FILE_EXTENSIONS = ("md", "markdown", "yaml", "yml", "csv", "tsv", "json", "txt", "html", "htm")
-# ripgrep's ``-t`` names for those formats, and ``all``. ripgrep has no ``tsv`` type (its ``csv`` type
-# covers ``*.tsv``).
+# ripgrep's ``-t`` names for those formats, and ``all``. ripgrep has no ``tsv`` type, and its ``csv``
+# type is ``*.csv`` only, so ``rg -t tsv`` is an error and ``*.tsv`` is caught as a glob only.
 _KB_RG_TYPES = {"all", "md", "markdown", "yaml", "csv", "json", "txt", "html"}
 
 
@@ -253,11 +253,25 @@ _RG_VALUES = {"-A", "-B", "-C", "-e", "-f", "-g", "-j", "-m", "-M", "-t", "-T", 
 _FIND_VALUES = {"-name", "-iname", "-path", "-ipath", "-wholename", "-regex", "-iregex", "-type", "-size",
                 "-mtime", "-mmin", "-atime", "-amin", "-ctime", "-cmin", "-newer", "-user", "-group", "-perm",
                 "-maxdepth", "-mindepth", "-printf", "-fprint", "-links", "-inum", "-samefile"}  # fmt: skip
+_AG_VALUES = {"-A", "-B", "-C", "-G", "-g", "-m", "-p", "--after", "--before", "--context", "--depth",
+              "--file-search-regex", "--ignore", "--ignore-dir", "--max-count", "--pager", "--path-to-ignore",
+              "--workers"}  # fmt: skip
+_ACK_VALUES = {"-A", "-B", "-C", "-g", "-m", "--after-context", "--before-context", "--context", "--ignore-dir",
+               "--ignore-file", "--match", "--max-count", "--output", "--pager", "--type", "--type-add",
+               "--type-del", "--type-set"}  # fmt: skip
+_FD_VALUES = {"-d", "-e", "-E", "-t", "-S", "-o", "-j", "-c", "--max-depth", "--min-depth", "--exact-depth",
+              "--extension", "--exclude", "--type", "--size", "--changed-within", "--changed-before", "--owner",
+              "--base-directory", "--search-path", "--path-separator", "--threads", "--max-results", "--color",
+              "--ignore-file", "--format", "--and"}  # fmt: skip
+# fd's flags that run a command on what it finds: everything after them is that command.
+_FD_EXEC = {"-x", "--exec", "-X", "--exec-batch"}
 _VALUE_FLAGS: dict[str, set[str]] = {
     "head": {"-n", "-c", "--lines", "--bytes"},
     "tail": {"-n", "-c", "--lines", "--bytes"},
     "grep": _GREP_VALUES, "egrep": _GREP_VALUES, "fgrep": _GREP_VALUES,
+    "ugrep": _GREP_VALUES | {"-g", "--glob"},
     "rg": _RG_VALUES,
+    "ag": _AG_VALUES, "ack": _ACK_VALUES, "fd": _FD_VALUES,
     "sed": {"-e", "-f", "-l"},
     "awk": {"-v", "-f", "-F"}, "gawk": {"-v", "-f", "-F"}, "mawk": {"-v", "-f", "-F"},
     "cut": {"-d", "-f", "-c", "-b"},
@@ -344,11 +358,16 @@ def _recursive(name: str, args: list[str]) -> _Recursive | None:
     """Where a recursive read starts, or None for a command that isn't one, or one whose file
     filter stays out of the KB (``--glob 'action-items/*.md'``, ``--include=*.py``), as for the
     Grep tool."""
-    if any(a in _NOT_A_READ for a in args) or (name in ("rg", "grep", "egrep", "fgrep") and "-V" in args):
+    if any(a in _NOT_A_READ for a in args) or (name in ("rg", "grep", "egrep", "fgrep", "ugrep") and "-V" in args):
         return None
+    runs = False  # fd -x/-X: it runs a command on each file it finds
+    if name == "fd":
+        cut = next((i for i, a in enumerate(args) if a in _FD_EXEC or a.startswith(("--exec=", "--exec-batch="))), None)
+        if cut is not None:
+            args, runs = args[:cut], True
     flags, plain = _split_args(_operands(name, args) if name != "find" else args)
     filters: list[str] = []
-    if name in ("grep", "egrep", "fgrep"):
+    if name in ("grep", "egrep", "fgrep", "ugrep"):
         recursive = any(_RECURSIVE_FLAG.match(f) for f in flags) or any(
             a in ("-d", "--directories") and i + 1 < len(args) and args[i + 1] == "recurse" for i, a in enumerate(args)
         )
@@ -357,7 +376,21 @@ def _recursive(name: str, args: list[str]) -> _Recursive | None:
         pattern_given = _pattern_flag(args)
         roots = plain if pattern_given else plain[1:]
         filters = [a.split("=", 1)[1] for a in args if a.startswith("--include=")] + _flag_values(args, {"--include"})
+        if name == "ugrep":  # ugrep also filters with `-g GLOB`, `!` negating
+            globs = _flag_values(args, {"-g", "--glob"}) + [a.split("=", 1)[1] for a in args if a.startswith("--glob=")]
+            filters += [g for g in globs if not g.strip("\"'").startswith("!")]
         return _filtered(_Recursive(roots, True, None, _exclusions(args)), filters)
+    if name in ("ag", "ack"):  # recursive by default; the first positional is the pattern
+        lists = "-g" in args or (name == "ack" and "-f" in args)  # file names only, no pattern
+        pattern_given = name == "ack" and any(a == "--match" or a.startswith("--match=") for a in args)
+        return _Recursive(plain if lists or pattern_given else plain[1:], not lists)
+    if name == "fd":  # `fd [pattern] [path...]`: names, or contents when it runs a command on them
+        roots = plain[1:] + _flag_values(args, {"--search-path", "--base-directory"})
+        exts = _flag_values(args, {"-e", "--extension"}) + [
+            a.split("=", 1)[1] for a in args if a.startswith("--extension=")
+        ]
+        globs = ["*." + e.strip("\"'").lstrip(".") for e in exts]
+        return _filtered(_Recursive(roots, runs, _int(_flag_value(args, {"-d", "--max-depth"}))), globs)
     if name == "rg":
         if "--files" in args:  # lists the files it would search: names, no pattern
             return _Recursive(plain, False, _int(_flag_value(args, {"--max-depth", "--maxdepth", "-d"})))
