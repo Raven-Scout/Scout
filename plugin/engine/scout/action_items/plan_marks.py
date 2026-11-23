@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from scout import config, paths
-from scout.action_items._common import resolve_target
+from scout.action_items._common import TASK_LINE_RE, resolve_target
 from scout.action_items.parser import ActionItem, parse_file
 from scout.action_items.writer import delete_line, insert_below, replace_line
 from scout.errors import ActionItemError
@@ -55,9 +55,6 @@ _BLOCK_VALUE_RE = re.compile(
     r"(?:\s+\(event:\s*(?P<event>[^)\s]+)\))?$"
 )
 _ACTUAL_VALUE_RE = re.compile(r"^(?P<dur>\S+)(?:\s+\((?P<day>\d{4}-\d{2}-\d{2})\))?$")
-# Any task line, at any depth: the marker scan for a task stops at the next one,
-# so a parent never reads or rewrites its child task's markers.
-_TASK_LINE_RE = re.compile(r"^\s*-\s+\[[ xX]\]")
 
 
 def _today(data_dir: Path | None = None) -> dt.date:
@@ -114,7 +111,9 @@ def _mark_lines(lines: list[str], task_line_number: int) -> dict[str, tuple[int,
         line = lines[j]
         if not line.strip() or not (line.startswith(" ") or line.startswith("\t")):
             break
-        if _TASK_LINE_RE.match(line):
+        # The marker scan stops at the next task line, at any depth, so a
+        # parent never reads or rewrites its child task's markers.
+        if TASK_LINE_RE.match(line):
             break
         m = _MARK_LINE_RE.match(line)
         if m is not None and m.group("key") not in found and _value_parses(m.group("key"), m.group("value")):

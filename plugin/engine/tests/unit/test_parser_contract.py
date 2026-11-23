@@ -41,8 +41,9 @@ from pathlib import Path
 import pytest
 
 from scout.action_items import render
+from scout.action_items._common import list_comment_lines
 from scout.action_items.parser import parse_file
-from scout.action_items.plan_marks import read_plan_marks
+from scout.action_items.plan_marks import plan_mark_line_numbers, read_plan_marks
 
 CORPUS = Path(__file__).resolve().parents[1] / "fixtures" / "contract" / "parser-corpus.json"
 
@@ -73,8 +74,10 @@ def _top_task(f: Path) -> render.Task:
 def test_short_prefix(entry: dict, tmp_path: Path) -> None:
     """short_prefix comes from parser.parse_file (the stable-ID parser)."""
     f = _write(tmp_path, entry)
-    items = parse_file(f)
-    assert len(items) == 1, f"{entry['name']}: expected one item, got {len(items)}"
+    # parse_file sorts by status; the entry's own task is the first in the file.
+    items = sorted(parse_file(f), key=lambda item: item.line_number)
+    expected_count = entry.get("task_count", 1)
+    assert len(items) == expected_count, f"{entry['name']}: expected {expected_count} item(s), got {len(items)}"
     assert (items[0].short_prefix or None) == entry["expected"]["short_prefix"], f"{entry['name']}: short_prefix"
 
 
@@ -105,7 +108,7 @@ _FIELD_ENTRIES = [e for e in _ENTRIES if "fields" in e["expected"]]
 @pytest.mark.parametrize("entry", _FIELD_ENTRIES, ids=lambda e: e["name"])
 def test_fields(entry: dict, tmp_path: Path) -> None:
     """Board fields come from parser.parse_file, bound by the owner rule."""
-    [item] = parse_file(_write(tmp_path, entry))
+    item = min(parse_file(_write(tmp_path, entry)), key=lambda item: item.line_number)
     fields = asdict(item.fields)
     fields["depends"] = list(fields["depends"])
     assert fields == entry["expected"]["fields"], f"{entry['name']}: fields"
@@ -129,3 +132,24 @@ def test_plan(entry: dict, tmp_path: Path) -> None:
     """The plan comes from plan_marks.read_plan_marks; the task line is line 5 of the file."""
     marks = read_plan_marks(_write(tmp_path, entry), task_line_number=5)
     assert marks.to_json_dict() == entry["expected"]["plan"], f"{entry['name']}: plan"
+
+
+_INDEX_ENTRIES = [e for e in _ENTRIES if "indexed_comments" in e["expected"]]
+
+
+@pytest.mark.parametrize("entry", _INDEX_ENTRIES, ids=lambda e: e["name"])
+def test_indexed_comments(entry: dict, tmp_path: Path) -> None:
+    """What `edit-comment` / `delete-comment --index` reach on the task (line 5).
+
+    The index is the position in `list_comment_lines`, which counts the plan
+    marker lines; the markers themselves are not comments, so they are left
+    out of the expected list.
+    """
+    f = _write(tmp_path, entry)
+    marker_lines = plan_mark_line_numbers(f.read_text(encoding="utf-8").splitlines(), 5)
+    indexed = [
+        {"author": author, "index": index}
+        for index, (line_number, author, _text) in enumerate(list_comment_lines(f, task_line_number=5), start=1)
+        if line_number not in marker_lines
+    ]
+    assert indexed == entry["expected"]["indexed_comments"], f"{entry['name']}: indexed_comments"
