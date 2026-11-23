@@ -13,8 +13,8 @@ import Foundation
 /// as a marker mirrors the engine's `plan_marks._mark_lines`: inside the
 /// task's sub-list, the first line per key whose value parses. Any other
 /// `- estimate:` line stays a comment. The engine's `--index` still counts
-/// the markers, for every app version, so a comment write goes through
-/// `engineCommentIndex`.
+/// the markers, for every app version, so a comment write sends
+/// `TaskComment.engineIndex`, which counts them too.
 nonisolated struct TaskPlan: Equatable, Hashable, Sendable {
     var estimateMinutes: Int?
     var rawMinutes: Int?
@@ -22,9 +22,6 @@ nonisolated struct TaskPlan: Equatable, Hashable, Sendable {
     var block: PlannedBlock?
     var actualMinutes: Int?
     var actualDate: String?
-    /// For each marker line, how many of the task's comments came before it,
-    /// so `engineCommentIndex` can count the markers back in.
-    var markerPositions: [Int] = []
 
     static let none = TaskPlan()
 
@@ -33,7 +30,7 @@ nonisolated struct TaskPlan: Equatable, Hashable, Sendable {
     /// This plan with one marker line folded in, or nil when the line is not
     /// a marker: the value does not parse, or the key already has one (the
     /// first wins). The caller then leaves the line to the comment path.
-    func merging(key: String, value: String, commentsBefore: Int = 0) -> TaskPlan? {
+    func merging(key: String, value: String) -> TaskPlan? {
         var out = self
         switch key {
         case "estimate":
@@ -61,15 +58,7 @@ nonisolated struct TaskPlan: Equatable, Hashable, Sendable {
         default:
             return nil
         }
-        out.markerPositions.append(commentsBefore)
         return out
-    }
-
-    /// The `--index` `scoutctl delete-comment` / `edit-comment` expect for the
-    /// comment the app shows at 1-based `index`: the engine counts the markers
-    /// above it as comments, as every app before this one showed them.
-    func engineCommentIndex(_ index: Int) -> Int {
-        index + markerPositions.filter { $0 < index }.count
     }
 
     /// `"1h15m"` -> 75. Nil for anything that is not a positive h/m duration.

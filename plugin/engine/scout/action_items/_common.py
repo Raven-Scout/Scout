@@ -26,17 +26,29 @@ from scout.plural import count
 # those when listing comments since they are not user-authored notes.
 _COMMENT_SUB_BULLET_RE = re.compile(r"^(?P<indent>\s+)-\s+(?P<author>[A-Za-z][A-Za-z0-9._-]*)\s*:\s*(?P<text>.+?)\s*$")
 _NON_COMMENT_AUTHORS = {"snoozed-until"} | TASK_FIELD_KEYS
+# Any task line, at any depth. The comment lister and the plan-marker scan
+# (plan_marks.py) use it to keep out of another task's sub-bullets.
+TASK_LINE_RE = re.compile(r"^\s*-\s+\[[ xX]\]")
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" \t"))
 
 
 def list_comment_lines(path: Path, *, task_line_number: int) -> list[tuple[int, str, str]]:
-    """Walk the indented sub-bullets directly under `task_line_number`.
+    """Walk the sub-bullets under `task_line_number`.
 
     Returns a list of `(line_number, author, text)` tuples for each comment
     `  - <author>: <text>` sub-bullet attached to the task, in file order.
     The `snoozed-until` marker and board fields are filtered out — they're
     machine metadata, not user-authored comments.
 
-    Stops at the first non-indented line, empty line, or a new task line.
+    The task's sub-list ends at an empty line or at the first line indented no
+    deeper than the task line itself: a sibling task, in a list that is itself
+    indented, is indented too. Inside the sub-list, a child task's own
+    sub-bullets (the lines indented deeper than the child's line) are skipped.
+    Before #556 only an empty or unindented line ended the walk, so `--index`
+    could reach the next task's or a child task's sub-bullets.
 
     The /scout-plan markers (`  - estimate: 45m`, see plan_marks.py) stay in
     this list on purpose. `--index` is what every Scout.app version sends: an
@@ -50,14 +62,31 @@ def list_comment_lines(path: Path, *, task_line_number: int) -> list[tuple[int, 
     if not 0 <= idx < len(lines):
         raise ActionItemError(f"list_comment_lines: task line {task_line_number} out of range (1..{len(lines)})")
     comments: list[tuple[int, str, str]] = []
+    task_indent = _indent(lines[idx])
+    # Indent of the child task whose sub-bullets are being skipped, if any.
+    child_indent: int | None = None
     j = idx + 1
     while j < len(lines):
         line = lines[j]
         if not line.strip():
             break
-        # Stop when we drop back to a top-level (unindented) bullet.
-        if not (line.startswith(" ") or line.startswith("\t")):
+        indent = _indent(line)
+        # Stop when we drop back to the task's own level (or above it): the
+        # next task, a plain bullet or a paragraph.
+        if indent <= task_indent:
             break
+        if TASK_LINE_RE.match(line):
+            # A child task. Its sub-bullets are its own; a grandchild task is
+            # one of them.
+            if child_indent is None or indent <= child_indent:
+                child_indent = indent
+            j += 1
+            continue
+        if child_indent is not None:
+            if indent > child_indent:
+                j += 1
+                continue
+            child_indent = None
         m = _COMMENT_SUB_BULLET_RE.match(line)
         if m is None:
             # Non-comment indented line (e.g. a sub-task or detail bullet).
