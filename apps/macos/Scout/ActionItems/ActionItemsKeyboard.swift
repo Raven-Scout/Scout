@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The Action Items List's keyboard model (UI audit #50). One card at a time
@@ -17,10 +18,11 @@ struct ActionItemsKeyboardContext: Equatable {
     var commitKeyFree = true
     /// The last Return or Space; the card it names opens or closes.
     var toggleRequest: ToggleRequest?
-    /// Makes a card current (a click anywhere on it).
-    var setCursor: StableAction<UUID>?
     /// Makes a card current and gives the list keyboard focus, so the arrows
-    /// work next: a click on the card's header, which holds no text field.
+    /// work next: a click anywhere on the card, unless the click left the keys
+    /// with text (`clickTakesListFocus`). A click that only made the card
+    /// current left the list without focus when it came from elsewhere, the
+    /// sidebar say: gold, no ring, and ↓ did nothing (UI audit T4).
     var focusCard: StableAction<UUID>?
 
     struct ToggleRequest: Equatable {
@@ -41,6 +43,24 @@ struct ActionItemsKeyboardContext: Equatable {
     /// into a comment would otherwise collapse its card and lose the draft.
     static func listOwnsKeys(listFocused: Bool, commentEditorFocused: Bool) -> Bool {
         listFocused && !commentEditorFocused
+    }
+
+    /// Whether a click on a card may take the list's keyboard focus, given
+    /// what holds it once the click is done. Not from text the click left the
+    /// keys with: a comment editor it clicked into (an editable text view, not
+    /// a field's shared editor, which is the search field's), or text it just
+    /// selected, which ⌘C must still copy. A field elsewhere (search) gives
+    /// way: the click was on the list.
+    static func clickTakesListFocus(firstResponder: NSResponder?) -> Bool {
+        if let text = firstResponder as? NSTextView {
+            if text.isEditable && !text.isFieldEditor { return false }
+            if text.selectedRange().length > 0 { return false }
+            return true
+        }
+        if let view = firstResponder as? NSView, view.accessibilitySelectedTextRange().length > 0 {
+            return false
+        }
+        return true
     }
 
     /// A card the arrow keys walk, with what identifies its task across a

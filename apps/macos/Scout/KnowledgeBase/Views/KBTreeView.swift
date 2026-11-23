@@ -187,6 +187,8 @@ private struct KBTreeRow: View {
         if node.isDirectory {
             Button { toggle(); onClick(node.relativePath) } label: { dirLabel }
                 .buttonStyle(.plainHit)
+                // The tree's stop, arrows and Return reach every row (T4).
+                .dsContainerItem()
                 .dsCursorRing(ring == node.relativePath)
                 .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
                 .accessibilityAddTraits(isCursor ? .isSelected : [])
@@ -200,6 +202,7 @@ private struct KBTreeRow: View {
         } else {
             Button { selectedPath = node.relativePath; onClick(node.relativePath) } label: { fileLabel }
                 .buttonStyle(.plainHit)
+                .dsContainerItem()
                 // While the tree itself has the keys, the current row rings (T4).
                 .dsCursorRing(ring == node.relativePath)
                 .accessibilityAddTraits(isSelected ? .isSelected : [])

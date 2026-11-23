@@ -207,18 +207,41 @@ extension View {
 
     /// The ring on a focusable container's current item (its cursor or
     /// selection) while the container holds the keyboard focus itself.
-    func dsCursorRing(_ isCurrent: Bool, cornerRadius: CGFloat = 6) -> some View {
-        modifier(DSCursorRing(isCurrent: isCurrent, cornerRadius: cornerRadius))
+    /// `outset` is how far outside the item the ring sits; a row that runs
+    /// edge to edge in a scroll view passes a negative one, so the ring is
+    /// drawn inside it rather than clipped at the edges (UI audit T4).
+    func dsCursorRing(_ isCurrent: Bool, cornerRadius: CGFloat = 6, outset: CGFloat = 2) -> some View {
+        modifier(DSCursorRing(isCurrent: isCurrent, cornerRadius: cornerRadius, outset: outset))
+    }
+
+    /// One item of a focusable container that is a button of its own (a
+    /// Schedules row or card, a KB tree row): not a Tab stop of its own. The
+    /// container's stop and its arrow keys reach every item, as in a Mac
+    /// list. With Keyboard navigation on, each item was a stop too, so Tab
+    /// walked the whole list, and the Table's first row came before the
+    /// list's own stop (UI audit T4). Buttons inside an item that do
+    /// something else (Done, a link) stay Tab stops.
+    func dsContainerItem() -> some View {
+        focusable(false)
+    }
+
+    /// Takes a control out of the Tab loop when `skips`: for a second copy
+    /// of a control that is already a Tab stop elsewhere on the same item,
+    /// so Tab doesn't stop twice for one link (UI audit T4). The pointer and
+    /// VoiceOver still reach it.
+    @ViewBuilder
+    func dsSkipsTab(_ skips: Bool) -> some View {
+        if skips { focusable(false) } else { self }
     }
 
     /// The keyboard focus ring Scout draws itself: on a `dsField` and on a
     /// focusable container's current item. Buttons get the system's.
-    func dsFocusRing(_ isFocused: Bool, cornerRadius: CGFloat = 6) -> some View {
+    func dsFocusRing(_ isFocused: Bool, cornerRadius: CGFloat = 6, outset: CGFloat = 2) -> some View {
         overlay {
             if isFocused {
                 RoundedRectangle(cornerRadius: cornerRadius)
                     .strokeBorder(Color(nsColor: .keyboardFocusIndicatorColor), lineWidth: 2)
-                    .padding(-2)
+                    .padding(-outset)
                     .allowsHitTesting(false)
             }
         }
@@ -228,9 +251,10 @@ extension View {
 private struct DSCursorRing: ViewModifier {
     let isCurrent: Bool
     let cornerRadius: CGFloat
+    let outset: CGFloat
     @Environment(\.dsFocusContainerShowsCursor) private var showsCursor
 
     func body(content: Content) -> some View {
-        content.dsFocusRing(isCurrent && showsCursor, cornerRadius: cornerRadius)
+        content.dsFocusRing(isCurrent && showsCursor, cornerRadius: cornerRadius, outset: outset)
     }
 }

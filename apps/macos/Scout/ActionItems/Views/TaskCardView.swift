@@ -117,9 +117,10 @@ struct TaskCardView: View {
                        accentBar: DS.priorityColor(effectiveKind).opacity(task.done ? 0.5 : 1))
         // While the list itself has the keys, the current card rings (T4).
         .dsCursorRing(keyboard.ringID == task.id, cornerRadius: 10)
-        // A click anywhere on the card makes it keyboard-current, alongside
-        // whatever the click hit (a button still does its own thing).
-        .simultaneousGesture(TapGesture().onEnded { keyboard.setCursor?(task.id) })
+        // A click anywhere on the card makes it keyboard-current and gives the
+        // list the keys, alongside whatever the click hit (a button still does
+        // its own thing; a comment editor keeps the keys it took).
+        .simultaneousGesture(TapGesture().onEnded { keyboard.focusCard?(task.id) })
         .contextMenu { contextMenuItems }
         .padding(.bottom, 10)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: isSelected)
@@ -180,9 +181,6 @@ struct TaskCardView: View {
         }
         .padding(density == .compact ? 8 : 14)
         .contentShape(Rectangle())
-        // The header holds no text field, so a click here can take the
-        // list's keyboard focus without pulling it out of a comment editor.
-        .simultaneousGesture(TapGesture().onEnded { keyboard.focusCard?(task.id) })
     }
 
     private var chevron: some View {
@@ -529,7 +527,8 @@ struct TaskCardView: View {
             }
 
             if !task.deepLinks.isEmpty {
-                TaskLinksView(links: task.deepLinks)
+                // The header's ref chips are these links' Tab stops while they show.
+                TaskLinksView(links: task.deepLinks, headerHasChips: fields.refs)
             }
 
             TaskActionsView(

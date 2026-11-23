@@ -30,15 +30,42 @@ struct SchedulesMasterTable: View {
     var body: some View {
         // Reading the scale here re-lays the table out when Text size changes.
         let columns = SchedulesColumns(scale: TextScale.shared.factor)
-        GeometryReader { geo in
-            let available = geo.size.width
-            let mode = columns.mode(forAvailable: available)
-            if mode == .stacked {
-                SchedulesMasterCards(slots: slots, newDraftSlot: newDraftSlot,
-                                     selectedSlotKey: $selectedSlotKey, warnings: warnings,
-                                     twentyFourHour: true)
-            } else {
-                table(columns, mode: mode, nameWidth: columns.nameWidth(forAvailable: available, mode: mode))
+        ScrollViewReader { proxy in
+            GeometryReader { geo in
+                let available = geo.size.width
+                let mode = columns.mode(forAvailable: available)
+                Group {
+                    if mode == .stacked {
+                        // The table's own focus, not the cards' (see `SchedulesMasterCards.tableFocus`).
+                        SchedulesMasterCards(slots: slots, newDraftSlot: newDraftSlot,
+                                             selectedSlotKey: $selectedSlotKey, warnings: warnings,
+                                             twentyFourHour: true, tableFocus: $tableFocused)
+                    } else {
+                        table(columns, mode: mode, nameWidth: columns.nameWidth(forAvailable: available, mode: mode))
+                    }
+                }
+                // A click that opens the detail pane can stack the table:
+                // keep the clicked row in view as it becomes a card.
+                .onChange(of: mode == .stacked) {
+                    guard let key = selectedSlotKey else { return }
+                    DispatchQueue.main.async { proxy.scrollTo(key) }
+                }
+            }
+            // One Tab stop and one key handler around both layouts, so the
+            // focus outlives a switch between them. At 1100 pt a click on a
+            // row opened the detail pane, the narrower table stacked into
+            // cards, its focus sink went with the table, and the focus fell to
+            // the "Table" button above (UI audit T4). It sits behind the
+            // header too, so Tab reaches it before any row.
+            // ↑ ↓ Home End move the selection once the table has keyboard
+            // focus; a click on a row gives it focus.
+            .dsFocusContainer($tableFocused)
+            .keyboardListNavigation(
+                when: tableFocused,
+                ids: { Self.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot) },
+                selection: $selectedSlotKey
+            ) { key in
+                proxy.scrollTo(key)
             }
         }
     }
@@ -49,28 +76,16 @@ struct SchedulesMasterTable: View {
         return VStack(alignment: .leading, spacing: 0) {
             headerRow(columns, mode: mode, nameWidth: nameWidth)
             Divider().background(DS.Rule.hard)
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        if let draft = newDraftSlot {
-                            row(for: draft, columns: columns, mode: mode, nameWidth: nameWidth, ringed: ringed)
-                            Divider().background(DS.Rule.soft)
-                        }
-                        ForEach(slots) { slot in
-                            row(for: slot, columns: columns, mode: mode, nameWidth: nameWidth, ringed: ringed)
-                            Divider().background(DS.Rule.soft)
-                        }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if let draft = newDraftSlot {
+                        row(for: draft, columns: columns, mode: mode, nameWidth: nameWidth, ringed: ringed)
+                        Divider().background(DS.Rule.soft)
                     }
-                }
-                // ↑ ↓ Home End move the selection once the table has keyboard
-                // focus; a click on a row gives it focus.
-                .dsFocusContainer($tableFocused)
-                .keyboardListNavigation(
-                    when: tableFocused,
-                    ids: { Self.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot) },
-                    selection: $selectedSlotKey
-                ) { key in
-                    proxy.scrollTo(key)
+                    ForEach(slots) { slot in
+                        row(for: slot, columns: columns, mode: mode, nameWidth: nameWidth, ringed: ringed)
+                        Divider().background(DS.Rule.soft)
+                    }
                 }
             }
         }
@@ -113,8 +128,13 @@ struct SchedulesMasterTable: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plainHit)
-        // Tab onto the table itself rings this row (T4).
-        .dsCursorRing(ringed == slot.key, cornerRadius: 4)
+        // The table's stop and arrows reach every row; a row isn't a stop of its own.
+        .dsContainerItem()
+        // Tab onto the table itself rings this row (T4): the cards' ring,
+        // drawn inside the row because the row runs edge to edge. Drawn
+        // around it, the ScrollView clipped it, so only part of it showed,
+        // and none of it at the window's edge.
+        .dsCursorRing(ringed == slot.key, cornerRadius: 6, outset: -2)
         .accessibilitySelected(isSelected)
         .accessibilityIdentifier("schedules-row-\(slot.key)")
         .id(slot.key)

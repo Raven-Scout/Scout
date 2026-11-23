@@ -254,10 +254,11 @@ struct ActionItemsView: View {
             ringID: KeyboardListNavigation.ringed(cursorTaskID, in: navigableRows.map(\.id)),
             commitKeyFree: !commentEditorFocused && !searchFocused,
             toggleRequest: toggleRequest,
-            setCursor: StableAction { id in cursorTaskID = id },
             focusCard: StableAction { id in
                 cursorTaskID = id
-                listFocused = true
+                if ActionItemsKeyboardContext.clickTakesListFocus(firstResponder: NSApp.keyWindow?.firstResponder) {
+                    listFocused = true
+                }
             })
     }
 
