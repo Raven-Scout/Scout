@@ -71,7 +71,8 @@ read-only mount, and its commits are pushed *into* a scratch repo there.
 - The scheduled run outside off-peak is "not now".
 - Then `applied`: the venv is built in the new root and the old root is kept. The pointer,
   shim and crontab are re-pointed, and every cron command is executable. The vault is
-  stamped, the fixture content is untouched, and the doctor is not red. `scoutctl health`
+  stamped, the fixture content is untouched, every brain file the new engine assembles
+  (`BRAIN_KINDS`) is live, and the doctor is not red. `scoutctl health`
   shows `update.last`. There are "updated itself" and "recovered" pushes, and the daily
   marker is written.
 - Finally the 24 h apply spacing, and `up_to_date`.

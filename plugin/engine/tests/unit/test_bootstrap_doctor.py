@@ -312,6 +312,18 @@ def test_missing_snapshot_is_yellow(tmp_path, name):
     assert any(f"snapshot missing: .scout-state/last-assembled/{name}.md" in w for w in report.warnings)
 
 
+@pytest.mark.parametrize("name", ["SKILL", "DREAMING", "RESEARCH", "RESPOND"])
+def test_missing_live_brain_file_is_yellow_with_the_fix(tmp_path, name):
+    """A live brain file missing (v0.18.22 recorded RESPOND.md as installed without writing it) → YELLOW."""
+    _populate_minimal_vault(tmp_path)
+    (tmp_path / f"{name}.md").unlink()
+    report = run_doctor(vault=tmp_path, check_jobs=False)
+    assert report.severity is Severity.YELLOW
+    [warning] = [w for w in report.warnings if w.startswith("brain file missing")]
+    assert f"{name}.md" in warning
+    assert "scoutctl bootstrap upgrade" in warning
+
+
 # ---------------------------------------------------------------------------
 # MINOR 6 — check_jobs=True with monkeypatched subprocess.run
 # ---------------------------------------------------------------------------

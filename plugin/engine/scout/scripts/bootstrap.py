@@ -662,7 +662,11 @@ def _stage_cat4_upgrade(
         name = f"{kind}.md"
         ours = _assemble(cfg, kind, custom=custom)
         live = cfg.vault / name
-        theirs = live.read_text(encoding="utf-8") if live.exists() else ours
+        # A missing live file (a brain kind new to this vault, or one an
+        # earlier engine recorded as installed without writing it) reads as
+        # ``ours``, so decide() advances and the write below installs it.
+        live_exists = live.exists()
+        theirs = live.read_text(encoding="utf-8") if live_exists else ours
         snap = snapshot_dir / name
         base = snap.read_text(encoding="utf-8") if snap.exists() else None
         proposed_path = _proposed_path(snapshot_dir, name)
@@ -692,7 +696,7 @@ def _stage_cat4_upgrade(
                 proposal = result.content
             else:
                 new_live = result.content
-        # ADVANCE: live already equals ours.
+        # ADVANCE: live already equals ours (or is missing, and gets ours).
 
         if proposal is not None:
             # The assembly is kept so `bootstrap resolve` can make it the base.
@@ -700,8 +704,8 @@ def _stage_cat4_upgrade(
             _atomic_write(sidecar, proposal)
             out.conflicts.append(sidecar.name)
             continue
-        if new_live != theirs:
-            if prov.snapshot is None and theirs != proposed:
+        if not live_exists or new_live != theirs:
+            if live_exists and prov.snapshot is None and theirs != proposed:
                 # Only the fingerprint vouches for the base (a vault from before
                 # provenance): park the file being replaced, once, like any
                 # vault copy an upgrade replaces.

@@ -1440,6 +1440,15 @@ def run_doctor(
         snap = snapshot_dir / f"{name}.md"
         if not snap.exists():
             warnings.append(f"snapshot missing: {snap.relative_to(vault)}")
+    # A live brain file missing (yellow): the runs it drives go without their
+    # instructions. Engines up to v0.18.22 recorded a brain kind new to the vault
+    # (RESPOND.md) as installed without writing it; the next upgrade installs it.
+    for name in BRAIN_KINDS:
+        if not (vault / f"{name}.md").exists():
+            warnings.append(
+                f"brain file missing: {name}.md — runs that use it go without their instructions; "
+                f"`/scout-update` (or `scoutctl bootstrap upgrade`) installs it"
+            )
 
     # Pending brain-file sidecars (yellow): upgrades skip that file, so it is
     # not receiving plugin changes until the sidecar is resolved.

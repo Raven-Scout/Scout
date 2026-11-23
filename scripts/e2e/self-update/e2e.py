@@ -37,6 +37,7 @@ BUILD = WORK / "build"
 EVAL_VAULT = REPO / "plugin" / "engine" / "tests" / "eval" / "vault"
 PLUGIN_ID = "scout@scout-plugin"
 SCENARIOS = ("happy", "rollback", "sidecars")
+BRAIN_KINDS_PROBE = "from scout.scripts.brain_merge import BRAIN_KINDS; print(*BRAIN_KINDS)"
 
 # Issues this harness is expected to surface on Linux. A check tied to one reports KNOWN,
 # not FAIL, so the run stays green until the fix lands (and then reports PASS).
@@ -681,6 +682,13 @@ def scenario_happy(h: Host, rel: Releases, render_dates, slot_tz: str) -> None:
     )
     changed = [rel_path for rel_path, digest in fixture.items() if sha256(h.vault / rel_path) != digest]
     r.check("fixture vault content untouched by the upgrade", not changed, str(changed))
+    # Every brain file the new engine assembles is live in the vault, including a kind new
+    # since the old release (v0.18.22 recorded RESPOND.md as installed without writing it).
+    kinds = subprocess.run(
+        [str(new_root / ".venv" / "bin" / "python"), "-c", BRAIN_KINDS_PROBE], capture_output=True, text=True
+    ).stdout.split()
+    absent = [f"{k}.md" for k in kinds if not (h.vault / f"{k}.md").is_file()]
+    r.check("every BRAIN_KINDS file is live after the upgrade", bool(kinds) and not absent, str(absent or kinds))
     code, health = h.health()
     last = finding(health, "update.last")
     r.check("health: update.last note names the update", bool(last) and v in last.get("summary", ""), json.dumps(last))

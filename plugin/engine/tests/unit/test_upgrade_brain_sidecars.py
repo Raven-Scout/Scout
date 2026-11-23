@@ -9,6 +9,7 @@ Design: docs/superpowers/specs/2026-10-02-brain-sidecars-never-block-upgrade-des
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -649,3 +650,74 @@ def test_backport_sees_no_vault_edit_after_a_fast_forward(tmp_path: Path) -> Non
 
     assert "Added by the plugin." in (vault / "SKILL.md").read_text()
     assert _backport(vault, plugin) == []
+
+
+# ---------- a brain file missing from live is installed ----------
+
+
+def _write_respond_phase(plugin: Path, extra: str = "") -> None:
+    path = plugin / "phases" / "respond" / "10-respond.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = "## Respond\n\nStep one: read the owner's message.\nStep two: answer it."
+    text = f"---\nphase: test\nname: {path.stem}\nmode: [respond]\nrequires: null\n---\n\n{body}\n"
+    path.write_text(text + (f"\n{extra}\n" if extra else ""), encoding="utf-8")
+
+
+def _records(vault: Path) -> dict:
+    return json.loads((vault / ".scout-state" / "last-assembled" / PROVENANCE_FILE).read_text())["files"]
+
+
+def test_an_upgrade_installs_a_brain_kind_new_to_the_vault(tmp_path: Path) -> None:
+    """A vault from before RESPOND.md existed: no live file, no snapshot, no record.
+
+    v0.18.22 read the missing file as the assembly, advanced, and recorded it
+    as installed without ever writing it.
+    """
+    plugin = _plugin(tmp_path)
+    _write_respond_phase(plugin)
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin))
+    (vault / "RESPOND.md").unlink()
+    _snapshot(vault, "RESPOND").unlink()
+    prov = vault / ".scout-state" / "last-assembled" / PROVENANCE_FILE
+    data = json.loads(prov.read_text())
+    del data["files"]["RESPOND.md"]
+    prov.write_text(json.dumps(data), encoding="utf-8")
+
+    result = upgrade(_config(vault, plugin, "0.4.1"))
+
+    live = vault / "RESPOND.md"
+    assert live.exists()
+    assert "Step one: read the owner's message." in live.read_text()
+    assert _snapshot(vault, "RESPOND").read_text() == live.read_text()
+    assert _records(vault)["RESPOND.md"]["snapshot"] == "assembled"
+    # Nothing was replaced, so nothing is parked (no record is the pre-provenance shape).
+    assert result.backups == [] and result.conflicts == [] and result.skipped == []
+    assert not (vault / "RESPOND.md.proposed-merge").exists()
+    assert not any("brain file missing" in w for w in result.doctor.warnings)
+
+
+@pytest.mark.parametrize("plugin_changed", [False, True], ids=["same-release", "phase-changed"])
+def test_an_upgrade_repairs_a_brain_file_recorded_as_installed_but_missing(
+    tmp_path: Path, plugin_changed: bool
+) -> None:
+    """A vault v0.18.22 left broken: a snapshot and an assembled record, but no live file."""
+    plugin = _plugin(tmp_path)
+    _write_respond_phase(plugin)
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin))
+    (vault / "RESPOND.md").unlink()
+    assert _records(vault)["RESPOND.md"]["snapshot"] == "assembled"
+    other_brains = _bytes(vault / "SKILL.md", vault / "DREAMING.md", vault / "RESEARCH.md")
+    if plugin_changed:
+        _write_respond_phase(plugin, "Step three: added by the plugin.")
+
+    result = upgrade(_config(vault, plugin, "0.4.1"))
+
+    live = (vault / "RESPOND.md").read_text()
+    assert "Step two: answer it." in live
+    assert ("Step three: added by the plugin." in live) is plugin_changed
+    assert _snapshot(vault, "RESPOND").read_text() == live
+    assert result.backups == [] and result.conflicts == [] and result.skipped == []
+    assert _bytes(vault / "SKILL.md", vault / "DREAMING.md", vault / "RESEARCH.md") == other_brains
+    assert not any("brain file missing" in w for w in result.doctor.warnings)
