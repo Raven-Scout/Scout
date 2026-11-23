@@ -113,6 +113,19 @@ def test_change_diff_with_no_own_paths_is_empty(repo):
     assert change_diff(repo, _id(sha)) == ""
 
 
+def test_change_diff_treats_own_paths_literally(repo):
+    commit(repo, {"knowledge-base/old.md": "same body\nline two\nline three\n"}, "scout: seed")
+    git(repo, "mv", "knowledge-base/old.md", "knowledge-base/*.md")
+    (repo / "knowledge-base" / "other.md").write_text("private bystander\n", encoding="utf-8")
+    git(repo, "add", "knowledge-base/other.md")
+    git(repo, "commit", "-m", "scout: rename to a glob name")
+    sha = git(repo, "rev-parse", "HEAD")
+    scan(repo, since=None)
+    text = change_diff(repo, _id(sha))
+    assert text is not None and "knowledge-base/*.md" in text
+    assert "other.md" not in text and "private bystander" not in text
+
+
 def test_change_diff_is_none_outside_a_repo(tmp_path):
     (tmp_path / "v").mkdir()
     assert change_diff(tmp_path / "v", "chg-aaaaaaaaaaaa") is None

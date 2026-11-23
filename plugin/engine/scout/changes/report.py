@@ -243,7 +243,7 @@ def change_diff(vault: Path, change_id: str) -> str | None:
     paths = own_paths(entries)
     if not paths:
         return ""  # an empty pathspec would print every file the commit touched, which is never shown
-    raw = _git_bytes(vault, "show", "--format=", "-M", sha, "--", *paths)
+    raw = _git_bytes(vault, "--literal-pathspecs", "show", "--format=", "-M", sha, "--", *paths)
     if raw is None:
         return None
     if len(raw) <= DIFF_MAX_BYTES:
