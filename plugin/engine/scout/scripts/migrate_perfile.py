@@ -24,7 +24,7 @@ RUN_LOG_HEADER = (
     "# Research Queue — run log\n"
     "\n"
     "Per-topic research items live as files in [[research-queue/]]. This file is the thin "
-    'run log: the research session records its latest "Last verified …" continuity note here.\n'
+    'run log: the research session records its latest "Last run …" continuity note here.\n'
     "\n"
     "---\n"
     "\n"

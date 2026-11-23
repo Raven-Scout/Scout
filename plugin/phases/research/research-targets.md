@@ -39,7 +39,7 @@ Any mandate it reports **counts as a `priority: urgent` queue hit** — take it 
 2. **Treat `priority: low` and the graph-completeness lane as the lowest tier:** run them **only when no substantive `medium`+ item is outstanding**.
 3. **Never spend a whole research run on a graph-completeness item while a substantive item is open.** Closing an internal gap is a completeness objective, not a user research priority; finishing one must not be mistaken for value.
 
-After researching a topic, set its frontmatter `status: done` (or `in-progress`) and add findings to the body; write the run's "Last verified …" continuity note to `knowledge-base/research-queue.md` (the run log).
+After researching a topic, set its frontmatter `status: done` (or `in-progress`) and add findings to the body; write the run's "Last run …" continuity note to `knowledge-base/research-queue.md` (the run log).
 
 ## Step 1b: Score Entities for Research Need
 
