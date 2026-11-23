@@ -8,13 +8,13 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from scout.changes import run_commits
 from scout.changes.models import CHANGE_ID_RE, SUMMARY_MAX, WHY_TYPES, Change, Why
-from scout.changes.run_commits import RunCommit
+from scout.changes.run_commits import Ledger, RunCommit, Window
 from scout.changes.store import append_change, read_changes, read_scan_mark, write_scan_mark
 
 # One git call may take this long; past it the scan records nothing and the watermark stays put.
@@ -258,7 +258,11 @@ def scan_new(vault: Path, *, now: datetime) -> list[Change]:
     """Record the changes in commits made since the last ``scan_new``: those reachable from HEAD but not from the
     watermark commit, or the last :data:`FALLBACK_WINDOW` when there is no usable mark. The mark moves to the HEAD
     read only once the log was read, so a long gap between runs (gates, budget, a lock) loses nothing and a failed
-    read retries the same range. Idempotent by sha either way."""
+    read retries the same range. Idempotent by sha either way.
+
+    The mark and the ledger are run-writable, so the run commits the run-commit ledger recorded in the last
+    :data:`FALLBACK_WINDOW` are read too (:func:`_record_ledger`): a run that moves the mark past its own commits,
+    or truncates the ledger, still has them judged."""
     head = (_git(vault, "rev-parse", "--verify", "--quiet", "HEAD^{commit}") or "").strip()
     if not head:
         return []
@@ -270,7 +274,27 @@ def scan_new(vault: Path, *, now: datetime) -> list[Change]:
     new = _record(vault, revs, backfilled=False)
     if new is None:
         return []
+    new += _record_ledger(vault, head, now)
     write_scan_mark(vault, head, now)
+    return new
+
+
+def _record_ledger(vault: Path, head: str, now: datetime) -> list[Change]:
+    """Append a row for each run commit the ledger recorded since ``now - FALLBACK_WINDOW`` that is a self-change in
+    ``head``'s history and has no row yet, oldest first."""
+    runs = _Runs(vault)
+    known = {c.id for c in read_changes(vault)[0]}
+    wanted = [s for s in runs.recent(now - FALLBACK_WINDOW) if f"chg-{s[:12]}" not in known]
+    got = _derive(vault, wanted, runs) if wanted else None
+    if not got:
+        return []
+    new: list[Change] = []
+    for change in sorted((c for c in got.values() if c is not None), key=lambda c: c.ts):
+        if change.id in known or _git_raw(vault, ["merge-base", "--is-ancestor", change.commit, head]) is None:
+            continue
+        append_change(vault, change)
+        known.add(change.id)
+        new.append(change)
     return new
 
 
@@ -316,6 +340,42 @@ def _rolls_back(vault: Path, sha: str, trailers: dict[str, str], body: str, *, d
     return cid
 
 
+class _Runs:
+    """The run-commit ledger for one read: a commit's own row, or the window it falls in (each window's commits
+    worked out once, from git). A run row beats a worktree row, as in the ledger itself."""
+
+    def __init__(self, vault: Path, ledger: Ledger | None = None) -> None:
+        self.vault = vault
+        self.ledger = run_commits.read() if ledger is None else ledger
+        self._members: dict[int, frozenset[str]] = {}
+
+    def _in(self, i: int, w: Window) -> frozenset[str]:
+        if i not in self._members:
+            args = ["rev-list", "--no-merges", "--ignore-missing", "--stdin"]
+            raw = _git_raw(self.vault, args, w.rev_list_input())
+            self._members[i] = frozenset(raw.decode().split()) if raw is not None else frozenset()
+        return self._members[i]
+
+    def get(self, sha: str) -> RunCommit | None:
+        hit = self.ledger.commits.get(sha)
+        if hit is not None and hit.by == "run":
+            return hit
+        for i, w in enumerate(self.ledger.windows):
+            if sha in self._in(i, w):
+                return RunCommit(sha, w.mode, "run", w.ts)
+        return hit
+
+    def recent(self, since: datetime) -> list[str]:
+        """The run commits recorded at or after ``since``, once each."""
+        out = dict.fromkeys(
+            c.sha for c in self.ledger.commits.values() if c.by == "run" and c.ts is not None and c.ts >= since
+        )
+        for i, w in enumerate(self.ledger.windows):
+            if w.ts is not None and w.ts >= since:
+                out.update(dict.fromkeys(sorted(self._in(i, w))))
+        return list(out)
+
+
 def _change_from_commit(
     vault: Path,
     sha: str,
@@ -326,10 +386,10 @@ def _change_from_commit(
     renames: Sequence[tuple[str, str]],
     *,
     backfilled: bool,
-    runs: Mapping[str, RunCommit],
+    runs: _Runs,
 ) -> Change | None:
     """The row the scanner writes for one commit, or None when it is not a self-change. ``runs`` is the run-commit
-    ledger (scout.changes.run_commits.read)."""
+    ledger (scout.changes.run_commits)."""
     lane = lane_of(subject, runs.get(sha))
     if lane is None:
         return None
@@ -373,12 +433,16 @@ def derive(vault: Path, shas: Sequence[str]) -> dict[str, Change | None] | None:
     """What the scanner would write now for each commit: a row, or None when the commit is not a self-change or is
     missing. None for the whole call when git can't be read. Anything that is not a full hex sha maps to None
     without reaching git, so a forged ledger value is never an option or a revision expression."""
+    return _derive(vault, shas, None)
+
+
+def _derive(vault: Path, shas: Sequence[str], runs: _Runs | None) -> dict[str, Change | None] | None:
     out: dict[str, Change | None] = {}
     valid = [s for s in dict.fromkeys(shas) if isinstance(s, str) and _FULL_SHA_RE.match(s)]
     out.update({s: None for s in dict.fromkeys(shas) if isinstance(s, str)})
     if not valid:
         return out
-    runs = run_commits.read()
+    runs = runs or _Runs(vault)
     for i in range(0, len(valid), DERIVE_CHUNK):
         raw = _git(
             vault,
@@ -405,7 +469,7 @@ def _record(vault: Path, revs: list[str], *, backfilled: bool) -> list[Change] |
     if raw is None:
         return None
     known = {c.id for c in read_changes(vault)[0]}
-    runs = run_commits.read()
+    runs = _Runs(vault)
     new: list[Change] = []
     for sha, ts, subject, body, paths, renames in reversed(_parse_log(raw)):
         if f"chg-{sha[:12]}" in known:

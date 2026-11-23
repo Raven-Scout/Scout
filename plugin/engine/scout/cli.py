@@ -307,9 +307,21 @@ def cli_sandbox_verify(
     else:
         from scout.changes import run_commits
 
-        # Before the check makes its restore commits, so those are never counted as the run's. Best-effort.
-        run_commits.record(data_dir, start, label=label)
+        # Before the check makes its restore commits, so those are never counted as the run's.
+        recorded = run_commits.record(data_dir, start, label=label)
         result = integrity.verify(data_dir, start, label=label)
+        if recorded is None:
+            # The changes map would judge this run's commits by their subjects, which the run chose. Run health shows
+            # it as a check that couldn't run, unless the integrity check found worse.
+            missed = "this run's commits couldn't be recorded for the changes map"
+            if result.status == "clean":
+                result = integrity.Result("error", reason=f"protected files unchanged, but {missed}")
+            else:
+                typer.echo(f"integrity check: {missed}")
+        else:
+            made = count(recorded.commits, "commit")
+            extra = f", and {count(recorded.windows, 'window')} too big to list" if recorded.windows else ""
+            typer.echo(f"changes map: recorded {made} this run made{extra}")
     for line in result.lines():
         typer.echo(line)
     raise typer.Exit(result.exit_code)

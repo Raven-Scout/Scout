@@ -84,7 +84,8 @@ def _undo(repo: Path, env: dict[str, str], cid: str) -> None:
 def test_a_run_commit_titled_fix_is_in_the_runs_lane_tested_and_undoable(repo: Path, owner_env: dict[str, str]) -> None:
     [sha] = _run(repo, "dreaming-nightly", lambda: [_commit(repo, "fix: tighten the wrap", {"SKILL.md": "skill v2\n"})])
 
-    assert run_commits.read()[sha] == run_commits.RunCommit(sha, "dreaming-nightly", "run")
+    row = run_commits.read().commits[sha]
+    assert (row.sha, row.mode, row.by) == (sha, "dreaming-nightly", "run") and row.ts is not None
     [change] = [c for c in scan(repo, since=None) if c.commit == sha]  # the seed commit is a change too
     assert (change.kind, change.author_lane) == ("brain-edit", "dreaming")
     assert is_tested(change)
@@ -153,7 +154,7 @@ def test_every_commit_of_the_run_is_recorded_on_every_branch_it_moved(repo: Path
 
     a, b = _run(repo, "research", make)
     seed = _git(repo, "rev-list", "--max-parents=0", "HEAD")
-    assert set(run_commits.read()) == {a, b} and seed not in run_commits.read()
+    assert set(run_commits.read().commits) == {a, b} and seed not in run_commits.read().commits
 
 
 def test_a_detached_head_commit_is_recorded(repo: Path) -> None:
@@ -162,12 +163,12 @@ def test_a_detached_head_commit_is_recorded(repo: Path) -> None:
         return [_commit(repo, "fix: detached", {"SKILL.md": "d\n"})]
 
     [sha] = _run(repo, "research", make)
-    assert run_commits.read()[sha].by == "run"
+    assert run_commits.read().commits[sha].by == "run"
 
 
 def test_a_run_that_committed_nothing_records_nothing(repo: Path) -> None:
     assert _run(repo, "research", lambda: []) == []
-    assert run_commits.read() == {}
+    assert run_commits.read() == run_commits.Ledger()
     assert not run_commits.path().exists()
 
 
@@ -186,7 +187,7 @@ def test_sandbox_verify_records_before_it_restores(repo: Path) -> None:
 
     assert result.exit_code == 10
     restore = _git(repo, "rev-parse", "HEAD")
-    assert restore != run_sha and set(run_commits.read()) == {run_sha}
+    assert restore != run_sha and set(run_commits.read().commits) == {run_sha}
     got = derive(repo, [run_sha, restore])
     assert got is not None
     assert (got[run_sha].kind, got[run_sha].author_lane) == ("driver", "briefing")  # type: ignore[union-attr]
@@ -215,7 +216,7 @@ def test_an_owner_worktree_commit_during_an_enforced_run_stays_interactive(
 
     owner, run = _run(repo, "dreaming-nightly", make)
 
-    ledger = run_commits.read()
+    ledger = run_commits.read().commits
     assert (ledger[owner].by, ledger[run].by) == ("worktree", "run")
     got = derive(repo, [owner, run])
     assert got is not None
@@ -234,7 +235,7 @@ def test_without_an_enforced_sandbox_no_worktree_vouches(
         monkeypatch.setenv("SCOUT_SANDBOX_STATUS", status)
     wt = _worktree(repo)
     [sha] = _run(repo, "dreaming-nightly", lambda: [_commit(wt, "fix: x", {"SKILL.md": "x\n"})])
-    assert run_commits.read()[sha].by == "run"
+    assert run_commits.read().commits[sha].by == "run"
 
 
 def test_a_run_moving_a_worktrees_branch_is_still_the_run(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -259,7 +260,7 @@ def test_a_run_moving_a_worktrees_branch_is_still_the_run(repo: Path, monkeypatc
         return [planted]
 
     [sha] = _run(repo, "dreaming-nightly", make)
-    assert run_commits.read()[sha].by == "run"
+    assert run_commits.read().commits[sha].by == "run"
 
 
 def test_a_worktree_on_the_vaults_own_branch_never_vouches(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -268,7 +269,7 @@ def test_a_worktree_on_the_vaults_own_branch_never_vouches(repo: Path, monkeypat
     _git(repo, "worktree", "add", "-q", "--detach", str(wt))
     _git(wt, "checkout", "-q", "--ignore-other-worktrees", "main")
     [sha] = _run(repo, "dreaming-nightly", lambda: [_commit(wt, "fix: x", {"SKILL.md": "x\n"})])
-    assert run_commits.read()[sha].by == "run"
+    assert run_commits.read().commits[sha].by == "run"
 
 
 # --- history from before the ledger keeps its prefix ---------------------------------------------------------------
@@ -311,7 +312,7 @@ def test_a_run_row_wins_over_a_worktree_row_in_either_order() -> None:
         {"schema": 1, "sha": b, "mode": "research", "by": "run"},
         {"schema": 1, "sha": b, "mode": "research", "by": "worktree"},
     )
-    assert {s: c.by for s, c in run_commits.read().items()} == {a: "run", b: "run"}
+    assert {s: c.by for s, c in run_commits.read().commits.items()} == {a: "run", b: "run"}
 
 
 def test_bad_rows_are_skipped_and_a_bad_mode_is_unknown() -> None:
@@ -321,11 +322,20 @@ def test_bad_rows_are_skipped_and_a_bad_mode_is_unknown() -> None:
         ["a list"],
         {"schema": 2, "sha": "d" * 40, "mode": "research", "by": "run"},
         {"schema": 1, "sha": "HEAD", "mode": "research", "by": "run"},
-        {"schema": 1, "sha": "e" * 40, "mode": 7, "by": "run"},
         {"schema": 1, "sha": "f" * 40, "mode": "research", "by": "owner"},
-        {"schema": 1, "sha": good, "mode": "--evil Mode", "by": "run"},
+        {"schema": 1, "window": "x", "mode": "research"},
+        {"schema": 1, "window": {"tips": [], "known": []}, "mode": "research"},
+        {"schema": 1, "window": {"tips": ["HEAD"], "known": []}, "mode": "research"},
+        {"schema": 1, "window": {"tips": ["a" * 40], "known": ["--all"]}, "mode": "research"},
+        {"schema": 1, "sha": good, "mode": "--evil Mode", "by": "run", "ts": "yesterday"},
+        {"schema": 1, "sha": "e" * 40, "mode": 7, "by": "run", "ts": "2026-11-17T10:00:00"},
     )
-    assert run_commits.read() == {good: run_commits.RunCommit(good, "unknown", "run")}
+    assert run_commits.read() == run_commits.Ledger(
+        {
+            good: run_commits.RunCommit(good, "unknown", "run"),
+            "e" * 40: run_commits.RunCommit("e" * 40, "unknown", "run"),
+        }
+    )
     assert run_commits.mode_lane("unknown") == "run"
 
 
@@ -334,13 +344,13 @@ def test_an_unreadable_ledger_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
         raise OSError("no")
 
     monkeypatch.setattr(run_commits, "path", boom)
-    assert run_commits.read() == {}
+    assert run_commits.read() == run_commits.Ledger()
 
 
 def test_record_never_raises(repo: Path, tmp_path: Path) -> None:
     assert run_commits.record(repo, {"repo": True}, label="research") is None  # a snapshot missing its keys
     assert run_commits.record(tmp_path / "missing", integrity.snapshot(repo, os.environ), label="x") is None
-    assert run_commits.window(tmp_path, {"repo": False}, os.environ, label="x") == []
+    assert run_commits.window(tmp_path, {"repo": False}, os.environ, label="x") == ([], [])
 
 
 def test_a_branch_with_no_start_commit_is_compared_with_its_whole_tree(repo: Path) -> None:
@@ -348,3 +358,195 @@ def test_a_branch_with_no_start_commit_is_compared_with_its_whole_tree(repo: Pat
     worktree recorded in the snapshot nothing vouches."""
     tip = _git(repo, "rev-parse", "HEAD")
     assert not run_commits._vouched(repo, {"worktrees": []}, "refs/heads/main", tip, None, os.environ)
+
+
+# --- the review's bypasses (#768): each one used to leave a run's `fix:` brain commit interactive ------------------
+
+
+def _lane(repo: Path, sha: str) -> str | None:
+    got = derive(repo, [sha])
+    assert got is not None and got[sha] is not None
+    return got[sha].author_lane  # type: ignore[union-attr]
+
+
+def test_a_branch_ref_at_a_blob_doesnt_wipe_the_runs_ledger(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCOUT_SANDBOX_STATUS", "enforced")
+
+    def make() -> list[str]:
+        sha = _commit(repo, "fix: tweak", {"SKILL.md": "evil\n"})
+        blob = subprocess.run(
+            ["git", "-C", str(repo), "hash-object", "-w", "--stdin"], input="hi\n", text=True,
+            capture_output=True, check=True,
+        ).stdout.strip()  # fmt: skip
+        (repo / ".git" / "refs" / "heads" / "zz").write_text(blob + "\n")
+        return [sha]
+
+    [sha] = _run(repo, "dreaming-nightly", make)
+    assert run_commits.read().commits[sha].by == "run"
+    assert _lane(repo, sha) == "dreaming"
+
+
+def test_a_vouch_that_cant_be_read_is_no_vouch(repo: Path) -> None:
+    tip = _git(repo, "rev-parse", "HEAD")
+    assert not run_commits._vouched(repo, {"worktrees": []}, "refs/heads/main", tip, "f" * 40, os.environ)
+    assert not run_commits._vouched(repo, {}, "refs/heads/main", "not-a-commit", None, os.environ)
+
+
+def test_a_commit_staged_on_a_tag_in_one_run_is_still_that_runs(repo: Path) -> None:
+    def stage() -> list[str]:
+        _git(repo, "checkout", "-q", "--detach")
+        sha = _commit(repo, "fix: tweak", {"SKILL.md": "evil\n"})
+        _git(repo, "tag", "t", sha)
+        _git(repo, "checkout", "-q", "main")
+        return [sha]
+
+    [sha] = _run(repo, "dreaming-nightly", stage)
+    assert run_commits.read().commits[sha].by == "run"  # the tag is a tip, so run 1 records it itself
+
+    def land() -> list[str]:
+        _git(repo, "merge", "-q", "--ff-only", "t")
+        return []
+
+    _run(repo, "dreaming-nightly", land)
+    assert _git(repo, "rev-parse", "HEAD") == sha and _lane(repo, sha) == "dreaming"
+
+
+def test_an_annotated_tag_is_peeled_to_its_commit(repo: Path) -> None:
+    def make() -> list[str]:
+        _git(repo, "checkout", "-q", "--detach")
+        sha = _commit(repo, "fix: tweak", {"SKILL.md": "evil\n"})
+        _git(repo, "tag", "-a", "-m", "x", "t2", sha)
+        _git(repo, "checkout", "-q", "main")
+        return [sha]
+
+    [sha] = _run(repo, "research", make)
+    assert run_commits.read().commits[sha].by == "run"
+
+
+def test_past_the_cap_the_whole_window_is_the_runs(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(run_commits, "MAX_PER_RUN", 3)
+
+    def make() -> list[str]:
+        sha = _commit(repo, "fix: tweak", {"SKILL.md": "evil\n"})
+        for i in range(3):
+            _git(repo, "commit", "-q", "--allow-empty", "-m", f"chore {i}")
+        return [sha]
+
+    snap = integrity.snapshot(repo, os.environ)
+    [sha] = make()
+    recorded = run_commits.record(repo, snap, label="dreaming-nightly")
+    assert recorded == run_commits.Recorded(commits=0, windows=1)
+    ledger = run_commits.read()
+    assert ledger.commits == {} and ledger.windows[0].tips == (_git(repo, "rev-parse", "HEAD"),)
+    assert _lane(repo, sha) == "dreaming"
+    seed = _git(repo, "rev-list", "--max-parents=0", "HEAD")
+    assert _lane(repo, seed) == "interactive"  # what the snapshot held is not in the window
+
+
+def test_a_window_git_cant_read_holds_nothing(repo: Path) -> None:
+    _write_rows({"schema": 1, "window": {"tips": ["a" * 40], "known": []}, "mode": "research", "ts": NOW.isoformat()})
+    sha = _commit(repo, "fix: tweak", {"SKILL.md": "evil\n"})
+    assert _lane(repo, sha) == "interactive"
+
+
+# --- run-writable bookkeeping can't hide the run's commits -----------------------------------------------------------
+
+
+def test_a_watermark_the_run_moved_past_its_commit_still_has_it_judged(repo: Path) -> None:
+    from scout.changes.scan import scan_new
+    from scout.changes.store import write_scan_mark
+
+    scan_new(repo, now=NOW)
+    [sha] = _run(repo, "dreaming-nightly", lambda: [_commit(repo, "fix: tweak", {"SKILL.md": "evil\n"})])
+    write_scan_mark(repo, sha, NOW)  # the run's own write: the runner's scan would read an empty range
+
+    [change] = scan_new(repo, now=NOW)
+    assert (change.commit, change.author_lane) == (sha, "dreaming")
+    assert scan_new(repo, now=NOW) == []  # once each
+
+
+def test_a_truncated_changes_ledger_gets_the_runs_commits_back(repo: Path) -> None:
+    from scout.changes.scan import scan_new
+    from scout.changes.store import CHANGES_NAME
+
+    [sha] = _run(repo, "dreaming-nightly", lambda: [_commit(repo, "fix: tweak", {"SKILL.md": "evil\n"})])
+    scan_new(repo, now=NOW)
+    (repo / ".scout-logs" / CHANGES_NAME).write_text("")
+    assert [c.commit for c in scan_new(repo, now=NOW)] == [sha]
+
+
+def test_only_recent_run_commits_in_heads_history_are_read_back(repo: Path) -> None:
+    from scout.changes.scan import scan_new
+
+    scan_new(repo, now=NOW)
+
+    def side() -> list[str]:
+        _git(repo, "checkout", "-q", "-b", "side")
+        sha = _commit(repo, "fix: side", {"SKILL.md": "side\n"})
+        _git(repo, "checkout", "-q", "main")
+        return [sha]
+
+    _run(repo, "research", side)
+    old = _commit(repo, "fix: old", {"SKILL.md": "old\n"})
+    from scout.changes.store import _append
+
+    row = {"schema": 1, "sha": old, "mode": "research", "by": "run", "ts": (NOW - timedelta(days=30)).isoformat()}
+    _append(run_commits.path(), row)  # appended, so the side branch's row stays
+    from scout.changes.store import write_scan_mark
+
+    write_scan_mark(repo, old, NOW)
+    assert scan_new(repo, now=NOW) == []  # the side branch isn't in effect; the old row is past the window
+
+
+# --- sandbox verify reports a ledger it couldn't write ---------------------------------------------------------------
+
+
+def test_verify_exits_12_when_a_clean_runs_commits_couldnt_be_recorded(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = CliRunner()
+    snap = runner.invoke(app, ["sandbox", "snapshot", "--vault", str(repo)])
+    _commit(repo, "fix: tweak", {"SKILL.md": "evil\n"})
+    monkeypatch.setattr(run_commits, "record", lambda *a, **k: None)
+    result = runner.invoke(app, ["sandbox", "verify", "--vault", str(repo), "--label", "research"], input=snap.stdout)
+    assert result.exit_code == 12
+    assert "couldn't be recorded for the changes map" in result.stdout
+
+
+def test_verify_keeps_a_restore_and_says_the_ledger_failed(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    protected = "scripts/claude-with-retry.sh"
+    _commit(repo, "seed runner", {protected: "#!/bin/sh\n"}, date=NOW - timedelta(days=59))
+    runner = CliRunner()
+    snap = runner.invoke(app, ["sandbox", "snapshot", "--vault", str(repo)])
+    _commit(repo, "fix: faster retry", {protected: "#!/bin/sh\necho x\n"})
+    monkeypatch.setattr(run_commits, "record", lambda *a, **k: None)
+    result = runner.invoke(app, ["sandbox", "verify", "--vault", str(repo), "--label", "research"], input=snap.stdout)
+    assert result.exit_code == 10
+    assert "integrity check: this run's commits couldn't be recorded for the changes map" in result.stdout
+
+
+def test_verify_says_what_it_recorded(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = CliRunner()
+    snap = runner.invoke(app, ["sandbox", "snapshot", "--vault", str(repo)])
+    _commit(repo, "fix: tweak", {"SKILL.md": "evil\n"})
+    result = runner.invoke(app, ["sandbox", "verify", "--vault", str(repo), "--label", "research"], input=snap.stdout)
+    assert result.exit_code == 0 and "changes map: recorded 1 commit this run made" in result.stdout
+    monkeypatch.setattr(run_commits, "record", lambda *a, **k: run_commits.Recorded(0, 1))
+    result = runner.invoke(app, ["sandbox", "verify", "--vault", str(repo), "--label", "research"], input=snap.stdout)
+    assert "recorded 0 commits this run made, and 1 window too big to list" in result.stdout
+
+
+def test_a_tip_git_cant_list_is_recorded_as_a_window(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = integrity._git
+
+    def flaky(vault: Path, args: list[str], env: object, **kw: object) -> str:
+        if args[0] == "rev-list":
+            raise integrity.IntegrityError("rev-list failed")
+        return real(vault, args, env, **kw)  # type: ignore[arg-type]
+
+    snap = integrity.snapshot(repo, os.environ)
+    sha = _commit(repo, "fix: tweak", {"SKILL.md": "evil\n"})
+    monkeypatch.setattr(integrity, "_git", flaky)
+    assert run_commits.record(repo, snap, label="research") == run_commits.Recorded(commits=0, windows=1)
+    monkeypatch.setattr(integrity, "_git", real)
+    assert _lane(repo, sha) == "research"

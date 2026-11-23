@@ -162,6 +162,20 @@ as the run ledger (`scoutctl runs --json`, #661).
   interactive, under an enforced sandbox only. Cutover: commits from before the release that
   added the ledger, and any run whose start snapshot couldn't be taken, are classified by
   subject prefix as before.
+  - *Fails closed.* Every moved or new ref under the integrity check's prefixes is a tip (a
+    ref at a non-commit is skipped); past 2,000 commits on a tip, or when git can't list them,
+    the row records the window itself and all of it is the run's. A run whose commits couldn't
+    be recorded at all makes `sandbox verify` exit 12 when it would have been clean, so run
+    health shows the check as not run. The scan also reads back the ledger's run commits from
+    the last 14 days that are in HEAD's history, so a run that moves the run-writable scan mark
+    or truncates `changes.jsonl` still has them judged.
+  - *Known limits.* An owner commit made in the vault's own checkout (not a linked worktree)
+    while a run goes is counted as the run's, as the integrity check counts it: it lands in a
+    tested lane, so a `targeted` auto-rollback (off today) could undo the owner's own edit. A
+    commit made after `sandbox verify` by a process the run left behind is in no window (the
+    runner doesn't reap the run's process group; the integrity check has the same gap). Rows
+    older than the 14-day read-back that a run deletes from `changes.jsonl` stay gone.
+    `run-commits.jsonl` is append-only and nothing compacts it yet.
 - **Must work under the run brokers and write sandbox** (Phase 1c/1d, v0.18.14–15): runs
   commit through `git-safe-commit` / the commit broker, so the detector hooks in there, not in
   a path a sandboxed run can't write.
