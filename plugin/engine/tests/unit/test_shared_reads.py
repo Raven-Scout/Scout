@@ -35,6 +35,7 @@ from scout.kb.ontology import clear_frontmatter_cache
 from scout.kb.privacy import classify, load_policy
 from scout.scripts import custom_connector_ops as ops
 from scout.scripts.bootstrap import BootstrapConfig, install
+from tests.unit._prefilter_root import with_prefilter
 from tests.unit.privacy_vault_helpers import build_privacy_vault, git
 
 PLUGIN = Path(__file__).parent.parent.parent.parent
@@ -714,7 +715,7 @@ def _sh(env: dict, stdin: str, cwd: Path, root: Path = PLUGIN) -> subprocess.Com
     clean = {k: v for k, v in os.environ.items() if k not in ("SCOUT_MODE", "SCOUT_READER", "SCOUT_DATA_DIR")}
     return subprocess.run(
         ["sh", "-c", _entry()["hooks"][0]["command"]],
-        env={**clean, **env, "CLAUDE_PLUGIN_ROOT": str(root)},
+        env={**clean, **env, "CLAUDE_PLUGIN_ROOT": str(with_prefilter(root))},
         cwd=cwd,
         input=stdin,
         capture_output=True,
