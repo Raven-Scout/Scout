@@ -225,7 +225,7 @@ Scout's runner scripts call three shell hooks before launching Claude. Each hook
 
 | Hook | Output | What it replaces |
 |------|--------|-----------------|
-| `hooks/kb-pre-filter.sh` | `.scout-cache/kb-filter.md` — KB files bucketed into stale / fresh / undated, with ages | Walking every KB file from inside the session to check "Last updated" dates |
+| `hooks/kb-pre-filter.sh` | `.scout-cache/kb-filter.md` — KB files bucketed into stale / fresh / undated, with ages | Reading every KB file's `last_updated:` / `last_verified:` frontmatter from inside the session |
 | `scripts/pre-session-data.sh` | `.scout-cache/session-context.json` — recent git log, open PRs, PR review requests, KB file dates, open personal tasks, each KB path and task labelled with its privacy `visibility` | `git log`, `gh pr list`, `gh search prs`, the engine's labelled knowledge graph |
 | `scripts/cc-session-cache.sh` | `.scout-cache/cc-sessions.md` — non-Scout Claude Code sessions from the last 24h: project paths, first prompts, files touched | Discovering + parsing `~/.claude/projects/*/*.jsonl` manually |
 

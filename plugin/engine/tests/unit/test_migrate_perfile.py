@@ -110,9 +110,8 @@ def test_last_verified_defaults_when_absent(tmp_path: Path) -> None:
 
     run_log = (kb / "research-queue.md").read_text()
     assert "_No runs yet._" in run_log
-    # The literal "**Last verified" continuity marker must be absent (the header prose
-    # mentions the phrase "Last verified …" but never the bolded marker).
-    assert "**Last verified" not in run_log
+    # No legacy "**Last verified" note to carry over, and the header no longer names one.
+    assert "Last verified" not in run_log
 
 
 def test_migrated_wishlist_file_has_valid_frontmatter(tmp_path: Path) -> None:
