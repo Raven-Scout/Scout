@@ -203,6 +203,49 @@ def test_run_may_read_its_run_env(vault, command):
     assert _decision(vault, "Bash", {"command": command}) is None
 
 
+# --- a run may not point HOME elsewhere: the gate expands ~ and $HOME with the run's own -------------------
+
+
+def _owner_state() -> str:
+    return str(Path.home() / ".local" / "state")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The gate read `~` as the run's HOME, so these wrote the owner's stores unseen (review of #792).
+        "HOME={state}/scout ; echo x >> ~/run-limits.json",
+        "export HOME={state} ; cp /dev/null ~/scout/run-limits.json",
+        "HOME={state}/scout/run-brokers sh -c 'echo x > $HOME/lab-vetoes.jsonl'",
+        "env HOME={state}/scout python3 -c \"open('x','w')\"",
+        "unset HOME; echo x > ~/x",
+        "for HOME in {state}/scout; do echo x > ~/run-limits.json; done",
+    ],
+)
+def test_run_denies_a_command_that_points_home_elsewhere(vault, command):
+    reason = _denied(_decision(vault, "Bash", {"command": command.format(state=_owner_state())}))
+    assert "HOME" in reason and "SCOUT_MODE" not in reason
+    assert not (vault / ".scout-logs").exists() or not _events(vault), "a HOME change isn't a hook skip"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "HOME=$HOME python3 scripts/clock-status.py",
+        'HOME="$HOME" ls notes',
+        "echo $HOME",
+        "ls ~/Documents",
+        "export HOME",
+    ],
+)
+def test_run_may_keep_or_read_its_home(vault, command):
+    assert _decision(vault, "Bash", {"command": command}) is None
+
+
+def test_owner_session_may_set_home(vault):
+    assert _decision(vault, "Bash", {"command": "HOME=/tmp/x ls"}, env={}) is None
+
+
 @pytest.mark.parametrize("env", [{}, {"SCOUT_READER": "owner"}])
 def test_owner_session_may_change_the_run_env(vault, env):
     assert _decision(vault, "Bash", {"command": "env -u SCOUT_MODE git commit -m x"}, env=env) is None
@@ -454,6 +497,25 @@ def test_a_run_env_change_or_detach_reaches_python_from_the_shell(vault, tmp_pat
     payload = _payload("Bash", {"command": command}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
     assert res.returncode == 2
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["HOME=/tmp/x scripts/scoutctl status", "export HOME=/tmp/x", "unset HOME", "read HOME", "printf -v HOME %s x"],
+)
+def test_a_home_change_reaches_python_from_the_shell(vault, tmp_path, command):
+    # No KB word and no other trigger: only HOME sends it to Python (here: missing, so exit 2).
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 2
+
+
+def test_a_home_change_is_denied_through_the_real_cli(vault):
+    payload = _payload("Bash", {"command": "export HOME=/tmp/x ; echo x >> ~/run-limits.json"}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
+    assert res.returncode == 0, res.stderr
+    out = json.loads(res.stdout)["hookSpecificOutput"]
+    assert out["permissionDecision"] == "deny" and "HOME" in out["permissionDecisionReason"]
 
 
 def test_a_run_env_change_is_denied_through_the_real_cli(vault):

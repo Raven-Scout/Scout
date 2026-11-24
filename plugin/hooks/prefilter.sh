@@ -171,6 +171,11 @@ bash_pattern() {
     alt 'git[^;&|]* -c '
     alt 'git[^;&|]*(commit|am).*([^A-Za-z0-9_-]|\\[nt])-[A-Za-z]*n' # -n as --no-verify
     alt 'git +(\\")?\$'                                             # git "$var": the subcommand is hidden
+
+    # -- HOME. The gates expand `~` and `$HOME` with the run's own HOME, so a command that points HOME
+    #    elsewhere first (`HOME=x cmd`, `unset HOME`, `export HOME=…`) names files they never check.
+    #    Every mention goes to Python, which denies a change and lets `HOME=$HOME` or a read through.
+    alt 'HOME'
 }
 
 # Sets $t to program $1 by absolute path: /usr/bin or /bin first, else the first in the (filtered,

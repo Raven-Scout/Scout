@@ -360,6 +360,12 @@ def _alive(pid: int) -> bool:
 # ----- the PreToolUse gate's check: a run's command that hides it's a run ------------
 
 RUN_VARS = ("SCOUT_MODE", "SCOUT_READER")
+# What `~` and `$HOME` name, which the gate expands with the run's own HOME: a command that points HOME elsewhere
+# (`HOME=… cmd`, `export HOME=…`, `env HOME=…`, `unset HOME`, `for HOME in …`, `read HOME`) writes where the gate
+# didn't look. Runs don't need it: one `HOME=$HOME` in the last 280 scheduled sessions, which keeps HOME as it is and
+# stays allowed.
+HOME_FORM = "HOME"
+_SAME_HOME = ("$HOME", "${HOME}")
 _SEGMENTS = re.compile(r"&&|\|\||[;\n`]|(?<!>)\||\$\(|\(|\)")  # ">|" is a redirect, not a pipe
 # An "&" that isn't the first half of "&&" or "&>". Whether it backgrounds is _backgrounds' call.
 _AMPERSAND = re.compile(r"&(?![&>])")
@@ -708,6 +714,12 @@ def _sets_run_var(token: str) -> bool:
     return m is not None and m[1] in RUN_VARS
 
 
+def _sets_home(token: str) -> bool:
+    """``HOME=…`` with any value but HOME's own (``HOME=$HOME``)."""
+    m = _ASSIGN.match(token)
+    return m is not None and m[1] == "HOME" and token[m.end() :] not in _SAME_HOME
+
+
 def _env_escape(args: list[str]) -> tuple[str | None, list[str]]:
     """``env``'s own options and assignments: ("env", _) if they hide the run, else the command after them."""
     i = 0
@@ -718,12 +730,16 @@ def _env_escape(args: list[str]) -> tuple[str | None, list[str]]:
         if a in ("-u", "--unset"):
             if i + 1 < len(args) and args[i + 1] in RUN_VARS:
                 return "env", []
+            if i + 1 < len(args) and args[i + 1] == "HOME":
+                return HOME_FORM, []
             i += 2
             continue
         if a.startswith("--unset=") and a.split("=", 1)[1] in RUN_VARS:
             return "env", []
         if a.startswith("-u") and a[2:] in RUN_VARS:
             return "env", []
+        if (a.startswith("--unset=") and a.split("=", 1)[1] == "HOME") or a == "-uHOME":
+            return HOME_FORM, []
         if a == "-S" or a == "--split-string":
             return _env_escape(_tokens(args[i + 1] if i + 1 < len(args) else "") + args[i + 2 :])
         if a.startswith("--split-string="):
@@ -737,6 +753,8 @@ def _env_escape(args: list[str]) -> tuple[str | None, list[str]]:
         if _ASSIGN.match(a):
             if _sets_run_var(a):
                 return "env", []
+            if _sets_home(a):
+                return HOME_FORM, []
             if _GIT_CONFIG_VAR.match(a):
                 return GIT_CONFIG_FORM, []
             i += 1
@@ -1331,8 +1349,20 @@ def _hook_write_form(words: list[str], targets: list[str], cwd: str) -> str | No
     return None
 
 
+def _home_escape(words: list[str]) -> str | None:
+    """HOME_FORM when this command's own assignments, or an earlier segment's (``HOME=x; …``, ``for HOME in …``,
+    ``read HOME``, which the parser has recorded), point HOME anywhere but itself."""
+    for word in words:
+        if _sets_home(word):
+            return HOME_FORM
+        if not (_ASSIGN.match(word) or word in _KEYWORDS):
+            break
+    recorded = _STATE["vars"].get("HOME")
+    return HOME_FORM if recorded is not None and recorded not in ([v] for v in _SAME_HOME) else None
+
+
 def _words_escape(words: list[str], depth: int) -> str | None:
-    form = None
+    form = _home_escape(words)
     while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS):
         if _sets_run_var(words[0]):
             return "env"
@@ -1347,6 +1377,8 @@ def _command_escape(words: list[str], depth: int) -> str | None:
     command = words
     while command and command[0] in _PREFIX:
         command = command[1:]
+    if command is not words and command and _ASSIGN.match(command[0]):
+        return _words_escape(command, depth)  # `sudo HOME=/a ls`: sudo sets the variables it is given
     found = _plain_escape(command, depth) if command else None
     if found is not None:
         return found
@@ -1360,11 +1392,16 @@ def _plain_escape(words: list[str], depth: int) -> str | None:
         verdict, rest = _env_escape(args)
         return verdict or (_words_escape(rest, depth) if rest else None)
     if name == "unset":
-        return "env" if any(a in RUN_VARS for a in args) else None
+        if any(a in RUN_VARS for a in args):
+            return "env"
+        return HOME_FORM if "HOME" in args else None
     if name in ("export", "declare", "typeset", "local", "readonly"):
         unexport = any(a in ("-n", "+x") or (a.startswith("+") and "x" in a) for a in args)
         if any(_sets_run_var(a) or (unexport and a in RUN_VARS) for a in args):
             return "env"
+        # `declare -n ref=HOME`: every later `ref=…` sets HOME.
+        if any(_sets_home(a) or (unexport and (a == "HOME" or a.endswith("=HOME"))) for a in args):
+            return HOME_FORM
         return GIT_CONFIG_FORM if any(_GIT_CONFIG_VAR.match(a) for a in args) else None
     if name in _DETACH:
         return "detach"

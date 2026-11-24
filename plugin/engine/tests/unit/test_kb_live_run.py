@@ -901,6 +901,51 @@ def test_commands_that_change_the_run_env_are_flagged(command: str) -> None:
 @pytest.mark.parametrize(
     "command",
     [
+        "HOME=/a ls",
+        "FOO=1 HOME=/a git commit -m x",
+        "HOME=/a; echo x > ~/f",
+        "export HOME=/a",
+        "declare -x HOME=/a",
+        "local HOME=/a",
+        "readonly HOME=/a",
+        "export -n HOME",
+        "declare -n ref=HOME; ref=/a",
+        "env HOME=/a ls",
+        "env -u HOME ls",
+        "env --unset=HOME ls",
+        "env -uHOME ls",
+        "unset HOME",
+        "unset -v HOME && ls",
+        "for HOME in /a /b; do ls; done",
+        "read HOME < f",
+        "mapfile HOME < f",
+        "printf -v HOME %s /a",
+        "bash -c 'HOME=/a ls'",
+        "eval 'export HOME=/a'",
+        "sudo HOME=/a ls",
+        "HOME=$OTHER ls",
+        "HOME=~other ls",
+    ],
+)
+def test_commands_that_point_home_elsewhere_are_named(command: str) -> None:
+    assert run_escape(command) == live_run.HOME_FORM
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["HOME=$HOME ls", "HOME=${HOME} ls", 'HOME="$HOME" ls', "echo $HOME ~", "export HOME", "printenv HOME", "cd ~"],
+)
+def test_keeping_or_reading_home_is_not_flagged(command: str) -> None:
+    assert run_escape(command) is None
+
+
+def test_a_run_env_change_still_wins_over_home() -> None:
+    assert run_escape("SCOUT_MODE= HOME=/a git commit -m x") == "env"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         "env SCOUT_MODE=x git commit -m y",
         "env -u OTHER -u SCOUT_MODE git commit",
         "env -C notes -u SCOUT_MODE git commit",

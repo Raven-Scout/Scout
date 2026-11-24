@@ -18,6 +18,11 @@ cannot change a match, and that nothing else in the pattern moved.
 
 A deliberate change to a filter belongs in ``INTENDED_DIFFERENCES`` with the reason; until then any
 difference fails.
+
+One deliberate change so far: the Bash pattern gained ``HOME_PATTERN``, because the gates expand ``~`` and
+``$HOME`` with the run's own HOME, and a command that points HOME elsewhere first names files they never check.
+The pattern must be the old one plus exactly that, and a case may differ from the old command only by now
+reaching Python where the old one let it through, for a command that pattern matches.
 """
 
 from __future__ import annotations
@@ -52,6 +57,20 @@ ENTRIES: dict[str, tuple[str, str]] = {
 
 # Cases where the new command is meant to differ from the old one: {case id: reason}. Empty on purpose.
 INTENDED_DIFFERENCES: dict[str, str] = {}
+
+# The alternative appended to the Bash pattern after the move, as prefilter.sh assembles it: any mention of HOME.
+HOME_PATTERN = "HOME"
+# A run's commands that point HOME elsewhere and that the old pattern let through: each must now reach Python.
+HOME_CHANGES = (
+    "HOME=x ls",
+    "HOME=/tmp/h ls",
+    "unset HOME",
+    "export HOME",
+    "export HOME=x",
+    "declare -x HOME=x",
+    "readonly HOME=x",
+    "for HOME in a b; do ls; done",
+)
 
 # The gate tests whose string literals make up the Bash corpus.
 CORPUS_SOURCES = (
@@ -390,12 +409,21 @@ def world(tmp_path_factory: pytest.TempPathFactory) -> World:
     return World(tmp_path_factory.mktemp("prefilter"))
 
 
+def _widened(case: Case, old: Outcome, new: Outcome) -> bool:
+    """True when ``case`` differs only as ``HOME_PATTERN`` means it to: a run's Bash call that mentions HOME,
+    which the old command let through without Python and the new one hands to Python."""
+    if case.entry != "kb-read-gate" or old.python:
+        return False
+    command = json.loads(case.payload).get("tool_input", {}).get("command", "")
+    return HOME_PATTERN in command and new.python == f"hook kb-read-gate\n{case.payload}"
+
+
 def _differences(world: World, cases: list[Case]) -> list[str]:
     """The cases where the old and the new command disagree, one line each."""
 
     def both(case: Case) -> str | None:
         old, new = world.run(OLD[case.entry], case), world.run(NEW[case.entry], case)
-        if old == new or case.id in INTENDED_DIFFERENCES:
+        if old == new or case.id in INTENDED_DIFFERENCES or _widened(case, old, new):
             return None
         return f"{case.id}: old={old!r} new={new!r}"
 
@@ -470,7 +498,7 @@ def test_the_bash_pattern_is_the_old_one_minus_its_repeated_block() -> None:
     assert head.endswith("|") and tail.startswith("|")
     # Each piece is a run of whole top-level alternatives, so `X|B|B|Y` and `X|B|Y` match the same lines.
     assert _balanced(head[:-1]) and _balanced(block) and _balanced(tail[1:])
-    assert new == f"{head}{block}{tail}"
+    assert new == f"{head}{block}{tail}|{HOME_PATTERN}"
     assert "'" not in new and "\n" not in new
 
 
@@ -511,7 +539,8 @@ def test_bash_corpus_matches_the_old_pattern_exactly() -> None:
     ).stdout.rstrip("\n")
 
     old, new = _matching_lines(_pattern(OLD["kb-read-gate"]), values), _matching_lines(new_pattern, values)
-    assert old == new, sorted(corpus[n - 1] for n in old ^ new)
+    added = _matching_lines(HOME_PATTERN, values)
+    assert new == old | added, sorted(corpus[n - 1] for n in new ^ (old | added))
     # The corpus exercises both answers, or the comparison above proves little.
     assert len(new) > 300 and len(values) - len(new) > 300
 
@@ -521,7 +550,7 @@ def test_bash_forms_under_every_reader_shell_and_failure(world: World) -> None:
     cases = []
     # This filter asks only "is it a run?"; owner sessions are covered by the entry matrix below.
     readers = ({"SCOUT_READER": "agent:helper"},)
-    for i, command in enumerate((*DESCRIBED_FORMS, *(form for form, _ in KNOWN_MISSED_FORMS))):
+    for i, command in enumerate((*DESCRIBED_FORMS, *(form for form, _ in KNOWN_MISSED_FORMS), *HOME_CHANGES)):
         for j, env in enumerate(readers):
             cases.append(
                 Case(f"bash[{i}] env[{j}] {command!r}", "kb-read-gate", _bash(command, compact=True), env, "deep")
@@ -613,6 +642,15 @@ def test_an_owner_session_never_starts_python_for_the_run_only_hooks(world: Worl
             for payload in (_bash("cat knowledge-base/a.md"), TOOL_PAYLOADS[2], TOOL_PAYLOADS[10]):
                 out = world.run(NEW[entry], Case("owner", entry, payload, env, "vault"))
                 assert out == Outcome(0, "", "", ""), (entry, env, payload)
+
+
+def test_a_run_that_points_home_elsewhere_now_reaches_python(world: World) -> None:
+    """The one widening: the old pattern let these through unjudged; the new one hands each to Python."""
+    for form in HOME_CHANGES:
+        case = Case(form, "kb-read-gate", _bash(form), RUN, "vault")
+        old, new = world.run(OLD["kb-read-gate"], case), world.run(NEW["kb-read-gate"], case)
+        assert not old.python, form
+        assert new == Outcome(0, "", "", f"hook kb-read-gate\n{_bash(form)}"), form
 
 
 def test_known_missed_forms_are_kept_exactly_as_they_were(world: World) -> None:
