@@ -81,6 +81,10 @@ final class AppState: ObservableObject {
     /// The run ledger (`scoutctl runs --json`): the Health page, and the
     /// Control Center's run statuses for runs the ledger records.
     let runLedgerService: RunLedgerService
+    /// The Changes tab: the changes map read through `scoutctl` (read-only), and the owner's decisions on it,
+    /// which are `scoutctl` calls too (`--surface app`).
+    let changesService: ChangesService
+    let changesDecisions: ChangesDecisions
     /// "Resolve with Claude" (`scoutctl health resolve-prompt`): the engine-built investigation
     /// prompt behind health, connector and run banners. Views read it from the environment.
     let resolvePromptService: ResolvePromptService
@@ -409,6 +413,26 @@ final class AppState: ObservableObject {
             }
         )
         self.runLedgerService = runLedger
+        // The Changes tab: the same engine, the same way as the inbox review.
+        let changesEngine: @MainActor () -> URL? = { [weak engineHealth] in
+            guard let state = engineHealth?.state, !state.gatesTabs else { return nil }
+            if case .broken = state { return nil }
+            return state.scoutctl
+        }
+        let changesService = ChangesService(
+            scoutctl: changesEngine,
+            runner: runner,
+            environment: ["SCOUT_DATA_DIR": scoutDir.path],
+            logsDirectory: scoutDir.appendingPathComponent(".scout-logs"),
+            pendingDirectory: scoutDir.appendingPathComponent("governance-pending"),
+            fileEvents: events
+        )
+        self.changesService = changesService
+        self.changesDecisions = ChangesDecisions(
+            runner: runner,
+            environment: ["SCOUT_DATA_DIR": scoutDir.path],
+            scoutctl: changesEngine
+        )
         self.resolvePromptService = resolvePrompt
         self.engineRelease = configuration.engineRelease
         self.engineTarballURL = configuration.engineTarballURL
@@ -572,8 +596,10 @@ final class AppState: ObservableObject {
             _ = try? await connectorHealth.loadInitial()
             _ = try? await logs.loadInitial()
             await runLedger.refresh()
+            await changesService.refresh()
             await MainActor.run {
                 runLedger.start()
+                changesService.start()
                 // Runs already on disk at launch never notify; only runs
                 // that finish (or first appear) from here on do.
                 self?.runNotificationsArmed = true
