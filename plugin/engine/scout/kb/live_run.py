@@ -340,7 +340,6 @@ RUN_VARS = ("SCOUT_MODE", "SCOUT_READER")
 _SEGMENTS = re.compile(r"&&|\|\||[;\n`]|(?<!>)\||\$\(|\(|\)")  # ">|" is a redirect, not a pipe
 # A lone "&" (background), not "&&", "&>", ">&", "|&" or "2>&1".
 _BACKGROUND = re.compile(r"(?<![&>|])&(?![&>])")
-_QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
 _HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)\s*(?:'([^']+)'|\"([^\"]+)\"|\\?([A-Za-z_][\w.-]*))")
 _ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
 _DETACH = {
@@ -453,6 +452,44 @@ _SUBST_NAME = SUBST[1:]
 _HEREDOC_AT = re.compile(r"<<(-?)\s*(?:'([^']+)'|\"([^\"]+)\"|\\?([A-Za-z_][\w.-]*))")
 
 
+def _quoted_spans(text: str) -> list[tuple[int, int]]:
+    """Where the quoted strings of ``text`` sit, as the shell reads them (each span includes its quotes).
+
+    A backslash outside quotes escapes the next character, so ``\\'`` and ``\\"`` open nothing. Single
+    quotes take no escapes; double quotes and ``$'…'`` do. A quote that is never closed is no span.
+    """
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(text)
+    dollar = False  # the character before is an unescaped "$"
+    while i < n:
+        c = text[i]
+        if c not in "'\"":
+            dollar = c == "$"
+            i += 2 if c == "\\" else 1
+            continue
+        escapes = c == '"' or dollar
+        dollar = False
+        j = i + 1
+        while j < n and text[j] != c:
+            j += 2 if escapes and text[j] == "\\" else 1
+        if j < n:
+            spans.append((i, j + 1))
+            i = j + 1
+        else:
+            i += 1
+    return spans
+
+
+def _mask_quoted(text: str) -> str:
+    """``text`` with every quoted string blanked to NULs, so no operator inside one is read as one."""
+    out, at = [], 0
+    for a, b in _quoted_spans(text):
+        out += [text[at:a], "\0" * (b - a)]
+        at = b
+    out.append(text[at:])
+    return "".join(out)
+
+
 def _split_heredocs(command: str, start: int = 0) -> tuple[str, list[tuple[str, bool]]]:
     """``command`` with each here-document's body cut out and its operator marked, and the bodies in order as
     ``(text, expands)``: ``expands`` when the delimiter is unquoted (the shell runs its substitutions)."""
@@ -463,7 +500,7 @@ def _split_heredocs(command: str, start: int = 0) -> tuple[str, list[tuple[str, 
     while i < len(lines):
         line = lines[i]
         i += 1
-        quoted = [m.span() for m in _QUOTED.finditer(line)]
+        quoted = _quoted_spans(line)
         pieces: list[str] = []
         found: list[tuple[str, bool, bool]] = []
         at = 0
@@ -596,7 +633,7 @@ def _substitutions(s: str, *, quotes: bool = True) -> list[tuple[int, int, int, 
 
 def _segments_with_ops(command: str) -> list[tuple[str, str]]:
     """Each segment of ``command`` (see :func:`_segments`) with the operator before it ("" for the first)."""
-    masked = _QUOTED.sub(lambda m: "\0" * len(m[0]), command)
+    masked = _mask_quoted(command)
     out: list[tuple[str, str]] = []
     at, op = 0, ""
     for m in _SEGMENTS.finditer(masked):
@@ -608,7 +645,7 @@ def _segments_with_ops(command: str) -> list[tuple[str, str]]:
 
 def _redirects(segment: str) -> tuple[str, list[str], list[str], list[str]]:
     """``segment`` without its unquoted redirects; the files they write, the files they read, and here-strings."""
-    masked = _QUOTED.sub(lambda m: "\0" * len(m[0]), segment)
+    masked = _mask_quoted(segment)
     kept: list[str] = []
     writes: list[str] = []
     reads: list[str] = []
@@ -1407,7 +1444,7 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
         if expands:
             for _s, _e, a, b in _substitutions(text, quotes=False):
                 results.append((len(command), _run_escape(text[a:b], depth + 1)))
-    detach = _BACKGROUND.search(_QUOTED.sub("''", command)) is not None
+    detach = _BACKGROUND.search(_mask_quoted(command)) is not None
     cwd = ""  # follows each `cd`, so `cd .git/hooks && rm pre-commit` reads as the path it writes
     previous: str | None = None
     position = 0
