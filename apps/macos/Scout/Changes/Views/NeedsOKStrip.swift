@@ -25,7 +25,7 @@ struct NeedsOKStrip: View {
             if !waiting.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(Self.title(waiting.count))
-                        .font(DS.font(.body, .serif, weight: .semibold))
+                        .dsFont(.body, .serif, weight: .semibold)
                         .foregroundStyle(DS.Attention.you)
                     ForEach(waiting) { item in row(item) }
                 }

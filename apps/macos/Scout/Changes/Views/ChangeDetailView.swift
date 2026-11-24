@@ -397,7 +397,7 @@ struct ChangeDetailView: View {
         } else {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Before and after")
-                    .font(DS.font(.body, .serif, weight: .semibold))
+                    .dsFont(.body, .serif, weight: .semibold)
                     .foregroundStyle(DS.Ink.p1)
                 let top = max(rows.flatMap { [$0.before ?? 0, $0.after ?? 0] }.max() ?? 0, 0.0001)
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, item in
@@ -473,7 +473,7 @@ struct ChangeDetailView: View {
             case .loaded(let text):
                 ScrollView([.horizontal, .vertical]) {
                     Text(verbatim: text.isEmpty ? "This change has no recorded diff." : text)
-                        .font(.system(.caption, design: .monospaced))
+                        .dsFont(.caption, .mono)
                         .foregroundStyle(DS.Ink.p1)
                         .textSelection(.enabled)
                         .padding(8)

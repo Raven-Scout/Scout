@@ -81,7 +81,7 @@ struct ChangeCard: View {
                 Rectangle().fill(DS.Rule.soft).frame(width: 1, height: 10)
                 Text(DigestCard.sparkline(spark.after)).foregroundStyle(DS.Ink.p2)
             }
-            .font(.system(.caption2, design: .monospaced))
+            .dsFont(.caption2, .mono)
             .accessibilityHidden(true)
             .help("Engagement over the 14 days before and after this change")
         }

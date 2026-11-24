@@ -166,7 +166,7 @@ struct GovernanceReviewSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(verbatim: model.item.summary)
-                .font(DS.font(.headline, .serif, weight: .semibold))
+                .dsFont(.headline, .serif, weight: .semibold)
                 .foregroundStyle(DS.Ink.p1)
                 .fixedSize(horizontal: false, vertical: true)
             if !model.item.why.isEmpty {

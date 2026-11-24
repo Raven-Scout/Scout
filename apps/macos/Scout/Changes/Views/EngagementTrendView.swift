@@ -41,11 +41,7 @@ struct EngagementTrendView: View {
                 legend
             }
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 8).fill(DS.Paper.raised)
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-        )
+        .editorialCard(padding: 14)
     }
 
     // MARK: - Chart

@@ -12,7 +12,7 @@ struct DigestCard: View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("What Scout is working on")
-                    .font(DS.font(.body, .serif, weight: .semibold))
+                    .dsFont(.body, .serif, weight: .semibold)
                     .foregroundStyle(DS.Ink.p1)
                 if let week = Self.weekLabel(digest.weekOf) {
                     Text(week)
