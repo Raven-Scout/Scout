@@ -26,7 +26,7 @@ enum AccessibilityTree {
         }
     }
 
-    private static let attributes = ["AXEnhancedUserInterface", "AXManualAccessibility"]
+    fileprivate static let attributes = ["AXEnhancedUserInterface", "AXManualAccessibility"]
         .map { NSAccessibility.Attribute(rawValue: $0) }
 
     /// Every element under `view`, depth first.
@@ -66,7 +66,7 @@ enum AccessibilityTree {
         return out
     }
 
-    private static func collect(_ element: Any, into out: inout [Node], depth: Int) {
+    fileprivate static func collect(_ element: Any, into out: inout [Node], depth: Int) {
         guard depth < 40, let object = element as? NSObject else { return }
         // Modern elements answer the `accessibility…` methods; AppKit's table
         // and outline rows (a sidebar `List`) only answer the attribute API.
@@ -102,5 +102,65 @@ enum AccessibilityTree {
         for child in children {
             collect(child, into: &out, depth: depth + 1)
         }
+    }
+}
+
+/// A view kept hosted across reads, so a test can change the data under a
+/// page and see whether the page shows it — `AccessibilityTree.nodes(of:)`
+/// builds a fresh host per read, which proves a page renders a state but not
+/// that it follows a change. Accessibility stays switched on until `close()`.
+@MainActor
+final class LiveAccessibilityTree {
+    private let window: NSWindow
+    private let host: NSView
+
+    init<V: View>(_ view: V, size: CGSize = CGSize(width: 1280, height: 860)) async {
+        for attribute in AccessibilityTree.attributes { NSApp.accessibilitySetValue(true, forAttribute: attribute) }
+        try? await Task.sleep(for: .milliseconds(300))
+        let host = NSHostingView(rootView: view)
+        host.frame = CGRect(origin: .zero, size: size)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.titled, .resizable],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        self.window = window
+        self.host = host
+    }
+
+    /// Reads the tree until `condition` holds, for up to `timeout`, yielding
+    /// the main actor between reads so SwiftUI applies pending changes.
+    /// Returns the last read either way; the caller checks it.
+    @discardableResult
+    func nodes(until condition: ([AccessibilityTree.Node]) -> Bool = { _ in true },
+               timeout: Duration = .seconds(5)) async -> [AccessibilityTree.Node] {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        var out: [AccessibilityTree.Node] = []
+        repeat {
+            host.layoutSubtreeIfNeeded()
+            host.display()
+            out = []
+            AccessibilityTree.collect(host, into: &out, depth: 0)
+            if out.count > 1 && condition(out) { return out }
+            try? await Task.sleep(for: .milliseconds(100))
+        } while clock.now < deadline
+        return out
+    }
+
+    func close() {
+        window.contentView = nil
+        for attribute in AccessibilityTree.attributes { NSApp.accessibilitySetValue(false, forAttribute: attribute) }
+    }
+}
+
+extension Array where Element == AccessibilityTree.Node {
+    /// Whether any element's label or value contains `text`.
+    func shows(_ text: String) -> Bool {
+        contains { $0.label.contains(text) || $0.value.contains(text) }
+    }
+
+    /// The element with this accessibility identifier.
+    func element(_ identifier: String) -> AccessibilityTree.Node? {
+        first { $0.identifier == identifier }
     }
 }
