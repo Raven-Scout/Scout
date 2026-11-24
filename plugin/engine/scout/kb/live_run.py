@@ -341,7 +341,6 @@ RUN_VARS = ("SCOUT_MODE", "SCOUT_READER")
 _SEGMENTS = re.compile(r"&&|\|\||(?<!\\)[;\n`]|(?<![>\\])\||\$\(|(?<!\\)\(|(?<!\\)\)")
 # A lone "&" (background), not "&&", "&>", ">&", "|&" or "2>&1".
 _BACKGROUND = re.compile(r"(?<![&>|])&(?![&>])")
-_QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
 _HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)\s*(?:'([^']+)'|\"([^\"]+)\"|\\?([A-Za-z_][\w.-]*))")
 _ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
 _DETACH = {
@@ -497,6 +496,52 @@ def _one_name_output(body: str) -> str | None:
 _HEREDOC_AT = re.compile(r"<<(-?)\s*(?:'([^']+)'|\"([^\"]+)\"|\\?([A-Za-z_][\w.-]*))")
 
 
+def _quoted_spans(text: str, *, even_dollars_escape: bool = False) -> list[tuple[int, int]]:
+    """Where the quoted strings of ``text`` sit, as the shell reads them (each span includes its quotes).
+
+    A backslash outside quotes escapes the next character, so ``\\'`` and ``\\"`` open nothing. Single
+    quotes take no escapes; double quotes and ``$'…'`` do. A quote in a comment opens nothing (the
+    comment's text is left as it is). A quote that is never closed is no span.
+
+    Shells disagree on ``$$'``: bash reads the process id and then a plain single quote, zsh and sh read
+    a ``$`` and then ``$'…'``. ``even_dollars_escape`` picks the second reading for an even run of ``$``.
+    """
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(text)
+    dollars = 0  # how many unescaped "$" come directly before text[i]
+    while i < n:
+        c = text[i]
+        if c == "#" and (i == 0 or text[i - 1] in " \t\n;&|("):
+            end = text.find("\n", i)
+            i, dollars = (n if end < 0 else end), 0
+            continue
+        if c not in "'\"":
+            dollars = dollars + 1 if c == "$" else 0
+            i += 2 if c == "\\" else 1
+            continue
+        escapes = c == '"' or dollars % 2 == 1 or (dollars > 0 and even_dollars_escape)
+        dollars = 0
+        j = i + 1
+        while j < n and text[j] != c:
+            j += 2 if escapes and text[j] == "\\" else 1
+        if j < n:
+            spans.append((i, j + 1))
+            i = j + 1
+        else:
+            i += 1
+    return spans
+
+
+def _mask_quoted(text: str, *, even_dollars_escape: bool = False) -> str:
+    """``text`` with every quoted string blanked to NULs, so no operator inside one is read as one."""
+    out, at = [], 0
+    for a, b in _quoted_spans(text, even_dollars_escape=even_dollars_escape):
+        out += [text[at:a], "\0" * (b - a)]
+        at = b
+    out.append(text[at:])
+    return "".join(out)
+
+
 def _split_heredocs(command: str, start: int = 0) -> tuple[str, list[tuple[str, bool]]]:
     """``command`` with each here-document's body cut out and its operator marked, and the bodies in order as
     ``(text, expands)``: ``expands`` when the delimiter is unquoted (the shell runs its substitutions)."""
@@ -507,7 +552,7 @@ def _split_heredocs(command: str, start: int = 0) -> tuple[str, list[tuple[str, 
     while i < len(lines):
         line = lines[i]
         i += 1
-        quoted = [m.span() for m in _QUOTED.finditer(line)]
+        quoted = _quoted_spans(line)
         pieces: list[str] = []
         found: list[tuple[str, bool, bool]] = []
         at = 0
@@ -640,7 +685,7 @@ def _substitutions(s: str, *, quotes: bool = True) -> list[tuple[int, int, int, 
 
 def _segments_with_ops(command: str) -> list[tuple[str, str]]:
     """Each segment of ``command`` (see :func:`_segments`) with the operator before it ("" for the first)."""
-    masked = _QUOTED.sub(lambda m: "\0" * len(m[0]), command)
+    masked = _mask_quoted(command)
     out: list[tuple[str, str]] = []
     at, op = 0, ""
     for m in _SEGMENTS.finditer(masked):
@@ -652,7 +697,7 @@ def _segments_with_ops(command: str) -> list[tuple[str, str]]:
 
 def _redirects(segment: str) -> tuple[str, list[str], list[str], list[str]]:
     """``segment`` without its unquoted redirects; the files they write, the files they read, and here-strings."""
-    masked = _QUOTED.sub(lambda m: "\0" * len(m[0]), segment)
+    masked = _mask_quoted(segment)
     kept: list[str] = []
     writes: list[str] = []
     reads: list[str] = []
@@ -1912,7 +1957,8 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
         if expands:
             for _s, _e, a, b in _substitutions(text, quotes=False):
                 results.append((len(command), _run_escape(text[a:b], depth + 1)))
-    detach = _BACKGROUND.search(_QUOTED.sub("''", command)) is not None
+    # Both readings of `$$'` (see _quoted_spans): a background under either one is a background.
+    detach = any(_BACKGROUND.search(_mask_quoted(command, even_dollars_escape=way)) for way in (False, True))
     cwd = ""  # follows each `cd`, so `cd .git/hooks && rm pre-commit` reads as the path it writes
     previous: str | None = None
     position = 0

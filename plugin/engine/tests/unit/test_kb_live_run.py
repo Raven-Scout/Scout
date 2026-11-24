@@ -951,6 +951,19 @@ def test_other_options_prefixes_and_broken_quotes_are_not_flagged(command: str) 
         "git commit -m x &",
         "(git commit -m x &)",
         "sleep 1 & git commit -m x",
+        # A backslash outside quotes escapes the quote after it, so no quoted span opens and the "&" is real.
+        "git commit -m x \\' & echo '' y",
+        'git commit -m x \\" & echo "" y',
+        "git commit -m x $'\\'' & echo ''",  # in $'…' a backslash escapes the quote
+        "git commit -m x \\\\\\' & echo ''",  # an escaped backslash, then an escaped quote
+        "git commit -m 'it'\\''s' & echo ''",
+        # bash reads `$$'` as the process id and a plain quote, which the `\\'` then closes; zsh reads `$'…'`.
+        "bash <<'EOF'\ngit commit -m x$$'\\' & echo 'y'\nEOF",
+        "echo x$$'\\' & sleep 5 & echo 'y'",
+        "echo x$$'a\\'b' & echo 'y' c'",  # the other way round: only the `$'…'` reading leaves the "&" bare
+        "echo hi # it's\nsleep 5 & echo 'y'",  # a quote in a comment opens nothing
+        'echo hi # say "\nsleep 5 & echo "y"',
+        "git commit -m \\$'x\\' & echo ''",  # an escaped "$": plain single quotes, closed by the second quote
         "launchctl submit -l x -- git commit",
         'osascript -e \'tell app "Terminal" to do script "git commit"\'',
         "open -a Terminal notes/commit.command",
@@ -1007,6 +1020,16 @@ SCOUT_WRAP"""
         "git commit -F - <<'EOF'\nQ3 P&L review; (at 10:00)\nnohup notes\nEOF",
         "git commit -F - <<EOF\nP&L\nEOF",
         "cat <<-'EOF' > notes/a.md\n\tR&D (open items)\n\tEOF",
+        "git commit -m 'R&D \\' -q",  # single quotes take no escapes: the string ends at the second quote
+        'git commit -m "say \\"R&D\\""',
+        "git commit -m $'R&D \\' still quoted'",
+        "git commit -m x\\'s -m 'R&D'",
+        'git commit -m \\"x -m "R&D"',
+        "git commit -m \\\\ -m 'R&D'",  # an escaped backslash escapes nothing after it
+        "git add -A # don't forget\ngit commit -m 'R&D' -q",
+        "git commit -m x$$'R&D'",
+        "git commit -m 'a#b' -m 'R&D'",
+        "echo a#b 'R&D'",  # "#" inside a word starts no comment
     ],
 )
 def test_ordinary_commands_and_reads_are_not_flagged(command: str) -> None:

@@ -117,7 +117,11 @@ def test_a_run_whose_protected_files_were_put_back_is_red(tmp_path: Path, status
     )
     (finding,) = health.evaluate(v, now=NOW).findings
     assert (finding.id, finding.severity) == ("run.integrity_restored", "red")
-    assert ("tag or the stash" in finding.summary) == (status == "unrestored")
+    still = status == "unrestored"
+    assert ("tag or the" in finding.summary) == still
+    # A branch Scout left alone because another session has it checked out: name that case and how to fix it.
+    assert ("another session has checked out" in finding.summary) == still
+    assert ("git revert" in finding.fix and "keeps the bad file" in finding.fix) == still
 
 
 def test_an_old_restore_ages_out(tmp_path: Path) -> None:

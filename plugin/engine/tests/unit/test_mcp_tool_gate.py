@@ -338,13 +338,24 @@ def _pre_tool_use_command() -> str:
 
 
 def test_hooks_json_runs_the_gate_on_mcp_calls():
-    assert 'scoutctl" hook mcp-tool-gate' in _pre_tool_use_command()
+    command = _pre_tool_use_command()
+    assert 'c="${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl"; ' in command
+    assert '/bin/sh "$h" mcp-tool-gate "$c" hook mcp-tool-gate;' in command
+    assert command.endswith('exec "$c" hook mcp-tool-gate')
+
+
+def _plugin_root_without_scoutctl(tmp_path: Path) -> Path:
+    """A CLAUDE_PLUGIN_ROOT with the shell pre-filter and no scoutctl: Python cannot start from it."""
+    root = tmp_path / "no-scoutctl"
+    (root / "hooks").mkdir(parents=True)
+    (root / "hooks" / "prefilter.sh").symlink_to(PLUGIN / "hooks" / "prefilter.sh")
+    return root
 
 
 def test_hook_command_skips_python_outside_a_vault(tmp_path):
-    # No SCOUT_DATA_DIR and a cwd in no vault: the shell guard exits before exec — CLAUDE_PLUGIN_ROOT points nowhere.
+    # No SCOUT_DATA_DIR and a cwd in no vault: the shell guard exits before exec — the plugin root has no scoutctl.
     env = {k: v for k, v in os.environ.items() if k not in ("SCOUT_MODE", "SCOUT_DATA_DIR")}
-    env["CLAUDE_PLUGIN_ROOT"] = str(tmp_path / "missing")
+    env["CLAUDE_PLUGIN_ROOT"] = str(_plugin_root_without_scoutctl(tmp_path))
     res = subprocess.run(
         ["sh", "-c", _pre_tool_use_command()], env=env, cwd=tmp_path, input="{}", capture_output=True, text=True
     )
@@ -377,7 +388,7 @@ def test_hook_command_skips_python_when_no_connector_restricts(tmp_path, custom_
     if custom_file is not None:
         (v / cc.CUSTOM_FILE).write_text(custom_file)
     env = {**os.environ, "SCOUT_MODE": "research", "SCOUT_DATA_DIR": str(v)}
-    env["CLAUDE_PLUGIN_ROOT"] = str(tmp_path / "missing")
+    env["CLAUDE_PLUGIN_ROOT"] = str(_plugin_root_without_scoutctl(tmp_path))
     res = subprocess.run(["sh", "-c", _pre_tool_use_command()], env=env, input="{}", capture_output=True, text=True)
     assert res.returncode == 0 and res.stdout == ""
 
@@ -475,6 +486,8 @@ def _stub_plugin_root(tmp_path: Path) -> Path:
     stub.parent.mkdir(parents=True)
     stub.write_text("#!/bin/sh\necho ran\n")
     stub.chmod(0o755)
+    (tmp_path / "stub-plugin" / "hooks").mkdir()
+    (tmp_path / "stub-plugin" / "hooks" / "prefilter.sh").symlink_to(PLUGIN / "hooks" / "prefilter.sh")
     return tmp_path / "stub-plugin"
 
 

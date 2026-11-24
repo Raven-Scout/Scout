@@ -65,6 +65,9 @@ jobs:
           sudo apt-get update && sudo apt-get install -y shellcheck
           # engine launcher — full severity (existing guard)
           shellcheck plugin/engine/bin/scoutctl
+          # the hooks' shell pre-filters (every tool call runs them) — full severity. The file opens
+          # with `{` so a cut-off copy fails to parse, which leaves no room for a shell directive.
+          shellcheck -s sh plugin/hooks/prefilter.sh
           # installer (repo root), both release scripts, and the PR-gating
           # scripts every workflow's `changes` job runs — error severity
           shellcheck -S error install.sh scripts/*.sh plugin/scripts/*.sh apps/macos/scripts/*.sh .github/scripts/*.sh

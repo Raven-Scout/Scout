@@ -12,6 +12,7 @@ import pytest
 
 from scout.hooks import kb_read_gate as gate
 from scout.kb.raw_read import raw_kb_read, search_reads_kb
+from tests.unit._prefilter_root import with_prefilter
 
 PLUGIN = Path(__file__).parent.parent.parent.parent
 RUN = {"SCOUT_MODE": "morning-briefing", "SCOUT_READER": "autonomous"}
@@ -372,7 +373,7 @@ def _sh(
     env: dict, payload: str, cwd: Path, root: Path = PLUGIN, matcher: str = "Grep|Glob|Bash"
 ) -> subprocess.CompletedProcess[str]:
     clean = {k: v for k, v in os.environ.items() if k not in ("SCOUT_MODE", "SCOUT_READER", "SCOUT_DATA_DIR")}
-    full = {**clean, **env, "CLAUDE_PLUGIN_ROOT": str(root)}
+    full = {**clean, **env, "CLAUDE_PLUGIN_ROOT": str(with_prefilter(root))}
     cmd = _entry(matcher)["hooks"][0]["command"]
     return subprocess.run(
         ["sh", "-c", cmd], env=full, cwd=cwd, input=payload, capture_output=True, text=True, timeout=60

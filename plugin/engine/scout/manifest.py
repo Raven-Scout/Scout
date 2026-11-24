@@ -47,8 +47,11 @@ def _list_subcommands() -> list[str]:
     from scout.cli import app as cli_app
 
     click_group = typer.main.get_command(cli_app)
-    commands = getattr(click_group, "commands", {})
-    return sorted(commands.keys())
+    # list_commands, not the `commands` dict: the root group adds `lab` only when its commands are listed.
+    list_commands = getattr(click_group, "list_commands", None)
+    if list_commands is None:
+        return []
+    return sorted(list_commands(typer.Context(click_group)))
 
 
 def build_manifest() -> EngineManifest:
