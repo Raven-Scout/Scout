@@ -2,5 +2,7 @@
   - ugrep's `-3` and `--depth=N` count as recursive, and its `-g`, `-O` and `-t` filters are read as comma-separated lists.
   - fd's `-C` is a base directory, and an exec command ends at `;`.
   - `ug`, `ug+`, `ugrep+`, `fdfind` and `ack-grep` are judged as the tools they run.
+  - The file a flag opens counts as read: `grep -f`/`--file`, `sed -f`, `awk -f`, `jq --from-file` and `ack --files-from`, so `grep -f k*/note.md docs/a.md` is denied. A value attached to `-e` (`grep -eTODO k*/…`, `sed -n -e'1,20p' k*/…`) is read as the pattern, so the KB file after it is judged.
+  - The gate's operand reader (`read_operands`) and its recursive-read check now share this one parser, so they agree on what a value flag takes.
   - A filter to code is still allowed: `ack -t python`, `ugrep -rO py`.
   - These no longer count as KB reads: `ag -V`, `fd -V`, `fd -h`, `ag --list-file-types`, `ack --help-types`, `fd -epy x` and `ag --context 3 x`.

@@ -285,7 +285,7 @@ _VALUE_FLAGS: dict[str, set[str]] = {
     "rg": _RG_VALUES,
     "ag": _AG_VALUES, "ack": _ACK_VALUES, "fd": _FD_VALUES,
     "sed": {"-e", "-f", "-l", "--expression", "--file"},
-    "awk": {"-v", "-f", "-F"}, "gawk": {"-v", "-f", "-F"}, "mawk": {"-v", "-f", "-F"},
+    "awk": {"-v", "-f", "-F", "--file"}, "gawk": {"-v", "-f", "-F", "--file"}, "mawk": {"-v", "-f", "-F", "--file"},
     "cut": {"-d", "-f", "-c", "-b"},
     "sort": {"-k", "-t", "-o", "-S", "-T"},
     "uniq": {"-f", "-s", "-w"},
@@ -412,6 +412,16 @@ def reads_folders(name: str, args: list[str]) -> bool:
     return False
 
 
+# The flags whose value is a file the reader opens: a pattern file, a script, a file list.
+_FILE_FLAGS: dict[str, set[str]] = {
+    **dict.fromkeys(("grep", "egrep", "fgrep", "ugrep", "rg"), {"-f", "--file"}),
+    "sed": {"-f", "--file"},
+    **dict.fromkeys(("awk", "gawk", "mawk"), {"-f", "--file"}),
+    "jq": {"-f", "--from-file"},
+    "ack": {"--files-from"},
+}
+
+
 def _program_given(name: str, args: list[str]) -> bool:
     """A flag gives the pattern or program (``grep -e x``, ``sed -ne p``, ``rg --regexp=x``), so every
     positional is a file. Read with :func:`_scan`, so a cluster ending in ``-e`` counts too."""
@@ -437,7 +447,8 @@ def read_operands(name: str, args: list[str]) -> list[str] | None:
     _flags, plain = _split_args(_operands(name, args))
     if name in _PROGRAM_FIRST and plain and not _program_given(name, args):
         plain = plain[1:]
-    return [p for p in plain if p and p != "-"]
+    given = [v for f, v in _options(name, args) if f in _FILE_FLAGS.get(name, ()) and v]  # `grep -f pats f`
+    return [p for p in [*given, *plain] if p and p != "-"]
 
 
 _BRACE_SEQUENCE = re.compile(r"^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.(-?\d+))?$")

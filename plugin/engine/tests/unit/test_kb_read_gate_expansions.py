@@ -473,6 +473,12 @@ def test_brace_expand_over_the_limit_is_none() -> None:
         ("fd", ["-e", "md", "pat", "a"], ["a"]),
         ("ag", ["-g", "pat", "a"], ["a"]),
         ("ack", ["-f", "a"], ["a"]),
+        # the file a flag opens is read too
+        ("grep", ["-f", "pats", "a"], ["pats", "a"]),
+        ("grep", ["--file=pats", "a"], ["pats", "a"]),
+        ("sed", ["-f", "prog", "a"], ["prog", "a"]),
+        ("awk", ["-f", "prog", "a"], ["prog", "a"]),
+        ("jq", ["--from-file", "prog", "a"], ["prog", "a"]),
     ],
 )
 def test_read_operands(name: str, args: list[str], expected: list[str] | None) -> None:
