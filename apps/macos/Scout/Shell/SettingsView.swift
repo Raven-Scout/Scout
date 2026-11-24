@@ -15,7 +15,14 @@ struct SettingsView: View {
     @State private var tab: SettingsTab
     /// A deep link's section, scrolled to once its tab is showing.
     @State private var scrollRequest: ScrollRequest?
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    /// Read from `SMAppService` by `loadLaunchAtLogin()` once the window shows,
+    /// never in an initializer: `ScoutApp.body` builds this view on every
+    /// `AppState` change, and `status` is a synchronous XPC round trip to the
+    /// service manager — seen as ~0.4 s of main-thread wait in a 15 s profile
+    /// of the Control Center, with the Settings window closed.
+    @State private var launchAtLogin = false
+    /// False until `loadLaunchAtLogin()` has the real value; the switch waits.
+    @State private var launchAtLoginLoaded = false
     @State private var launchAtLoginError: String?
     /// Set while the switch is put back after macOS refused the change.
     @State private var revertingLaunchAtLogin = false
@@ -108,7 +115,9 @@ struct SettingsView: View {
                     help: "Start the app automatically so it's watching your Scout folder all day."
                 ) {
                     SettingsToggle(isOn: $launchAtLogin)
+                        .disabled(!launchAtLoginLoaded)
                         .onChange(of: launchAtLogin) { _, newValue in setLaunchAtLogin(newValue) }
+                        .task { await loadLaunchAtLogin() }
                 }
                 if let launchAtLoginError {
                     Label(launchAtLoginError, systemImage: "exclamationmark.triangle.fill")
@@ -309,6 +318,19 @@ struct SettingsView: View {
                                panelMessage: "Choose the \(label.lowercased())",
                                defaultURL: appState.scoutDirectory.appendingPathComponent(defaultRelative))
         }
+    }
+
+    /// The switch's real state, read off the main thread. Setting it is not a
+    /// change the owner made, so `setLaunchAtLogin` is told to skip it.
+    private func loadLaunchAtLogin() async {
+        let enabled = await Task.detached(priority: .userInitiated) {
+            SMAppService.mainApp.status == .enabled
+        }.value
+        if enabled != launchAtLogin {
+            revertingLaunchAtLogin = true
+            launchAtLogin = enabled
+        }
+        launchAtLoginLoaded = true
     }
 
     private func setLaunchAtLogin(_ on: Bool) {

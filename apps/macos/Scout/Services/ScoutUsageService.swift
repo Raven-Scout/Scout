@@ -38,7 +38,34 @@ final class ScoutUsageService: ObservableObject {
     /// Re-read the summary. A failure keeps the last good summary (the card
     /// keeps showing it) and records why, so a transient engine error doesn't
     /// blank the card.
+    ///
+    /// Never two `scoutctl` reads at once: a call while one is reading asks
+    /// for one more read after it (the data may have changed since that read
+    /// started, as when a tracker row lands) and waits for it. The Today tile
+    /// and the usage card each refresh when the Control Center appears.
+    /// Values are only assigned when they change, since every publish
+    /// re-renders the whole window through `AppState`.
     func refresh() async {
+        if let inFlight {
+            readAgain = true
+            await inFlight.value
+            return
+        }
+        let task = Task {
+            repeat {
+                self.readAgain = false
+                await self.read()
+            } while self.readAgain
+        }
+        inFlight = task
+        await task.value
+        inFlight = nil
+    }
+
+    private var inFlight: Task<Void, Never>?
+    private var readAgain = false
+
+    private func read() async {
         do {
             let result = try await runner.run(
                 executable: scoutctl,
@@ -48,15 +75,20 @@ final class ScoutUsageService: ObservableObject {
             )
             guard result.exitCode == 0 else {
                 let stderr = String(data: result.stderr, encoding: .utf8) ?? ""
-                lastError = Self.failureMessage(exitCode: result.exitCode, stderr: stderr)
+                setLastError(Self.failureMessage(exitCode: result.exitCode, stderr: stderr))
                 return
             }
-            summary = try Self.decode(result.stdout)
-            lastError = nil
+            let decoded = try Self.decode(result.stdout)
+            if decoded != summary { summary = decoded }
+            setLastError(nil)
             scheduleRollover()
         } catch {
-            lastError = error.localizedDescription
+            setLastError(error.localizedDescription)
         }
+    }
+
+    private func setLastError(_ error: String?) {
+        if error != lastError { lastError = error }
     }
 
     /// Re-read when the summary's "today" ends, so the card and the status

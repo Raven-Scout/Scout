@@ -57,9 +57,20 @@ nonisolated struct UsagePeriod: Codable, Equatable, Sendable {
     }
 
     /// When the period ends; nil if the engine's `end` doesn't parse.
-    var endDate: Date? { ISO8601DateFormatter().date(from: end) }
+    var endDate: Date? { UsagePeriodFormatter.date(from: end) }
     /// When the period starts; nil if the engine's `start` doesn't parse.
-    var startDate: Date? { ISO8601DateFormatter().date(from: start) }
+    var startDate: Date? { UsagePeriodFormatter.date(from: start) }
+
+    /// `[start, end)` as dates, parsed once; nil when either bound doesn't
+    /// parse. Callers that test many dates (every run, every render) take
+    /// this once rather than calling `contains` per date: each `contains`
+    /// parses both bounds, and parsing through ICU per run on every Control
+    /// Center render was most of its main-thread time on a vault with
+    /// ~2,000 run logs.
+    var bounds: Range<Date>? {
+        guard let s = startDate, let e = endDate, s <= e else { return nil }
+        return s..<e
+    }
 
     /// Whether `date` falls in this period, the vault's day or week (`[start, end)`);
     /// nil when either bound doesn't parse.
@@ -70,6 +81,17 @@ nonisolated struct UsagePeriod: Codable, Equatable, Sendable {
 
     /// This period while `now` is in it; nil once it is over (or its bounds don't parse).
     func ifCurrent(at now: Date) -> UsagePeriod? { contains(now) == true ? self : nil }
+}
+
+/// The bounds' parser, built once. `ISO8601DateFormatter()` construction goes
+/// into ICU (`udat_open`); a fresh one per call was the hot spot behind the
+/// slow Control Center (see `bounds`). Configured once and never mutated, so
+/// it can be shared (`ISO8601DateFormatter` is thread-safe once configured),
+/// as `UsageTimestampFormatters` does.
+nonisolated enum UsagePeriodFormatter {
+    nonisolated(unsafe) private static let formatter = ISO8601DateFormatter()
+
+    static func date(from iso: String) -> Date? { formatter.date(from: iso) }
 }
 
 /// The `scoutctl budget usage --json` payload (engine:

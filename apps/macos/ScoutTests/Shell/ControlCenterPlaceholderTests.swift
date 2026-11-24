@@ -85,6 +85,31 @@ struct ControlCenterPlaceholderTests {
         #expect(p.ifCurrent(at: inTheVaultsDay) == p && p.ifCurrent(at: nextDay) == nil)
     }
 
+    /// `todayRuns` works the day out once (`todayBounds`) and compares dates: the vault's day
+    /// while it is current, the host's day otherwise, and the host's day for bounds that don't parse.
+    @Test("today's bounds: the vault's day while current, else the host's")
+    func todayBoundsPickTheRightDay() throws {
+        let p = period(.reported, cost: 1)
+        let iso = ISO8601DateFormatter()
+        var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(identifier: "UTC")!
+        let vaultDay = try #require(p.bounds)
+        #expect(vaultDay == iso.date(from: "2026-11-16T23:00:00Z")!..<iso.date(from: "2026-11-17T23:00:00Z")!)
+
+        let inTheVaultsDay = iso.date(from: "2026-11-17T20:00:00Z")!
+        #expect(NowStripView.todayBounds(today: p, now: inTheVaultsDay, calendar: utc) == vaultDay)
+
+        let hostDay = iso.date(from: "2026-11-18T00:00:00Z")!..<iso.date(from: "2026-11-19T00:00:00Z")!
+        let nextDay = iso.date(from: "2026-11-18T00:30:00Z")!
+        #expect(NowStripView.todayBounds(today: p, now: nextDay, calendar: utc) == hostDay)
+        #expect(NowStripView.todayBounds(today: nil, now: nextDay, calendar: utc) == hostDay)
+
+        let unparseable = UsagePeriod(start: "soon", end: "later", runs: 0, runsWithTokens: 0, sessions: 0,
+                                      tokens: UsageTokens(input: 0, output: 0, cacheRead: 0, cacheCreation: 0),
+                                      costUSD: 0, costKind: .none, pricedRuns: 0)
+        #expect(unparseable.bounds == nil)
+        #expect(NowStripView.todayBounds(today: unparseable, now: nextDay, calendar: utc) == hostDay)
+    }
+
     private func period(_ kind: UsageCostKind, cost: Double) -> UsagePeriod {
         UsagePeriod(start: "2026-11-17T00:00:00+01:00", end: "2026-11-18T00:00:00+01:00", runs: 11, runsWithTokens: 11,
                     sessions: 11, tokens: UsageTokens(input: 1, output: 1, cacheRead: 0, cacheCreation: 0),
