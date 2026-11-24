@@ -30,18 +30,21 @@ struct ChangesViewTests {
         #expect(!ChangesView.isSuspectAndNotUndone(ChangeTest(suspect: false)))
     }
 
-    @Test("the digest shows plain words, never a bare change id")
+    @Test("the rendered digest card shows plain words, never a bare change id")
     func digestHasNoBareIds() async throws {
         let service = try await LoadedChangesService.make()
         let digest = try #require(service.snapshot).digest
-        let lines = DigestCard.lines(for: digest)
-        #expect(!lines.isEmpty)
-        for line in lines {
-            #expect(!line.contains("chg-"), "bare id in: \(line)")
-        }
-        #expect(lines.contains { $0.contains("A phase change") && $0.contains("10 days left") })
-        #expect(lines.contains { $0.contains("Say so when a Gmail search finds nothing") })
-        #expect(lines.contains { $0.contains("Needs your OK (1)") })
+        // Read what the card actually draws, from the accessibility tree.
+        let nodes = await AccessibilityTree.nodes(of: DigestCard(digest: digest).frame(width: 700),
+                                                  size: CGSize(width: 700, height: 900))
+        let shown = nodes.flatMap { [$0.label, $0.value] }.filter { !$0.isEmpty }
+        let all = shown.joined(separator: "\n")
+        for text in shown { #expect(!text.contains("chg-"), "bare id in: \(text)") }
+        #expect(all.contains("A phase change"), "testing row missing:\n\(all)")
+        #expect(all.contains("A rollback change"), "shipped row missing:\n\(all)")
+        #expect(all.contains("A wishlist-done change"), "learned row missing:\n\(all)")
+        #expect(all.contains("Say so when a Gmail search finds nothing"), "up-next row missing:\n\(all)")
+        #expect(all.contains("Needs your OK (1)"), "needs-OK line missing:\n\(all)")
     }
 
     @Test("engagement reads with its comparison, or says there is none")

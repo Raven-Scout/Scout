@@ -122,17 +122,6 @@ struct DigestCard: View {
 
     // MARK: - Words (pure, so they are unit-tested)
 
-    /// The card as plain lines, in reading order: what a screen reader and the tests see.
-    nonisolated static func lines(for digest: ChangesDigest) -> [String] {
-        var out = [engagementLine(digest.engagement, noise: digest.noise)]
-        out += digest.testing.map { "\($0.summary) — \(daysLeft($0.daysLeft))" }
-        out += digest.shipped.map(\.summary)
-        out += digest.learned.map { "\(verdictWords($0.verdict)): \($0.summary)" + ($0.suspect ? " (suspect)" : "") }
-        out += digest.upNext.map(\.title)
-        if digest.needsOK > 0 { out.append(needsOKLine(digest.needsOK)) }
-        return out
-    }
-
     /// "Your engagement: 41 this week (up 12% vs last), noise 6 (down 2)".
     nonisolated static func engagementLine(_ engagement: DigestEngagement, noise: DigestNoise) -> String {
         let versus: String
