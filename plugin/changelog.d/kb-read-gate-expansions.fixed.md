@@ -12,5 +12,9 @@
   `git ls-files scripts | xargs rg x` stays allowed and `find . | xargs cat` doesn't. A match in
   `knowledge-base/` or `action-items/context/` is denied. A read whose path the gate can't work out (a command
   substitution, a backtick, a variable the command doesn't set, `xargs` input from any other command) is
-  denied in a run too, as a write of one already is; a `$(date +FORMAT)` that prints no `/`, with or without
-  a `TZ=` for the call, counts as any one name, so `action-items/action-items-$(date +%F).md` stays allowed.
+  allowed for now and recorded as a `kb_read_gate.unresolved_read` event naming only its kind
+  (`command_output`, `unset_variable`, `xargs_input`) and the run's mode, never the command or the path;
+  `DENY_UNRESOLVED_READS` in `kb_read_gate.py` denies them instead, as an unresolved write already is. A
+  `$(date +FORMAT)` that prints no `/`, with or without a `TZ=` for the call, counts as any one name, so
+  `action-items/action-items-$(date +%F).md` is allowed with nothing recorded and
+  `knowledge-base/$(date +%F).md` is denied.

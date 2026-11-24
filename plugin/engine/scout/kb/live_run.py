@@ -453,6 +453,8 @@ _SUBST_NAME = SUBST[1:]
 # A substitution that prints one name with no `/` in it (`$(date +%F)`): unresolved for a write as before, but a
 # read judges it as `*`, which matches every name it can print.
 ANY_NAME = "$__scout_name__"
+# What xargs reads from a command the gate can't follow: unresolved, as SUBST is, but told apart in the audit.
+UNSEEN_INPUT = "$__scout_input__"
 # A `date` format whose output has no `/` and no space: digits, the literal characters given, `%z`'s sign.
 _DATE_FORMAT = re.compile(r"\+(?:%[YmdHMSjuwUVGgyCsNIFTRz%]|[A-Za-z0-9_.:,+-])*")
 _DATE_VALUE_FLAGS = {"-d", "-v", "-r", "-f", "--date", "--reference"}
@@ -1209,10 +1211,10 @@ def _kb_read(words: list[str], reads: list[str], cwd: str, fed: str | None) -> s
                 if marker is None:
                     operands = [*operands, *names]
                 else:  # `xargs -I{} cat {}`: each input line goes where the marker is
-                    given = names or [SUBST]
+                    given = names or [UNSEEN_INPUT]
                     operands = [o.replace(marker, n) for o in operands for n in (given if marker in o else [""])]
                     if listed and any(marker in o and o != marker for o in stripped.words[1:]):
-                        operands.append(SUBST)  # a listed path inside a longer word: not one the gate can judge
+                        operands.append(UNSEEN_INPUT)  # a listed path inside a longer word: not one the gate can judge
             targets += [(word, where) for word in operands]
     for word, where, covers in [*((w, d, False) for w, d in targets), *((w, d, True) for w, d in roots)]:
         found = _judge_read(word, where, covers)
@@ -1295,15 +1297,15 @@ def _fed_sources(fed: str | None) -> tuple[list[str], list[str]]:
     """What ``xargs`` gets from the segment piped into it: the words ``echo`` or ``printf`` prints, split as
     ``xargs`` splits it; or the folders a lister prints file paths under (``git ls-files docs``, ``find docs``,
     ``grep -l x docs/*.md``, ``rg --files``), each a root it reads below; from anything else, one name the gate
-    can't know (:data:`SUBST`)."""
+    can't know (:data:`UNSEEN_INPUT`)."""
     if fed is None:
-        return [SUBST], []
+        return [UNSEEN_INPUT], []
     clean, _writes, _reads, strings = _redirects(fed)
     words = _tokens(clean)
     while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS):
         words = words[1:]
     if strings or _HD_MARK.search(fed) or not words:
-        return [SUBST], []
+        return [UNSEEN_INPUT], []
     name, args = _basename(words[0]), words[1:]
     if name == "echo":
         escapes = False
@@ -1318,8 +1320,8 @@ def _fed_sources(fed: str | None) -> tuple[list[str], list[str]]:
         text = _printf(args[0], args[1:]) if args and args[0] != "-v" else None
     else:
         roots = _listed_roots(name, args)
-        return ([SUBST], []) if roots is None else ([], roots)
-    return ([SUBST], []) if text is None else (text.split(), [])
+        return ([UNSEEN_INPUT], []) if roots is None else ([], roots)
+    return ([UNSEEN_INPUT], []) if text is None else (text.split(), [])
 
 
 # A lister's flags that make it print something other than the paths, as found, of files under its operands.

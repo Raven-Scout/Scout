@@ -227,9 +227,24 @@ def _deny_unresolved(form: str) -> str:
     )
 
 
-# A run's read of a path the gate can't work out is denied, as a write of one is (#637 round 3): the shell may
-# fill it in with a KB note. False only allows those reads again (the KB reads it can work out stay denied).
-DENY_UNRESOLVED_READS = True
+# A run's read of a path the gate can't work out (a command's output, a variable set elsewhere, xargs input from a
+# command the gate can't follow) may be a KB note. True denies it, as a write of one is (#637 round 3). Off for
+# now: in a replay of real runs every such read was a false deny (most read the engine checkout), so each is
+# allowed and recorded as a `kb_read_gate.unresolved_read` event with its categories (UNRESOLVED_CATEGORIES)
+# until there's data to decide on. The KB reads the gate can work out are denied either way.
+DENY_UNRESOLVED_READS = False
+# What made a read unresolved, by the placeholder live_run left in its word.
+UNRESOLVED_CATEGORIES = ("xargs_input", "command_output", "unset_variable")
+
+
+def _unresolved_category(raw: str) -> str:
+    from scout.kb.live_run import SUBST, UNSEEN_INPUT
+
+    if UNSEEN_INPUT in raw:
+        return "xargs_input"
+    if SUBST in raw or "`" in raw:
+        return "command_output"  # a substitution, a backtick, `read`/`mapfile`, `$OLDPWD`
+    return "unset_variable"
 
 
 def _deny_unresolved_read() -> str:
@@ -322,12 +337,18 @@ def _deny_skip_form(form: str) -> str:
 
 
 # Audit rows wait here until the decision is out (main prints the deny first): writing a log can never delay it.
-_PENDING_AUDIT: list[tuple[Path, str, str | None]] = []
+_PENDING_AUDIT: list[tuple[Path, str, dict[str, Any]]] = []
 
 
 def _record_hook_skip(vault: Path, form: str, mode: str | None) -> None:
     """Queue the form and the run's mode, never the command: its text can quote a note."""
-    _PENDING_AUDIT.append((vault, form, mode))
+    _PENDING_AUDIT.append((vault, "kb_read_gate.hook_skip", {"form": form, "mode": mode}))
+
+
+def _record_unresolved_read(vault: Path, categories: list[str], mode: str | None) -> None:
+    """Queue an allowed read the gate couldn't work out: what kind of word it was and the run's mode, never the
+    command or the path (see :data:`DENY_UNRESOLVED_READS`)."""
+    _PENDING_AUDIT.append((vault, "kb_read_gate.unresolved_read", {"categories": categories, "mode": mode}))
 
 
 def flush_audit() -> None:
@@ -335,14 +356,9 @@ def flush_audit() -> None:
     from scout.events import append_event
 
     while _PENDING_AUDIT:
-        vault, form, mode = _PENDING_AUDIT.pop(0)
+        vault, kind, payload = _PENDING_AUDIT.pop(0)
         try:
-            append_event(
-                paths.logs_dir(vault),
-                kind="kb_read_gate.hook_skip",
-                source=f"hook:{GATE}",
-                payload={"form": form, "mode": mode},
-            )
+            append_event(paths.logs_dir(vault), kind=kind, source=f"hook:{GATE}", payload=payload)
         except Exception:  # noqa: BLE001, S110 - the deny stands without the event
             pass
 
@@ -431,7 +447,10 @@ def decide(
             ``covers``: the command reads files below it (an xargs lister's root), so a folder holding the KB counts."""
             target = resolve(raw)
             if target is None:
-                return UNRESOLVED_READ if DENY_UNRESOLVED_READS else None
+                if DENY_UNRESOLVED_READS:
+                    return UNRESOLVED_READ
+                unresolved.add(_unresolved_category(raw))
+                return None
             targets = globs(target)
             if targets is None:
                 return hook_paths.TOO_MANY
@@ -448,6 +467,7 @@ def decide(
             return None
 
         memo: dict[str, list[str] | None] = {}
+        unresolved: set[str] = set()
 
         def globs(target: str) -> list[str] | None:
             if target not in memo:
@@ -469,7 +489,11 @@ def decide(
             _record_hook_skip(vault, escape, mode)
             return _deny_skip_form(escape)
         flagged = raw_kb_read(command, in_kb=_in_kb(cwd, vault), cwd=str(cwd), vault=str(vault), env=env)
-        return _deny_bash() if flagged else None
+        if flagged:
+            return _deny_bash()
+        if unresolved:
+            _record_unresolved_read(vault, sorted(unresolved), mode)
+        return None
     if tool in ("Grep", "Glob"):
         raw = tool_input.get("path")
         root = _target(raw, cwd) if isinstance(raw, str) and raw else cwd

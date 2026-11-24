@@ -189,28 +189,71 @@ def test_a_harmless_neighbour_stays_allowed(home: Path, command: str) -> None:
 # ----- reads whose path the gate can't work out -------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "command",
-    [
-        "cat $(echo kn)owledge-base/a.md",
-        'cat "$(printf knowl%sdge-base/a.md e)"',
-        "cat `echo knowledge-base/a.md`",
-        "cat $UNSET_SOMEWHERE/a.md",
-        'while read -r f; do cat "$f"; done < /tmp/list.txt',
-        "ls scripts | xargs cat",
-        "cat < $(echo /tmp/x)",
-        'cd "$(git rev-parse --show-toplevel)" && cat docs/a.md',
-        "cat action-items/$(date +%Y/%m)/x.md",  # a date whose output can hold a `/` stands for nothing
-        "cat action-items/$(TZ=$(scripts/run.sh) date +%F; cat x).md",  # more than the one date call
-        "find docs -exec basename {} \\; | xargs cat",  # a lister that prints something else
-        "git ls-files --full-name docs | xargs cat",
-        "find docs | sort | xargs cat",  # only the command piped straight in is read
-        "find docs | xargs -I{} cat x{}",  # a listed path inside a longer word
-    ],
-)
-def test_a_read_the_gate_cant_work_out_is_denied_in_a_run(home: Path, command: str) -> None:
+UNRESOLVED = [
+    ("cat $(echo kn)owledge-base/a.md", "command_output"),
+    ('cat "$(printf knowl%sdge-base/a.md e)"', "command_output"),
+    ("cat `echo knowledge-base/a.md`", "command_output"),
+    ("cat $UNSET_SOMEWHERE/a.md", "unset_variable"),
+    ('while read -r f; do cat "$f"; done < /tmp/list.txt', "command_output"),
+    ("ls scripts | xargs cat", "xargs_input"),
+    ("cat < $(echo /tmp/x)", "command_output"),
+    ('cd "$(git rev-parse --show-toplevel)" && cat docs/a.md', "command_output"),
+    ("cat action-items/$(date +%Y/%m)/x.md", "command_output"),  # a date whose output can hold a `/`
+    ("cat action-items/$(TZ=$(scripts/run.sh) date +%F; cat x).md", "command_output"),  # more than one date call
+    ("find docs -exec basename {} \\; | xargs cat", "xargs_input"),  # a lister that prints something else
+    ("git ls-files --full-name docs | xargs cat", "xargs_input"),
+    ("find docs | sort | xargs cat", "xargs_input"),  # only the command piped straight in is read
+    ("find docs | xargs -I{} cat x{}", "xargs_input"),  # a listed path inside a longer word
+]
+
+
+def _events(home: Path) -> list[dict]:
+    import json
+
+    rows: list[dict] = []
+    for path in sorted((home / "Vault" / ".scout-logs").glob("schedule-events-*.jsonl")):
+        rows += [json.loads(line) for line in path.read_text().splitlines()]
+    return rows
+
+
+@pytest.mark.parametrize(("command", "category"), UNRESOLVED)
+def test_a_read_the_gate_cant_work_out_is_allowed_and_recorded(home: Path, command: str, category: str) -> None:
+    assert gate.DENY_UNRESOLVED_READS is False  # off until the recorded events say otherwise
+    assert _run(home, command) is None
+    (row,) = [r for r in _events(home) if r["kind"] == "kb_read_gate.unresolved_read"]
+    assert row["source"] == "hook:kb-read-gate"
+    assert row["payload"] == {"categories": [category], "mode": RUN["SCOUT_MODE"]}
+    assert category in gate.UNRESOLVED_CATEGORIES
+
+
+def test_the_unresolved_read_event_never_carries_the_command(home: Path) -> None:
+    assert _run(home, "cat $(echo kn)owledge-base/a.md docs/$UNSET_X.md") is None
+    (row,) = _events(home)
+    assert row["payload"]["categories"] == ["command_output", "unset_variable"]
+    assert set(row["payload"]) == {"categories", "mode"}
+    text = str(row)
+    for word in ("knowledge", "docs", "UNSET_X", "echo", "a.md"):
+        assert word not in text
+
+
+def test_an_unresolved_read_beside_a_kb_read_is_denied_and_not_recorded(home: Path) -> None:
+    assert "knowledge-base/" in _denied(_run(home, "cat $(echo x) knowledge-base/a.md"))
+    assert not [r for r in _events(home) if r["kind"] == "kb_read_gate.unresolved_read"]
+
+
+def test_a_resolved_read_records_nothing(home: Path) -> None:
+    assert _run(home, "cat docs/a.md action-items/action-items-$(date +%F).md") is None
+    assert _events(home) == []
+
+
+@pytest.mark.parametrize("command", [command for command, _category in UNRESOLVED])
+def test_with_the_switch_on_a_read_the_gate_cant_work_out_is_denied(
+    home: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    monkeypatch.setattr(gate, "DENY_UNRESOLVED_READS", True)
     reason = _denied(_run(home, command))
     assert "can't work out" in reason or "can't resolve" in reason, reason
+    assert not [r for r in _events(home) if r["kind"] == "kb_read_gate.unresolved_read"]
 
 
 def test_an_unresolved_read_is_still_allowed_outside_a_run(home: Path) -> None:
@@ -375,34 +418,35 @@ def test_ansi_c(command: str, expected: str) -> None:
 
 
 SUBST = live_run.SUBST
+UNSEEN = live_run.UNSEEN_INPUT
 
 
 @pytest.mark.parametrize(
     ("fed", "expected"),
     [
-        (None, ([SUBST], [])),
+        (None, ([UNSEEN], [])),
         ("echo docs/a.md docs/b.md", (["docs/a.md", "docs/b.md"], [])),
         ("echo -n docs/a.md", (["docs/a.md"], [])),
         ("echo -e 'knowledge\\x2dbase/a.md'", (["knowledge-base/a.md"], [])),
         ("printf '%s\\n' docs/a.md docs/b.md", (["docs/a.md", "docs/b.md"], [])),
         ("printf -- 'docs/%s' a.md", (["docs/a.md"], [])),
-        ("printf -v x '%s' a", ([SUBST], [])),
-        ("printf '%q' a", ([SUBST], [])),
-        ("cat <<< docs/a.md", ([SUBST], [])),
-        ("X=1 ls docs", ([SUBST], [])),
+        ("printf -v x '%s' a", ([UNSEEN], [])),
+        ("printf '%q' a", ([UNSEEN], [])),
+        ("cat <<< docs/a.md", ([UNSEEN], [])),
+        ("X=1 ls docs", ([UNSEEN], [])),
         ("git ls-files docs scripts", ([], ["docs", "scripts"])),
         ("git ls-files", ([], ["."])),
-        ("git ls-files --format=x docs", ([SUBST], [])),
-        ("git log --name-only", ([SUBST], [])),
+        ("git ls-files --format=x docs", ([UNSEEN], [])),
+        ("git log --name-only", ([UNSEEN], [])),
         ("find docs scripts -name '*.md'", ([], ["docs", "scripts"])),
         ("find -name '*.md'", ([], ["."])),
-        ("find docs -printf '%f\\n'", ([SUBST], [])),
+        ("find docs -printf '%f\\n'", ([UNSEEN], [])),
         ("grep -l x docs/a.md", ([], ["docs/a.md"])),
         ("grep -rL x", ([], ["."])),
         ("grep --files-with-matches -e x docs", ([], ["docs"])),
-        ("grep -n x docs/a.md", ([SUBST], [])),
+        ("grep -n x docs/a.md", ([UNSEEN], [])),
         ("rg --files docs", ([], ["docs"])),
-        ("rg -L x docs", ([SUBST], [])),  # rg's -L follows links: it prints matching lines
+        ("rg -L x docs", ([UNSEEN], [])),  # rg's -L follows links: it prints matching lines
         ("rg -il x", ([], ["."])),
     ],
 )
