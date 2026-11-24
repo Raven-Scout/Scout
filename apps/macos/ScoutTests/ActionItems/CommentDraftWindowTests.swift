@@ -6,16 +6,22 @@ import Testing
 @MainActor
 private final class DraftCardLog {
     var listFocused = false
+    /// The list's own keys handlers may act and its ring shows: it has the
+    /// keys and no comment editor claims them (`listOwnsKeys`).
+    var listOwnsKeys = false
     var toggle: () -> Void = {}
 }
 
 /// One real card in a list wired as `ActionItemsView` wires it: the list's
 /// focus sink, the keyboard context, and the hand-back of the keys when a
-/// comment editor lets go of them.
+/// comment editor lets go of them. With `handsBackOnRelease` off, the list
+/// doesn't take the keys when the editor's preference clears, so only the
+/// card's own hand-off (`takeKeys`) can give them back.
 private struct DraftCardProbe: View {
     let task: ActionTask
     let store: CommentDraftStore
     let log: DraftCardLog
+    var handsBackOnRelease = true
     @State private var cursor: UUID?
     @State private var toggleRequest: ActionItemsKeyboardContext.ToggleRequest?
     @State private var serial = 0
@@ -38,9 +44,13 @@ private struct DraftCardProbe: View {
             focusCard: StableAction { id in
                 cursor = id
                 listFocused = true
+            },
+            takeKeys: StableAction { id in
+                cursor = id
+                listFocused = true
             }))
         .onPreferenceChange(CommentEditorFocusedKey.self) { focused in
-            if commentEditorFocused, !focused { listFocused = true }
+            if handsBackOnRelease, commentEditorFocused, !focused { listFocused = true }
             commentEditorFocused = focused
         }
         .dsFocusContainer($listFocused, showsCursor: listFocused && !commentEditorFocused)
@@ -51,6 +61,9 @@ private struct DraftCardProbe: View {
             }
         }
         .onChange(of: listFocused) { _, focused in log.listFocused = focused }
+        .onChange(of: ActionItemsKeyboardContext.listOwnsKeys(listFocused: listFocused,
+                                                              commentEditorFocused: commentEditorFocused),
+                  initial: true) { _, owns in log.listOwnsKeys = owns }
     }
 }
 
@@ -115,14 +128,18 @@ struct CommentDraftWindowTests {
         }
     }
 
-    @Test("collapsing a card whose comment editor has the keys hands them to the list: no stop without a ring")
-    func collapseLeavesNoRinglessStop() async throws {
+    /// `handsBackOnRelease: false` is the card's own hand-off alone: without
+    /// it the list never got the keys (checked by taking `takeKeys` out).
+    @Test("collapsing a card whose comment editor has the keys hands them to the list: no stop without a ring",
+          arguments: [true, false])
+    func collapseLeavesNoRinglessStop(handsBackOnRelease: Bool) async throws {
         try await KeyWindowGate.run {
             let store = CommentDraftStore()
             let log = DraftCardLog()
             let task = SmokeFixtures.task(subject: "Reply to Priya", body: "About the rollout.")
             store.update("Hello", for: CommentComposerView.draftKey(task, SmokeFixtures.day), task: task)
-            let window = try await open(DraftCardProbe(task: task, store: store, log: log))
+            let window = try await open(DraftCardProbe(task: task, store: store, log: log,
+                                                       handsBackOnRelease: handsBackOnRelease))
             defer { window.close() }
 
             let editor = try #require(editors(in: window.contentView).first, "the composer didn't open on the draft")
@@ -138,6 +155,7 @@ struct CommentDraftWindowTests {
                 #expect(view.window === window, "the keys are on a view no longer in the window: \(describe(view))")
             }
             #expect(log.listFocused, "the list didn't take the keys: they're on \(describe(responder))")
+            #expect(log.listOwnsKeys, "the list has the keys but shows no ring")
             // Every stop Tab reaches is on screen: none is the removed editor.
             for _ in 0..<6 {
                 WindowEvents.press(WindowEvents.tab, in: window)

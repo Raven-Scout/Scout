@@ -35,6 +35,8 @@ struct TaskCardView: View {
 
     @State private var inlineError: String?
     @State private var expanded: Bool
+    /// One of this card's comment editors has the keys.
+    @State private var editorHasKeys = false
     @State private var showingQuickSnooze = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.openKBNote) private var openKBNote
@@ -110,6 +112,8 @@ struct TaskCardView: View {
                 detail
                     .padding(.horizontal, 14)
                     .padding(.bottom, 14)
+                    .onPreferenceChange(CommentEditorFocusedKey.self) { editorHasKeys = $0 }
+                    .onDisappear { editorHasKeys = false }
             } else if let err = Self.collapsedError(expanded: expanded, inlineError: inlineError) {
                 inlineErrorLabel(err)
                     .padding(.horizontal, 14)
@@ -221,6 +225,9 @@ struct TaskCardView: View {
     }
 
     private func toggle() {
+        // Collapsing tears the comment editor down: hand its keys to the list
+        // first, so no stop is left without a ring (`takeKeys`).
+        if expanded, editorHasKeys { keyboard.takeKeys?(task.id) }
         withMotion(.easeInOut(duration: 0.15)) { expanded.toggle() }
         if !expanded { onCollapse?() }
     }

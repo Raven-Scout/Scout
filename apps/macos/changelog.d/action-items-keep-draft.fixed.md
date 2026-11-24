@@ -5,5 +5,5 @@
   the action item is completed or archived. It is never written to the vault, and quitting Scout asks first
   while one remains.
 - **Action Items: collapsing a card no longer leaves a Tab stop without a ring.** When the comment editor had
-  the keys, closing its card left them on the removed editor until the next redraw. They now go back to the
-  list, on the card you closed.
+  the keys, closing its card took the editor away, and the list only took the keys back once it noticed, a
+  redraw later. The card now hands them to the list, on the card you closed, as it closes.

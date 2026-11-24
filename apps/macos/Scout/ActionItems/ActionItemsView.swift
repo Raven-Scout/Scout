@@ -266,6 +266,10 @@ struct ActionItemsView: View {
             toggleRequest: toggleRequest,
             focusCard: StableAction { id in
                 clickFocus.clicked(id, setCursor: { cursorTaskID = $0 }, focusList: { listFocused = true })
+            },
+            takeKeys: StableAction { id in
+                cursorTaskID = id
+                listFocused = true
             })
     }
 
