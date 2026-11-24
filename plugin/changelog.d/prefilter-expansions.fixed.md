@@ -4,7 +4,7 @@
   spells no KB path. In a scheduled run, a command now goes to Python when it has a glob character, a `$`
   (other than `$?`, `$#`, `$!`, `$$`), a backtick, a brace list (`kn{o,}wledge-base`), a leading `~`, an
   absolute path, a `(` (zsh reads `kn(o|)wledge-base` as alternation), `xargs` or `parallel`, or a `cd`
-  into `action-items/`; when its cwd is in or under `action-items/`; or when it names a KB folder in another
+  into `action-items/` (in any letter case, quoted or escaped: `cd 'action'-items`, `XARGS`); when its cwd is in or under `action-items/`; or when it names a KB folder in another
   letter case (`KNOWLEDGE-BASE`, the same folder on macOS's default disk). Owner sessions are unaffected: they
   leave before the filter runs. A launcher called by its full path (`/usr/bin/nohup`, `/usr/bin/env -i`) and
   `git -C $R $SUB` now reach Python too, which denies them. The Python gate does not yet deny the glob and

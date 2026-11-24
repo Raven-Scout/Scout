@@ -79,11 +79,14 @@ EXPANSION_ALTERNATIVES = (
     r"\(",
 )
 EXPANSION_PATTERN = "|".join(EXPANSION_ALTERNATIVES)
-# A KB folder's name in any letter case (macOS's default disk ignores case), as prefilter.sh matches it.
-KB_NAME_ANY_CASE = (
-    "[Kk][Nn][Oo][Ww][Ll][Ee][Dd][Gg][Ee][-_][Bb][Aa][Ss][Ee]"
-    "|[Aa][Cc][Tt][Ii][Oo][Nn]-[Ii][Tt][Ee][Mm][Ss]/[Cc][Oo][Nn][Tt][Ee][Xx][Tt]"
+# Rules prefilter.sh also applies ignoring letter case, to the command value as is and again with its quotes and
+# backslashes gone: a program fed paths by another, a cd into action-items/ (on macOS's case-insensitive disk
+# ACTION-ITEMS is the folder and XARGS runs xargs), and, on the stripped value only, a KB folder's name.
+LATE_RULES = (
+    r"(^|[^A-Za-z0-9_.-]|\\[nt])(xargs|parallel)([^A-Za-z0-9_.-]|$)"
+    r"|(cd|pushd|-C|--directory|--git-dir|--work-tree)[^;&|]*action-items"
 )
+STRIPPED_RULES = rf"knowledge[-_]base|action-items/context|{LATE_RULES}"
 MAX_PAYLOAD = 32768  # bytes; a run's kb-read-gate payload over this is blocked in the shell
 
 # The gate tests whose string literals make up the Bash corpus.
@@ -403,6 +406,18 @@ GATE_FORMS = (
     "head Knowledge_Base/a.md",
     "cat ACTION-ITEMS/Context/x.md",
     "cat KNOW''LEDGE-BASE/x.md",
+    # review of #798: quoting, a backslash or letter case hid a cd or an xargs
+    "cd action\\-items && cat context/a.md",
+    "cd 'action'-items && cat context/a.md",
+    "cd ACTION-ITEMS && cat context/a.md",
+    "ls | x\\args cat",
+    "ls | XARGS cat",
+    'cd "action-items" && cat context/a.md',
+    "true\nXARGS cat",
+    "ls | Parallel cat",
+    "git -C Action-Items show HEAD:context/a.md",
+    # an even run of `$` before a quote that holds a backslash: bash and zsh split it differently (#790)
+    "cat x$$'\\' k*/a.md '",
 )
 
 # Commands that read a KB note once the shell has expanded them, though their text spells no KB path (the
@@ -600,11 +615,15 @@ def _widened(case: Case, old: Outcome, new: Outcome, expansions: set[str]) -> bo
 
 
 def _expansion_matches(commands: list[str]) -> set[str]:
-    """The commands EXPANSION_PATTERN matches, as the hook sees them (the JSON-escaped command value), and those
-    that name a KB folder in another letter case once quotes and backslashes are gone (they now reach Python too)."""
+    """The commands this change sends to Python, as the hook sees them (the JSON-escaped command value):
+    EXPANSION_PATTERN, LATE_RULES in any letter case, and STRIPPED_RULES once quotes and backslashes are gone."""
     values = ['"command": ' + json.dumps(c) for c in commands]
     matched = {commands[n - 1] for n in _matching_lines(EXPANSION_PATTERN, values)}
-    return matched | {c for c in commands if re.search(KB_NAME_ANY_CASE, re.sub(r"[\"'\\]", "", c))}
+    for command, value in zip(commands, values, strict=True):
+        stripped = re.sub(r"[\"'\\]", "", value)
+        if re.search(LATE_RULES, value, re.I) or re.search(STRIPPED_RULES, stripped, re.I):
+            matched.add(command)
+    return matched
 
 
 def _differences(world: World, cases: list[Case]) -> list[str]:

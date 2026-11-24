@@ -245,6 +245,11 @@ matches() {
     printf '%s' "$v" | "$GREP" -qE -e "$1"
 }
 
+# The same, ignoring letter case.
+matches_i() {
+    printf '%s' "$v" | "$GREP" -qiE -e "$1"
+}
+
 # Sets $v to the payload's command value, as JSON spells it (quotes and escapes kept). Returns grep's
 # status: 1 (and an empty $v) when the payload has no command, above 1 when grep failed.
 command_value() {
@@ -260,14 +265,19 @@ bash_needs_python() {
     bash_pattern
     matches "$re"
     [ "$?" -ne 1 ] && return 0
+    # A KB folder, a program fed paths by another, a cd into action-items/: also in any letter case (on a
+    # case-insensitive disk, macOS's default, ACTION-ITEMS is the folder and XARGS runs xargs), and below
+    # with quotes and backslashes gone (`cd 'action'-items`, `x\args`).
+    late='(^|[^A-Za-z0-9_.-]|\\[nt])(xargs|parallel)([^A-Za-z0-9_.-]|$)|(cd|pushd|-C|--directory|--git-dir|--work-tree)[^;&|]*action-items'
+    matches_i "$late"
+    [ "$?" -ne 1 ] && return 0
     if [ -n "$SCOUT_SECRETS_DIR" ]; then
         case "$p" in *"$SCOUT_SECRETS_DIR"*) return 0 ;; esac
     fi
     tool tr
     # shellcheck disable=SC1003 # the set is ', " and \ (one backslash after the shell's escaping)
     v=$(printf '%s' "$v" | "$t" -d "'\"\\\\") || return 0
-    # In any letter case: on a case-insensitive disk (macOS's default) KNOWLEDGE-BASE is the same folder.
-    matches '[Kk][Nn][Oo][Ww][Ll][Ee][Dd][Gg][Ee][-_][Bb][Aa][Ss][Ee]|[Aa][Cc][Tt][Ii][Oo][Nn]-[Ii][Tt][Ee][Mm][Ss]/[Cc][Oo][Nn][Tt][Ee][Xx][Tt]'
+    matches_i "knowledge[-_]base|action-items/context|$late"
     [ "$?" -ne 1 ]
 }
 
