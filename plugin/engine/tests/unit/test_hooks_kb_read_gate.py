@@ -220,6 +220,29 @@ def _owner_state() -> str:
         "env HOME={state}/scout python3 -c \"open('x','w')\"",
         "unset HOME; echo x > ~/x",
         "for HOME in {state}/scout; do echo x > ~/run-limits.json; done",
+        # review of #800: each of these changes `~`, verified in zsh -f with a run's options
+        "typeset H\\OME=$PWD/h; git commit -m msg",
+        "export HO''ME=$PWD/h; git commit -m msg",
+        "export HO\\ME=$PWD/h; git commit -m msg",
+        "printf -v HO''ME %s $PWD/h; git commit -m msg",
+        "read HO''ME <<< $PWD/h; git commit -m msg",
+        "unset HO''ME",
+        "IFS= read -r HOME <<< $PWD/h; git commit -m msg",
+        "HOME+=/.claude; echo x >> ~/settings.json",
+        "HOME[1,-1]=$PWD/h; git commit -m msg",
+        ": ${{HOME::=$PWD/h}}; git commit -m msg",
+        "echo ${{HOME::=/x}}",
+        ": ${{HOME:=/x}}",
+        "select HOME in $PWD/h; do break; done <<< 1; git commit -m msg",
+        "nocorrect export HOME=$PWD/h; git commit -m msg",
+        "- export HOME=$PWD/h; git commit -m msg",
+        "noglob HOME=/x true",
+        # a name built at run time
+        "v=HO; v+=ME; : ${{(P)v::=$PWD/h}}; git commit -m msg",
+        "v=HO; v+=ME; export $v=$PWD/h; git commit -m msg",
+        'v=HO; v+=ME; typeset "$v=$PWD/h"; git commit -m msg',
+        "v=HO; v+=ME; read $v <<< $PWD/h; git commit -m msg",
+        'v=HO; v+=ME; eval "$v=$PWD/h"; git commit -m msg',
     ],
 )
 def test_run_denies_a_command_that_points_home_elsewhere(vault, command):
@@ -236,6 +259,11 @@ def test_run_denies_a_command_that_points_home_elsewhere(vault, command):
         "echo $HOME",
         "ls ~/Documents",
         "export HOME",
+        "HOME=~ ls",
+        "HOME=$HOME/ ls",
+        'echo "HOME is $HOME"',
+        "read -r HOME_DIR <<< x",
+        'while IFS= read -r line; do echo "$line"; done < notes.txt',
     ],
 )
 def test_run_may_keep_or_read_its_home(vault, command):
@@ -271,6 +299,8 @@ def _events(vault: Path) -> list[dict]:
         ("git --config-env=core.hooksPath=D commit -m x", "--config-env core.hooksPath"),
         ("git config core.hooksPath /dev/null", "git config core.hooksPath"),
         ("GIT_CONFIG_COUNT=1 git commit -m x", "GIT_CONFIG_*"),
+        ("XDG_CONFIG_HOME=./x git commit -m x", "XDG_CONFIG_HOME"),
+        ("export XDG_CONFIG_HOME=./x; git commit -m x", "XDG_CONFIG_HOME"),
         ("git commit-tree abc -m x", "commit-tree"),
         ("git update-ref refs/heads/main abc", "update-ref"),
         ("rm .git/hooks/pre-commit", ".git/hooks"),
@@ -501,10 +531,29 @@ def test_a_run_env_change_or_detach_reaches_python_from_the_shell(vault, tmp_pat
 
 @pytest.mark.parametrize(
     "command",
-    ["HOME=/tmp/x scripts/scoutctl status", "export HOME=/tmp/x", "unset HOME", "read HOME", "printf -v HOME %s x"],
+    [
+        "HOME=/tmp/x scripts/scoutctl status",
+        "export HOME=/tmp/x",
+        "unset HOME",
+        "read HOME",
+        "printf -v HOME %s x",
+        # quoted or escaped: matched once the shell stage has removed quotes and backslashes (review of #800)
+        "typeset H\\OME=/tmp/x; git commit -m msg",
+        "export HO''ME=/tmp/x; git commit -m msg",
+        "unset HO''ME",
+        "export SCOUT_MO''DE=x; git commit -m msg",
+        "unset SCOUT_REA''DER",
+        # a name built at run time names no HOME at all
+        "export $v=/tmp/x; git commit -m msg",
+        'typeset "$v=/tmp/x"; git commit -m msg',
+        "read $v <<< /tmp/x; git commit -m msg",
+        'printf -v "$v" %s x',
+        ": ${(P)v::=/tmp/x}",
+    ],
 )
 def test_a_home_change_reaches_python_from_the_shell(vault, tmp_path, command):
-    # No KB word and no other trigger: only HOME sends it to Python (here: missing, so exit 2).
+    # No KB word and no other trigger: only the HOME, run-env or built-name rules send it to Python (here: missing,
+    # so exit 2).
     payload = _payload("Bash", {"command": command}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
     assert res.returncode == 2

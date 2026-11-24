@@ -925,6 +925,51 @@ def test_commands_that_change_the_run_env_are_flagged(command: str) -> None:
         "sudo HOME=/a ls",
         "HOME=$OTHER ls",
         "HOME=~other ls",
+        "HOME=~/.claude; echo x >> ~/settings.json",
+        "HOME=$HOME/.claude ls",
+        # review of #800: forms that change `~` without a plain `HOME=` at the start of a command
+        "HOME+=/.claude; echo x >> ~/settings.json",
+        "HOME[1,-1]=/x; echo x >> ~/settings.json",
+        "HOME[1]=x",
+        "(( HOME=0 ))",
+        "let HOME=0",
+        'let "HOME+=1"',
+        "integer HOME=0",
+        "IFS= read -r HOME <<< /x; echo x >> ~/settings.json",
+        "read -A HOME",
+        "readarray HOME < f",
+        "vared HOME",
+        "getopts x HOME",
+        "select HOME in /x; do break; done <<< 1",
+        "local HOME",
+        "typeset -T HOME home",
+        "typeset -l HOME",
+        "nocorrect export HOME=/x",
+        "noglob HOME=/x true",
+        "noglob export HOME=/x",
+        "- export HOME=/x",
+        "builtin export HOME=/x",
+        "command export HOME=/x",
+        "exec env HOME=/x ls",
+        # a quoted or escaped name is the same name to the shell
+        "export HO''ME=/x",
+        "typeset H\\OME=/x",
+        "HO\\ME=/x git commit -m m",
+        "printf -v HO''ME /x",
+        "read HO''ME <<< /x",
+        "unset HO''ME",
+        "for HO''ME in /x; do :; done",
+        'eval "HO""ME=x"',
+        # a name built at run time may be HOME
+        "v=HOME; export $v=/x",
+        'v=HOME; typeset "$v=/x"',
+        'v=HO; v+=ME; eval "$v=/x"; git commit -m m',
+        "v=HOME; read $v <<< /x",
+        'read "$v" <<< /x',
+        'printf -v "$v" /x',
+        "unset $v",
+        "export ${v}=/x",
+        "let $v=1",
     ],
 )
 def test_commands_that_point_home_elsewhere_are_named(command: str) -> None:
@@ -933,10 +978,56 @@ def test_commands_that_point_home_elsewhere_are_named(command: str) -> None:
 
 @pytest.mark.parametrize(
     "command",
-    ["HOME=$HOME ls", "HOME=${HOME} ls", 'HOME="$HOME" ls', "echo $HOME ~", "export HOME", "printenv HOME", "cd ~"],
+    [
+        "HOME=$HOME ls",
+        "HOME=${HOME} ls",
+        'HOME="$HOME" ls',
+        "HOME=~ ls",
+        "HOME=$HOME/ ls",
+        "FOO=bar HOME=$HOME ls",
+        "echo $HOME ~",
+        "export HOME",
+        "printenv HOME",
+        "cd ~",
+        'echo "HOME is $HOME"',
+        "read -r HOME_DIR <<< x",
+        "export PATH=$HOME/bin:$PATH",
+        "unset HOMEBREW_PREFIX",
+        "for d in $HOME/a $HOME/b; do ls $d; done",
+        'while IFS= read -r line; do echo "$line"; done < notes.txt',
+        "v=x; read -r v <<< y",
+        "printf '%s\\n' \"$HOME\"",
+    ],
 )
 def test_keeping_or_reading_home_is_not_flagged(command: str) -> None:
     assert run_escape(command) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [": ${HOME:=/x}", ": ${HOME=/x}", ": ${HOME::=/x}; echo x >> ~/f", "echo ${HOME::=/x}", "v=HOME; : ${(P)v::=/x}"],
+)
+def test_an_expansion_that_assigns_home_or_a_built_name_is_found(command: str) -> None:
+    assert live_run.assigns_by_expansion(command)
+
+
+@pytest.mark.parametrize("command", ["echo ${HOME}", "echo ${HOME:-/x}", "ls ${HOME}/notes", "echo ${(P)v}"])
+def test_an_expansion_that_only_reads_is_not(command: str) -> None:
+    assert not live_run.assigns_by_expansion(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "XDG_CONFIG_HOME=./x git commit -m m",
+        "export XDG_CONFIG_HOME=./x; git commit -m m",
+        "env XDG_CONFIG_HOME=./x git commit -m m",
+        "declare -x XDG_CONFIG_HOME=./x",
+    ],
+)
+def test_pointing_git_at_another_global_config_dir_is_named(command: str) -> None:
+    """git reads ``$XDG_CONFIG_HOME/git/config`` as its global config, which can set core.hooksPath."""
+    assert run_escape(command) == live_run.XDG_CONFIG_FORM
 
 
 def test_a_run_env_change_still_wins_over_home() -> None:

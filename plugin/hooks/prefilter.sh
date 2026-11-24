@@ -175,7 +175,14 @@ bash_pattern() {
     # -- HOME. The gates expand `~` and `$HOME` with the run's own HOME, so a command that points HOME
     #    elsewhere first (`HOME=x cmd`, `unset HOME`, `export HOME=…`) names files they never check.
     #    Every mention goes to Python, which denies a change and lets `HOME=$HOME` or a read through.
+    #    A quoted or escaped name (`HO''ME=x`, `H\OME=x`) is matched below, once quotes are removed.
     alt 'HOME'
+    # -- A variable whose name is built at run time, so no name above need appear: `export $v=…`,
+    #    `read "$v"`, `printf -v "$v" …`, zsh's `${(P)v::=…}`. Python denies a run's assignment to a
+    #    name it can't read.
+    alt "$word"'(export|declare|typeset|local|readonly|integer|float|unset|read|select|getopts|vared|mapfile|readarray|let)([^A-Za-z0-9_.-][^;&|]*)?[$`]'
+    alt 'printf[^;&|]* -v'
+    alt '\$\{\([^)]*P'
 }
 
 # Sets $t to program $1 by absolute path: /usr/bin or /bin first, else the first in the (filtered,
@@ -225,7 +232,9 @@ bash_needs_python() {
     tool tr
     # shellcheck disable=SC1003 # the set is ', " and \ (one backslash after the shell's escaping)
     v=$(printf '%s' "$v" | "$t" -d "'\"\\\\") || return 0
-    matches 'knowledge-base|knowledge_base|action-items/context'
+    # A KB path, and the names a run may not set, spelled with quotes or backslashes (`HO''ME=x`,
+    # `export SCOUT_MO\DE=x`).
+    matches 'knowledge-base|knowledge_base|action-items/context|HOME|SCOUT_(MODE|READER)'
     [ "$?" -ne 1 ]
 }
 

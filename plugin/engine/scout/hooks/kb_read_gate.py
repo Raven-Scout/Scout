@@ -150,8 +150,9 @@ def _deny_run_env() -> str:
 
 def _deny_home() -> str:
     return (
-        f"{MARK} A scheduled run doesn't set, unset or export HOME: what `~` and `$HOME` name decides which files "
-        "this gate protects. Use the paths as they are; Scout's commands find their own folders."
+        f"{MARK} A scheduled run doesn't set, unset or export HOME, or set a variable whose name it builds at run "
+        "time (`export $v=…`, `read $v`): what `~` and `$HOME` name decides which files this gate protects. Use the "
+        "paths as they are, and name the variables you set; Scout's commands find their own folders."
     )
 
 
@@ -376,7 +377,7 @@ def decide(
         if not isinstance(command, str):
             raise ValueError("Bash call without a command")
         from scout.kb import hook_paths
-        from scout.kb.live_run import DELEGATE_FORM, HOME_FORM, run_escape
+        from scout.kb.live_run import DELEGATE_FORM, HOME_FORM, assigns_by_expansion, run_escape
 
         def resolve(raw: str) -> str | None:
             """The path a word names, with the environment's variables put in; None when the shell fills in
@@ -416,6 +417,8 @@ def decide(
                     return found
             return None
 
+        if assigns_by_expansion(command):
+            return _deny_home()
         escape = run_escape(command, protect=protect, secret=secret)
         if escape == "env":
             return _deny_run_env()

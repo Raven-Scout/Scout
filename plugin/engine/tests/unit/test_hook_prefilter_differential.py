@@ -19,10 +19,12 @@ cannot change a match, and that nothing else in the pattern moved.
 A deliberate change to a filter belongs in ``INTENDED_DIFFERENCES`` with the reason; until then any
 difference fails.
 
-One deliberate change so far: the Bash pattern gained ``HOME_PATTERN``, because the gates expand ``~`` and
-``$HOME`` with the run's own HOME, and a command that points HOME elsewhere first names files they never check.
-The pattern must be the old one plus exactly that, and a case may differ from the old command only by now
-reaching Python where the old one let it through, for a command that pattern matches.
+One deliberate change so far: the Bash pattern gained ``ADDED_ALTERNATIVES`` (any mention of HOME, and a builtin
+given a name built at run time), because the gates expand ``~`` and ``$HOME`` with the run's own HOME, and a
+command that points HOME elsewhere first names files they never check; and the last, quote-stripped match gained
+``STRIPPED_NAMES`` (HOME, SCOUT_MODE and SCOUT_READER), so ``HO''ME=x`` or ``SCOUT_MO\\DE=`` is no way round. The
+pattern must be the old one plus exactly those, and a case may differ from the old command only by now reaching
+Python where the old one let it through, for a command one of them matches.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -58,9 +61,21 @@ ENTRIES: dict[str, tuple[str, str]] = {
 # Cases where the new command is meant to differ from the old one: {case id: reason}. Empty on purpose.
 INTENDED_DIFFERENCES: dict[str, str] = {}
 
-# The alternative appended to the Bash pattern after the move, as prefilter.sh assembles it: any mention of HOME.
-HOME_PATTERN = "HOME"
-# A run's commands that point HOME elsewhere and that the old pattern let through: each must now reach Python.
+# The alternatives appended to the Bash pattern after the move, as prefilter.sh assembles them: any mention of
+# HOME, and a builtin that sets what it names given a name built at run time (`export $v=…`, `read "$v"`,
+# `printf -v "$v"`, zsh's `${(P)v::=…}`).
+ADDED_ALTERNATIVES = (
+    "HOME",
+    r"(^|[^A-Za-z0-9_.-]|\\[nt])(export|declare|typeset|local|readonly|integer|float|unset|read|select|getopts|vared"
+    r"|mapfile|readarray|let)([^A-Za-z0-9_.-][^;&|]*)?[$`]",
+    r"printf[^;&|]* -v",
+    r"\$\{\([^)]*P",
+)
+ADDED_PATTERN = "|".join(ADDED_ALTERNATIVES)
+# Names the last match finds once quotes and backslashes are removed, beside the KB's own.
+STRIPPED_NAMES = "HOME|SCOUT_(MODE|READER)"
+# A run's commands that point HOME elsewhere, or change the run env, and that the old pattern let through: each
+# must now reach Python.
 HOME_CHANGES = (
     "HOME=x ls",
     "HOME=/tmp/h ls",
@@ -70,6 +85,19 @@ HOME_CHANGES = (
     "declare -x HOME=x",
     "readonly HOME=x",
     "for HOME in a b; do ls; done",
+    "HO''ME=x ls",
+    "H\\OME=x ls",
+    "export HO''ME=x",
+    "typeset H\\OME=x",
+    "unset HO''ME",
+    "read HO''ME <<< x",
+    "export SCOUT_MO''DE=x",
+    "unset SCOUT_REA''DER",
+    "export $v=x",
+    'typeset "$v=x"',
+    "read $v <<< x",
+    'printf -v "$v" %s x',
+    ": ${(P)v::=x}",
 )
 
 # The gate tests whose string literals make up the Bash corpus.
@@ -268,7 +296,7 @@ KNOWN_MISSED_FORMS: tuple[tuple[str, bool], ...] = (
     ("timeout 60 env -u FOO ls", True),
     ("time -p ls", False),
     ("exec -a x bash -c ls", True),
-    ("unset $v", False),
+    ("unset $v", True),  # a name built at run time (this PR's ADDED_ALTERNATIVES)
     ("$'SCOUT\\x5fMODE'= git commit -m x", False),
     ("git ci -m x", False),
     ("make commit", False),
@@ -410,12 +438,17 @@ def world(tmp_path_factory: pytest.TempPathFactory) -> World:
 
 
 def _widened(case: Case, old: Outcome, new: Outcome) -> bool:
-    """True when ``case`` differs only as ``HOME_PATTERN`` means it to: a run's Bash call that mentions HOME,
-    which the old command let through without Python and the new one hands to Python."""
+    """True when ``case`` differs only as ``ADDED_ALTERNATIVES`` and ``STRIPPED_NAMES`` mean it to: a run's Bash
+    call one of them matches, which the old command let through without Python and the new one hands to Python."""
     if case.entry != "kb-read-gate" or old.python:
         return False
-    command = json.loads(case.payload).get("tool_input", {}).get("command", "")
-    return HOME_PATTERN in command and new.python == f"hook kb-read-gate\n{case.payload}"
+    found = re.search(r'"command": *"([^"\\]|\\.)*"', case.payload)  # the value as the shell stage reads it
+    if found is None:
+        return False
+    value = found[0]
+    stripped = value.translate(str.maketrans("", "", "'\"\\"))
+    added = re.search(ADDED_PATTERN, value) is not None or re.search(STRIPPED_NAMES, stripped) is not None
+    return added and new.python == f"hook kb-read-gate\n{case.payload}"
 
 
 def _differences(world: World, cases: list[Case]) -> list[str]:
@@ -498,7 +531,7 @@ def test_the_bash_pattern_is_the_old_one_minus_its_repeated_block() -> None:
     assert head.endswith("|") and tail.startswith("|")
     # Each piece is a run of whole top-level alternatives, so `X|B|B|Y` and `X|B|Y` match the same lines.
     assert _balanced(head[:-1]) and _balanced(block) and _balanced(tail[1:])
-    assert new == f"{head}{block}{tail}|{HOME_PATTERN}"
+    assert new == f"{head}{block}{tail}|{ADDED_PATTERN}"
     assert "'" not in new and "\n" not in new
 
 
@@ -539,7 +572,7 @@ def test_bash_corpus_matches_the_old_pattern_exactly() -> None:
     ).stdout.rstrip("\n")
 
     old, new = _matching_lines(_pattern(OLD["kb-read-gate"]), values), _matching_lines(new_pattern, values)
-    added = _matching_lines(HOME_PATTERN, values)
+    added = _matching_lines(ADDED_PATTERN, values)
     assert new == old | added, sorted(corpus[n - 1] for n in new ^ (old | added))
     # The corpus exercises both answers, or the comparison above proves little.
     assert len(new) > 300 and len(values) - len(new) > 300
@@ -657,7 +690,7 @@ def test_known_missed_forms_are_kept_exactly_as_they_were(world: World) -> None:
     for form, python_judges in KNOWN_MISSED_FORMS:
         case = Case(form, "kb-read-gate", _bash(form), RUN, "vault")
         old, new = world.run(OLD["kb-read-gate"], case), world.run(NEW["kb-read-gate"], case)
-        assert old == new, form
+        assert old == new or _widened(case, old, new), form
         assert bool(new.python) is python_judges, form
 
 
