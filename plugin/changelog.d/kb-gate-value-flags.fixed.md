@@ -1,0 +1,6 @@
+- **A value flag before the pattern no longer hides a vault-root search from the `kb-read-gate`** (`engine/scout/kb/raw_read.py`, `hooks/hooks.json`; follow-up to #541). `ack -t markdown TODO`, `ugrep -rO md TODO`, `fd --newer 1d people` and `ag -W 80 TODO` read the flag's value as the pattern and the pattern as a folder outside the KB, so they were allowed from the vault root. The gate now reads short-flag clusters the way the tools do (`-rO md`, `-epy`) and knows more value flags for each tool. Other fixes in the same change:
+  - ugrep's `-3` and `--depth=N` count as recursive, and its `-g`, `-O` and `-t` filters are read as comma-separated lists.
+  - fd's `-C` is a base directory, and an exec command ends at `;`.
+  - `ug`, `ug+`, `ugrep+`, `fdfind` and `ack-grep` are judged as the tools they run.
+  - A filter to code is still allowed: `ack -t python`, `ugrep -rO py`.
+  - These no longer count as KB reads: `ag -V`, `fd -V`, `fd -h`, `ag --list-file-types`, `ack --help-types`, `fd -epy x` and `ag --context 3 x`.
