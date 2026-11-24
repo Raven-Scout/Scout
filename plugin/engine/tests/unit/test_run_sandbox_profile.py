@@ -527,6 +527,46 @@ def test_homes_is_home_then_the_accounts_when_they_differ(world, account) -> Non
     assert hook_paths.homes({**env, "HOME": str(link)}) == [link]  # the same folder: one home
 
 
+def test_a_home_spelled_in_another_case_is_the_same_home_on_a_case_insensitive_disk(
+    world, account, monkeypatch
+) -> None:
+    """``HOME=/users/x`` for an account home ``/Users/x`` is one folder on APFS: one home, and the account home
+    adds no rule to what ``$HOME`` alone gives (no per-user path written twice, once per spelling)."""
+    _, vault, env = world
+    variant = {**env, "HOME": str(account).swapcase()}
+    if not os.path.isdir(variant["HOME"]):
+        pytest.skip("case-sensitive disk: another case is another folder")
+    assert hook_paths.homes(variant) == [Path(variant["HOME"])]
+    with_account = set(_rules(vault, variant))
+    monkeypatch.setattr(hook_paths, "account_home", lambda: hook_paths.NO_ACCOUNT_HOME)
+    hook_paths._ROOTS_CACHE.clear()
+    assert with_account == set(_rules(vault, variant))
+
+
+def test_a_missing_home_is_compared_case_folded(world, account, monkeypatch) -> None:
+    """When a home doesn't exist (nothing to stat), the two are compared as the roots are: real path, case-folded."""
+    _, _, env = world
+    gone = account.parent / "Gone"
+    monkeypatch.setattr(hook_paths, "account_home", lambda: gone)
+    assert hook_paths.homes({**env, "HOME": str(gone).swapcase()}) == [Path(str(gone).swapcase())]
+    assert hook_paths.homes({**env, "HOME": str(account)}) == [account, gone]
+
+
+def test_the_roots_cache_follows_the_account_home(world, account, monkeypatch) -> None:
+    """The account's home isn't in the environment, so it is part of the roots cache's key: one process asked
+    again after it changes (a test that patches it) gets the new home's roots, not the old ones."""
+    _, vault, env = world
+    store = hook_paths.CHANGES_OWNER_NAME
+    first = account / ".local" / "state" / "scout" / store / "run-commits.jsonl"
+    assert hook_paths.protected_write(first, vault, env) == hook_paths.ENGINE
+    other = account.parent / "other-account"
+    other.mkdir()
+    monkeypatch.setattr(hook_paths, "account_home", lambda: other)
+    second = other / ".local" / "state" / "scout" / store / "run-commits.jsonl"
+    assert hook_paths.protected_write(second, vault, env) == hook_paths.ENGINE
+    assert hook_paths.protected_write(first, vault, env) is None  # no longer a home of this process
+
+
 def test_homes_ignores_an_account_with_no_home(world, monkeypatch, _owner_store_follows_home) -> None:
     import pwd
 

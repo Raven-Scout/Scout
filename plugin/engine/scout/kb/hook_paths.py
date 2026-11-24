@@ -304,9 +304,19 @@ def homes(env: Mapping[str, str]) -> list[Path]:
     env_home = Path(env.get("HOME") or Path.home())
     out = [env_home]
     account = account_home()
-    if account != NO_ACCOUNT_HOME and os.path.realpath(account) != os.path.realpath(env_home):
+    if account != NO_ACCOUNT_HOME and not _same_folder(account, env_home):
         out.append(account)
     return out
+
+
+def _same_folder(a: Path, b: Path) -> bool:
+    """Whether ``a`` and ``b`` are one folder: the same file on disk, so ``/users/x`` is ``/Users/x`` on a
+    case-insensitive disk (APFS) and no rule is written twice. When either is missing, their real paths
+    compared case-folded, as the roots are."""
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return _norm(os.path.realpath(a)) == _norm(os.path.realpath(b))
 
 
 def claude_dirs(env: Mapping[str, str]) -> list[Path]:
@@ -365,7 +375,9 @@ def protected_roots(vault: Path | None, env: Mapping[str, str] | None = None) ->
     each against this one list, so the gate stays fast however many paths it is handed (review of #637).
     """
     env = os.environ if env is None else env
-    key = (str(vault), *(env.get(k, "") for k in _ENV_KEYS))
+    # The account's home too (homes): it isn't in the environment, and a test that patches it must not read stale
+    # roots.
+    key = (str(vault), str(account_home()), *(env.get(k, "") for k in _ENV_KEYS))
     if key not in _ROOTS_CACHE:
         _ROOTS_CACHE[key] = _build_roots(vault, env, deadline=time.monotonic() + HOOK_ROOTS_BUDGET_S)
     return _ROOTS_CACHE[key]
