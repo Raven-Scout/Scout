@@ -340,7 +340,8 @@ def _pre_tool_use_command() -> str:
 def test_hooks_json_runs_the_gate_on_mcp_calls():
     command = _pre_tool_use_command()
     assert 'c="${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl"; ' in command
-    assert command.endswith('exec /bin/sh "$h" mcp-tool-gate "$c" hook mcp-tool-gate')
+    assert '/bin/sh "$h" mcp-tool-gate "$c" hook mcp-tool-gate;' in command
+    assert command.endswith('exec "$c" hook mcp-tool-gate')
 
 
 def _plugin_root_without_scoutctl(tmp_path: Path) -> Path:

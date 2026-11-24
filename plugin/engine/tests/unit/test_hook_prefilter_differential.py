@@ -465,7 +465,7 @@ def test_the_fixture_is_the_inline_hooks_json() -> None:
     assert len(OLD["kb-read-gate"]) == 4089
     assert all("prefilter.sh" not in c for c in OLD.values())
     assert all(c.count("prefilter.sh") >= 1 for c in NEW.values())
-    assert max(len(c) for c in NEW.values()) < 600  # entries are short calls now
+    assert max(len(c) for c in NEW.values()) < 700  # entries are short calls now
 
 
 # ----- the differential runs ------------------------------------------------------------------
@@ -610,7 +610,7 @@ def test_known_missed_forms_are_kept_exactly_as_they_were(world: World) -> None:
         assert bool(new.python) is python_judges, form
 
 
-# ----- a pre-filter that is missing or broken never means "allow" in a run ---------------------
+# ----- a pre-filter that is missing or broken is never trusted ---------------------------------
 
 GATES = ("kb-read-gate", "kb-read-gate-read", "kb-write-gate", "outbound-gate")
 RUN_ONLY_GATES = GATES[:3]
@@ -625,13 +625,18 @@ RUNS: tuple[dict[str, str], ...] = (RUN, {"SCOUT_READER": "agent:helper"}, {"SCO
 OWNERS: tuple[dict[str, str], ...] = ({}, {"SCOUT_READER": "owner"})
 
 
+DIRECTORY = "<a directory>"
+
+
 def _world_with_script(tmp_path: Path, text: str | None, mode: int = 0o755) -> World:
     """A world whose prefilter.sh is ``text`` (None: no script at all)."""
     world = World(tmp_path)
     script = world.root / "hooks" / "prefilter.sh"
     script.unlink()
-    if text is not None:
-        script.write_text(text)
+    if text == DIRECTORY:
+        script.mkdir()
+    elif text is not None:
+        script.write_bytes(text.encode())
         script.chmod(mode)
     return world
 
@@ -670,8 +675,16 @@ def test_a_script_without_its_executable_bit_works_the_same(world: World, tmp_pa
 
 
 _REAL = PREFILTER.read_text(encoding="utf-8")
+# Copies that are not the script. None of them may be trusted: a syntax error exits 2 (a hook's
+# "block", for the owner too) and a no-op exits 0 (a hook's "allow", in a run too).
 BROKEN = {
     "does not parse": "#!/bin/sh\nif then (\n",
+    "only whitespace": "  \n\t\n\n",
+    "only a comment": "# Scout hook pre-filters\n",
+    "NUL-filled": "\x00" * 4096,
+    "a directory": DIRECTORY,
+    "exits 0": "#!/bin/sh\nexit 0\n",
+    "exits 2": "#!/bin/sh\nexit 2\n",
     # A partial write during a plugin update: the brace group is left open, so the copy cannot parse.
     "cut in half": _REAL[: len(_REAL) // 2],
     "cut before its closing brace": _REAL[: _REAL.rindex("}")],
@@ -679,36 +692,60 @@ BROKEN = {
     "cut to its first character": _REAL[:1],
     "exits 1": "#!/bin/sh\nexit 1\n",
     "exits 7": "#!/bin/sh\nexit 7\n",
-    "is killed": "#!/bin/sh\nkill -9 $$\n",
     "fails before the filter": '#!/bin/sh\nset -eu\n: "$NO_SUCH_VARIABLE"\nexit 0\n',
 }
 
 
-@pytest.mark.parametrize("entry", GATES)
 @pytest.mark.parametrize("how", list(BROKEN))
-def test_a_broken_script_blocks_a_run_and_never_the_owner(tmp_path: Path, entry: str, how: str) -> None:
-    world = _world_with_script(tmp_path, BROKEN[how])
-    for env in RUNS:
-        for payload in (JUDGED[entry], _bash("ls"), "{}"):
-            blocked = world.run(NEW[entry], Case(how, entry, payload, env, "vault"))
-            assert blocked.returncode == 2 and blocked.stderr and blocked.python == "", (env, payload, blocked)
-    for env in OWNERS:
-        owner = world.run(NEW[entry], Case(how, entry, JUDGED[entry], env, "vault"))
-        if entry in RUN_ONLY_GATES:  # the entry itself leaves before it looks for the script
-            assert owner == Outcome(0, "", "", ""), (env, owner)
-        else:  # outbound-gate checks the owner too, and only ever warns them
-            assert owner.returncode == 1 and owner.python == "", (env, owner)
+def test_a_broken_script_is_bypassed_as_if_it_were_missing(tmp_path: Path, how: str) -> None:
+    """Whatever the copy does, each entry ends as it does with no script, plus any shell error: Python decides."""
+    broken = _world_with_script(tmp_path / "broken", BROKEN[how])
+    missing = _world_with_script(tmp_path / "missing", None)
+    for entry in ENTRIES:
+        payload = JUDGED.get(entry, TOOL_PAYLOADS[2])
+        for env in (*RUNS, *OWNERS):
+            for p, stub_exit in ((payload, 0), (payload, 1), (payload, 2), (_bash("ls"), 0)):
+                case = Case(how, entry, p, env, "vault", stub_exit)
+                got, want = broken.run(NEW[entry], case), missing.run(NEW[entry], case)
+                # The broken copy may add its own shell diagnostic first; everything after it is the same.
+                assert got._replace(stderr="") == want._replace(stderr=""), (entry, env, p, stub_exit)
+                assert got.stderr.endswith(want.stderr), (entry, env, p, stub_exit)
 
 
-def test_an_unknown_filter_or_a_missing_program_blocks_a_run() -> None:
+def test_a_killed_script_blocks_a_runs_gated_call_and_never_the_owner(tmp_path: Path) -> None:
+    """A filter killed mid-way may have read the payload already, so a gate does not hand Python an empty one."""
+    world = _world_with_script(tmp_path, "#!/bin/sh\nkill -9 $$\n")
+    for entry in ENTRIES:
+        payload = JUDGED.get(entry, TOOL_PAYLOADS[2])
+        for env in RUNS:
+            out = world.run(NEW[entry], Case("killed", entry, payload, env, "vault"))
+            if entry in (*GATES, "mcp-tool-gate"):
+                assert out.returncode == 2 and "(exit 137)" in out.stderr and out.python == "", (entry, env, out)
+            else:  # PostToolUse: nothing to block; Python labels or records
+                assert out.returncode == 0 and out.python, (entry, env, out)
+        for env in OWNERS:
+            out = world.run(NEW[entry], Case("killed", entry, payload, env, "vault"))
+            assert out.returncode != 2, (entry, env, out)
+            if entry not in (*RUN_ONLY_GATES, "front-page-reads"):
+                assert out.python, (entry, env, out)
+
+
+def test_an_unknown_filter_or_a_missing_program_is_not_a_verdict() -> None:
     env = {"PATH": "/usr/bin:/bin"}
     for argv in (["no-such-filter", "/usr/bin/true"], ["kb-read-gate"], []):
-        run = subprocess.run(
-            ["/bin/sh", str(PREFILTER), *argv], env={**env, **RUN}, input="{}", capture_output=True, text=True
-        )
-        assert run.returncode == 2 and "[scout:prefilter]" in run.stderr, argv
-        owner = subprocess.run(["/bin/sh", str(PREFILTER), *argv], env=env, input="{}", capture_output=True, text=True)
-        assert owner.returncode == 1 and "[scout:prefilter]" in owner.stderr, argv
+        for extra in (RUN, {}):
+            out = subprocess.run(
+                ["/bin/sh", str(PREFILTER), *argv], env={**env, **extra}, input="{}", capture_output=True, text=True
+            )
+            assert out.returncode == 1 and "[scout:prefilter]" in out.stderr, (argv, extra)
+
+
+def test_every_filter_ends_in_a_verdict() -> None:
+    """The entries trust only 200 + code, so a filter that ends any other way is bypassed: slower, never
+    wrong. Pin it anyway: outside `verdict` and the unknown-filter branch, the script never exits itself."""
+    code = [line.split("#")[0] for line in PREFILTER.read_text(encoding="utf-8").splitlines()]
+    exits = [line.strip() for line in code if "exit " in line or "exec " in line]
+    assert exits == ['if [ "$1" -le 55 ]; then exit $((200 + $1)); fi', "exit 255", "exit 1"], exits
 
 
 # ----- wiring ---------------------------------------------------------------------------------

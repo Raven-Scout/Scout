@@ -6,9 +6,15 @@
 #
 # The whole file is one `{ ... }` group, opened on line 1 and closed on the last line, and it has no
 # shebang (it is only ever run as `/bin/sh <path>`). The shell reads a group whole before running any of
-# it, so a copy cut off anywhere (a partial write during a plugin update) is a syntax error, exit 2,
-# which the hooks.json entry turns into a block for a run. With a shebang first, a copy cut to that one
-# line would be a comment-only script that exits 0.
+# it, so a copy cut off anywhere (a partial write during a plugin update) is a syntax error that runs
+# nothing. With a shebang first, a copy cut to that one line would be a comment-only script.
+#
+# THE VERDICT PROTOCOL. A syntax error exits 2, which is also a hook's "block"; an empty, comment-only,
+# NUL-filled or no-op copy exits 0, which is "allow". So neither code can be trusted from this script.
+# Every filter ends with `verdict <code>`, which exits 200 + <code>; the hooks.json entry trusts only an
+# exit of 200 or more, and hands Claude Code <exit> - 200. Anything else means this copy did not do its
+# job, and the entry starts the Python stage itself, as when the file is missing. A copy killed by a
+# signal (128 + n) may have read the payload already, so for a gate a run's call is blocked instead.
 #
 # hooks.json calls this once per matching tool call. <filter> names one block of the `case` at the
 # bottom; <program> [args...] is the Python stage (`.../engine/bin/scoutctl hook <name>`), which this
@@ -22,9 +28,9 @@
 # is a call the Python gate never judges. So:
 #   - Widening a pattern is safe (Python decides; it costs time). Narrowing one opens a hole.
 #   - When the Python stage of a gate cannot run, a run's call is blocked (exit 2), never allowed.
-#   - The hooks.json entry guards this script in turn: if the file is missing or empty it starts the
-#     Python stage directly, and if a gate's filter ends with anything but 0 or 2 (a syntax error, a
-#     kill) it blocks the run's call. So a filter here may only ever exit 0 on purpose.
+#   - The hooks.json entry guards this script in turn (the verdict protocol above): a copy that is
+#     missing, empty or broken is bypassed for the Python stage, and one that is killed blocks a run's
+#     gated call. So a filter here ends only through `verdict`, and `verdict 0` only on purpose.
 #   - A tool that fails (cat, grep, tr or cmp missing or erroring: any status but 0 or 1) means
 #     "cannot decide": the call goes to Python, or, when the payload itself could not be read, a run's
 #     call is blocked.
@@ -38,14 +44,21 @@
 #     user. Nothing is looked up in the working directory; no dirname (parameter expansion instead).
 #     The filters' own tools come from /usr/bin or /bin first (see `tool`), so a PATH without them
 #     (PATH=/opt/homebrew/bin) neither breaks the filter nor changes which grep decides.
-#   - Exit codes are the hook protocol: 0 allow or done, 2 block (PreToolUse), anything else is a
-#     non-blocking error.
+#   - Hook codes, as `verdict` takes them: 0 allow or done, 2 block (PreToolUse), anything else is a
+#     non-blocking error. Never `exit` or `exec` directly.
 
 # >>> path-filter
 # Keep only absolute PATH entries. A leading `~` becomes $HOME, as the shell's own PATH search reads
 # it. An empty result falls back to the system dirs. `set -f` keeps glob characters literal.
 sp=; oi=$IFS; IFS=:; set -f; for pe in $PATH; do case "$pe" in \~|\~/*) [ -z "$HOME" ] || pe="$HOME${pe#"~"}" ;; esac; case "$pe" in /*) sp="${sp:+$sp:}$pe" ;; esac; done; set +f; IFS=$oi; PATH="${sp:-/usr/bin:/bin}"; export PATH
 # <<< path-filter
+
+# Ends the filter with hook exit code $1, under the verdict protocol (see the top). A code above 55
+# (the Python stage killed, say) is reported as 55: still neither "allow" nor "block".
+verdict() {
+    if [ "$1" -le 55 ]; then exit $((200 + $1)); fi
+    exit 255
+}
 
 # A scheduled run, by #517's rule: SCOUT_MODE set, or SCOUT_READER set to anything but exactly `owner`.
 is_run() {
@@ -225,18 +238,19 @@ case "$filter" in
 mcp-tool-gate)
     find_vault
     f="$d/connectors.custom.yaml"
-    [ -s "$f" ] || exit 0
+    [ -s "$f" ] || verdict 0
     tool grep
     # shellcheck disable=SC1003 # the pattern ends in an escaped backslash: any backslash in the file
     LC_ALL=C "$t" -qsE -e 'restrict_tools|\\' "$f"
-    [ "$?" -eq 1 ] || exec "$@" # the key, or grep failed
+    [ "$?" -eq 1 ] || { "$@"; verdict "$?"; } # the key, or grep failed
     # No key: Python only if the file holds a NUL byte (tr drops them; cmp then finds a difference).
     tool tr
     tr=$t
     tool cmp
     # shellcheck disable=SC2094 # both only read the file
-    LC_ALL=C "$tr" -d '\000' 2>/dev/null <"$f" | "$t" -s - "$f" && exit 0
-    exec "$@"
+    LC_ALL=C "$tr" -d '\000' 2>/dev/null <"$f" | "$t" -s - "$f" && verdict 0
+    "$@"
+    verdict "$?"
     ;;
 
 # PreToolUse, MCP write tools. Skipped only for a session that is neither a run nor in a vault.
@@ -245,14 +259,14 @@ outbound-gate)
     run=
     is_run && run=1
     find_vault
-    [ -n "$run" ] || [ -f "$d/scout-config.yaml" ] || exit 0
-    "$@" && exit 0
+    [ -n "$run" ] || [ -f "$d/scout-config.yaml" ] || verdict 0
+    "$@" && verdict 0
     if [ -n "$run" ]; then
         echo "[scout:outbound-gate] Scout's outbound privacy check could not run, so this call is blocked in a scheduled run. Put the content in the daily file or the owner's Telegram chat instead, and say so in the run notes." >&2
-        exit 2
+        verdict 2
     fi
     echo "[scout:outbound-gate] Warning: Scout's outbound privacy check could not run; this call was not checked for private content." >&2
-    exit 1
+    verdict 1
     ;;
 
 # PreToolUse, Grep|Glob|Bash. Owner sessions leave at once. A run's Grep or Glob, and any payload
@@ -261,18 +275,18 @@ outbound-gate)
 #   2. the payload names $SCOUT_SECRETS_DIR;
 #   3. its command value spells a KB path once quotes and backslashes are removed.
 kb-read-gate)
-    is_run || exit 0
+    is_run || verdict 0
     if ! read_payload; then
         echo "[scout:kb-read-gate] Scout's KB read gate could not read this call, so it is blocked in a scheduled run." >&2
-        exit 2
+        verdict 2
     fi
     case "$p" in
     *'"Grep"'* | *'"Glob"'* | *knowledge-base* | *knowledge_base* | *action-items/context*) ;;
-    *) bash_needs_python || exit 0 ;;
+    *) bash_needs_python || verdict 0 ;;
     esac
-    printf '%s' "$p" | "$@" && exit 0
+    printf '%s' "$p" | "$@" && verdict 0
     echo "[scout:kb-read-gate] Scout's KB read gate could not run, so this call is blocked in a scheduled run. Read the KB through scripts/scoutctl kb (search, files, read, resolve)." >&2
-    exit 2
+    verdict 2
     ;;
 
 # PreToolUse, Read. $r: a reader that is neither the owner nor `autonomous` (an agent:* or
@@ -282,49 +296,50 @@ kb-read-gate)
 kb-read-gate-read)
     r=
     [ -n "${SCOUT_READER+set}" ] && [ "$SCOUT_READER" != owner ] && [ "$SCOUT_READER" != autonomous ] && r=1
-    [ -n "$r" ] || is_run || exit 0
+    [ -n "$r" ] || is_run || verdict 0
     if ! read_payload; then
         echo "[scout:kb-read-gate] Scout's KB read gate could not read this Read, so it is blocked for this reader." >&2
-        exit 2
+        verdict 2
     fi
     s=
     case "$p" in *[Ss][Cc][Oo][Uu][Tt]-[Ss][Ee][Cc][Rr][Ee][Tt][Ss]*) s=1 ;; esac
     case "$p" in *[Ss][Cc][Oo][Uu][Tt]-[Ii]* | *[Aa][Gg][Ee][Nn][Tt][Ss]/*) s=1 ;; esac
     [ -n "$SCOUT_SECRETS_DIR" ] && case "$p" in *"$SCOUT_SECRETS_DIR"*) s=1 ;; esac
     if [ -z "$s" ]; then
-        [ -n "$r" ] || exit 0
+        [ -n "$r" ] || verdict 0
         case "$SCOUT_READER" in
         [Dd][Ee][Ll][Ee][Gg][Aa][Tt][Ee]:*) ;;
-        *) case "$p" in *knowledge-base* | *knowledge_base* | *action-items/context*) ;; *) exit 0 ;; esac ;;
+        *) case "$p" in *knowledge-base* | *knowledge_base* | *action-items/context*) ;; *) verdict 0 ;; esac ;;
         esac
     fi
-    printf '%s' "$p" | "$@" && exit 0
+    printf '%s' "$p" | "$@" && verdict 0
     echo "[scout:kb-read-gate] Scout's KB read gate could not run, so this Read is blocked for this reader." >&2
-    exit 2
+    verdict 2
     ;;
 
 # PreToolUse, Write|Edit|MultiEdit|NotebookEdit. Every run write goes to Python: a symlink can hide
 # the path from the shell.
 kb-write-gate)
-    is_run || exit 0
-    "$@" && exit 0
+    is_run || verdict 0
+    "$@" && verdict 0
     echo "[scout:kb-write-gate] Scout's write gate could not run, so this write is blocked in a scheduled run." >&2
-    exit 2
+    verdict 2
     ;;
 
 # PostToolUse, Read. Labels a KB note in a run or a vault session; a note it cannot label is private.
 kb-read-label)
     if read_payload; then
-        case "$p" in *knowledge-base* | *knowledge_base* | *action-items/context*) ;; *) exit 0 ;; esac
+        case "$p" in *knowledge-base* | *knowledge_base* | *action-items/context*) ;; *) verdict 0 ;; esac
     else
         p=
     fi
     run=
     is_run && run=1
     find_vault
-    [ -n "$run" ] || [ -f "$d/scout-config.yaml" ] || exit 0
-    printf '%s' "$p" | "$@" && exit 0
+    [ -n "$run" ] || [ -f "$d/scout-config.yaml" ] || verdict 0
+    printf '%s' "$p" | "$@" && verdict 0
     printf '%s\n' '{"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "[scout:kb-label] Scout could not label the file just read, so treat it as [private]: its content must not reach any shared surface (Slack, a connector write or query, a web query, drafts/, a back-port)."}}'
+    verdict 0
     ;;
 
 # PostToolUse, the shared-notes tools. Records what the answer showed, in a run or a vault session.
@@ -332,21 +347,22 @@ shared-read-record)
     run=
     is_run && run=1
     find_vault
-    [ -n "$run" ] || [ -f "$d/scout-config.yaml" ] || exit 0
-    "$@" && exit 0
+    [ -n "$run" ] || [ -f "$d/scout-config.yaml" ] || verdict 0
+    "$@" && verdict 0
     printf '%s\n' '{"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "[scout:shared-read] Scout could not record this answer, so check-outbound will not recognise it. Notes shared with you are private to you: keep their path, title and text off every shared surface (Slack, a connector write or query, a web query, drafts/)."}}'
+    verdict 0
     ;;
 
 # PostToolUse, a run's Write|Edit|MultiEdit. Python starts only for a file_path shaped <dir>/<x>/<x>.md
-# (a project's front page). It warns, never blocks: always exit 0.
+# (a project's front page). It warns, never blocks: always verdict 0.
 front-page-reads)
-    is_run || exit 0
-    read_payload || exit 0 # it only ever warns
+    is_run || verdict 0
+    read_payload || verdict 0 # it only ever warns
     tool grep
     printf '%s' "$p" | "$t" -qE -e '"file_path": *"[^"]*/([^/"]+)/\1\.md"'
-    [ "$?" -eq 1 ] && exit 0
+    [ "$?" -eq 1 ] && verdict 0
     printf '%s' "$p" | "$@"
-    exit 0
+    verdict 0
     ;;
 
 # For the tests: the assembled Bash pattern, one line.
@@ -355,11 +371,11 @@ print-bash-pattern)
     printf '%s\n' "$re"
     ;;
 
-# An unknown filter, or no program to start: hooks.json and this file disagree. Blocked in a run.
+# An unknown filter, or no program to start: hooks.json and this file disagree. Not a verdict, so the
+# entry bypasses this script for the Python stage.
 *)
     echo "[scout:prefilter] hooks/prefilter.sh was called with an unknown filter or no program (${name:-none}); hooks.json and the script are out of step." >&2
-    is_run && exit 2
-    exit 1
+    exit 1 # not a verdict: the entry starts the Python stage itself
     ;;
 esac
 }

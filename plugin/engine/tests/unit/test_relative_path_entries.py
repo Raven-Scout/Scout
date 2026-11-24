@@ -454,7 +454,7 @@ def test_every_tool_hook_filters_path_first_and_none_calls_dirname() -> None:
     assert _script_code()[0] + "; " == prefix
     # Shell builtins and keywords, the two assignments, and the two programs an entry starts, both by
     # absolute path: /bin/sh and scoutctl (which filters PATH itself).
-    allowed = {"[", "{", "}", "if", "then", "else", "fi", "exit", "exec", "echo", "/bin/sh", '"$c"', "s=$?"}
+    allowed = {"[", "{", "}", "if", "then", "else", "fi", "exit", "exec", "echo", "/bin/sh", '"$c"', "s=0", "s=$?", "!"}
     for name, command in _tool_hooks():
         assert (
             'h="${CLAUDE_PLUGIN_ROOT}/hooks/prefilter.sh"; c="${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl"; ' in command

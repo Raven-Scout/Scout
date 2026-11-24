@@ -9,11 +9,14 @@
     The old pattern held one 1,117-character block twice; the copies were identical runs of whole
     alternatives, so one was dropped.
   - The PATH filter and the vault walk, repeated in every entry before, are written once.
-  - A pre-filter that cannot do its job never means "allow" in a run. If `prefilter.sh` is missing or
-    empty, the entry starts the Python hook directly. If it is broken (does not parse, is cut off, is
-    killed, exits with anything but 0 or 2), a gate entry (`kb-read-gate`, `kb-write-gate`,
-    `outbound-gate`) blocks the run's call (exit 2). The whole script is one `{ … }` group, so a copy
-    cut off anywhere fails to parse. An owner session is never blocked by any of this.
+  - The script's own exit code is never trusted: a syntax error exits 2 (a hook's "block", for an
+    owner too) and an empty, comment-only, NUL-filled or no-op copy exits 0 (a hook's "allow", in a
+    run too). Every filter ends with exit 200 + the hook's code, and each entry hands on only such a
+    verdict. If `prefilter.sh` is missing, empty, cut off, broken or does nothing, the entry starts the
+    Python hook directly, exactly as with no script; so a broken copy costs time and never a check, and
+    never blocks an owner. If it is killed mid-way, a gate entry (`kb-read-gate`, `kb-write-gate`,
+    `outbound-gate`, `mcp-tool-gate`) blocks a run's call (exit 2) rather than hand Python a payload
+    that may already have been read; an owner's call goes to Python.
   - **Fixed: a run whose PATH lacked `cat`, `grep` or `tr` let every Bash call through unjudged**, and a
     `grep` error counted as "no match". The filters now take their tools from `/usr/bin` or `/bin` first,
     and any tool status other than 0 or 1 sends the call to Python (or, when the payload itself can't be
