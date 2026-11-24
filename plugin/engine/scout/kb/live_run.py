@@ -734,33 +734,22 @@ def _reads_something(words: list[str], reads: list[str]) -> bool:
 
 
 def _strip_comments(command: str) -> str:
-    """``command`` without its comments: a ``#`` that starts a word, outside quotes, to the end of its line
-    (``cat x # it's`` is ``cat x``; ``a#b``, ``${#x}`` and ``$#`` keep theirs). Run after :func:`_ansi_c`."""
+    """``command`` without its comments: a ``#`` that starts a word (the rule :func:`_quoted_spans` and
+    :func:`_close` use) outside quotes, to the end of its line. ``cat x # it's`` is ``cat x``; ``a#b``, ``${#x}``,
+    ``$#`` and ``\\#`` keep theirs. Run after :func:`_ansi_c`."""
     if "#" not in command:
         return command
+    spans = _quoted_spans(command)
     out: list[str] = []
-    i, n, quote = 0, len(command), None
-    while i < n:
-        c = command[i]
-        if quote is not None:
-            if c == "\\" and quote == '"' and i + 1 < n:
-                out.append(command[i : i + 2])
-                i += 2
-                continue
-            quote = None if c == quote else quote
-        elif c == "\\" and i + 1 < n:
-            out.append(command[i : i + 2])
-            i += 2
-            continue
-        elif c in "'\"":
-            quote = c
-        elif c == "#" and (i == 0 or command[i - 1] in " \t\n;&|()<>"):
+    at = i = 0
+    while (i := command.find("#", i)) >= 0:
+        if (i == 0 or command[i - 1] in " \t\n;&|(") and not any(x <= i < y for x, y in spans):
             end = command.find("\n", i)
-            i = n if end < 0 else end
-            continue
-        out.append(c)
-        i += 1
-    return "".join(out)
+            out.append(command[at:i])
+            at = i = len(command) if end < 0 else end
+        else:
+            i += 1
+    return "".join([*out, command[at:]])
 
 
 # zsh's alternation (`(knowledge|x)-base/a.md`, core zsh even with NO_EXTENDED_GLOB) in a word's place: a group glued
@@ -774,7 +763,7 @@ def _zsh_groups(command: str) -> str:
     rewrite (nested, quoted or with a substitution inside) marks the command unparsed."""
     if "(" not in command:
         return command
-    masked = _QUOTED.sub(lambda m: "\0" * len(m[0]), command)
+    masked = _mask_quoted(command)
     out: list[str] = []
     at = 0
     for m in re.finditer(r"\(", masked):
@@ -1622,42 +1611,29 @@ def _unescape(text: str) -> str:
 
 def _ansi_c(command: str) -> str:
     """``command`` with each ``$'…'`` (outside other quotes) decoded into a plain single-quoted word, so
-    ``$'knowledge\\x2dbase/x.md'`` is read as ``'knowledge-base/x.md'``."""
+    ``$'knowledge\\x2dbase/x.md'`` is read as ``'knowledge-base/x.md'``. The spans are :func:`_quoted_spans`'s, read
+    the zsh way (the shell runs use). An even run of ``$`` before the quote (``$$'…'``) is bash's ``$$`` and a plain
+    quote, so when the quote holds a backslash (the two readings end it apart) a run's read fails closed."""
     if "$'" not in command:
         return command
     out: list[str] = []
-    i, n, quote = 0, len(command), None
-    while i < n:
-        c = command[i]
-        if quote == "'":
-            out.append(c)
-            quote = None if c == "'" else quote
-            i += 1
-        elif c == "\\" and i + 1 < n:
-            out.append(command[i : i + 2])
-            i += 2
-        elif quote == '"':
-            out.append(c)
-            quote = None if c == '"' else quote
-            i += 1
-        elif command.startswith("$'", i):
-            j = i + 2
-            while j < n and command[j] != "'":
-                j += 2 if command[j] == "\\" else 1
-            run = len(command[: i + 1]) - len(command[: i + 1].rstrip("$"))
-            if run % 2 == 0 and "\\" in command[i + 2 : j]:
-                # `$$'…\…'`: bash reads `$$` and a plain quote that ends at the first `'`, zsh and sh read `$` and
-                # `$'…'`. With a backslash inside, the words differ: a run's read can't be judged (fail closed).
-                _STATE["unparsed"] = True
-            decoded = _unescape(command[i + 2 : min(j, n)])
-            out.append("'" + decoded.replace("'", "'\\''") + "'")
-            i = j + 1
-        else:
-            if c in "'\"":
-                quote = c
-            out.append(c)
-            i += 1
-    return "".join(out)
+    at = 0
+    for a, b in _quoted_spans(command, even_dollars_escape=True):
+        if command[a] != "'":
+            continue
+        head = command[:a]
+        run = len(head) - len(head.rstrip("$"))
+        if run and head[: a - run].endswith("\\"):
+            run -= 1  # `\$'…'`: the first `$` is a character
+        if not run:
+            continue
+        body = command[a + 1 : b - 1]
+        if run % 2 == 0 and "\\" in body:
+            _STATE["unparsed"] = True
+        decoded = _unescape(body)
+        out += [command[at : a - 1], "'" + decoded.replace("'", "'\\''") + "'"]
+        at = b
+    return "".join([*out, command[at:]])
 
 
 def _destinations(name: str, args: list[str]) -> list[str]:
