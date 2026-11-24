@@ -108,7 +108,7 @@ bash_pattern() {
     alt '(for [A-Za-z_][A-Za-z0-9_]* in |mapfile|readarray).*scoutctl kb '
 
     # -- Recursive reads, which reach the KB from any directory above it.
-    alt "$word"'(rg|find|tree|du)([^A-Za-z0-9_./-]|$)'
+    alt "$word"'(rg|find|tree|du|ag|ack|fd|ugrep)([^A-Za-z0-9_./-]|$)'
     alt "$word"'[ef]?grep[^;&|]* (-[A-Za-z]*[rR]|--(dereference-)?recursive|-d *recurse|--directories=recurse)'
     alt 'git[^;&|]* grep'
 

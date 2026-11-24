@@ -28,6 +28,6 @@
     without starting any program (before, it filtered PATH first).
   - The filters now always run under `/bin/sh`, whatever shell Claude Code starts hooks with.
   - `engine/tests/unit/test_hook_prefilter_differential.py` runs the old commands (kept as
-    `engine/tests/fixtures/hooks/hooks-inline-574f7dc2.json`) and the new ones over every string the gate
+    `engine/tests/fixtures/hooks/hooks-inline-f3d30663.json`) and the new ones over every string the gate
     tests use plus the forms the `description` names, under each reader, in and out of a vault, with
     Python succeeding and failing, and requires the same exit code, output and Python start for each.

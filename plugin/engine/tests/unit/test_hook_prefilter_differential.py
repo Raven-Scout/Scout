@@ -4,8 +4,8 @@ The shell stage of each tool hook chooses whether Python (``scoutctl hook <name>
 for a scheduled run a call it lets through is a call the gate never judges. Moving that stage out of
 hooks.json into ``hooks/prefilter.sh`` was meant to change no decision. This file holds that to account:
 
-- ``tests/fixtures/hooks/hooks-inline-574f7dc2.json`` is hooks.json as it was on main before the move
-  (commit 574f7dc2, v0.18.22), byte for byte. Its commands are the reference.
+- ``tests/fixtures/hooks/hooks-inline-f3d30663.json`` is hooks.json as it was on main before the move
+  (commit f3d30663, #788, after v0.18.23), byte for byte. Its commands are the reference.
 - Every case runs the old command and the new one against a plugin root whose ``scoutctl`` only records
   that it was started, with what arguments and what stdin, and compares everything observable: exit
   code, stdout, stderr, whether Python would have started, and the payload it would have been given.
@@ -35,7 +35,7 @@ import pytest
 ENGINE = Path(__file__).resolve().parents[2]
 PLUGIN = ENGINE.parent
 PREFILTER = PLUGIN / "hooks" / "prefilter.sh"
-OLD_HOOKS = ENGINE / "tests" / "fixtures" / "hooks" / "hooks-inline-574f7dc2.json"
+OLD_HOOKS = ENGINE / "tests" / "fixtures" / "hooks" / "hooks-inline-f3d30663.json"
 NEW_HOOKS = PLUGIN / "hooks" / "hooks.json"
 
 # (event, matcher prefix) -> the filter name its entry passes to prefilter.sh.
@@ -156,6 +156,15 @@ DESCRIBED_FORMS = (
     # recursive reads
     "rg widgets",
     "find . -name '*.md'",
+    # #788: the other search tools, from the vault root and with a KB path
+    "ag widgets",
+    "ack widgets",
+    "fd . -X cat",
+    "ugrep -r widgets . --include='*.yaml'",
+    "ag widgets knowledge-base",
+    "ls\nfd md",
+    "agent ls",
+    "fdisk -l",
     "tree",
     "du -a",
     "grep -r widgets .",
@@ -252,6 +261,10 @@ KNOWN_MISSED_FORMS: tuple[tuple[str, bool], ...] = (
     ("grep -r widgets .", True),
     ("rg widgets", True),
     ("find . -name '*.yaml'", True),
+    ("ag widgets", True),
+    ("ack widgets", True),
+    ("fd . -X cat", True),
+    ("ugrep -r widgets .", True),
     # #618: hook-skip forms
     ("git config core.hooksPath get", True),
     ('git -C "$R" $SUB -m x', False),
@@ -462,7 +475,7 @@ def test_the_bash_pattern_is_the_old_one_minus_its_repeated_block() -> None:
 
 
 def test_the_fixture_is_the_inline_hooks_json() -> None:
-    assert len(OLD["kb-read-gate"]) == 4089
+    assert len(OLD["kb-read-gate"]) == 4105
     assert all("prefilter.sh" not in c for c in OLD.values())
     assert all(c.count("prefilter.sh") >= 1 for c in NEW.values())
     assert max(len(c) for c in NEW.values()) < 700  # entries are short calls now
