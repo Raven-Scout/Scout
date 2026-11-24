@@ -143,6 +143,16 @@ def test_cli_prints_the_diff_and_refuses_unknown(repo, monkeypatch, tmp_path):
     assert bad.exit_code == 2 and "scoutctl changes diff: no such change chg-ffffffffffff" in bad.output
 
 
+def test_cli_prints_nothing_for_a_change_with_no_own_paths(repo, monkeypatch, tmp_path):
+    """m-a: an empty diff prints nothing (not a bare newline), so the app can tell it from a diff."""
+    sha = commit(repo, {"action-items/x.md": "private item\n"}, "upgrade to 1.2.3")
+    scan(repo, since=None)
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(repo))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    res = CliRunner().invoke(app, ["changes", "diff", _id(sha)])
+    assert res.exit_code == 0 and res.stdout == ""
+
+
 def test_cli_refuses_when_the_vault_is_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "nowhere"))
     res = CliRunner().invoke(app, ["changes", "diff", "chg-aaaaaaaaaaaa"])

@@ -560,7 +560,8 @@ def cli_changes_diff(change_id: str = typer.Argument(..., metavar="CHG-ID", help
     if text is None:
         typer.echo(f"scoutctl changes diff: no such change {change_id}", err=True)
         raise typer.Exit(code=2)
-    typer.echo(text, nl=not text.endswith("\n"))
+    if text:  # a change with no own paths prints nothing, not a bare newline
+        typer.echo(text, nl=not text.endswith("\n"))
 
 
 @changes_app.command("scan")
@@ -749,7 +750,29 @@ def cli_changes_undo(
             err=True,
         )
         raise typer.Exit(2)
+    # Refuse now what the run would only flag later (spec §7.5): an undo that can't happen is never queued.
+    from scout.changes import actions
+    from scout.changes.models import Change
+
+    verified = doc["verified"]
+    problem = actions.rollback_problem(vault, Change.from_row(change), change["test"]) if verified else "git-unreadable"
+    if problem is not None:
+        typer.echo(f"scoutctl changes undo: {_UNDO_REFUSALS.get(problem, _UNDO_REFUSAL_OTHER)}", err=True)
+        raise typer.Exit(2)
     _record_decision("undo", "approval", f"undo:{change_id}", surface, installed, once=True)
+
+
+# What `changes undo` says when the run could not undo the change (scout.changes.actions.rollback_problem), in the
+# owner's words: the app shows the line as it is.
+_UNDO_REFUSALS = {
+    "edited-since": (
+        "Scout can't undo this change: its lines were edited after it, or its files have uncommitted edits. "
+        "Undo it by hand, or commit or drop those edits and try again."
+    ),
+    "root-commit": "Scout can't undo this change: it is the first commit in the vault's history.",
+    "git-unreadable": "Scout can't read the vault's history right now, so it can't undo this change. Try again later.",
+}
+_UNDO_REFUSAL_OTHER = "Scout can't undo this change automatically. Undo it by hand."
 
 
 @changes_app.command("wrong")

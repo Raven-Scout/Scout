@@ -479,9 +479,15 @@ def _commit_file(repo: Path, path: str, message: str) -> None:
     _git(repo, "commit", "-q", "-m", message)
 
 
-def test_undo_records_once_for_a_tested_change(cli, git_vault, home):
+def _second_edit(cli, git_vault: Path) -> dict:
+    """A tested run change that can be undone (the seed is the root commit, which can't be): the newest row."""
+    _commit_file(git_vault, "SKILL.md", "dreaming [22:30]: SKILL.md self-edit — y")
     assert cli(["changes", "scan"]).exit_code == 0
-    change = json.loads(cli(["changes", "--json"]).stdout)["changes"][0]
+    return next(c for c in json.loads(cli(["changes", "--json"]).stdout)["changes"] if c["summary"].endswith("— y"))
+
+
+def test_undo_records_once_for_a_tested_change(cli, git_vault, home):
+    change = _second_edit(cli, git_vault)
     assert change["test"]["state"] == "testing"
     first = cli(["changes", "undo", change["id"]])
     assert first.exit_code == 0 and first.output.strip() == ""
@@ -513,6 +519,36 @@ def test_undo_refuses_interactive_and_governance_changes(cli, git_vault, home):
     assert cli(["changes", "undo", "chg-ffffffffffff"]).exit_code == 2
     assert cli(["changes", "undo", "nonsense"]).exit_code == 2
     assert [r["ref"].split(":")[0] for r in _owner_rows(home)] == ["approve"]  # no undo row was written
+
+
+def test_undo_refuses_a_change_the_run_could_not_undo(cli, git_vault, home):
+    """I7: a change whose lines were edited after it would be blocked at the run, so `changes undo` says so now in
+    plain words (exit 2, nothing recorded) instead of queuing an undo that never happens."""
+    change = _second_edit(cli, git_vault)
+    _commit_file(git_vault, "SKILL.md", "interactive: rewrite the same line")
+    r = cli(["changes", "undo", change["id"]])
+    assert r.exit_code == 2 and "edited after" in r.output and "edited-since" not in r.output
+    assert not _owner_rows(home)
+    # Uncommitted edits to its file block it too; once they're gone (and the later edit undone) it can be queued.
+    _git(git_vault, "revert", "--no-edit", "HEAD")
+    (git_vault / "SKILL.md").write_text("half-written\n")
+    r = cli(["changes", "undo", change["id"]])
+    assert r.exit_code == 2 and "uncommitted" in r.output and not _owner_rows(home)
+    _git(git_vault, "checkout", "--", "SKILL.md")
+    assert cli(["changes", "undo", change["id"]]).exit_code == 0
+    assert [r["ref"] for r in _owner_rows(home)] == [f"undo:{change['id']}"]
+
+
+def test_undo_refuses_when_git_cannot_say(cli, git_vault, home, monkeypatch):
+    from scout.changes import actions
+
+    change = _second_edit(cli, git_vault)
+    monkeypatch.setattr(actions, "rollback_problem", lambda *a, **k: "git-unreadable")
+    r = cli(["changes", "undo", change["id"]])
+    assert r.exit_code == 2 and "can't read" in r.output and not _owner_rows(home)
+    monkeypatch.setattr(actions, "rollback_problem", lambda *a, **k: "something-new")
+    r = cli(["changes", "undo", change["id"]])
+    assert r.exit_code == 2 and "can't undo this change" in r.output and not _owner_rows(home)
 
 
 def test_wrong_records_verdict_wrong_once_and_shows_in_the_report(cli, git_vault, home):
@@ -642,8 +678,11 @@ def test_rollback_refusal_exits_2_with_the_reason(cli, git_vault, home):
     cid = json.loads(cli(["changes", "--json"]).stdout)["changes"][0]["id"]
     r = cli(["changes", "rollback", cid])
     assert r.exit_code == 2 and "not-due" in r.output
-    # The seed commit is the root commit: asked to undo, it is blocked, and rollback says why.
-    assert cli(["changes", "undo", cid]).exit_code == 0
+    # The seed commit is the root commit: `changes undo` refuses it up front (I7)...
+    r = cli(["changes", "undo", cid])
+    assert r.exit_code == 2 and "first commit" in r.output and not _owner_rows(home)
+    # ...and an undo row recorded another way (an older engine) is blocked, and rollback says why.
+    assert cli(["engagement", "record", "approval", "--surface", "scoutctl", "--ref", f"undo:{cid}"]).exit_code == 0
     assert [b["why_blocked"] for b in _due_doc(cli)["blocked"]] == ["root-commit"]
     r = cli(["changes", "rollback", cid])
     assert r.exit_code == 2 and "root-commit" in r.output
@@ -698,8 +737,7 @@ def test_a_ledger_that_cannot_be_written_is_exit_2_with_one_line(cli, git_vault,
     def full(*_a, **_k):
         raise OSError("No space left on device")
 
-    assert cli(["changes", "scan"]).exit_code == 0
-    cid = json.loads(cli(["changes", "--json"]).stdout)["changes"][0]["id"]
+    cid = _second_edit(cli, git_vault)["id"]
     gov = _pending(git_vault)
     monkeypatch.setattr(store, "_append", full)
     for args in (
