@@ -100,6 +100,28 @@ struct NeedsOKTests {
         #expect(refreshCount(runner) == 1)
     }
 
+    @Test func approveAfterTheFileWasRewrittenSendsNothing() async throws {
+        let (runner, service, decisions) = rig()
+        let root = try vault()
+        let model = GovernanceReviewModel(item: item(), vaultDirectory: root, decisions: decisions, service: service)
+        #expect(model.canApprove)
+        // A→B under the open sheet: the owner saw A, the file now says B.
+        try Self.pendingFile.replacingOccurrences(of: "+new", with: "+other").write(
+            to: root.appendingPathComponent("governance-pending/skip-carried-red.md"), atomically: true, encoding: .utf8)
+        await model.approve()
+        #expect(runner.calls(to: "scoutctl").filter { $0.prefix(2) == ["changes", "approve"] }.isEmpty)
+        #expect(model.message == GovernanceReviewModel.editedMessage)
+        #expect(!model.finished)
+    }
+
+    @Test func aFinalSymlinkIsNotRead() throws {
+        let root = try vault()
+        let link = root.appendingPathComponent("governance-pending/inside.md")
+        try FileManager.default.createSymbolicLink(
+            at: link, withDestinationURL: root.appendingPathComponent("governance-pending/skip-carried-red.md"))
+        #expect(GovernanceReviewModel.readDiff(vault: root, path: "governance-pending/inside.md") == nil)
+    }
+
     @Test func rejectRunsAndRefreshesOnce() async throws {
         let (runner, service, decisions) = rig()
         let model = GovernanceReviewModel(item: item(), vaultDirectory: try vault(), decisions: decisions, service: service)

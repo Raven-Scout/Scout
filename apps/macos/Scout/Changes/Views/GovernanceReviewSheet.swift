@@ -45,6 +45,15 @@ final class GovernanceReviewModel: ObservableObject {
 
     func approve() async {
         guard canApprove else { return }
+        // The hash covers what the owner saw: read the file once more and send only if it is still that diff.
+        guard Self.readDiff(vault: vault, path: item.path) == diff else {
+            busy = true
+            await service.refresh()
+            reload()
+            message = Self.editedMessage
+            busy = false
+            return
+        }
         await decide(.approve(govID: item.id, diffHash: item.diffHash))
     }
 
@@ -89,12 +98,20 @@ final class GovernanceReviewModel: ObservableObject {
 
     /// Read-only. Nil when the path isn't a safe one inside the vault's pending folder or has no single diff block.
     static func readDiff(vault: URL?, path: String) -> String? {
-        guard let url = pendingFileURL(vault: vault, path: path),
-              let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int,
-              size <= 1_000_000,
-              let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .utf8) else { return nil }
+        guard let url = pendingFileURL(vault: vault, path: path), let vault,
+              let text = readRegularFile(vault.appendingPathComponent(path)) else { return nil }
         return diffBlock(fromPendingFile: text)
+    }
+
+    /// The file's text, refusing a symlink at the final component (O_NOFOLLOW), a non-regular file or one over 1 MB.
+    nonisolated static func readRegularFile(_ url: URL) -> String? {
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW)
+        guard fd >= 0 else { return nil }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_size <= 1_000_000,
+              let data = try? handle.readToEnd() else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     nonisolated static let pendingFolder = "governance-pending"

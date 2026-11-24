@@ -19,21 +19,25 @@ struct NeedsOKStrip: View {
 
     var body: some View {
         let waiting = Self.awaiting(items)
-        if !waiting.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(Self.title(waiting.count))
-                    .font(DS.font(.body, .serif, weight: .semibold))
-                    .foregroundStyle(DS.Attention.you)
-                ForEach(waiting) { item in row(item) }
+        // The sheet hangs off a container that is always present, so it outlives the strip's own content
+        // (a decision empties `waiting` while the sheet is still on screen).
+        VStack(alignment: .leading, spacing: 0) {
+            if !waiting.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(Self.title(waiting.count))
+                        .font(DS.font(.body, .serif, weight: .semibold))
+                        .foregroundStyle(DS.Attention.you)
+                    ForEach(waiting) { item in row(item) }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .editorialCard()
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel(Self.title(waiting.count))
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .editorialCard()
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel(Self.title(waiting.count))
-            .sheet(item: $reviewing) { item in
-                GovernanceReviewSheet(item: item, vaultDirectory: vaultDirectory, decisions: decisions,
-                                      service: service, onClose: { reviewing = nil })
-            }
+        }
+        .sheet(item: $reviewing) { item in
+            GovernanceReviewSheet(item: item, vaultDirectory: vaultDirectory, decisions: decisions,
+                                  service: service, onClose: { reviewing = nil })
         }
     }
 
