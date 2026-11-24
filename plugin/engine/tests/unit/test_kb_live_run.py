@@ -997,6 +997,9 @@ def test_other_options_prefixes_and_broken_quotes_are_not_flagged(command: str) 
         "echo $(cat <<EOF) x\nsleep 5 &\nEOF",
         "echo `cat <<EOF` x\nsleep 5 &\nEOF",
         'echo "$(cat <<EOF)" x\nsleep 5 &\nEOF',
+        # zsh reads `$$'\'<<EOF'` as one string, so it runs the lines bash would take as a body.
+        "echo x$$'\\'<<EOF'\n{ echo BG; } &\nwait\nEOF",
+        "echo x$$'\\' <<'EOF''\nsleep 5 &\nEOF",
     ],
 )
 def test_commands_that_detach_are_flagged(command: str) -> None:
