@@ -40,14 +40,10 @@ struct PageLayoutTests {
             view = AnyView(SchedulesView()
                 .environmentObject(state.scheduleEditService)
                 .environmentObject(state.modelSettingsService))
-        case .proposals:
-            view = AnyView(ProposalsView()
-                .environmentObject(state.proposalsDocumentService)
-                .environmentObject(state.proposalsWriterBox))
-        case .wishlist:
-            view = AnyView(PerFileListView(config: .wishlist)
-                .environmentObject(state.wishlistDocumentService)
-                .environmentObject(state.perFileWriterBox))
+        case .changes:
+            view = AnyView(ChangesView()
+                .environmentObject(state.changesService)
+                .environmentObject(state.changesDecisions))
         case .research:
             view = AnyView(PerFileListView(config: .research)
                 .environmentObject(state.researchDocumentService)
@@ -99,6 +95,21 @@ struct PageLayoutTests {
         let needed = LayoutHarness.minimumWidth(of: Self.page(item, in: vault), height: LayoutSize.minimumPageHeight)
         #expect(needed <= available,
                 "\(item) needs \(needed) pt; it gets \(available) pt at a \(LayoutSize.windowWidths[0]) pt window")
+    }
+
+    @Test("the Changes page fits the page width at the minimum window with a loaded digest")
+    func changesPageFitsWhenLoaded() async throws {
+        let service = try await LoadedChangesService.make()
+        guard case .loaded = service.state else { Issue.record("fixtures did not load: \(service.state)"); return }
+        let page = ChangesView()
+            .environmentObject(service)
+            .environmentObject(LoadedChangesService.decisions())
+        let available = LayoutSize.pageWidth(window: LayoutSize.windowWidths[0])
+        let needed = LayoutHarness.minimumWidth(of: page, height: LayoutSize.minimumPageHeight)
+        #expect(needed <= available, "Changes needs \(needed) pt; it gets \(available) pt at the minimum window")
+        for width in LayoutSize.windowWidths {
+            ViewHost.render(page, size: CGSize(width: width, height: LayoutSize.minimumWindowHeight))
+        }
     }
 
     // MARK: - Action Items filter row

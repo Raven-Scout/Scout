@@ -1,0 +1,93 @@
+import SwiftUI
+import Testing
+@testable import Scout
+
+@MainActor
+@Suite("Changes tab", .serialized)
+struct ChangesViewTests {
+
+    @Test("the sidebar badge counts what awaits your OK plus suspect changes not yet undone")
+    func badgeCountsFromTheLoadedSnapshot() async throws {
+        let service = try await LoadedChangesService.make()
+        // Fixture: one governance item awaiting OK (the other is approved) and one suspect change.
+        #expect(ChangesView.needsYouCount(service.state) == 2)
+    }
+
+    @Test("no badge unless the snapshot is loaded")
+    func noBadgeWhenNotLoaded() {
+        for state: ChangesService.State in [.idle, .loading, .unsupported, .failed("x")] {
+            #expect(ChangesView.needsYouCount(state) == 0)
+        }
+    }
+
+    @Test("a suspect change that was already undone does not count")
+    func undoneSuspectDoesNotCount() async throws {
+        let service = try await LoadedChangesService.make()
+        let snapshot = try #require(service.snapshot)
+        let suspect = try #require(snapshot.changes.changes.first { $0.test.suspect })
+        #expect(ChangesView.isSuspectAndNotUndone(suspect.test))
+        #expect(!ChangesView.isSuspectAndNotUndone(ChangeTest(suspect: true, rolledBackBy: "chg-000000000009")))
+        #expect(!ChangesView.isSuspectAndNotUndone(ChangeTest(suspect: false)))
+    }
+
+    @Test("the digest shows plain words, never a bare change id")
+    func digestHasNoBareIds() async throws {
+        let service = try await LoadedChangesService.make()
+        let digest = try #require(service.snapshot).digest
+        let lines = DigestCard.lines(for: digest)
+        #expect(!lines.isEmpty)
+        for line in lines {
+            #expect(!line.contains("chg-"), "bare id in: \(line)")
+        }
+        #expect(lines.contains { $0.contains("A phase change") && $0.contains("10 days left") })
+        #expect(lines.contains { $0.contains("Say so when a Gmail search finds nothing") })
+        #expect(lines.contains { $0.contains("Needs your OK (1)") })
+    }
+
+    @Test("engagement reads with its comparison, or says there is none")
+    func engagementSentence() {
+        #expect(DigestCard.engagementLine(DigestEngagement(feedback: 5, reliance: 3, thisWeek: 8, lastWeek: 0, changePct: nil),
+                                          noise: DigestNoise(thisWeek: 2, lastWeek: 0))
+                == "Your engagement: 8 this week (nothing from last week to compare), noise 2 (up 2)")
+        #expect(DigestCard.engagementLine(DigestEngagement(feedback: 5, reliance: 3, thisWeek: 9, lastWeek: 8, changePct: 12.5),
+                                          noise: DigestNoise(thisWeek: 1, lastWeek: 3))
+                == "Your engagement: 9 this week (up 13% vs last), noise 1 (down 2)")
+    }
+
+    @Test("the sparkline scales each day to a block")
+    func sparkline() {
+        #expect(DigestCard.sparkline([0, 2, 4]) == "▁▅█")
+        #expect(DigestCard.sparkline([]) == "")
+        #expect(DigestCard.sparkline([0, 0]) == "▁▁")
+    }
+
+    @Test("the Changes tab renders loaded, unsupported, failed and loading")
+    func rendersEveryState() async throws {
+        let loaded = try await LoadedChangesService.make()
+        let decisions = LoadedChangesService.decisions()
+        ViewHost.render(ChangesView().environmentObject(loaded).environmentObject(decisions))
+
+        let runner = RuleBasedRunner()   // no rules: the read can't run, so the state is .failed
+        let failed = ChangesService(scoutctl: { URL(fileURLWithPath: "/usr/bin/scoutctl") }, runner: runner,
+                                    logsDirectory: URL(fileURLWithPath: "/tmp/none-\(UUID().uuidString)"),
+                                    pendingDirectory: URL(fileURLWithPath: "/tmp/none-\(UUID().uuidString)"),
+                                    fileEvents: NoopFS())
+        ViewHost.render(ChangesView().environmentObject(failed).environmentObject(decisions))   // .idle
+        await failed.refresh()
+        #expect(failed.state == .failed("Couldn't run Scout's engine."))
+        ViewHost.render(ChangesView().environmentObject(failed).environmentObject(decisions))
+    }
+
+    @Test("the banners say what is unconfirmed or still calibrating")
+    func bannerCopy() async throws {
+        let service = try await LoadedChangesService.make()
+        let changes = try #require(service.snapshot).changes
+        #expect(changes.verified == false)
+        #expect(changes.calibrating == true)
+        #expect(ChangesView.bannerTitles(for: changes) == [
+            "Scout couldn't check these changes against git just now, so they're shown unconfirmed and Undo is off.",
+            "Calibrating: verdicts are shown, but nothing acts on them yet.",
+        ])
+        #expect(ChangesView.unsupportedMessage == "Update Scout's engine to see this page.")
+    }
+}

@@ -64,33 +64,26 @@ struct TabViewSmokeTests {
                 .environmentObject(vault.state.vaultUndo))
     }
 
-    // MARK: - Proposals
+    // MARK: - Changes
 
-    @Test("the proposals tab renders a pending proposal")
-    func proposalsRenders() throws {
+    @Test("the changes tab renders a loaded snapshot")
+    func changesRenders() async throws {
         let vault = try SmokeVault(); defer { vault.tearDown() }
-        vault.state.proposalsDocumentService.load()
+        let service = try await LoadedChangesService.make()
+        // Without this the test renders the loading chrome and the digest card is never evaluated.
+        guard case .loaded = service.state else {
+            Issue.record("changes fixtures did not load: \(service.state)")
+            return
+        }
 
         ViewHost.render(
-            ProposalsView()
-                .environmentObject(vault.state.proposalsDocumentService)
-                .environmentObject(vault.state.proposalsWriterBox)
+            ChangesView()
+                .environmentObject(service)
+                .environmentObject(LoadedChangesService.decisions())
                 .environmentObject(vault.state.vaultUndo))
     }
 
-    // MARK: - Wishlist / Research
-
-    @Test("the wishlist tab renders")
-    func wishlistRenders() throws {
-        let vault = try SmokeVault(); defer { vault.tearDown() }
-        vault.state.wishlistDocumentService.load()
-
-        ViewHost.render(
-            PerFileListView(config: .wishlist)
-                .environmentObject(vault.state.wishlistDocumentService)
-                .environmentObject(vault.state.perFileWriterBox)
-                .environmentObject(vault.state.vaultUndo))
-    }
+    // MARK: - Research
 
     @Test("the research tab renders")
     func researchRenders() throws {

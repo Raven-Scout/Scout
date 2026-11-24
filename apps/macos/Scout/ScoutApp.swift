@@ -49,7 +49,6 @@ struct ScoutApp: App {
             MainWindowView()
                 .environmentObject(appState)
                 .environment(\.resolvePromptService, appState.resolvePromptService)
-                .environmentObject(appState.proposalsDocumentService)
                 .environmentObject(updates)
                 .frame(minWidth: MainWindowSize.minWidth, minHeight: MainWindowSize.minHeight)
         }

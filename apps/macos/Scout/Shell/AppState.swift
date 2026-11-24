@@ -470,6 +470,11 @@ final class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        // The Changes row's badge counts what a loaded snapshot says needs you.
+        changesService.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
         // Runs the ledger records take its status (a safety skip is a skip,
         // not a run that hung); the rest keep their log-derived status.
         runLedger.$state
