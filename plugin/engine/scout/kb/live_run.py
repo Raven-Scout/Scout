@@ -452,23 +452,31 @@ _SUBST_NAME = SUBST[1:]
 _HEREDOC_AT = re.compile(r"<<(-?)\s*(?:'([^']+)'|\"([^\"]+)\"|\\?([A-Za-z_][\w.-]*))")
 
 
-def _quoted_spans(text: str) -> list[tuple[int, int]]:
+def _quoted_spans(text: str, *, even_dollars_escape: bool = False) -> list[tuple[int, int]]:
     """Where the quoted strings of ``text`` sit, as the shell reads them (each span includes its quotes).
 
     A backslash outside quotes escapes the next character, so ``\\'`` and ``\\"`` open nothing. Single
-    quotes take no escapes; double quotes and ``$'…'`` do. A quote that is never closed is no span.
+    quotes take no escapes; double quotes and ``$'…'`` do. A quote in a comment opens nothing (the
+    comment's text is left as it is). A quote that is never closed is no span.
+
+    Shells disagree on ``$$'``: bash reads the process id and then a plain single quote, zsh and sh read
+    a ``$`` and then ``$'…'``. ``even_dollars_escape`` picks the second reading for an even run of ``$``.
     """
     spans: list[tuple[int, int]] = []
     i, n = 0, len(text)
-    dollar = False  # the character before is an unescaped "$"
+    dollars = 0  # how many unescaped "$" come directly before text[i]
     while i < n:
         c = text[i]
+        if c == "#" and (i == 0 or text[i - 1] in " \t\n;&|("):
+            end = text.find("\n", i)
+            i, dollars = (n if end < 0 else end), 0
+            continue
         if c not in "'\"":
-            dollar = c == "$"
+            dollars = dollars + 1 if c == "$" else 0
             i += 2 if c == "\\" else 1
             continue
-        escapes = c == '"' or dollar
-        dollar = False
+        escapes = c == '"' or dollars % 2 == 1 or (dollars > 0 and even_dollars_escape)
+        dollars = 0
         j = i + 1
         while j < n and text[j] != c:
             j += 2 if escapes and text[j] == "\\" else 1
@@ -480,10 +488,10 @@ def _quoted_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
-def _mask_quoted(text: str) -> str:
+def _mask_quoted(text: str, *, even_dollars_escape: bool = False) -> str:
     """``text`` with every quoted string blanked to NULs, so no operator inside one is read as one."""
     out, at = [], 0
-    for a, b in _quoted_spans(text):
+    for a, b in _quoted_spans(text, even_dollars_escape=even_dollars_escape):
         out += [text[at:a], "\0" * (b - a)]
         at = b
     out.append(text[at:])
@@ -1444,7 +1452,8 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
         if expands:
             for _s, _e, a, b in _substitutions(text, quotes=False):
                 results.append((len(command), _run_escape(text[a:b], depth + 1)))
-    detach = _BACKGROUND.search(_mask_quoted(command)) is not None
+    # Both readings of `$$'` (see _quoted_spans): a background under either one is a background.
+    detach = any(_BACKGROUND.search(_mask_quoted(command, even_dollars_escape=way)) for way in (False, True))
     cwd = ""  # follows each `cd`, so `cd .git/hooks && rm pre-commit` reads as the path it writes
     previous: str | None = None
     position = 0
