@@ -458,11 +458,9 @@ def decide(
                 return None
             targets = globs(target)
             if targets is None:
-                # Too many matches to judge: refused, unless the glob's fixed folder (resolved) can't reach the vault
-                # (`ls -lt /tmp/x/*/*`): no KB note is there to find.
-                fixed = paths.resolve_path(_fixed_prefix(target))
-                outside = _vault_rel(vault, fixed) is None and not vault.resolve().is_relative_to(fixed)
-                return None if outside else hook_paths.TOO_MANY
+                # Too many matches to judge: refused wherever the glob starts, since a match past the cap may be a
+                # symlink into the vault (`/tmp/x/*/*/*` behind decoys).
+                return hook_paths.TOO_MANY
             for one in targets:
                 here = paths.resolve_path(one)
                 rel = _vault_rel(vault, here)
@@ -527,13 +525,6 @@ def decide(
     from scout.kb.privacy import FULL_READERS
 
     return None if reader in FULL_READERS else _deny_read()
-
-
-def _fixed_prefix(target: str) -> str:
-    """The folders of ``target`` before its first wildcard component (``/tmp/x/*/y`` → ``/tmp/x``)."""
-    parts = target.split("/")
-    cut = next((i for i, part in enumerate(parts) if glob.has_magic(part)), len(parts))
-    return "/".join(parts[:cut]) or "/"
 
 
 def _literal_globs(target: str) -> list[str] | None:

@@ -17,10 +17,9 @@
   substituted `(…|…)` group, a variable with more than 256 values) is refused. A KB *folder* counts only for a
   reader that reads folders (`ls` without `-d`, `tree`, `find`, `rg`, `diff`, `grep -r` …), so
   `cat action-items/*` and `ls -d */` pass. A quoted character is literal (`cat "k*/a.md"` reads a file named
-  `k*`), `~-` follows the command's own `cd`, and a glob over the match cap is refused only when it can reach
-  the vault. The secret-path check no longer reads a reader's pattern as a path, so
-  `grep -o "projects/(a|b)[^/]*/[^/]*\.md" file` is no longer refused as too many paths. A read whose path the
-  gate can't work out (a command
+  `k*`) and `~-` follows the command's own `cd`; the secret-path check reads quoted characters literally too,
+  so a quoted regex (`grep -o "projects/(a|b)[^/]*/[^/]*\.md" file`) is no longer refused as too many paths. A
+  read whose path the gate can't work out (a command
   substitution, a backtick, a variable the command doesn't set, `xargs` input from any other command) is
   allowed for now and recorded as a `kb_read_gate.unresolved_read` event naming only its kind
   (`command_output`, `unset_variable`, `xargs_input`) and the run's mode, never the command or the path;

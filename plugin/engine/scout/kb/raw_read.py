@@ -314,43 +314,6 @@ _PROGRAM_FIRST: dict[str, set[str]] = {
     **dict.fromkeys(("awk", "gawk", "mawk"), {"-f", "--file"}),
     "jq": {"-f", "--from-file"},
 }
-# The flags whose value is a pattern, not a file (`grep -e x`, `sed -e 1p`); `-f` takes a file and isn't one.
-_PATTERN_FLAGS: dict[str, set[str]] = {
-    **dict.fromkeys(("grep", "egrep", "fgrep", "rg"), {"-e", "--regexp"}),
-    "sed": {"-e", "--expression"},
-}
-
-
-def program_positions(name: str, args: list[str]) -> set[int]:
-    """The indices in ``args`` that are a pattern or a program, never a file: ``grep``'s first operand (unless
-    ``-e``/``-f`` gives it), ``-e``'s value, ``sed``/``awk``/``jq``'s script, BSD ``sed -i``'s backup suffix."""
-    out: set[int] = set()
-    if name == "sed":
-        out |= {i for i in range(1, len(args)) if args[i - 1] == "-i" and (not args[i] or args[i].startswith("."))}
-    given = _PROGRAM_FIRST.get(name)
-    if given is None:
-        return out
-    flags = _PATTERN_FLAGS.get(name, set())
-    out |= {i + 1 for i, a in enumerate(args[:-1]) if a in flags}
-    if any(a in given or a.split("=", 1)[0] in given for a in args):
-        return out
-    takes, skip = _VALUE_FLAGS.get(name, set()), False
-    for i, a in enumerate(args):
-        if skip or i in out:
-            skip = False
-            continue
-        if a == "--":
-            if i + 1 < len(args):
-                out.add(i + 1)
-            break
-        if a.startswith("-") and a != "-":
-            skip = a in takes
-            continue
-        out.add(i)
-        break
-    return out
-
-
 # Readers that read a folder they're given (its names, or the files below it); the rest only open files.
 _FOLDER_READERS = {"tree", "du", "find", "rg", "ag", "ack", "fd", "ugrep", "diff"}  # `diff -N dir empty/` prints it
 

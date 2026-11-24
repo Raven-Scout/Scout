@@ -1383,13 +1383,7 @@ def _secret_read(words: list[str], reads: list[str], cwd: str) -> str | None:
     """Whether a command names one of Scout's secrets (best effort: a path it spells out, or one after a ``cd``)."""
     if _SECRET is None or (words and _basename(words[0]) in _LISTS_ONLY):
         return None
-    from scout.kb import raw_read
-
-    stripped = raw_read._strip(words).words
-    lead = len(words) - len(stripped)  # where the command word sits, past prefixes (`timeout 5 grep …`)
-    name = raw_read._command_name(stripped[0]) if stripped else ""
-    patterns = {lead + 1 + i for i in raw_read.program_positions(name, stripped[1:])}  # a regex is no path
-    for word in [*(w for i, w in enumerate(words) if i and i not in patterns), *reads]:
+    for word in [*words[1:], *reads]:
         word = word.split("=", 1)[1] if word.startswith("--") and "=" in word else word.lstrip("@<")  # @file
         if not (cwd or "/" in word or word.startswith(("~", "$"))) or word.startswith("-"):
             continue
@@ -2037,15 +2031,17 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
                     break
         if found is None and _shell_stdin_program(words):
             found = _shell_stdin_escape(segment, strings, fed, depth)
-        if found is None:
-            found = _secret_read(words, reads, cwd)
-        if found is None and _KB_READ is not None:
+        if found is None and (_SECRET is not None or _KB_READ is not None):
+            # The same words, with what their quotes keep literal marked so (see _SHIELD): a quoted regex
+            # (`grep -o "a/(b|c)[^/]*/…"`) is no glob for either check.
+            literal_words, literal_reads = words, reads
             shielded = _shield_quoted(segment)
-            if shielded == segment:
-                found = _kb_read(words, reads, cwd, fed, oldpwd)
-            else:  # the same words, with what their quotes keep literal marked so (see _SHIELD)
-                kb_clean, _writes, kb_reads, _strings = _redirects(shielded)
-                found = _kb_read(_tokens(kb_clean), kb_reads, cwd, fed, oldpwd)
+            if shielded != segment:
+                kb_clean, _writes, literal_reads, _strings = _redirects(shielded)
+                literal_words = _tokens(kb_clean)
+            found = _secret_read(literal_words, literal_reads, cwd)
+            if found is None and _KB_READ is not None:
+                found = _kb_read(literal_words, literal_reads, cwd, fed, oldpwd)
         if found == "env":
             return "env"
         results.append((here, found))

@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from scout.hooks import kb_read_gate as gate
-from scout.kb import live_run, raw_read
+from scout.kb import live_run
 from scout.kb.raw_read import brace_expand, read_operands
 from tests.unit.test_hooks_kb_read_gate import RUN, _denied, _payload
 
@@ -374,7 +374,7 @@ def test_a_glob_over_the_match_cap_is_refused(home: Path, monkeypatch: pytest.Mo
     assert "more files than" in reason
 
 
-def test_an_over_cap_glob_that_cant_reach_the_vault_is_allowed(
+def test_an_over_cap_glob_is_refused_wherever_it_starts(
     home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(gate, "GLOB_CAP", 1)
@@ -382,10 +382,9 @@ def test_an_over_cap_glob_that_cant_reach_the_vault_is_allowed(
     for name in ("a.out", "b.out", "c.out"):
         (outside / "s" / name).parent.mkdir(parents=True, exist_ok=True)
         (outside / "s" / name).write_text("x\n")
-    assert _run(home, f"ls -lt {outside}/*/*.out") is None
-    (tmp_path / "kb-link").symlink_to(home / "Vault" / "knowledge-base")
-    assert "more files than" in _denied(_run(home, f"ls -lt {tmp_path}/kb-link/*"))  # resolves into the vault
-    assert "more files than" in _denied(_run(home, "cat */*.md"))  # inside the vault: still refused
+    (outside / "s" / "k").symlink_to(home / "Vault" / "knowledge-base")  # a match past the cap may be this
+    assert "more files than" in _denied(_run(home, f"ls -lt {outside}/*/*"))
+    assert "more files than" in _denied(_run(home, "cat */*.md"))
 
 
 def test_a_glob_that_runs_out_of_time_is_refused(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -674,29 +673,31 @@ def test_zsh_groups(command: str, expected: str) -> None:
     assert live_run._STATE["unparsed"] is False
 
 
-@pytest.mark.parametrize(
-    ("name", "args", "expected"),
-    [
-        ("grep", ["-o", "x", "f"], {1}),
-        ("grep", ["-e", "x", "-e", "y", "f"], {1, 3}),
-        ("grep", ["-f", "pats", "f"], set()),
-        ("grep", ["-A", "3", "x", "f"], {2}),
-        ("grep", ["--", "-x", "f"], {1}),
-        ("rg", ["--regexp", "x", "f"], {1}),
-        ("sed", ["-i", "", "s/a/b/", "f"], {1, 2}),
-        ("sed", ["-n", "-e", "1p", "f"], {2}),
-        ("awk", ["-F", ":", "{print}", "f"], {2}),
-        ("jq", ["-e", ".", "f"], {1}),  # jq's -e is a flag: the filter is still first
-        ("cat", ["f"], set()),
-    ],
-)
-def test_program_positions(name: str, args: list[str], expected: set[int]) -> None:
-    assert raw_read.program_positions(name, args) == expected
-
-
 def test_a_secret_named_after_a_pattern_is_still_judged(home: Path) -> None:
     secrets = home / ".scout-secrets"
     secrets.mkdir()
     (secrets / "token").write_text("t\n")
-    assert _run(home, "grep -o x ~/.scout-secrets/token") is not None
-    assert _run(home, "grep -f ~/.scout-secrets/token docs/a.md") is not None
+    for command in (
+        "grep -o x ~/.scout-secrets/token",
+        "grep -f ~/.scout-secrets/token docs/a.md",
+        # review round 4: an attached `-eX`, and a flag that takes no value here, must not hide the file
+        "grep -eT ~/.scout-secrets/token",
+        "sed -ep ~/.scout-secrets/token",
+        "grep --context T ~/.scout-secrets/token",
+        "sed -l p ~/.scout-secrets/token",
+        'grep -o "x" "$HOME/.scout-secrets/token"',
+    ):
+        assert _run(home, command) is not None, command
+
+
+def test_an_over_budget_ls_glob_through_a_symlink_is_refused(home: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out2"
+    out.mkdir()
+    (out / "l").symlink_to(home / "Vault")
+    (tmp_path / "out" / "x").mkdir(parents=True)
+    for command in (
+        f"ls {out}/*/kn*/*/*/*.md",
+        f"ls -R {out}/*/kn*/*/*/",
+        f"ls {tmp_path}/out/*/../../out2/l/kn*/*/*/*.md",
+    ):
+        assert _run(home, command) is not None, command
