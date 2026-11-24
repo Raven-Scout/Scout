@@ -1270,6 +1270,115 @@ def test_a_local_only_file_replaced_by_a_symlink_is_listed(vault: Path) -> None:
     assert checks(vault) == [] and checks(vault, RUN) == []
 
 
+MISC = "knowledge-base/topics/misc/"
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param("draft.md", id="as written"),
+        pytest.param("DRAFT.md", id="another case of the name"),
+        pytest.param("Draft.MD", id="another case of the suffix"),
+        pytest.param("../MISC/draft.md", id="another case of a folder"),
+        pytest.param("../../People/sam.md", id="another case, outside the share"),
+        pytest.param("draft.md/", id="a trailing slash"),
+    ],
+)
+def test_a_shared_symlink_reaches_no_private_note_by_another_spelling(vault: Path, target: str) -> None:
+    """A case-insensitive disk opens ``DRAFT.md`` as ``draft.md``: the target is found the way the disk finds it."""
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    stage_link(vault, LINK, target)
+    assert (LINK, _LINK, False, None) in checks(vault)
+    assert (LINK, "privacy-widening", True, None) in checks(vault, RUN)
+
+
+def test_a_shared_symlink_reaches_no_private_note_by_another_unicode_form(vault: Path) -> None:
+    import unicodedata
+
+    _share(vault, _SHARE_TOPICS)
+    name = unicodedata.normalize("NFC", "r\u00e9sum\u00e9.md")
+    stage(vault, MISC + name, "---\nvisibility: private\n---\n# A stand-in private note\n")
+    commit(vault, "share topics/misc with Priya")
+    git(vault, "update-index", "--add", "--cacheinfo", "120000", _blob(vault, unicodedata.normalize("NFD", name)), LINK)
+    assert (LINK, _LINK, False, None) in checks(vault)
+    assert (LINK, "privacy-widening", True, None) in checks(vault, RUN)
+
+
+def _blob(vault: Path, text: str) -> str:
+    import subprocess
+
+    done = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"], cwd=vault, input=text.encode(), capture_output=True, check=True
+    )
+    return done.stdout.decode().strip()
+
+
+def test_a_chain_of_symlinks_is_followed_to_its_end(vault: Path) -> None:
+    """The owner's link to a private note is a warning; a run's link to that link reaches the same note."""
+    _share(vault, _SHARE_TOPICS)
+    stage_link(vault, MISC + "link2.md", "draft.md")
+    stage_link(vault, MISC + "ok2.md", "plain.md")
+    commit(vault, "share topics/misc with Priya")
+    stage_link(vault, LINK, "link2.md")
+    assert checks(vault) == [(LINK, _LINK, False, None)]
+    assert checks(vault, RUN) == [(LINK, "privacy-widening", True, None)]
+    stage_link(vault, LINK, "ok2.md")  # a chain that ends inside the share is fine
+    assert checks(vault) == [] and checks(vault, RUN) == []
+
+
+def test_a_symlink_through_a_linked_folder_is_followed(vault: Path) -> None:
+    _share(vault, _SHARE_TOPICS)
+    stage_link(vault, MISC + "ppl", "../../people")
+    commit(vault, "share topics/misc with Priya")  # the owner's commit; the hook isn't run here
+    stage_link(vault, LINK, "ppl/sam.md")
+    assert checks(vault) == [(LINK, _LINK, False, None)]
+    assert checks(vault, RUN) == [(LINK, "privacy-widening", True, None)]
+
+
+def test_a_symlink_loop_is_reported(vault: Path) -> None:
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    stage_link(vault, MISC + "a.md", "b.md")
+    stage_link(vault, MISC + "b.md", "a.md")
+    assert checks(vault) == [(MISC + "a.md", _LINK, False, None), (MISC + "b.md", _LINK, False, None)]
+    assert [f[1:3] for f in checks(vault, RUN)] == [("privacy-widening", True)] * 2
+
+
+def test_a_runs_symlink_to_nothing_in_the_commit_is_refused(vault: Path) -> None:
+    """A run's link must name a file or folder of the commit: what a missing name opens can't be checked."""
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    stage_link(vault, LINK, "not-there.md")
+    assert checks(vault) == []  # the owner's is judged by its path, which stays in the share
+    assert checks(vault, RUN) == [(LINK, "privacy-widening", True, None)]
+    stage_link(vault, "notes/later", "not-there")  # unshared, but it uploads
+    assert checks(vault, RUN) == [
+        (LINK, "privacy-widening", True, None),
+        ("notes/later", "privacy-widening", True, None),
+    ]
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param("../.env.local", id="a secret file"),
+        pytest.param("../.claude/settings.json", id="a path the host always keeps local"),
+        pytest.param("../Scans/scan.md", id="a path on the host's cached list, in another case"),
+    ],
+)
+def test_a_symlink_to_a_path_repo_sync_keeps_home_is_reported(vault: Path, target: str) -> None:
+    """Local-only as repo sync counts it (the host's lists and secret files too), not only the vault's policy."""
+    _with_scan(vault)
+    stage(vault, ".env.local", "A_STAND_IN=1\n")
+    stage(vault, ".claude/settings.json", "{}\n")
+    commit(vault, "stand-ins")
+    _linked(vault, ["Scans/"])
+    stage_link(vault, "notes/there", target)
+    assert checks(vault) == [("notes/there", _LINK, False, None)]
+    assert checks(vault, RUN) == [("notes/there", "privacy-widening", True, None)]
+
+
 # ----- a run changing a non-note file in a share (#594) ---------------------------
 
 SHARED = "knowledge-base/topics/misc/"

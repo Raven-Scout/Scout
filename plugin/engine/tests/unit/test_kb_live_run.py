@@ -979,6 +979,12 @@ def test_other_options_prefixes_and_broken_quotes_are_not_flagged(command: str) 
         "cat <&3 &",  # the descriptor duplicate isn't a background, the trailing "&" is
         "git commit -m x <&3 & disown",
         "cat < notes/a.md & git commit -m x",
+        "git commit -m x\\<&",  # an escaped "<" is a word's last letter: the "&" after it backgrounds
+        "git commit -m x\\>&",
+        "git commit -m x\\|&",
+        "git commit -m x\\&&",
+        "git commit -m x <&- &",
+        "a<&b&",
     ],
 )
 def test_commands_that_detach_are_flagged(command: str) -> None:
@@ -1036,6 +1042,7 @@ SCOUT_WRAP"""
         "cat <&3",  # #618: "<&" duplicates a descriptor, it backgrounds nothing
         "exec 3<&0; cat <&3; exec 3<&-",
         'read -r line <&3 && echo "$line"',
+        "cat \\\\<&3",  # an escaped backslash, then a real "<&"
     ],
 )
 def test_ordinary_commands_and_reads_are_not_flagged(command: str) -> None:

@@ -106,9 +106,11 @@ from typing import Any
 import yaml
 
 from scout.kb.git_io import (
+    SYMLINK_MODE,
     StagedPath,
     head_blob,
     head_text_lossy,
+    index_modes,
     index_text_lossy,
     staged_blob,
     staged_paths,
@@ -150,7 +152,7 @@ from scout.kb.privacy import scope_widens as _widens
 from scout.kb.read import all_labels, policy_hash
 from scout.kb.shared_reads import parse_shared_source, shared_sources
 from scout.plural import count
-from scout.repo_sync import LocalOnlyRules, RepoSyncError, host_cache_problem, load_host_cache, load_state
+from scout.repo_sync import LocalOnlyRules, RepoSyncError, fold, host_cache_problem, load_host_cache, load_state
 from scout.yaml_safe import load_yaml
 
 __all__ = ["ALLOW_MARKER_RE", "PolicyUnreadable", "format_report", "privacy_report", "privacy_staged"]
@@ -185,11 +187,11 @@ _MESSAGES = {
     "repo sync after this commit: leave it to the owner. Owner: run scoutctl repo sync yourself; it refuses to "
     "push a move out of a path Agnes keeps local-only, and says how to allow one",
     "link-leaves-scope": "this symlink points outside what its own path shares or uploads: at a private, "
-    "local-only or less widely shared file, or outside the vault. Git stores a link as its target's path, so "
-    "whoever gets the link reads that name; point it inside the same share, or remove it",
+    "local-only or less widely shared file, through too many links, or outside the vault. Git stores a link as "
+    "its target's path, so whoever gets the link reads that name; point it inside the same share, or remove it",
     "link-widening": "a scheduled run may not add or retarget a symlink that points outside what its own path "
-    "shares or uploads (a private, local-only or less widely shared file, or a path outside the vault) — leave "
-    "that to the owner",
+    "shares or uploads (a private, local-only or less widely shared file, or a path outside the vault), or at "
+    "a name that isn't in the commit — leave that to the owner",
     "privacy-overlay-unreadable": "scout-config.yaml doesn't parse, so the engine's default privacy policy applies, "
     "plus the stricter settings in its privacy: block if that part reads cleanly; "
     "a scheduled run's commit is refused until it does",
@@ -240,6 +242,9 @@ class _Ctx:
     _terms: PrivateTerms | None = None
     _notes: list[PrivateNote] | None = None
     _checked_terms: dict[Any, PrivateTerms] = field(default_factory=dict)
+    _index: tuple[dict[str, tuple[str, str]], dict[str, str]] | None = None
+    _sync: tuple[Any, tuple[str, ...], bool] | None = None
+    _home: LocalOnlyRules | None = None
 
     @property
     def shared_edits_checked(self) -> bool:
@@ -254,6 +259,52 @@ class _Ctx:
 
     def is_shared(self, rel: str, label: Label) -> bool:
         return label.shared_file or any(glob_match(g, rel) for g in self.shared_globs)
+
+    def index(self) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
+        """The commit's files and folders, each keyed by :func:`scout.repo_sync.fold` of its path.
+
+        A file maps to its path as written and its mode, a folder to its path
+        as written. Folded, because a case-insensitive disk opens ``DRAFT.md``
+        as ``draft.md``, and one that normalises Unicode opens either form.
+        """
+        if self._index is None:
+            files: dict[str, tuple[str, str]] = {}
+            folders: dict[str, str] = {}
+            for path, mode in index_modes(self.repo).items():
+                files[fold(path)] = (path, mode)
+                parent = posixpath.dirname(path)
+                while parent and fold(parent) not in folders:
+                    folders[fold(parent)] = parent
+                    parent = posixpath.dirname(parent)
+            self._index = (files, folders)
+        return self._index
+
+    def sync_inputs(self) -> tuple[Any, tuple[str, ...], bool]:
+        """What repo sync adds to the policies' Local-Only rules: the upload allowlist pinned for the
+        link (None: not linked), the host's list as last cached, and whether that cache is missing or stale."""
+        if self._sync is None:
+            try:
+                state = load_state(self.repo)
+            except RepoSyncError:
+                state = None  # repo sync refuses this state, so it uploads nothing; the config's allowlist still counts
+            host_entries: tuple[str, ...] = ()
+            unchecked = False
+            if state is not None:
+                cache = load_host_cache(self.repo, agnes_url=state.agnes_url)
+                host_entries = cache.local_only_paths if cache is not None else ()
+                unchecked = host_cache_problem(cache) is not None
+            self._sync = (state.sync_only if state is not None else None, host_entries, unchecked)
+        return self._sync
+
+    def stays_home(self, rel: str) -> bool:
+        """Whether repo sync keeps ``rel`` on this computer under any policy in play: local-only by the
+        vault's rules, the host's built-in and cached lists or an allowlist, or a secret file."""
+        if self._home is None:
+            pinned, host_entries, _ = self.sync_inputs()
+            self._home = LocalOnlyRules.build(
+                [self.head_policy, self.policy, self.disk_policy], host_entries, pinned=pinned
+            )
+        return self._home.refused(rel)
 
     def private_notes(self) -> list[PrivateNote]:
         if self._notes is None:
@@ -406,39 +457,90 @@ def privacy_staged(repo: Path, *, env: Mapping[str, str]) -> list[Finding]:
     return out
 
 
+_LINK_HOPS = 8  # how many links a link may lead through; more reads as a loop
+
+
 def _link_findings(ctx: _Ctx, sp: StagedPath) -> list[Finding]:
     """A staged symlink whose target leaves the link's own scope (#606).
 
     Git stores a link as its target's path, and repo sync mirrors it as that
     name, never the file behind it. So the link is labelled by its path alone,
-    and its target must be at least as open: a link that uploads may not name a
-    local-only path or one outside the vault, and a shared link may not name a
-    private note, a file no share covers, or one shared with fewer people. A
-    link in a local-only path stays home, so it may point anywhere. A scheduled
-    run's link blocks; the owner gets a warning. The link's text is still
-    checked as the file's content by the callers, as before.
+    and what it leads to (:func:`_link_end`) must be at least as open: a link
+    that uploads may not name a path repo sync keeps home or one outside the
+    vault, and a shared link may not name a private note, a file no share
+    covers, or one shared with fewer people. A folder is judged by what a file
+    in it would be. A link in a local-only path stays home, so it may point
+    anywhere. A scheduled run's link blocks, and so does one of its links that
+    names nothing in the commit, since what that opens can't be checked; the
+    owner gets a warning, and a link of theirs to a missing name is judged by
+    its path. The link's text is still checked as the file's content by the
+    callers, as before.
     """
     rel = sp.rel
     link = classify(rel, None, ctx.policy)
     if link.local_only:
         return []
-    target = _as_text(staged_blob(ctx.repo, rel))
-    if target is not None and not target.startswith("/"):
-        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(rel), target))
-        if resolved not in (".", "..") and not resolved.startswith("../"):
-            text = index_text_lossy(ctx.repo, resolved)
-            # No file by that name in the commit: a folder link (judged by what a file in it would be), or dangling.
-            names = [resolved] if text is not None else [resolved, f"{resolved}/x"]
-            if any(_as_open(ctx, link, n, classify(n, _head_window(n, text), ctx.policy)) for n in names):
-                return []
+    end = _link_end(ctx, rel)
+    if end is not None:
+        path, kind = end
+        if kind == "file":
+            names = [(path, _head_window(path, index_text_lossy(ctx.repo, path)))]
+        elif kind == "folder":
+            names = [(f"{path}/x", None)]
+        else:
+            names = [] if ctx.scheduled else [(path, None), (f"{path}/x", None)]
+        if any(_as_open(ctx, link, n, classify(n, window, ctx.policy)) for n, window in names):
+            return []
     if ctx.scheduled:
         return [Finding(rel, "privacy-widening", True, _MESSAGES["link-widening"])]
     return [Finding(rel, "link-leaves-scope", False, _MESSAGES["link-leaves-scope"])]
 
 
+def _link_end(ctx: _Ctx, rel: str) -> tuple[str, str] | None:
+    """Where the staged symlink ``rel`` leads in the commit: a path and ``file``, ``folder`` or ``missing``.
+
+    None when it leaves the vault, a target isn't text, or it leads through
+    more than :data:`_LINK_HOPS` links (a loop). Names are matched the way a
+    case-insensitive disk matches them (:meth:`_Ctx.index`), and a link on the
+    way, to a file or as a folder of the path, is followed.
+    """
+    files, folders = ctx.index()
+    path = _link_target(ctx, rel)
+    for _ in range(_LINK_HOPS):
+        if path is None:
+            return None
+        key = fold(path)
+        entry = files.get(key)
+        if entry is not None and entry[1] != SYMLINK_MODE:
+            return entry[0], "file"
+        if entry is not None:
+            path = _link_target(ctx, entry[0])
+            continue
+        if key in folders:
+            return folders[key], "folder"
+        parts = path.split("/")
+        for i in range(1, len(parts)):
+            on_the_way = files.get(fold("/".join(parts[:i])))
+            if on_the_way is not None and on_the_way[1] == SYMLINK_MODE:
+                path = _link_target(ctx, on_the_way[0], "/".join(parts[i:]))
+                break
+        else:
+            return path, "missing"
+    return None
+
+
+def _link_target(ctx: _Ctx, link: str, rest: str = "") -> str | None:
+    """The vault path the symlink at ``link`` names (``rest`` appended), or None outside the vault or not text."""
+    target = _as_text(staged_blob(ctx.repo, link))
+    if target is None or target.startswith("/"):
+        return None
+    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(link), target, rest))
+    return None if resolved in (".", "..") or resolved.startswith("../") else resolved
+
+
 def _as_open(ctx: _Ctx, link: Label, rel: str, label: Label) -> bool:
     """Whether everyone who gets the symlink labelled ``link`` may also see ``rel`` (labelled ``label``)."""
-    if label.local_only:
+    if label.local_only or ctx.stays_home(rel):
         return False
     link_shared_file = ctx.is_shared(link.path, link)
     if not link_shared_file and link.federation_scope == "none":
@@ -466,23 +568,13 @@ def _local_only_moves(ctx: _Ctx, paths: list[StagedPath]) -> list[Finding]:
     moves = [(sp.head_rel, sp.rel) for sp in paths if sp.head_rel is not None and sp.head_rel != sp.rel]
     if not moves:
         return []
-    try:
-        state = load_state(ctx.repo)
-    except RepoSyncError:
-        state = None  # repo sync refuses this state, so it uploads nothing; the config's allowlist still counts
-    pinned = state.sync_only if state is not None else None
     # A linked vault adds the host's list as last cached (#596): a missing or stale
     # cache still counts what it has, and every other move that would upload gets
     # a warning, since the hook can't ask Agnes. The cache only adds blocks: it
     # judges sources, never the destination, so a stale entry or a cache a run
     # wrote can't make a destination count as staying home. Sync re-checks every
     # move against the list it fetches (repo_sync.host_only_moves).
-    host_entries: tuple[str, ...] = ()
-    unchecked = False
-    if state is not None:
-        cache = load_host_cache(ctx.repo, agnes_url=state.agnes_url)
-        host_entries = cache.local_only_paths if cache is not None else ()
-        unchecked = host_cache_problem(cache) is not None
+    pinned, host_entries, unchecked = ctx.sync_inputs()
     was = LocalOnlyRules.build([ctx.head_policy, ctx.policy, ctx.disk_policy], host_entries, pinned=pinned)
     now = LocalOnlyRules.build([ctx.policy], (), pinned=pinned)
     out: list[Finding] = []

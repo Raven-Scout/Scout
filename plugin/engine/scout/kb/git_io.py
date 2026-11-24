@@ -85,6 +85,17 @@ def staged_paths(repo: Path) -> list[StagedPath]:
     return result
 
 
+def index_modes(repo: Path) -> dict[str, str]:
+    """Every path in the index with its mode (``120000`` is a symlink)."""
+    out = git(repo, "ls-files", "-s", "-z").stdout
+    modes: dict[str, str] = {}
+    for record in out.split("\0"):
+        if record:
+            meta, _, path = record.partition("\t")
+            modes[path] = meta.split(" ", 1)[0]
+    return modes
+
+
 def staged_size(repo: Path, rel: str) -> int:
     return int(git(repo, "cat-file", "-s", f":{rel}").stdout.strip())
 
