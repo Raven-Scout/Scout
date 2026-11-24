@@ -200,8 +200,6 @@ final class ChangeDetailModel: ObservableObject {
         case failed(String)
     }
 
-    /// Undos the engine recorded that no refreshed row shows applied yet.
-    @Published private(set) var pendingUndos: Set<String> = []
     /// The change the owner is being asked to undo.
     @Published var confirmingUndoID: String?
     @Published private(set) var message: String?
@@ -218,8 +216,12 @@ final class ChangeDetailModel: ObservableObject {
         confirmingUndoID = nil
     }
 
-    func canUndo(_ row: ChangeRow, verified: Bool) -> Bool {
-        ChangeActions.canUndo(row, verified: verified) && !pendingUndos.contains(row.id) && !busy
+    /// True while a result for `id` should still be shown: nothing else has been opened since.
+    private func isCurrent(_ id: String) -> Bool { openID == nil || openID == id }
+
+    /// `pending` is `ChangesDecisions.pendingUndos`, which outlives this model and the tab.
+    func canUndo(_ row: ChangeRow, verified: Bool, pending: Set<String>) -> Bool {
+        ChangeActions.canUndo(row, verified: verified) && !pending.contains(row.id) && !busy
     }
 
     func canMarkWrong(_ row: ChangeRow) -> Bool {
@@ -227,8 +229,8 @@ final class ChangeDetailModel: ObservableObject {
     }
 
     /// Opens the confirmation. Nothing runs until `confirmUndo`.
-    func askToUndo(_ row: ChangeRow, verified: Bool) {
-        guard canUndo(row, verified: verified) else { return }
+    func askToUndo(_ row: ChangeRow, verified: Bool, pending: Set<String>) {
+        guard canUndo(row, verified: verified, pending: pending) else { return }
         confirmingUndoID = row.id
     }
 
@@ -246,19 +248,19 @@ final class ChangeDetailModel: ObservableObject {
     /// Runs the undo for an id `confirmUndo()` returned.
     func performUndo(id: String, decisions: ChangesDecisions, service: ChangesService) async {
         guard let snapshot = service.snapshot, let row = snapshot.changes.changes.first(where: { $0.id == id }),
-              canUndo(row, verified: snapshot.changes.verified) else { return }
+              canUndo(row, verified: snapshot.changes.verified, pending: decisions.pendingUndos) else { return }
         busy = true
         defer { busy = false }
         switch await decisions.perform(.undo(changeID: id)) {
         case .done:
-            pendingUndos.insert(id)
-            message = DetailModel.undoQueuedMessage
+            decisions.noteUndoQueued(id)
+            if isCurrent(id) { message = DetailModel.undoQueuedMessage }
             await service.refresh()
-            reconcile(service)
+            decisions.reconcilePendingUndos(with: service)
         case .refused(let words):
-            message = words
+            if isCurrent(id) { message = words }
         case .invalid:
-            message = DetailModel.invalidMessage
+            if isCurrent(id) { message = DetailModel.invalidMessage }
         }
     }
 
@@ -268,13 +270,13 @@ final class ChangeDetailModel: ObservableObject {
         defer { busy = false }
         switch await decisions.perform(.wrong(changeID: row.id)) {
         case .done:
-            message = DetailModel.wrongRecordedMessage
+            if isCurrent(row.id) { message = DetailModel.wrongRecordedMessage }
             await service.refresh()
-            reconcile(service)
+            decisions.reconcilePendingUndos(with: service)
         case .refused(let words):
-            message = words
+            if isCurrent(row.id) { message = words }
         case .invalid:
-            message = DetailModel.invalidMessage
+            if isCurrent(row.id) { message = DetailModel.invalidMessage }
         }
     }
 
@@ -282,7 +284,10 @@ final class ChangeDetailModel: ObservableObject {
     func loadDiff(for row: ChangeRow, decisions: ChangesDecisions) async {
         guard diff != .loading else { return }
         diff = .loading
-        switch await decisions.perform(.diff(changeID: row.id)) {
+        let result = await decisions.perform(.diff(changeID: row.id))
+        // The owner may have opened another change while the engine ran: that result is not theirs to see.
+        guard isCurrent(row.id) else { return }
+        switch result {
         case .done(let text):
             diff = .loaded(text)
         case .refused(let words):
@@ -290,13 +295,6 @@ final class ChangeDetailModel: ObservableObject {
         case .invalid:
             diff = .failed(DetailModel.invalidMessage)
         }
-    }
-
-    /// Forgets each pending undo whose refreshed row shows it rolled back.
-    func reconcile(_ service: ChangesService) {
-        guard let rows = service.snapshot?.changes.changes else { return }
-        let still = DetailModel.stillPending(pendingUndos, rows: rows)
-        if still != pendingUndos { pendingUndos = still }
     }
 }
 
@@ -341,12 +339,12 @@ struct ChangeDetailView: View {
         .frame(minWidth: 560, idealWidth: 640, minHeight: 520, idealHeight: 680)
         .background(DS.Paper.base)
         .onAppear { model.open(changeID) }
-        .onChange(of: service.state) { _, _ in model.reconcile(service) }
+        .onChange(of: service.state) { _, _ in decisions.reconcilePendingUndos(with: service) }
     }
 
     @ViewBuilder
     private func detail(_ row: ChangeRow, document: ChangesDocument) -> some View {
-        let pending = model.pendingUndos.contains(row.id) && row.test.rolledBackBy == nil
+        let pending = decisions.pendingUndos.contains(row.id) && row.test.rolledBackBy == nil
         VStack(alignment: .leading, spacing: 16) {
             header(row)
             if let status = DetailModel.rollbackStatus(row, in: document.changes, pending: pending) {
@@ -494,9 +492,9 @@ struct ChangeDetailView: View {
     private func actions(_ row: ChangeRow, verified: Bool) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                Button("Undo") { model.askToUndo(row, verified: verified) }
+                Button("Undo") { model.askToUndo(row, verified: verified, pending: decisions.pendingUndos) }
                     .buttonStyle(.ds(.secondary, size: .small))
-                    .disabled(!model.canUndo(row, verified: verified))
+                    .disabled(!model.canUndo(row, verified: verified, pending: decisions.pendingUndos))
                 Button("This verdict is wrong") {
                     Task { await model.markWrong(row, decisions: decisions, service: service) }
                 }

@@ -50,6 +50,23 @@ final class ChangesDecisions: ObservableObject {
 
     @Published private(set) var consent: ConsentAnswer = .unknown
 
+    /// Undos the engine recorded that no refreshed row shows applied yet. Held here, not in a view model,
+    /// because this object lives as long as the app: leaving the tab (the detail's own links do) must not
+    /// offer Undo again while a dreaming run is still to apply it.
+    ///
+    /// An id leaves the set once a refreshed row has `rolledBackBy != nil`. An undo that a dreaming run
+    /// declines stays pending for the rest of the app session (accepted for v1).
+    @Published private(set) var pendingUndos: Set<String> = []
+
+    func noteUndoQueued(_ id: String) { pendingUndos.insert(id) }
+
+    /// Drops each pending undo whose refreshed row shows it rolled back.
+    func reconcilePendingUndos(with service: ChangesService) {
+        guard let rows = service.snapshot?.changes.changes else { return }
+        let still = DetailModel.stillPending(pendingUndos, rows: rows)
+        if still != pendingUndos { pendingUndos = still }
+    }
+
     static let liveRunMessage = "Scout is running right now. Try again when the run finishes."
 
     private let runner: any ProcessRunner

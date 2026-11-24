@@ -36,6 +36,14 @@ struct ChangeDetailTests {
         init(_ changes: String) { self.changes = changes }
     }
 
+    /// Holds an engine answer until the test lets it go.
+    private actor Gate {
+        private var open = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+        func wait() async { if open { return }; await withCheckedContinuation { waiters.append($0) } }
+        func release() { open = true; waiters.forEach { $0.resume() }; waiters = [] }
+    }
+
     private struct Rig {
         let runner: RuleBasedRunner
         let service: ChangesService
@@ -44,7 +52,7 @@ struct ChangeDetailTests {
     }
 
     /// A loaded service and a decisions object on one runner. `box.changes` is what the next refresh reads.
-    private func rig(verified: Bool = true, undoStderr: String = "", undoExit: Int32 = 0, diff: String = "--- a/x\n+++ b/x\n-old\n+new\n") async throws -> Rig {
+    private func rig(verified: Bool = true, undoStderr: String = "", undoExit: Int32 = 0, gate: Gate? = nil, diff: String = "--- a/x\n+++ b/x\n-old\n+new\n") async throws -> Rig {
         let runner = RuleBasedRunner()
         let box = Box(try changesJSON(verified: verified))
         func fixture(_ name: String) throws -> String { String(decoding: try ChangesContractTests.data(name), as: UTF8.self) }
@@ -53,9 +61,15 @@ struct ChangeDetailTests {
             ProcessResult(exitCode: 0, stdout: Data(box.changes.utf8), stderr: Data())
         }
         runner.on(tool: "scoutctl", prefix: ["engagement", "--json"], stdout: try fixture("engagement"))
-        runner.on(tool: "scoutctl", prefix: ["changes", "undo"], stderr: undoStderr, exit: undoExit)
+        runner.on({ url, args in url.lastPathComponent == "scoutctl" && args.prefix(2) == ["changes", "undo"] }) { _, _, _ in
+            if let gate { await gate.wait() }
+            return ProcessResult(exitCode: undoExit, stdout: Data(), stderr: Data(undoStderr.utf8))
+        }
         runner.on(tool: "scoutctl", prefix: ["changes", "wrong"])
-        runner.on(tool: "scoutctl", prefix: ["changes", "diff"], stdout: diff)
+        runner.on({ url, args in url.lastPathComponent == "scoutctl" && args.prefix(2) == ["changes", "diff"] }) { _, _, _ in
+            if let gate { await gate.wait() }
+            return ProcessResult(exitCode: 0, stdout: Data(diff.utf8), stderr: Data())
+        }
         let exe = URL(fileURLWithPath: "/usr/bin/scoutctl")
         let service = ChangesService(
             scoutctl: { exe }, runner: runner,
@@ -207,7 +221,7 @@ struct ChangeDetailTests {
         let r = try await rig()
         let model = ChangeDetailModel()
         let row = try changeRow(Self.undoID, in: r.service)
-        model.askToUndo(row, verified: true)
+        model.askToUndo(row, verified: true, pending: r.decisions.pendingUndos)
         #expect(model.confirmingUndoID == Self.undoID)
         // Asking sent nothing.
         #expect(r.runner.calls(to: "scoutctl").filter { $0.prefix(2) == ["changes", "undo"] }.isEmpty)
@@ -224,7 +238,7 @@ struct ChangeDetailTests {
     @Test func cancellingTheQuestionSendsNothing() async throws {
         let r = try await rig()
         let model = ChangeDetailModel()
-        model.askToUndo(try changeRow(Self.undoID, in: r.service), verified: true)
+        model.askToUndo(try changeRow(Self.undoID, in: r.service), verified: true, pending: r.decisions.pendingUndos)
         model.cancelUndo()
         #expect(model.confirmUndo() == nil)
         #expect(r.runner.calls(to: "scoutctl").filter { $0.prefix(2) == ["changes", "undo"] }.isEmpty)
@@ -234,8 +248,8 @@ struct ChangeDetailTests {
         let r = try await rig(verified: false)
         let model = ChangeDetailModel()
         let row = try changeRow(Self.undoID, in: r.service)
-        #expect(!model.canUndo(row, verified: false))
-        model.askToUndo(row, verified: false)
+        #expect(!model.canUndo(row, verified: false, pending: r.decisions.pendingUndos))
+        model.askToUndo(row, verified: false, pending: r.decisions.pendingUndos)
         #expect(model.confirmingUndoID == nil)
     }
 
@@ -243,26 +257,26 @@ struct ChangeDetailTests {
         let r = try await rig()
         let model = ChangeDetailModel()
         let before = try changeRow(Self.undoID, in: r.service)
-        #expect(model.canUndo(before, verified: true))
-        model.askToUndo(before, verified: true)
+        #expect(model.canUndo(before, verified: true, pending: r.decisions.pendingUndos))
+        model.askToUndo(before, verified: true, pending: r.decisions.pendingUndos)
         await model.performUndo(id: try #require(model.confirmUndo()), decisions: r.decisions, service: r.service)
 
         #expect(model.message == "Undo queued: the next dreaming run takes back the lines this change made.")
         #expect(!(model.message ?? "").lowercased().contains("undone"))
-        #expect(model.pendingUndos == [Self.undoID])
+        #expect(r.decisions.pendingUndos == [Self.undoID])
         // The refresh found the row unchanged, so Undo stays off and the detail says it is queued.
         let after = try changeRow(Self.undoID, in: r.service)
-        #expect(!model.canUndo(after, verified: true))
+        #expect(!model.canUndo(after, verified: true, pending: r.decisions.pendingUndos))
         let status = DetailModel.rollbackStatus(after, in: try #require(r.service.snapshot).changes.changes, pending: true)
         #expect(status == DetailModel.undoQueuedMessage)
 
         // A later refresh shows the row rolled back: the pending mark clears and the status reads the outcome.
         r.box.changes = try changesJSON(verified: true, rolledBack: [Self.undoID: "chg-000000000004"])
         await r.service.refresh()
-        model.reconcile(r.service)
-        #expect(model.pendingUndos.isEmpty)
+        r.decisions.reconcilePendingUndos(with: r.service)
+        #expect(r.decisions.pendingUndos.isEmpty)
         let rolled = try changeRow(Self.undoID, in: r.service)
-        #expect(!model.canUndo(rolled, verified: true))   // ChangeActions: already reverted
+        #expect(!model.canUndo(rolled, verified: true, pending: r.decisions.pendingUndos))   // ChangeActions: already reverted
         #expect(DetailModel.rollbackStatus(rolled, in: try #require(r.service.snapshot).changes.changes, pending: false)
                 == "Rolled back by \u{201C}A rollback change\u{201D}.")
     }
@@ -271,11 +285,11 @@ struct ChangeDetailTests {
         let r = try await rig(undoStderr: "scoutctl changes undo: a scheduled run may not make it\n", undoExit: 2)
         let model = ChangeDetailModel()
         let row = try changeRow(Self.undoID, in: r.service)
-        model.askToUndo(row, verified: true)
+        model.askToUndo(row, verified: true, pending: r.decisions.pendingUndos)
         await model.performUndo(id: try #require(model.confirmUndo()), decisions: r.decisions, service: r.service)
         #expect(model.message == "Scout is running right now. Try again when the run finishes.")
-        #expect(model.pendingUndos.isEmpty)
-        #expect(model.canUndo(row, verified: true))
+        #expect(r.decisions.pendingUndos.isEmpty)
+        #expect(model.canUndo(row, verified: true, pending: r.decisions.pendingUndos))
         #expect(refreshCount(r.runner) == 1)   // nothing changed, nothing re-read
     }
 
@@ -306,6 +320,52 @@ struct ChangeDetailTests {
         // A different change starts clean.
         model.open("chg-000000000002")
         #expect(model.diff == .idle)
+    }
+
+    // MARK: - Fix round 1
+
+    @Test func aQueuedUndoSurvivesTheDetailModelAndTheTab() async throws {
+        let r = try await rig()
+        let first = ChangeDetailModel()
+        let row = try changeRow(Self.undoID, in: r.service)
+        first.askToUndo(row, verified: true, pending: r.decisions.pendingUndos)
+        await first.performUndo(id: try #require(first.confirmUndo()), decisions: r.decisions, service: r.service)
+        // The tab is left and reopened: a fresh model over the same decisions still has Undo off.
+        let second = ChangeDetailModel()
+        #expect(!second.canUndo(row, verified: true, pending: r.decisions.pendingUndos))
+        second.askToUndo(row, verified: true, pending: r.decisions.pendingUndos)
+        #expect(second.confirmingUndoID == nil)
+    }
+
+    @Test func aDiffThatArrivesAfterSwitchingChangeIsDropped() async throws {
+        let gate = Gate()
+        let r = try await rig(gate: gate)
+        let model = ChangeDetailModel()
+        model.open(Self.undoID)
+        let a = try changeRow(Self.undoID, in: r.service)
+        let load = Task { await model.loadDiff(for: a, decisions: r.decisions) }
+        while model.diff != .loading { await Task.yield() }
+        model.open(Self.wrongID)   // the owner moved on before the engine answered
+        await gate.release()
+        await load.value
+        #expect(model.diff == .idle)
+    }
+
+    @Test func aMessageThatArrivesAfterSwitchingChangeIsDropped() async throws {
+        let gate = Gate()
+        let r = try await rig(gate: gate)
+        let model = ChangeDetailModel()
+        model.open(Self.undoID)
+        let a = try changeRow(Self.undoID, in: r.service)
+        model.askToUndo(a, verified: true, pending: r.decisions.pendingUndos)
+        let id = try #require(model.confirmUndo())
+        let run = Task { await model.performUndo(id: id, decisions: r.decisions, service: r.service) }
+        while !model.busy { await Task.yield() }
+        model.open(Self.wrongID)
+        await gate.release()
+        await run.value
+        #expect(model.message == nil)
+        #expect(r.decisions.pendingUndos == [Self.undoID])   // the decision itself is still remembered
     }
 
     // MARK: - What is on screen
