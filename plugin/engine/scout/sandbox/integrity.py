@@ -22,6 +22,24 @@ session's branch is still put back. Without an enforced sandbox (``SCOUT_SANDBOX
 vault's own branch and a prunable worktree (its folder gone) never vouch. Accepted (spec §13): a run could commit
 onto a session's branch exactly what that session has already staged for a protected path, and have it pass.
 
+Who made a change can't come from anything the run can write: a commit's author, committer, message or dates, or
+git's own files. Under Phase 1d it doesn't have to. With the broker's tightened profile the run can't write the
+vault's git dirs at all, so its only way into git is the commit broker, which runs outside the sandbox and records
+each commit it makes in the owner store (the shared ledger, ``scout.changes.run_commits``). When that record is
+trustworthy for this run (:func:`broker_record`: an enforced sandbox, the tightened profile for the whole run, no
+commit the broker started without recording it), a protected path is the run's only if a new commit on the ref
+that the broker made touched it. Anything else that changed during the run (an owner commit that fast-forwarded
+the vault's branch, a session's branch, the index after an owner merge in this checkout) is reported in one
+"left alone" log line and neither put back nor a finding: ``run.integrity_restored`` keeps meaning a run did it.
+A path the run's commit touched stays the run's even if an owner commit touched it later, and is put back to its
+start content (fail closed). Without that record the check stays as conservative as before: every change is the
+run's, with only the snapshot-time worktree exemption above.
+
+Whatever the attribution, a restore commit is never written onto a branch that another work tree has checked out
+now (worktrees made during the run included): it would move that session's HEAD under it and leave its tree
+looking dirty. Such a branch is reported as still holding the change (``unrestored``, health red), naming the
+worktree. The vault's own branch is always put back, even when another worktree has it checked out too.
+
 The protected tracked paths are ``hook_paths.protected_specs()`` entries inside the vault's work tree, outside its
 git dir: the runner scripts, ``.gitattributes``, ``.gitmodules``, ``.mcp.json``, ``.claude/``, the other agent dirs,
 the delegate state and ``.scout-state/schedule.yaml`` / ``triggers.yaml``. Paths compare NFC-normalised and
@@ -32,6 +50,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unicodedata
@@ -48,6 +67,7 @@ REF_PREFIXES = ("refs/heads/", "refs/tags/", "refs/stash", "refs/replace/")
 # An unmerged index entry's key: the path, then this, then its stage (a NUL can't be in a git path).
 STAGE_SEP = "\0"
 GIT_TIMEOUT_S = 60
+_OID_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 # verify()'s result: the status the runner records, and scoutctl's exit code for it.
 STATUS_EXIT = {"clean": 0, "restored": 10, "unrestored": 11, "error": 12}
@@ -73,6 +93,11 @@ class Result:
     unrestored: list[str] = field(default_factory=list)  # refs reported but not rewritten
     left_alone: dict[str, list[str]] = field(default_factory=dict)  # a worktree session's own branch -> its paths
     left_alone_by: dict[str, str] = field(default_factory=dict)  # that branch -> the worktree's name
+    # Changed during the run, but in no commit the run's broker made, under a run whose only way into git was that
+    # broker: not the run's doing, so neither put back nor a finding. where ("HEAD", "index", a ref) -> paths.
+    foreign: dict[str, list[str]] = field(default_factory=dict)
+    # A branch the run changed that another worktree has checked out: reported, never rewritten. ref -> worktree.
+    held_by: dict[str, str] = field(default_factory=dict)
     reason: str = ""
 
     @property
@@ -89,8 +114,16 @@ class Result:
             f"worktree {self.left_alone_by.get(ref, '?')!r}, which has it checked out, so left alone"
             for ref, paths in sorted(self.left_alone.items())
         ]
+        out += [
+            f"integrity check: {where} changed protected {noun(len(paths), 'file')} during the run: "
+            f"{', '.join(sorted(paths))}; not in any commit the run's broker made, and the run had no other way "
+            "into git, so it wasn't this run: left alone (if you didn't make this change, check that ref's recent "
+            "commits)"
+            for where, paths in sorted(self.foreign.items())
+        ]
         if self.status == "clean":
-            return [*out, "integrity check: protected tracked files unchanged"]
+            done = "protected tracked files unchanged" if not self.foreign else "this run changed no protected file"
+            return [*out, f"integrity check: {done}"]
         for where, paths in sorted(self.changed.items()):
             out.append(
                 f"integrity check: {where} changed protected {noun(len(paths), 'file')}: {', '.join(sorted(paths))}"
@@ -98,8 +131,66 @@ class Result:
         for ref, commit in sorted(self.restored.items()):
             out.append(f"integrity check: restored them on {ref} in commit {commit[:12]}")
         for ref in self.unrestored:
-            out.append(f"integrity check: {ref} still holds the change (not rewritten; review it by hand)")
+            if ref in self.held_by:
+                out.append(
+                    f"integrity check: {ref} still holds the change: it is checked out in worktree "
+                    f"{self.held_by[ref]!r}, so it wasn't rewritten under that session; check that branch's commits "
+                    f"since the run started to {', '.join(sorted(self.changed.get(ref, [])))} and revert any you "
+                    "didn't make"
+                )
+            else:
+                out.append(f"integrity check: {ref} still holds the change (not rewritten; review it by hand)")
         return out
+
+
+def _checked_out_elsewhere(vault: Path, env: Mapping[str, str]) -> dict[str, str]:
+    """Each branch another work tree of the vault's repository has checked out now -> that worktree's name.
+
+    Read at verify time, so a worktree a session made during the run counts. The main work tree counts too when the
+    vault is itself a linked worktree. Used only to decide not to write, never to decide whose change it was.
+    """
+    out: dict[str, str] = {}
+    for admin in _other_admins(vault, env):
+        branch = _held_branch(vault, env, admin)
+        if branch:
+            out.setdefault(branch, os.path.basename(admin))
+    common = Path(_git(vault, ["rev-parse", "--git-common-dir"], env).strip())
+    common = common if common.is_absolute() else vault / common
+    own = os.path.realpath(_git(vault, ["rev-parse", "--absolute-git-dir"], env).strip())
+    if os.path.realpath(common) != own:
+        main_branch = _held_branch(vault, env, os.path.realpath(common))
+        if main_branch:
+            out.setdefault(main_branch, "main work tree")
+    return out
+
+
+_BRANCH_IN_PROGRESS = ("rebase-merge/head-name", "rebase-apply/head-name")
+
+
+def _held_branch(vault: Path, env: Mapping[str, str], git_dir: str) -> str | None:
+    """The branch a work tree has checked out, or is rebasing or bisecting on a detached HEAD (as git itself counts
+    a branch checked out): a restore commit there would break that session's ``git rebase --continue``."""
+    branch = _symbolic_head(vault, env, git_dir=git_dir)
+    if branch:
+        return branch
+    for name in _BRANCH_IN_PROGRESS:
+        text = _read_small(Path(git_dir, name))
+        if text and text.startswith("refs/heads/"):
+            return text
+    start = _read_small(Path(git_dir, "BISECT_START"))
+    if not start:
+        return None
+    if start.startswith("refs/heads/"):
+        return start
+    # BISECT_START holds the branch name bisect started from, or a commit id when it started detached.
+    return None if _OID_RE.fullmatch(start) else f"refs/heads/{start}"
+
+
+def _read_small(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8").strip() or None
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def _worktrees(vault: Path, env: Mapping[str, str]) -> list[list[str]]:
@@ -109,6 +200,16 @@ def _worktrees(vault: Path, env: Mapping[str, str]) -> list[list[str]]:
     vault's own git dirs). The vault's own admin dir, when the vault is itself a linked worktree, is left out, and
     so is a prunable one: its work tree is gone, so no session works there.
     """
+    out = []
+    for real in _other_admins(vault, env):
+        branch = _symbolic_head(vault, env, git_dir=real)
+        if branch:
+            out.append([real, branch])
+    return out
+
+
+def _other_admins(vault: Path, env: Mapping[str, str]) -> list[str]:
+    """The admin dir (real path) of each other linked worktree whose work tree is still there, sorted."""
     common = Path(_git(vault, ["rev-parse", "--git-common-dir"], env).strip())
     common = common if common.is_absolute() else vault / common
     own = os.path.realpath(_git(vault, ["rev-parse", "--absolute-git-dir"], env).strip())
@@ -116,15 +217,8 @@ def _worktrees(vault: Path, env: Mapping[str, str]) -> list[list[str]]:
         admins = sorted(p for p in (common / "worktrees").iterdir() if p.is_dir())
     except OSError:
         return []
-    out = []
-    for admin in admins:
-        real = os.path.realpath(admin)
-        if real == own or not _worktree_present(real):
-            continue
-        branch = _symbolic_head(vault, env, git_dir=real)
-        if branch:
-            out.append([real, branch])
-    return out
+    reals = (os.path.realpath(admin) for admin in admins)
+    return [real for real in reals if real != own and _worktree_present(real)]
 
 
 def _worktree_present(admin: str) -> bool:
@@ -337,16 +431,113 @@ def _diff(before: Entries, after: Entries) -> list[str]:
     return sorted(p for p in {*before, *after} if before.get(p) != after.get(p))
 
 
-def verify(vault: Path, start: dict, env: Mapping[str, str] | None = None, *, label: str = "scheduled") -> Result:
-    """Compare the vault with ``start`` (from :func:`snapshot`) and put back what changed. Never raises."""
+# How many new commits a moved ref may carry before the check stops sorting them by maker and calls every changed
+# path the run's (fail closed).
+MAX_NEW_COMMITS = 5000
+
+
+@dataclass(frozen=True)
+class BrokerRecord:
+    """The commits a run's broker made, as the owner store recorded them, outside the sandbox.
+
+    Only a record from a run whose sole way into git was its broker is one: the enforced sandbox with the broker's
+    tightened profile (Phase 1d) denies every write in the vault's git dirs, so every commit, ref move and index
+    write the run caused went through the broker, which recorded the commits it made. ``shas`` are full commit ids:
+    every commit the ledger names, at any grade, so blame is fail closed.
+    """
+
+    shas: frozenset[str]
+
+
+def broker_record(vault: Path, start: dict, env: Mapping[str, str]) -> BrokerRecord | None:
+    """This run's :class:`BrokerRecord`, or None when there is none to trust (the check is then conservative).
+
+    None unless the runner says the sandbox was enforced, the owner store says this run's broker had the tightened
+    profile for the whole run, and it recorded every commit it started (no gap).
+    """
+    if env.get("SCOUT_SANDBOX_STATUS") != "enforced":
+        return None
+    from scout.changes import run_commits  # the shared ledger; imported here, as it imports this module's helpers
+
+    # broker_was_on: a broker of this vault decided its profile after the snapshot, every one got the tightened
+    # profile, and none left a commit it couldn't name. The session lock serialises a vault's runs.
+    if not run_commits.broker_was_on(vault, start):
+        return None
+    # Whether the record can clear anyone is broker_was_on's call alone. Blame is fail closed, so it takes every
+    # commit any ledger row names, whatever its grade: exact ("broker") or not ("run": an untightened broker's row,
+    # a tick drain's; "worktree": a vouch, which may be wrong).
+    return BrokerRecord(run_commits.recorded_shas())
+
+
+def _new_commits(vault: Path, tip: str, start: dict, env: Mapping[str, str]) -> list[str] | None:
+    """Commits reachable from ``tip`` and from nothing the snapshot saw; None past :data:`MAX_NEW_COMMITS`."""
+    known = sorted(start["trees"])
+    try:
+        out = _git(
+            vault,
+            ["rev-list", f"--max-count={MAX_NEW_COMMITS + 1}", "--stdin"],
+            env,
+            input_text="".join(f"{line}\n" for line in [tip, *(f"^{k}" for k in known)]),
+        ).split()
+    except IntegrityError:
+        return None  # a start commit git can no longer read: no sorting, so all of it is the run's
+    return None if len(out) > MAX_NEW_COMMITS else out
+
+
+def _touched(vault: Path, commit: str, env: Mapping[str, str]) -> set[str]:
+    """The paths ``commit`` changed against its first parent (everything it holds, for a root commit), normalised."""
+    parents = _git(vault, ["rev-list", "--parents", "-n", "1", commit], env).split()[1:]
+    if parents:
+        out = _git(vault, ["diff-tree", "-r", "-z", "--no-renames", "--name-only", parents[0], commit], env)
+    else:
+        out = _git(vault, ["ls-tree", "-r", "-z", "--name-only", "--full-tree", commit], env)
+    return {_norm(p) for p in out.split("\0") if p}
+
+
+def _runs_paths(
+    vault: Path, tip: str, paths: list[str], start: dict, record: BrokerRecord, env: Mapping[str, str]
+) -> list[str]:
+    """Which of ``paths`` (changed on a ref now at ``tip``) a commit the run's broker made touched.
+
+    A path is the run's when any new commit on the ref that the broker recorded touched it, whatever else touched
+    it too: a commit the run made can't be laundered by an owner commit on top. Too many new commits to sort means
+    all of them are the run's.
+    """
+    new = _new_commits(vault, tip, start, env)
+    if new is None:
+        return paths
+    touched: set[str] = set()
+    for commit in new:
+        if commit in record.shas:
+            touched |= _touched(vault, commit, env)
+    return [p for p in paths if _norm(p) in touched]
+
+
+_UNSET = object()
+
+
+def verify(
+    vault: Path,
+    start: dict,
+    env: Mapping[str, str] | None = None,
+    *,
+    label: str = "scheduled",
+    record: BrokerRecord | None | object = _UNSET,
+) -> Result:
+    """Compare the vault with ``start`` (from :func:`snapshot`) and put back what the run changed. Never raises.
+
+    ``record``: this run's :class:`BrokerRecord`, or None for none; by default :func:`broker_record` reads it.
+    """
     env = os.environ if env is None else env
     try:
-        return _verify(vault, start, env, label)
+        if record is _UNSET:
+            record = broker_record(vault, start, env) if isinstance(start, dict) else None
+        return _verify(vault, start, env, label, record if isinstance(record, BrokerRecord) else None)
     except (IntegrityError, KeyError, TypeError, ValueError) as e:
         return Result("error", reason=str(e) or type(e).__name__)
 
 
-def _verify(vault: Path, start: dict, env: Mapping[str, str], label: str) -> Result:
+def _verify(vault: Path, start: dict, env: Mapping[str, str], label: str, record: BrokerRecord | None) -> Result:
     if not isinstance(start, dict) or start.get("version") != SNAPSHOT_VERSION:
         raise IntegrityError("no start snapshot of this version")
     genv = _git_env(env)
@@ -368,8 +559,25 @@ def _verify(vault: Path, start: dict, env: Mapping[str, str], label: str) -> Res
     trust_worktrees = env.get("SCOUT_SANDBOX_STATUS") == "enforced"
     result = Result("clean")
     head, branch = _head(vault, genv)
-    # The vault's own branch is the run's: no linked worktree vouches for it, even one that has it checked out too.
+    # The vault's own branch is the run's: no linked worktree vouches for it, even one that has it checked out too,
+    # and a restore on it is never held back for another worktree.
     own_branches = {b for b in (start.get("branch"), branch) if b}
+    # Branches other sessions are working on now (worktrees made during the run included): a restore commit is never
+    # written onto one, since that moves the session's HEAD under it and leaves its tree looking dirty.
+    elsewhere = _checked_out_elsewhere(vault, genv)
+    runs_paths: set[str] = set()  # normalised: every protected path a commit of the run's broker touched
+
+    def the_runs(where: str, tip: str, paths: list[str]) -> list[str]:
+        # With a broker record, only what a commit the run's broker made touched is the run's; the rest happened
+        # during the run but not by it. Without one, every change is the run's, as before.
+        if record is None:
+            return paths
+        mine = _runs_paths(vault, tip, paths, start, record, genv)
+        runs_paths.update(_norm(p) for p in mine)
+        if others := [p for p in paths if p not in mine]:
+            result.foreign[where] = others
+        return mine
+
     now_refs = _refs(vault, genv)
     moved = sorted(r for r, sha in now_refs.items() if start["refs"].get(r) != sha)
     for ref in moved:
@@ -378,30 +586,43 @@ def _verify(vault: Path, start: dict, env: Mapping[str, str], label: str) -> Res
             continue
         want = baseline(ref)
         have = _tree_entries(vault, commit, scope_list, genv)
-        paths = _diff(want, have)
+        paths = the_runs(ref, commit, _diff(want, have))
         if not paths:
             continue
-        if trust_worktrees and ref.startswith("refs/heads/") and ref not in own_branches:
+        if record is None and trust_worktrees and ref.startswith("refs/heads/") and ref not in own_branches:
             worktree = _vouching_worktree(vault, start, ref, have, paths, scope_list, genv)
             if worktree is not None:
                 result.left_alone[ref] = paths
                 result.left_alone_by[ref] = worktree
                 continue
         result.changed[ref] = paths
-        if ref.startswith("refs/heads/"):
+        if ref.startswith("refs/heads/") and (ref in own_branches or ref not in elsewhere):
             result.restored[ref] = _restore_ref(vault, ref, now_refs[ref], commit, want, paths, genv, label)
         else:
+            if ref in elsewhere:
+                result.held_by[ref] = elsewhere[ref]
             result.unrestored.append(ref)
     if branch is None and head and head != start_head:
         have = _tree_entries(vault, head, scope_list, genv)
-        paths = _diff(head_entries, have)
+        paths = the_runs("HEAD", head, _diff(head_entries, have))
         if paths:
             result.changed["HEAD"] = paths
             result.restored["HEAD"] = _restore_ref(vault, "HEAD", head, head, head_entries, paths, genv, label)
     want_index: Entries = start["index"]
     have_index = _index_entries(vault, scope_list, genv)
     index_paths = _diff(want_index, have_index)
-    if index_paths:
+    if index_paths and record is not None:
+        # The run couldn't write the index itself; its broker's commits stage only the paths they commit. So an
+        # entry is the run's only for a path its commits touched (it goes back with the branch); any other changed
+        # entry was someone else's (an owner merge in this checkout), and putting it back would leave their work
+        # tree looking dirty.
+        mine = [p for p in index_paths if _norm(_plain(p)) in runs_paths]
+        if others := sorted({_plain(p) for p in index_paths if p not in mine}):
+            result.foreign["index"] = others
+        if mine:
+            result.changed["index"] = sorted({_plain(p) for p in mine})
+            _restore_index(vault, want_index, mine, genv)
+    elif index_paths:
         result.changed["index"] = sorted({_plain(p) for p in index_paths})
         _restore_index(vault, want_index, index_paths, genv)
     if result.changed:

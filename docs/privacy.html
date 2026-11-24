@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>Privacy Policy — Scout</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Scout is local-first and collects nothing — no account, no server, no analytics, no telemetry. Your data stays on your machine.">
+<meta name="description" content="Scout is local-first and collects nothing: no account, no server, no analytics, no telemetry. Your data stays on your machine. This website counts page views anonymously, without cookies.">
 <meta name="robots" content="index, follow">
 <meta name="theme-color" content="#f3f4f1" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0f1112" media="(prefers-color-scheme: dark)">
@@ -15,6 +15,7 @@
   try { var t = localStorage.getItem('scout-theme'); if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t); } catch (e) {}
 </script>
 <script src="site.js" defer></script>
+<script src="analytics.js" defer></script>
 </head>
 <body class="legal">
 <a class="skip" href="#main">Skip to content</a>
@@ -38,7 +39,7 @@
 
 <main id="main"><div class="wrap"><article class="doc">
   <h1>Privacy Policy</h1>
-  <p class="updated">Last updated: November 16, 2026</p>
+  <p class="updated">Last updated: November 24, 2026</p>
 
   <p>This Privacy Policy explains how the <b>Scout</b> project (&ldquo;Scout&rdquo;, &ldquo;we&rdquo;,
   &ldquo;us&rdquo;, or &ldquo;the project&rdquo; &mdash; the maintainers who publish the
@@ -59,6 +60,8 @@
     address, no identity, nothing about you or your machine. See
     <a href="#version-check">&ldquo;The installer's version check&rdquo;</a>, which also says how to turn it
     off.</p>
+    <p>This website also counts its page views, anonymously and without cookies, so we know how often it's read.
+    That count never involves the plugin or the apps. See <a href="#website">&ldquo;This website&rdquo;</a>.</p>
   </div>
   <p>Because we never receive your data, there is nothing for us to sell, share, mine, or lose. The honest
   privacy story for Scout is one of <b>architecture, not promises</b>: the data stays where you are.</p>
@@ -162,10 +165,25 @@
   <pre class="code">curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh | SCOUT_NO_RELEASE_CHECK=1 bash</pre>
   <p>The install works the same without the check.</p>
 
-  <h2>This website</h2>
+  <h2 id="website">This website</h2>
   <p>Our website (<code>raven-scout.github.io</code>) is a static informational site hosted on <b>GitHub Pages</b>.
-  It does <b>not</b> use cookies, analytics, tracking pixels, advertising, or third-party fonts, and it makes no
-  third-party network requests &mdash; fonts and styles are served from the site itself.</p>
+  It does <b>not</b> use cookies, tracking pixels, advertising, third-party scripts, or third-party fonts &mdash;
+  fonts, styles and scripts are served from the site itself. The only thing it saves in your browser is your
+  light or dark theme, if you pick one.</p>
+  <p>To learn how often the site is visited, each page you open sends one anonymous page-view count to
+  <a href="https://posthog.com/privacy">PostHog</a>, the analytics service we use. That is the site's only request
+  to anyone other than GitHub. The count holds:</p>
+  <ul>
+    <li>the page's address, without any query string or <code>#</code> part, and any <code>utm_</code> campaign
+    tags in the link you followed;</li>
+    <li>the domain of the site that linked you here, if any (never the full address);</li>
+    <li>the page's title and your screen's width;</li>
+    <li>a random ID made fresh for every page you open, so two page views can't be tied together or to you.</li>
+  </ul>
+  <p>It holds no cookie, no stored identifier and no fingerprint, and it doesn't follow you between pages or
+  visits. PostHog receives your IP address when the count arrives, as any server you connect to does; we have set
+  PostHog to discard it, so the counts we can see contain no IP address. If your browser sends a
+  <b>Do Not Track</b> or <b>Global Privacy Control</b> signal, the site sends no count at all.</p>
   <p>As with any website, the host (GitHub) may automatically log technical request data such as IP addresses to
   operate and secure the service. That processing is performed by GitHub under
   <a href="https://docs.github.com/site-policy/privacy-policies/github-privacy-statement">GitHub's Privacy
@@ -215,7 +233,7 @@
       <a href="terms.html">Terms</a>
       <a href="https://github.com/Raven-Scout/Scout/blob/main/LICENSE">MIT License</a>
     </nav>
-    <p class="meta">© 2026 Raven Scout. This site sets no cookies and loads no analytics, trackers or third-party fonts.</p>
+    <p class="meta">© 2026 Raven Scout. This site sets no cookies and loads no third-party scripts or fonts. It counts page views anonymously (<a href="privacy.html#website">see how</a>).</p>
   </div>
 </footer>
 </body>

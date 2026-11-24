@@ -161,6 +161,19 @@ struct RunProtectionTests {
         #expect(model.offersTurnOff && !model.offersTurnOn)
     }
 
+    @Test func aChangeStillHeldSaysAnotherSessionsBranchWasLeftAlone() throws {
+        var obj = try #require(try JSONSerialization.jsonObject(with: try Self.sharedFixture()) as? [String: Any])
+        var run = try #require(obj["last_run"] as? [String: Any])
+        run["integrity"] = "unrestored"
+        obj["last_run"] = run
+        let model = RunProtectionModel(status: try #require(RunProtectionStatus.parse(try JSONSerialization.data(withJSONObject: obj))),
+                                       vault: vault, now: now)
+        #expect(model.fileCheck.value == "Change still held")
+        #expect(model.fileCheck.tone == .bad)
+        #expect(model.fileCheck.help.contains("another session has that branch checked out, so Scout left it alone"))
+        #expect(model.fileCheck.help.contains("a tag or the stash"))
+    }
+
     @Test func protectionFromTheLastRunSaysWhereItCameFrom() throws {
         var obj = try #require(try JSONSerialization.jsonObject(with: try Self.enforcedJSON()) as? [String: Any])
         obj["sandbox"] = ["status": "enforced", "reason": "the last run ran inside it", "switch": "on",

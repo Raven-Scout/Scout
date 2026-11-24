@@ -257,11 +257,9 @@ def test_the_shell_prefilter_matches_only_front_page_shaped_paths(file_path: str
     import re
     import subprocess
 
-    config = json.loads((PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8"))
-    command = next(
-        h["command"] for g in config["hooks"]["PostToolUse"] for h in g["hooks"] if "front-page-reads" in h["command"]
-    )
-    pattern = re.search(r"grep -qE '([^']+)'", command)
+    script = (PLUGIN / "hooks" / "prefilter.sh").read_text(encoding="utf-8")
+    branch = script[script.index("\nfront-page-reads)\n") :]
+    pattern = re.search(r"-qE -e '([^']+)'", branch[: branch.index("\n    ;;\n")])
     assert pattern is not None
     payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": file_path, "content": "x.md y/y.md"}})
     found = subprocess.run(["grep", "-qE", pattern.group(1)], input=payload, text=True, check=False)
@@ -352,7 +350,12 @@ def test_hooks_json_runs_it_after_a_runs_writes_and_never_fails_the_call() -> No
     ]
     assert len(entries) == 1
     command = entries[0]["command"]
-    after_path_filter = command.split("export PATH; ", 1)[1]  # #731's prefix comes first on every hook
-    assert after_path_filter.startswith('[ -n "$SCOUT_MODE" ]') and command.endswith("; exit 0")
-    assert "exit 2" not in command and "grep -qE" in command
+    assert '"$c" hook front-page-reads' in command and command.endswith("; exit 0") and "exit 2" not in command
+    # The filter itself lives in hooks/prefilter.sh: run-only, a grep on the path's shape, always exit 0.
+    script = (PLUGIN / "hooks" / "prefilter.sh").read_text(encoding="utf-8")
+    branch = script[script.index("\nfront-page-reads)\n") :]
+    branch = branch[: branch.index("\n    ;;\n")]
+    body = [line.strip() for line in branch.splitlines()[2:]]
+    assert body[0] == "is_run || verdict 0" and body[-1] == "verdict 0"
+    assert "exit 2" not in branch and "tool grep" in branch and "-qE -e" in branch
     assert "front-page-reads" in config["description"]

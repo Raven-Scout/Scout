@@ -641,6 +641,34 @@ def test_integrity_lines_are_read_from_the_end_of_a_long_log(tmp_path, quiet_hea
     assert RESTORING in p.prompt and "still holds the change" in p.prompt
 
 
+def test_a_branch_left_alone_for_another_worktree_says_how_to_check_it(tmp_path, quiet_health):
+    vault = build_vault(tmp_path)
+    log = vault / ".scout-logs" / LOG
+    held = "refs/heads/claude/owner-1"
+    log.write_text(
+        log.read_text(encoding="utf-8")
+        + f"integrity check: {held} changed protected file: .claude/settings.local.json\n"
+        f"integrity check: {held} still holds the change: it is checked out in worktree 'owner-1', so it wasn't "
+        "rewritten under that session; check that branch's commits since the run started to "
+        ".claude/settings.local.json and revert any you didn't make\n",
+        encoding="utf-8",
+    )
+    p = resolve_prompt.for_finding(vault, "run.integrity_restored", now=NOW, home=tmp_path / "home")
+    assert f"`{held}` still holds the change: it is checked out in worktree `owner-1`" in p.prompt
+    assert f"git log -p -n 3 {held} -- .claude/settings.local.json" in p.prompt
+    assert "git revert" in p.prompt and "keeps the bad file" in p.prompt
+    # A held line without a worktree (a tag, the stash) adds no branch step.
+    plain = build_vault(tmp_path / "plain")
+    plog = plain / ".scout-logs" / LOG
+    plog.write_text(
+        plog.read_text(encoding="utf-8") + "integrity check: refs/tags/v1 still holds the change "
+        "(not rewritten; review it by hand)\n",
+        encoding="utf-8",
+    )
+    q = resolve_prompt.for_finding(plain, "run.integrity_restored", now=NOW, home=tmp_path / "home2")
+    assert "keeps the bad file" not in q.prompt and "`refs/tags/v1` still holds the change" in q.prompt
+
+
 def test_an_unreadable_alerts_file_is_no_alert(tmp_path):
     vault = build_vault(tmp_path)
     (vault / ".scout-logs" / "connector-alerts.json").write_text('{"alerts": "nope"}', encoding="utf-8")
