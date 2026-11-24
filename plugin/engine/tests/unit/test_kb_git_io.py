@@ -43,6 +43,31 @@ def test_staged_paths_rename_maps_to_head_source(kb_repo) -> None:
     assert staged_paths(kb_repo.root) == [StagedPath("knowledge-base/new.md", "knowledge-base/old.md")]
 
 
+def test_staged_paths_lists_a_type_change_as_a_modification(kb_repo) -> None:
+    """#606: a file replaced by a symlink (git status T) is listed, with its HEAD path, and marked a link."""
+    kb_repo.stage("knowledge-base/a.md", "one\n")
+    kb_repo.stage("knowledge-base/b.md", "two\n")
+    kb_repo.commit()
+    (kb_repo.root / "knowledge-base/a.md").unlink()
+    (kb_repo.root / "knowledge-base/a.md").symlink_to("b.md")
+    kb_repo.git("add", "--", "knowledge-base/a.md")
+    assert staged_paths(kb_repo.root) == [
+        StagedPath("knowledge-base/a.md", "knowledge-base/a.md", symlink=True, type_change=True)
+    ]
+    assert added_lines(kb_repo.root, "knowledge-base/a.md", "knowledge-base/a.md") == [(1, "b.md")]
+
+
+def test_staged_paths_marks_only_symlinks(kb_repo) -> None:
+    kb_repo.stage("knowledge-base/b.md", "two\n")
+    (kb_repo.root / "knowledge-base/link.md").symlink_to("b.md")
+    kb_repo.git("add", "--", "knowledge-base/link.md")
+    got = {sp.rel: sp.symlink for sp in staged_paths(kb_repo.root)}
+    assert got == {"knowledge-base/b.md": False, "knowledge-base/link.md": True}
+    kb_repo.commit()
+    kb_repo.git("mv", "knowledge-base/link.md", "knowledge-base/moved.md")
+    assert staged_paths(kb_repo.root) == [StagedPath("knowledge-base/moved.md", "knowledge-base/link.md", symlink=True)]
+
+
 def test_staged_paths_unicode_and_spaces(kb_repo) -> None:
     kb_repo.stage("knowledge-base/topics/café notes.md", "hi\n")
     assert staged_paths(kb_repo.root) == [StagedPath("knowledge-base/topics/café notes.md", None)]

@@ -324,6 +324,29 @@ def run_without_ps(vault: Path) -> tuple[int, str | None] | None:
     return held, marker_mode
 
 
+def _backgrounds(text: str) -> bool:
+    """Whether ``text`` (quotes masked) holds a lone "&": a background.
+
+    Not the second half of "&&", ">&" (`2>&1`), "<&" (`cat <&3`, #618) or "|&".
+    A backslash before that first character makes it a letter of a word, so
+    the "&" after `x\\<` or `x\\>` does background.
+    """
+    for match in _AMPERSAND.finditer(text):
+        if _backslashes(text, match.start()) % 2:
+            continue  # an escaped "&" is a letter
+        before = match.start() - 1
+        if before < 0 or text[before] not in "&><|":
+            return True
+        if _backslashes(text, before) % 2:
+            return True
+    return False
+
+
+def _backslashes(text: str, at: int) -> int:
+    """How many backslashes come directly before ``text[at]``."""
+    return at - len(text[:at].rstrip("\\"))
+
+
 def _alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -338,8 +361,8 @@ def _alive(pid: int) -> bool:
 
 RUN_VARS = ("SCOUT_MODE", "SCOUT_READER")
 _SEGMENTS = re.compile(r"&&|\|\||[;\n`]|(?<!>)\||\$\(|\(|\)")  # ">|" is a redirect, not a pipe
-# A lone "&" (background), not "&&", "&>", ">&", "|&" or "2>&1".
-_BACKGROUND = re.compile(r"(?<![&>|])&(?![&>])")
+# An "&" that isn't the first half of "&&" or "&>". Whether it backgrounds is _backgrounds' call.
+_AMPERSAND = re.compile(r"&(?![&>])")
 _HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)\s*(?:'([^']+)'|\"([^\"]+)\"|\\?([A-Za-z_][\w.-]*))")
 _ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
 _DETACH = {
@@ -1453,7 +1476,7 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
             for _s, _e, a, b in _substitutions(text, quotes=False):
                 results.append((len(command), _run_escape(text[a:b], depth + 1)))
     # Both readings of `$$'` (see _quoted_spans): a background under either one is a background.
-    detach = any(_BACKGROUND.search(_mask_quoted(command, even_dollars_escape=way)) for way in (False, True))
+    detach = any(_backgrounds(_mask_quoted(command, even_dollars_escape=way)) for way in (False, True))
     cwd = ""  # follows each `cd`, so `cd .git/hooks && rm pre-commit` reads as the path it writes
     previous: str | None = None
     position = 0

@@ -888,3 +888,19 @@ def test_dropping_the_pin_and_committing_the_removal_does_not_lift_it(vault: Pat
     rs.sync(vault, host)
 
     assert HOME not in _tip_paths(host)
+
+
+def test_repo_sync_labels_an_uppercase_md_note_by_its_frontmatter() -> None:
+    """#605: ``x.MD`` is a note to repo sync too, so its frontmatter (not only its path) labels it."""
+    from scout.repo_sync import TreeEntry, label_blob
+
+    class Blobs:
+        def read(self, sha: str) -> bytes:
+            return b"---\nvisibility: private\n---\n# Plan\n"
+
+    pol = load_policy(None)
+    labels = {
+        label_blob(rel, TreeEntry("100644", "blob", "0" * 40, rel), pol, Blobs()).visibility  # type: ignore[arg-type]
+        for rel in ("knowledge-base/topics/misc/plan.md", "knowledge-base/topics/misc/Plan.MD")
+    }
+    assert labels == {"private"}
