@@ -449,7 +449,8 @@ def test_every_tool_hook_filters_path_first_and_none_calls_dirname() -> None:
     assert prefix.startswith("sp=; ") and prefix.endswith("export PATH; ")
     # The filter is the script's first command, and each entry reaches the script by absolute path
     # through /bin/sh, with nothing before it that a PATH search could answer.
-    assert PREFILTER.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
+    # Line 1 opens the brace group that holds the whole file; the PATH filter is its first command.
+    assert PREFILTER.read_text(encoding="utf-8").startswith("{ #")
     assert _script_code()[0] + "; " == prefix
     # Shell builtins and keywords, the two assignments, and the two programs an entry starts, both by
     # absolute path: /bin/sh and scoutctl (which filters PATH itself).

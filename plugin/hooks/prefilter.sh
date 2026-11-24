@@ -1,7 +1,14 @@
-#!/bin/sh
-# Scout hook pre-filters: the shell stage of every tool hook in hooks.json.
+{ # Scout hook pre-filters: the shell stage of every tool hook in hooks.json. POSIX sh.
 #
 #   /bin/sh prefilter.sh <filter> <program> [args...]
+#
+# Lint it with `shellcheck -s sh` (CI does): a shell directive would have to come before the `{`.
+#
+# The whole file is one `{ ... }` group, opened on line 1 and closed on the last line, and it has no
+# shebang (it is only ever run as `/bin/sh <path>`). The shell reads a group whole before running any of
+# it, so a copy cut off anywhere (a partial write during a plugin update) is a syntax error, exit 2,
+# which the hooks.json entry turns into a block for a run. With a shebang first, a copy cut to that one
+# line would be a comment-only script that exits 0.
 #
 # hooks.json calls this once per matching tool call. <filter> names one block of the `case` at the
 # bottom; <program> [args...] is the Python stage (`.../engine/bin/scoutctl hook <name>`), which this
@@ -15,9 +22,12 @@
 # is a call the Python gate never judges. So:
 #   - Widening a pattern is safe (Python decides; it costs time). Narrowing one opens a hole.
 #   - When the Python stage of a gate cannot run, a run's call is blocked (exit 2), never allowed.
-#   - The hooks.json entry guards this script in turn: if the file is missing it starts the Python
-#     stage directly, and if a gate's filter ends with anything but 0 or 2 (a syntax error, a kill)
-#     it blocks the run's call. So a filter here may only ever exit 0 on purpose.
+#   - The hooks.json entry guards this script in turn: if the file is missing or empty it starts the
+#     Python stage directly, and if a gate's filter ends with anything but 0 or 2 (a syntax error, a
+#     kill) it blocks the run's call. So a filter here may only ever exit 0 on purpose.
+#   - A tool that fails (cat, grep, tr or cmp missing or erroring: any status but 0 or 1) means
+#     "cannot decide": the call goes to Python, or, when the payload itself could not be read, a run's
+#     call is blocked.
 #   - tests/unit/test_hook_prefilter_differential.py pins the decisions against the inline commands
 #     this file replaced. Change a pattern on purpose, and say so there.
 #
@@ -26,13 +36,15 @@
 #   - The PATH filter below runs before any external command. Hooks run in any cwd (a cloned repo,
 #     the vault), and a relative or empty PATH entry would let a planted grep, cat or tr run as the
 #     user. Nothing is looked up in the working directory; no dirname (parameter expansion instead).
+#     The filters' own tools come from /usr/bin or /bin first (see `tool`), so a PATH without them
+#     (PATH=/opt/homebrew/bin) neither breaks the filter nor changes which grep decides.
 #   - Exit codes are the hook protocol: 0 allow or done, 2 block (PreToolUse), anything else is a
 #     non-blocking error.
 
 # >>> path-filter
 # Keep only absolute PATH entries. A leading `~` becomes $HOME, as the shell's own PATH search reads
 # it. An empty result falls back to the system dirs. `set -f` keeps glob characters literal.
-sp=; oi=$IFS; IFS=:; set -f; for pe in $PATH; do case "$pe" in "~"|"~/"*) [ -z "$HOME" ] || pe="$HOME${pe#"~"}" ;; esac; case "$pe" in /*) sp="${sp:+$sp:}$pe" ;; esac; done; set +f; IFS=$oi; PATH="${sp:-/usr/bin:/bin}"; export PATH
+sp=; oi=$IFS; IFS=:; set -f; for pe in $PATH; do case "$pe" in \~|\~/*) [ -z "$HOME" ] || pe="$HOME${pe#"~"}" ;; esac; case "$pe" in /*) sp="${sp:+$sp:}$pe" ;; esac; done; set +f; IFS=$oi; PATH="${sp:-/usr/bin:/bin}"; export PATH
 # <<< path-filter
 
 # A scheduled run, by #517's rule: SCOUT_MODE set, or SCOUT_READER set to anything but exactly `owner`.
@@ -148,8 +160,56 @@ bash_pattern() {
     alt 'git +(\\")?\$'                                             # git "$var": the subcommand is hidden
 }
 
-# The payload's command value, as JSON spells it (quotes and escapes kept).
-command_value() { printf '%s' "$p" | grep -oE '"command": *"([^"\\]|\\.)*"'; }
+# Sets $t to program $1 by absolute path: /usr/bin or /bin first, else the first in the (filtered,
+# all-absolute) PATH, else empty. Running an empty $t fails with 127, which callers read as "cannot
+# decide". No subshell on the common path: [ -x ] is a builtin.
+tool() {
+    for t in "/usr/bin/$1" "/bin/$1"; do
+        [ -x "$t" ] && return 0
+    done
+    t=$(command -v "$1") || t=
+}
+
+# Reads the payload into $p. Fails (non-zero) when it could not be read. With fd 0 closed, the pipe
+# that $(...) opens would take fd 0 and cat would read its own output pipe forever, so a closed
+# stdin is refused first. Duplicating fd 0 to fd 9 fails when it is closed (`<&0` onto itself is a
+# no-op that always succeeds); `true`, not `:`, since a redirection error on a special builtin ends
+# the shell.
+read_payload() {
+    { true 9<&0; } 2>/dev/null || return 1
+    tool cat
+    p=$("$t")
+}
+
+# Exit status of `grep -qE -e <pattern>` over $v: 0 match, 1 no match, anything else an error.
+matches() {
+    printf '%s' "$v" | "$GREP" -qE -e "$1"
+}
+
+# Sets $v to the payload's command value, as JSON spells it (quotes and escapes kept). Returns grep's
+# status: 1 (and an empty $v) when the payload has no command, above 1 when grep failed.
+command_value() {
+    v=$(printf '%s' "$p" | "$GREP" -oE '"command": *"([^"\\]|\\.)*"')
+}
+
+# Returns 0 when a run's Bash call must go to Python. Any tool error answers yes.
+bash_needs_python() {
+    tool grep
+    GREP=$t
+    command_value
+    [ "$?" -gt 1 ] && return 0
+    bash_pattern
+    matches "$re"
+    [ "$?" -ne 1 ] && return 0
+    if [ -n "$SCOUT_SECRETS_DIR" ]; then
+        case "$p" in *"$SCOUT_SECRETS_DIR"*) return 0 ;; esac
+    fi
+    tool tr
+    # shellcheck disable=SC1003 # the set is ', " and \ (one backslash after the shell's escaping)
+    v=$(printf '%s' "$v" | "$t" -d "'\"\\\\") || return 0
+    matches 'knowledge-base|knowledge_base|action-items/context'
+    [ "$?" -ne 1 ]
+}
 
 name="${1-}"
 [ "$#" -gt 0 ] && shift
@@ -166,7 +226,16 @@ mcp-tool-gate)
     find_vault
     f="$d/connectors.custom.yaml"
     [ -s "$f" ] || exit 0
-    LC_ALL=C grep -qsE 'restrict_tools|\\' "$f" || ! LC_ALL=C tr -d '\000' 2>/dev/null <"$f" | cmp -s - "$f" || exit 0
+    tool grep
+    # shellcheck disable=SC1003 # the pattern ends in an escaped backslash: any backslash in the file
+    LC_ALL=C "$t" -qsE -e 'restrict_tools|\\' "$f"
+    [ "$?" -eq 1 ] || exec "$@" # the key, or grep failed
+    # No key: Python only if the file holds a NUL byte (tr drops them; cmp then finds a difference).
+    tool tr
+    tr=$t
+    tool cmp
+    # shellcheck disable=SC2094 # both only read the file
+    LC_ALL=C "$tr" -d '\000' 2>/dev/null <"$f" | "$t" -s - "$f" && exit 0
     exec "$@"
     ;;
 
@@ -193,16 +262,13 @@ outbound-gate)
 #   3. its command value spells a KB path once quotes and backslashes are removed.
 kb-read-gate)
     is_run || exit 0
-    p=$(cat)
+    if ! read_payload; then
+        echo "[scout:kb-read-gate] Scout's KB read gate could not read this call, so it is blocked in a scheduled run." >&2
+        exit 2
+    fi
     case "$p" in
     *'"Grep"'* | *'"Glob"'* | *knowledge-base* | *knowledge_base* | *action-items/context*) ;;
-    *)
-        bash_pattern
-        command_value | grep -qE "$re" ||
-            { [ -n "$SCOUT_SECRETS_DIR" ] && case "$p" in *"$SCOUT_SECRETS_DIR"*) true ;; *) false ;; esac; } ||
-            command_value | tr -d "'\"\\\\" | grep -qE 'knowledge-base|knowledge_base|action-items/context' ||
-            exit 0
-        ;;
+    *) bash_needs_python || exit 0 ;;
     esac
     printf '%s' "$p" | "$@" && exit 0
     echo "[scout:kb-read-gate] Scout's KB read gate could not run, so this call is blocked in a scheduled run. Read the KB through scripts/scoutctl kb (search, files, read, resolve)." >&2
@@ -217,7 +283,10 @@ kb-read-gate-read)
     r=
     [ -n "${SCOUT_READER+set}" ] && [ "$SCOUT_READER" != owner ] && [ "$SCOUT_READER" != autonomous ] && r=1
     [ -n "$r" ] || is_run || exit 0
-    p=$(cat)
+    if ! read_payload; then
+        echo "[scout:kb-read-gate] Scout's KB read gate could not read this Read, so it is blocked for this reader." >&2
+        exit 2
+    fi
     s=
     case "$p" in *[Ss][Cc][Oo][Uu][Tt]-[Ss][Ee][Cc][Rr][Ee][Tt][Ss]*) s=1 ;; esac
     case "$p" in *[Ss][Cc][Oo][Uu][Tt]-[Ii]* | *[Aa][Gg][Ee][Nn][Tt][Ss]/*) s=1 ;; esac
@@ -245,8 +314,11 @@ kb-write-gate)
 
 # PostToolUse, Read. Labels a KB note in a run or a vault session; a note it cannot label is private.
 kb-read-label)
-    p=$(cat)
-    case "$p" in *knowledge-base* | *knowledge_base* | *action-items/context*) ;; *) exit 0 ;; esac
+    if read_payload; then
+        case "$p" in *knowledge-base* | *knowledge_base* | *action-items/context*) ;; *) exit 0 ;; esac
+    else
+        p=
+    fi
     run=
     is_run && run=1
     find_vault
@@ -269,8 +341,10 @@ shared-read-record)
 # (a project's front page). It warns, never blocks: always exit 0.
 front-page-reads)
     is_run || exit 0
-    p=$(cat)
-    printf '%s' "$p" | grep -qE '"file_path": *"[^"]*/([^/"]+)/\1\.md"' || exit 0
+    read_payload || exit 0 # it only ever warns
+    tool grep
+    printf '%s' "$p" | "$t" -qE -e '"file_path": *"[^"]*/([^/"]+)/\1\.md"'
+    [ "$?" -eq 1 ] && exit 0
     printf '%s' "$p" | "$@"
     exit 0
     ;;
@@ -288,3 +362,4 @@ print-bash-pattern)
     exit 1
     ;;
 esac
+}

@@ -300,7 +300,7 @@ class Case(NamedTuple):
     env: dict[str, str]
     cwd: str  # "vault", "deep" (a folder inside the vault) or "outside"
     stub_exit: int = 0
-    shell: str = "sh"
+    shell: str = "/bin/sh"  # by path: a case may run with a PATH that has no sh
 
 
 def _commands(path: Path) -> dict[str, str]:
@@ -338,7 +338,7 @@ class World:
         (self.root / "hooks").mkdir()
         (self.root / "hooks" / "prefilter.sh").symlink_to(PREFILTER)
         stub = self.root / "engine" / "bin" / "scoutctl"
-        stub.write_text('#!/bin/sh\n{ printf \'%s\\n\' "$*"; cat; } >"$STUB_LOG"\nexit "${STUB_EXIT:-0}"\n')
+        stub.write_text('#!/bin/sh\n{ printf \'%s\\n\' "$*"; /bin/cat; } >"$STUB_LOG"\nexit "${STUB_EXIT:-0}"\n')
         stub.chmod(0o755)
         self.logs = tmp / "logs"
         self.logs.mkdir()
@@ -465,7 +465,7 @@ def test_the_fixture_is_the_inline_hooks_json() -> None:
     assert len(OLD["kb-read-gate"]) == 4089
     assert all("prefilter.sh" not in c for c in OLD.values())
     assert all(c.count("prefilter.sh") >= 1 for c in NEW.values())
-    assert max(len(c) for c in NEW.values()) < 500  # entries are short calls now
+    assert max(len(c) for c in NEW.values()) < 600  # entries are short calls now
 
 
 # ----- the differential runs ------------------------------------------------------------------
@@ -641,8 +641,11 @@ def _hook_of(entry: str) -> str:
 
 
 @pytest.mark.parametrize("entry", GATES)
-def test_a_missing_script_sends_the_call_straight_to_python(tmp_path: Path, entry: str) -> None:
-    world = _world_with_script(tmp_path, None)
+@pytest.mark.parametrize("content", [None, ""], ids=["missing", "empty"])
+def test_a_missing_or_empty_script_sends_the_call_straight_to_python(
+    tmp_path: Path, entry: str, content: str | None
+) -> None:
+    world = _world_with_script(tmp_path, content)
     for env in RUNS:
         judged = world.run(NEW[entry], Case("missing", entry, JUDGED[entry], env, "vault"))
         assert judged.returncode == 0 and judged.python == f"hook {_hook_of(entry)}\n{JUDGED[entry]}", (env, judged)
@@ -666,8 +669,14 @@ def test_a_script_without_its_executable_bit_works_the_same(world: World, tmp_pa
             assert plain.run(NEW[entry], case) == world.run(NEW[entry], case), (env, payload)
 
 
+_REAL = PREFILTER.read_text(encoding="utf-8")
 BROKEN = {
     "does not parse": "#!/bin/sh\nif then (\n",
+    # A partial write during a plugin update: the brace group is left open, so the copy cannot parse.
+    "cut in half": _REAL[: len(_REAL) // 2],
+    "cut before its closing brace": _REAL[: _REAL.rindex("}")],
+    "cut to its first line": _REAL[: _REAL.index("\n") + 1],
+    "cut to its first character": _REAL[:1],
     "exits 1": "#!/bin/sh\nexit 1\n",
     "exits 7": "#!/bin/sh\nexit 7\n",
     "is killed": "#!/bin/sh\nkill -9 $$\n",
@@ -723,4 +732,61 @@ def test_each_entry_names_its_filter_and_the_hook_it_may_start() -> None:
 
 def test_the_script_ships_inside_the_plugin_and_is_executable() -> None:
     assert PREFILTER.parent == PLUGIN / "hooks" and os.access(PREFILTER, os.X_OK)
-    assert PREFILTER.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
+    # One brace group from the first byte to the last: no prefix of the file is a script that runs.
+    text = PREFILTER.read_text(encoding="utf-8")
+    assert text.startswith("{ #") and text.endswith("\n}\n")
+
+
+# ----- the filters' own tools -----------------------------------------------------------------
+
+# Calls each run-only filter must send to Python, whatever PATH the session has.
+NEEDS_PYTHON = {
+    "kb-read-gate": [_bash("rm -rf x"), _bash("cat kno*/a.md"), _bash("cat know'ledge'-base/a.md"), TOOL_PAYLOADS[0]],
+    "kb-read-gate-read": [TOOL_PAYLOADS[6], TOOL_PAYLOADS[7]],
+    "front-page-reads": [TOOL_PAYLOADS[10]],
+}
+
+
+@pytest.mark.parametrize("path", ["", "/opt/homebrew/bin", "/nonexistent", "/usr/local/bin:/nonexistent"])
+def test_a_path_without_the_system_tools_changes_no_decision(world: World, path: str) -> None:
+    """The inline commands looked cat, grep and tr up in PATH, so a run whose PATH lacked them (macOS keeps
+    cat in /bin only) let every call through. The script takes them from /usr/bin or /bin first."""
+    for entry, payloads in NEEDS_PYTHON.items():
+        for payload in payloads:
+            out = world.run(NEW[entry], Case("path", entry, payload, {**RUN, "PATH": path}, "vault"))
+            assert out.returncode == 0 and out.python == f"hook {_hook_of(entry)}\n{payload}", (entry, payload, out)
+    harmless = world.run(NEW["kb-read-gate"], Case("path", "kb-read-gate", _bash("ls"), {**RUN, "PATH": path}, "vault"))
+    assert harmless == Outcome(0, "", "", "")
+
+
+def test_the_old_commands_let_a_run_through_without_cat() -> None:
+    """What the fix above is for, shown on the inline command (no behaviour of the new code here)."""
+    out = subprocess.run(
+        ["/bin/sh", "-c", OLD["kb-read-gate"]],
+        env={"PATH": "/nonexistent", "SCOUT_MODE": "briefing", "CLAUDE_PLUGIN_ROOT": "/nonexistent"},
+        input=_bash("rm -rf x"),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert out.returncode == 0  # allowed, and no gate ran
+
+
+def test_a_payload_that_cannot_be_read_blocks_a_run(tmp_path: Path) -> None:
+    """cat failing (here: stdin closed) leaves nothing for Python to judge, so the gates block."""
+    world = World(tmp_path)
+    for entry in ("kb-read-gate", "kb-read-gate-read"):
+        out = subprocess.run(
+            ["/bin/sh", "-c", "exec 0<&-; " + NEW[entry]],
+            env={
+                "PATH": "/usr/bin:/bin",
+                "SCOUT_MODE": "briefing",
+                "CLAUDE_PLUGIN_ROOT": str(world.root),
+                "STUB_LOG": str(tmp_path / "log"),
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,  # cat blocking on a closed stdin hung here once; fail instead
+        )
+        assert out.returncode == 2 and "could not read" in out.stderr, (entry, out)

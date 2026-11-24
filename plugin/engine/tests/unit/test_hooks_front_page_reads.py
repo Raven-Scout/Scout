@@ -259,7 +259,7 @@ def test_the_shell_prefilter_matches_only_front_page_shaped_paths(file_path: str
 
     script = (PLUGIN / "hooks" / "prefilter.sh").read_text(encoding="utf-8")
     branch = script[script.index("\nfront-page-reads)\n") :]
-    pattern = re.search(r"grep -qE '([^']+)'", branch[: branch.index("\n    ;;\n")])
+    pattern = re.search(r"-qE -e '([^']+)'", branch[: branch.index("\n    ;;\n")])
     assert pattern is not None
     payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": file_path, "content": "x.md y/y.md"}})
     found = subprocess.run(["grep", "-qE", pattern.group(1)], input=payload, text=True, check=False)
@@ -357,5 +357,5 @@ def test_hooks_json_runs_it_after_a_runs_writes_and_never_fails_the_call() -> No
     branch = branch[: branch.index("\n    ;;\n")]
     body = [line.strip() for line in branch.splitlines()[2:]]
     assert body[0] == "is_run || exit 0" and body[-1] == "exit 0"
-    assert "exit 2" not in branch and "grep -qE" in branch
+    assert "exit 2" not in branch and "tool grep" in branch and "-qE -e" in branch
     assert "front-page-reads" in config["description"]
