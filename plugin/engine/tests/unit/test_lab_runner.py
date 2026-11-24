@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import functools
 import hashlib
 import json
 import os
@@ -206,12 +207,19 @@ def test_wrong_probe_answers_refuse_before_the_script_runs(tmp_path: Path, monke
     assert logs == []
 
 
-GATE_NPROC = 4000  # under this Mac's per-user ceiling (kern.maxprocperuid), far over what a test starts
+@functools.cache
+def _gate_nproc() -> int:
+    """A process limit the gate can apply on this machine: the per-user ceiling (a CI runner's
+    ``kern.maxprocperuid`` is well under a workstation's), at most 4000, far over what a test starts."""
+    counts = runner._process_counts()
+    assert counts is not None
+    return min(4000, counts[1] or 4000)
 
 
 def _gate(
-    script: str, nproc: object = GATE_NPROC, fsize: object = runner.FILE_SIZE_BLOCKS, nofile: object = 1024
+    script: str, nproc: object = None, fsize: object = runner.FILE_SIZE_BLOCKS, nofile: object = 1024
 ) -> subprocess.Popen[bytes]:
+    nproc = _gate_nproc() if nproc is None else nproc
     argv = [runner.GATE_SHELL, "-c", runner._GATE, "gate", str(fsize), str(nproc), str(nofile), "/bin/sh", "-c", script]
     return subprocess.Popen(argv, stdin=subprocess.PIPE)
 
@@ -265,7 +273,7 @@ def test_the_gate_sets_the_process_limit_it_is_given(tmp_path: Path) -> None:
     py = "import resource; print(*resource.getrlimit(resource.RLIMIT_NPROC))"
     gate = _gate(f"{h.PY} -I -c '{py}' > '{out}'")
     gate.communicate(b"go\n", timeout=10)
-    assert gate.returncode == 0 and out.read_text().split() == [str(GATE_NPROC)] * 2
+    assert gate.returncode == 0 and out.read_text().split() == [str(_gate_nproc())] * 2
     marker = tmp_path / "ran.txt"
     for bad in ("x", "-1"):  # (bash 3.2 takes "" as 0, which fails closed; the runner passes only digits)
         refused = _gate(f"echo ran > '{marker}'", nproc=bad)
@@ -298,32 +306,40 @@ def _host_can_fork() -> bool:
 
 
 @kernel
-def test_a_bounded_fork_bomb_is_held_to_the_process_limit(tmp_path: Path) -> None:
+def test_a_bounded_fork_bomb_is_held_to_the_process_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The kernel cap is the backstop: a bomb that forks faster than the runner polls is refused a fork near the
+    allowance plus the headroom. That cap counts every process of the user, so slots other processes free during the
+    run are open to it too (and ones they take come off it): the bound checked is that it is stopped short."""
+    monkeypatch.setattr(runner, "NPROC_HEADROOM", 32)
     vault = h.make_vault(tmp_path)
     folder = h.exp_dir(vault)
     folder.mkdir()
     (folder / "bomb.py").write_text(_BOMB)
     out = h.run(vault, tmp_path, f"exec {h.PY} bomb.py", max_processes=16)
-    assert out.exit == 3, (out.exit, out.stderr_tail)  # a fork was refused: the script got no 17th process
+    assert out.exit == 3, (out.exit, out.stderr_tail)  # a fork was refused before the 200th
     kids = [int(p) for p in (folder / "kids.txt").read_text().split()]
-    assert 0 < len(kids) <= 15  # the script itself is one of the 16
+    assert len(kids) < 200
     for pid in kids:
         _assert_dead_now(pid)
     assert _host_can_fork()
 
 
 @kernel
-def test_a_shell_fork_bomb_ends_non_zero_and_leaves_the_host_alone(tmp_path: Path) -> None:
-    """The spec's bomb: a loop of 200 background ``sleep``s. The shell retries a refused fork (sleeping between
-    tries), so the timeout ends it."""
+def test_a_shell_fork_bomb_ends_non_zero_and_leaves_the_host_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The spec's bomb: a loop of 200 background ``sleep``s. The kernel cap (per user, so it moves with the
+    machine's other processes) refuses it forks, and the runner kills it once it holds more than its allowance at a
+    poll; either ends it short of 200."""
+    monkeypatch.setattr(runner, "NPROC_HEADROOM", 32)
     vault = h.make_vault(tmp_path)
     bomb = "i=0; while [ $i -lt 200 ]; do sleep 60 & echo $! >> kids.txt; i=$((i+1)); done; wait"
     started = time.monotonic()
     out = h.run(vault, tmp_path, bomb, timeout_s=5, max_processes=16)
     assert time.monotonic() - started < 30
-    assert out.exit != 0
+    assert out.exit != 0  # the shell gave up on a refused fork, or the runner killed it
     kids = [int(p) for p in (h.exp_dir(vault) / "kids.txt").read_text().split()]
-    assert len(kids) <= 15
+    assert len(kids) < 200
     for pid in kids:
         _assert_dead_now(pid)
     assert _host_can_fork()
@@ -332,7 +348,8 @@ def test_a_shell_fork_bomb_ends_non_zero_and_leaves_the_host_alone(tmp_path: Pat
 @kernel
 def test_the_process_limit_counts_only_the_experiments_own_processes(tmp_path: Path) -> None:
     """The limit is relative to the owner's processes at launch, not an absolute per-user count: with a limit of
-    8, far under the hundreds of processes the owner has, the script still forks."""
+    8, far under the hundreds of processes the owner has, the script still forks, however many processes the
+    machine starts meanwhile (up to the headroom)."""
     vault = h.make_vault(tmp_path)
     out = h.run(vault, tmp_path, "sleep 1 & sleep 1 & sleep 1 & wait; echo forked", max_processes=8)
     assert out.exit == 0 and out.stdout_tail.strip() == "forked", out.stderr_tail
@@ -340,13 +357,9 @@ def test_the_process_limit_counts_only_the_experiments_own_processes(tmp_path: P
 
 
 @kernel
-def test_more_processes_than_the_limit_are_killed_by_the_runner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The runner's own count backs the kernel's: had the owner's other processes exited since launch, the kernel
-    would leave the experiment their slots. Here the launch count is overstated by 40 to the same effect."""
-    real = runner._owner_process_count
-    monkeypatch.setattr(runner, "_owner_process_count", lambda: (real() or 0) + 40)
+def test_more_processes_than_the_limit_are_killed_by_the_runner(tmp_path: Path) -> None:
+    """The allowance is the runner's: the kernel cap leaves the headroom over it, and the runner kills a script
+    that holds more than ``max_processes`` at a poll."""
     vault = h.make_vault(tmp_path)
     script = "i=0; while [ $i -lt 30 ]; do sleep 60 & i=$((i+1)); done; wait"
     started = time.monotonic()
@@ -357,20 +370,31 @@ def test_more_processes_than_the_limit_are_killed_by_the_runner(
     assert "over_processes: true" in log
 
 
-def test_the_process_limit_is_the_launch_count_plus_the_experiments_allowance(
+def test_the_process_limit_is_the_launch_count_plus_the_allowance_plus_the_headroom(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(runner, "_owner_process_count", lambda: 800)
-    assert runner._nproc_limit(64) == 864
-    monkeypatch.setattr(runner.resource, "getrlimit", lambda _: (8000, 850))
-    assert runner._nproc_limit(64) == 850  # never over the hard limit the gate can't raise
-    monkeypatch.setattr(runner, "_owner_process_count", lambda: None)
+    inf = runner.resource.RLIM_INFINITY
+    monkeypatch.setattr(runner.resource, "getrlimit", lambda _: (inf, inf))
+    monkeypatch.setattr(runner, "_process_counts", lambda: (800, None))
+    assert runner._nproc_limit(64) == 800 + 64 + runner.NPROC_HEADROOM
+    monkeypatch.setattr(runner, "_process_counts", lambda: (800, 1000))
+    assert runner._nproc_limit(64) == 1000  # never over the per-user ceiling the gate can't raise past
+    monkeypatch.setattr(runner.resource, "getrlimit", lambda _: (8000, 900))
+    assert runner._nproc_limit(64) == 900  # nor over this process's own hard limit
+    monkeypatch.setattr(runner, "_process_counts", lambda: (850, 1000))
+    with pytest.raises(
+        LabError, match=r"process cap reached: this user has 850 processes and the per-user limit is 900"
+    ):
+        runner._nproc_limit(64)  # no room for the allowance: not run, rather than failing at its first fork
+    monkeypatch.setattr(runner, "_process_counts", lambda: None)
     with pytest.raises(LabError, match="count"):
         runner._nproc_limit(64)
 
 
 def test_the_owners_process_count_is_the_kernels(monkeypatch: pytest.MonkeyPatch) -> None:
     """Asked of the kernel (the lowest RLIMIT_NPROC at which a helper can still fork), not read from ``ps``."""
+    counts = runner._process_counts()
+    assert counts is not None and counts[0] >= 1 and (counts[1] is None or counts[1] > counts[0])
     count = runner._owner_process_count()
     assert count is not None and count >= 1
     if sys.platform == "darwin":  # Linux's RLIMIT_NPROC counts threads, which ps doesn't list
@@ -378,8 +402,17 @@ def test_the_owners_process_count_is_the_kernels(monkeypatch: pytest.MonkeyPatch
         assert count <= ps.count(str(os.getuid())) + 50  # in the neighbourhood of what ps lists (churn aside)
     monkeypatch.setattr(runner.subprocess, "run", lambda argv, **_: subprocess.CompletedProcess(argv, 1, "", ""))
     assert runner._owner_process_count() is None
-    monkeypatch.setattr(runner.subprocess, "run", lambda argv, **_: subprocess.CompletedProcess(argv, 0, "x\n", ""))
-    assert runner._owner_process_count() is None
+
+    def says(out: str) -> None:
+        monkeypatch.setattr(runner.subprocess, "run", lambda argv, **_: subprocess.CompletedProcess(argv, 0, out, ""))
+
+    for bad in ("x\n", "12\n", "12 x\n", "x 900\n", "1 2 3\n"):
+        says(bad)
+        assert runner._process_counts() is None and runner._owner_process_count() is None, bad
+    says("12 -1\n")
+    assert runner._process_counts() == (12, None)
+    says("12 900\n")
+    assert runner._process_counts() == (12, 900) and runner._owner_process_count() == 12
 
     def broken(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         raise OSError("no interpreter")
@@ -741,7 +774,8 @@ def test_a_refused_launch_is_killed_before_the_gate_pipe_closes(
         return False
 
     monkeypatch.setattr(runner, "_positive_control", refuse)
-    monkeypatch.setattr(runner, "_nproc_limit", lambda _: GATE_NPROC)  # its `ps` would open the first pipes
+    nproc = _gate_nproc()  # counted before os.pipe and os.close are watched: the count opens pipes of its own
+    monkeypatch.setattr(runner, "_nproc_limit", lambda _: nproc)  # its `ps` would open the first pipes
     monkeypatch.setattr(runner.os, "pipe", pipe)
     monkeypatch.setattr(runner.os, "close", close)
     monkeypatch.setattr(runner.os, "killpg", killpg)

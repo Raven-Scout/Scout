@@ -40,12 +40,13 @@ What it holds the script to, and why each piece is where it is:
   have at once, itself included, two ways. The kernel's ``RLIMIT_NPROC`` (the gate's ``ulimit -u``, soft and hard,
   so the script can't raise it) counts every process of the user, by real uid, not a process tree, so an absolute
   64 would leave a busy Mac's script unable to fork at all; the gate sets it instead to the user's count just before
-  launch, as the kernel counts it (:func:`_owner_process_count`; ``ps`` lists more), plus the allowance
-  (:func:`_nproc_limit`). A fork bomb then can't take the owner's count past that, so it
-  can't starve the owner's other processes. That bound moves with the owner's other processes: when they exit during
-  the run the script could use their slots, so the runner also counts the processes holding this run's sandbox
-  (the sweep's probe, never anything else) at every poll and kills the run when they are more than the allowance
-  (``over_processes``). When they grow, the script gets fewer than its allowance: the one dependence left. At the
+  launch, as the kernel counts it (:func:`_owner_process_count`; ``ps`` lists more), plus the allowance, plus
+  :data:`NPROC_HEADROOM` for the owner's other processes to grow into meanwhile, never over the per-user ceiling
+  (:func:`_nproc_limit`). That kernel cap is the fork-bomb backstop: a bomb can't take the owner's count past it, so it
+  can't starve the owner's other processes. The allowance itself is the runner's: it counts the processes holding
+  this run's sandbox (the sweep's probe, never anything else) at every poll and kills the run when they are more than
+  ``max_processes`` (``over_processes``). The headroom is what keeps a script's forks from depending on how many
+  other processes the owner starts during the run (a Mac with many sessions open starts plenty). At the
   same polls (:data:`_POLL_S`) the runner sums the bytes of the regular files in the experiment folder, its scratch
   dir included (``lstat``, no link followed, each inode once), plus every open-but-unlinked regular file a process
   holding this run's sandbox keeps (libproc, :class:`scout.lab.sandbox.OpenFiles`: ``tempfile.TemporaryFile`` and
@@ -108,7 +109,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
-from scout import config, safe_write
+from scout import config, plural, safe_write
 from scout import paths as vault_paths
 from scout.errors import LabError
 from scout.kb import hook_paths
@@ -143,6 +144,9 @@ _SWEEP_ROUNDS = 20
 # bash run as bash counts it in 1024-byte blocks in every version.
 GATE_SHELL = "/bin/bash"
 GATE_EXIT = 125
+# Room, over the experiment's allowance, for the owner's other processes to grow into during the run before the
+# kernel cap refuses the script a fork (:func:`_nproc_limit`).
+NPROC_HEADROOM = 256
 FILE_SIZE_BLOCKS = 1024 * 1024  # 1 GiB, in bash's 1024-byte `ulimit -f` blocks: the most any one file may hold
 # The gate's $1 is the file-size limit (:func:`_file_size_blocks`), $2 the process limit (:func:`_nproc_limit`) and
 # $3 the descriptor limit (the owner's ``lab.max_open_files``: it bounds how many open-but-unlinked files the script
@@ -594,15 +598,19 @@ while lo < hi:
         hi = mid
     else:
         lo = mid + 1
-print(lo - 2)
+# The count, then the per-user ceiling as the kernel now reports it (-1: none).
+hard = resource.getrlimit(resource.RLIMIT_NPROC)[1]
+print(lo - 2, -1 if hard == resource.RLIM_INFINITY else hard)
 """
 
 
-def _owner_process_count() -> int | None:
-    """How many processes this user has, as the kernel counts them for ``RLIMIT_NPROC`` (None when it can't be
-    found). Asked of the kernel itself (:data:`_COUNT_HELPER`), not read from ``ps``: on macOS 26 the kernel's count
-    ran 7 to 12 below the processes ``ps`` lists for the user's real uid, so a limit built on ``ps`` would have let a
-    fork bomb have that many more."""
+def _process_counts() -> tuple[int, int | None] | None:
+    """This user's process count, as the kernel counts them for ``RLIMIT_NPROC``, and the per-user ceiling the
+    kernel enforces (None: no ceiling); None when they can't be found. Asked of the kernel itself
+    (:data:`_COUNT_HELPER`), not read from ``ps``: on macOS 26 the kernel's count ran 7 to 12 below the processes
+    ``ps`` lists for the user's real uid, so a limit built on ``ps`` would have let a fork bomb have that many more.
+    The ceiling is read after the helper has set the limit once: before that, macOS reports no ceiling where
+    ``kern.maxprocperuid`` holds one, and a gate asked for more than it can't apply its limit."""
     import sys
 
     try:
@@ -612,21 +620,42 @@ def _owner_process_count() -> int | None:
         )  # fmt: skip
     except (OSError, subprocess.SubprocessError):
         return None
-    text = proc.stdout.strip()
-    if proc.returncode != 0 or not text.isdigit():
+    parts = proc.stdout.split()
+    if proc.returncode != 0 or len(parts) != 2 or not parts[0].isdigit():
         return None
-    return int(text)
+    count, ceiling = parts
+    if ceiling == "-1":
+        return int(count), None
+    if not ceiling.isdigit():
+        return None
+    return int(count), int(ceiling)
+
+
+def _owner_process_count() -> int | None:
+    """How many processes this user has, as the kernel counts them (:func:`_process_counts`)."""
+    counts = _process_counts()
+    return None if counts is None else counts[0]
 
 
 def _nproc_limit(max_processes: int) -> int:
-    """The script's ``RLIMIT_NPROC``: the user's process count now plus ``max_processes`` (the script, created
-    next, is the first of them), never over this process's hard limit, which the gate couldn't raise to."""
-    count = _owner_process_count()
-    if count is None:
+    """The script's ``RLIMIT_NPROC``: the user's process count now, plus ``max_processes`` (the script, created
+    next, is the first of them), plus :data:`NPROC_HEADROOM`, never over the per-user ceiling nor this process's
+    hard limit, which the gate couldn't raise to. When the ceiling leaves no room for ``max_processes`` the
+    experiment isn't run, with an error that says so, rather than started to fail at its first fork."""
+    counts = _process_counts()
+    if counts is None:
         raise LabError("cannot count this user's processes to set the experiment's process limit; not run")
-    limit = count + max_processes
-    hard = resource.getrlimit(resource.RLIMIT_NPROC)[1]
-    return limit if hard == resource.RLIM_INFINITY else min(limit, hard)
+    count, ceiling = counts
+    caps = [c for c in (ceiling, resource.getrlimit(resource.RLIMIT_NPROC)[1]) if c is not None]
+    caps = [c for c in caps if c != resource.RLIM_INFINITY]
+    cap = min(caps) if caps else None
+    if cap is not None and cap < count + max_processes:
+        raise LabError(
+            f"process cap reached: this user has {plural.count(count, 'process', 'processes')} and the per-user "
+            f"limit is {cap}, which leaves no room for the experiment's {max_processes}; not run"
+        )
+    limit = count + max_processes + NPROC_HEADROOM
+    return limit if cap is None else min(limit, cap)
 
 
 def _file_size_blocks(max_total_bytes: int) -> int:
@@ -854,6 +883,7 @@ def _log_body(
     cap_usd: float,
     max_processes: int,
     max_total_bytes: int,
+    nproc: int,
 ) -> str:
     return "\n".join(
         [
@@ -862,7 +892,8 @@ def _log_body(
             f"argv: {json.dumps(list(argv), ensure_ascii=False)}",
             f"exit: {outcome.exit}",
             f"timed_out: {'true' if outcome.timed_out else 'false'}",
-            f"over_processes: {'true' if outcome.over_processes else 'false'} (limit {max_processes})",
+            f"over_processes: {'true' if outcome.over_processes else 'false'} (limit {max_processes}; "
+            f"the kernel refuses forks past {nproc} of the owner's processes)",
             f"over_bytes: {'true' if outcome.over_bytes else 'false'} (cap {max_total_bytes} bytes)",
             f"spent_usd: {outcome.spent_usd:.4f} (this run {max(outcome.spent_usd - spent_before, 0.0):.4f}, "
             f"cap {cap_usd:.2f})",
@@ -1242,7 +1273,7 @@ def _run(
             over_processes=over_processes,
         )
         body = _log_body(
-            argv, started, config.now(vault), outcome, spent_before, cap_usd, max_processes, max_total_bytes
+            argv, started, config.now(vault), outcome, spent_before, cap_usd, max_processes, max_total_bytes, nproc
         )
         if not clean:
             body += "survivors: a process holding this experiment's sandbox was still alive after the sweep\n"

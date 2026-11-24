@@ -146,7 +146,7 @@ def test_a_run_reports_its_exit_tails_env_and_log(tmp_path: Path, fake: _Kernel)
     assert not (exp / ".tmp").exists()
     assert not Path(env["SCOUT_LAB_METER"]).parent.exists()  # the runner's temp dir is gone
     text = _log(vault)
-    for line in ("exit: 4", "timed_out: false", "over_processes: false (limit 64)", "spent_usd: 0.0000"):
+    for line in ("exit: 4", "timed_out: false", "over_processes: false (limit 64;", "spent_usd: 0.0000"):
         assert line in text, line
     assert "survivors" not in text and "done" in text and "oops" in text
     assert fake.pids()  # the script ran through the stand-in
@@ -258,7 +258,7 @@ def test_more_processes_than_the_allowance_kill_the_run(tmp_path: Path, fake: _K
     vault = h.make_vault(tmp_path)
     out = h.run(vault, tmp_path, "sleep 60 & sleep 60 & sleep 60 & wait", max_processes=2, timeout_s=30)
     assert out.over_processes and not out.over_bytes and not out.timed_out
-    assert "over_processes: true (limit 2)" in _log(vault)
+    assert "over_processes: true (limit 2;" in _log(vault)
 
 
 # --- what stops a run, or refuses it --------------------------------------------------------------------------------

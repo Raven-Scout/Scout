@@ -159,14 +159,14 @@ def test_long_single_line_parses_quickly(item: str) -> None:
     page = _front().replace("## Open questions\n", f"## Open questions\n{item}\n", 1)
     start = time.perf_counter()
     parse_front_page(SLUG, page)
-    assert time.perf_counter() - start < 0.5
+    assert time.perf_counter() - start < 5  # ~0.01 s on a quiet Mac; loose enough for a loaded CI runner
 
 
 def test_long_heading_and_spaces_parse_quickly() -> None:
     page = _front().replace("## Open questions\n", "## Open questions" + " " * 100_000 + "x\n", 1)
     start = time.perf_counter()
     parse_front_page(SLUG, page)
-    assert time.perf_counter() - start < 0.5
+    assert time.perf_counter() - start < 5  # ~0.01 s on a quiet Mac; loose enough for a loaded CI runner
 
 
 def test_tail_split_keeps_last_separator_and_first_note_dash() -> None:

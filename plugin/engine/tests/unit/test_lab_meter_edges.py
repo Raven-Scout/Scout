@@ -116,7 +116,9 @@ def test_a_silent_client_times_out(d: Path, monkeypatch: pytest.MonkeyPatch) -> 
 def test_a_handler_that_fails_answers_with_its_class(d: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     s = _server(d)
 
-    def boom(_conn: socket.socket) -> dict[str, object]:
+    def boom(conn: socket.socket) -> dict[str, object]:
+        # Read the request first, as the real handler does, so the client's send can't race the close.
+        conn.recv(65536)
         raise RuntimeError("bug")
 
     monkeypatch.setattr(s, "_handle", boom)
