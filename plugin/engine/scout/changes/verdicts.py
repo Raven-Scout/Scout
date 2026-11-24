@@ -23,7 +23,7 @@ from scout.changes.settings import Settings
 BASELINE_DAYS = 14
 NOISE_UP = 1.25
 ENGAGEMENT_UP = 1.15
-TESTED_LANES = frozenset({"briefing", "consolidation", "dreaming", "research", "work"})
+TESTED_LANES = frozenset({"briefing", "consolidation", "dreaming", "research", "work", "run"})
 UNTESTED_KINDS = frozenset({"rollback", "upgrade"})
 # The reasons a `targeted` auto-rollback would act on: the change's own target went bad, not the whole window.
 TARGETED_REASONS = frozenset({"recurrence-up", "named-negative"})
