@@ -498,3 +498,161 @@ def test_the_kernel_denies_runs_the_agents_inbox_copies(tmp_path: Path) -> None:
     rules = profile.build_rules(vault, {"HOME": str(tmp_path / "home")})
     for op in ("file-read-data", "file-write*"):
         assert any(r.action == "deny" and r.op == op and r.path.endswith("/.scout-inbox/agents") for r in rules), op
+
+
+# -- HOME and the account's home -------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def account(world, monkeypatch, _owner_store_follows_home) -> Path:
+    """The account database names a home other than the run's HOME (a custom launch, a harness, ``sudo -E``)."""
+    import pwd
+    import types
+
+    home, _, _ = world
+    folder = home.parent / "account"
+    folder.mkdir()
+    monkeypatch.setattr(hook_paths, "account_home", _owner_store_follows_home)  # the real lookup
+    monkeypatch.setattr(pwd, "getpwuid", lambda _uid: types.SimpleNamespace(pw_dir=str(folder)))
+    hook_paths._ROOTS_CACHE.clear()
+    return folder
+
+
+def test_homes_is_home_then_the_accounts_when_they_differ(world, account) -> None:
+    home, _, env = world
+    assert hook_paths.homes(env) == [home, account]
+    assert hook_paths.homes({**env, "HOME": str(account)}) == [account]
+    link = account.parent / "home-link"
+    link.symlink_to(account)
+    assert hook_paths.homes({**env, "HOME": str(link)}) == [link]  # the same folder: one home
+
+
+def test_a_home_spelled_in_another_case_is_the_same_home_on_a_case_insensitive_disk(
+    world, account, monkeypatch
+) -> None:
+    """``HOME=/users/x`` for an account home ``/Users/x`` is one folder on APFS: one home, and the account home
+    adds no rule to what ``$HOME`` alone gives (no per-user path written twice, once per spelling)."""
+    _, vault, env = world
+    variant = {**env, "HOME": str(account).swapcase()}
+    if not os.path.isdir(variant["HOME"]):
+        pytest.skip("case-sensitive disk: another case is another folder")
+    assert hook_paths.homes(variant) == [Path(variant["HOME"])]
+    with_account = set(_rules(vault, variant))
+    monkeypatch.setattr(hook_paths, "account_home", lambda: hook_paths.NO_ACCOUNT_HOME)
+    hook_paths._ROOTS_CACHE.clear()
+    assert with_account == set(_rules(vault, variant))
+
+
+def test_a_missing_home_is_compared_case_folded(world, account, monkeypatch) -> None:
+    """When a home doesn't exist (nothing to stat), the two are compared as the roots are: real path, case-folded."""
+    _, _, env = world
+    gone = account.parent / "Gone"
+    monkeypatch.setattr(hook_paths, "account_home", lambda: gone)
+    assert hook_paths.homes({**env, "HOME": str(gone).swapcase()}) == [Path(str(gone).swapcase())]
+    assert hook_paths.homes({**env, "HOME": str(account)}) == [account, gone]
+
+
+def test_the_roots_cache_follows_the_account_home(world, account, monkeypatch) -> None:
+    """The account's home isn't in the environment, so it is part of the roots cache's key: one process asked
+    again after it changes (a test that patches it) gets the new home's roots, not the old ones."""
+    _, vault, env = world
+    store = hook_paths.CHANGES_OWNER_NAME
+    first = account / ".local" / "state" / "scout" / store / "run-commits.jsonl"
+    assert hook_paths.protected_write(first, vault, env) == hook_paths.ENGINE
+    other = account.parent / "other-account"
+    other.mkdir()
+    monkeypatch.setattr(hook_paths, "account_home", lambda: other)
+    second = other / ".local" / "state" / "scout" / store / "run-commits.jsonl"
+    assert hook_paths.protected_write(second, vault, env) == hook_paths.ENGINE
+    assert hook_paths.protected_write(first, vault, env) is None  # no longer a home of this process
+
+
+def test_homes_ignores_an_account_with_no_home(world, monkeypatch, _owner_store_follows_home) -> None:
+    import pwd
+
+    home, _, env = world
+    monkeypatch.setattr(hook_paths, "account_home", _owner_store_follows_home)
+
+    def missing(_uid):
+        raise KeyError("no such user")
+
+    monkeypatch.setattr(pwd, "getpwuid", missing)
+    assert hook_paths.account_home() == hook_paths.NO_ACCOUNT_HOME
+    assert hook_paths.homes(env) == [home]
+
+
+@pytest.mark.parametrize("name", hook_paths.OWNER_STATE_NAMES)
+def test_an_owner_store_under_the_account_home_is_denied_when_home_is_elsewhere(world, account, name) -> None:
+    """A run whose HOME is a temp dir can't write the owner stores under the account's home, from either layer,
+    and the copies under its HOME stay protected too."""
+    home, vault, env = world
+    rules = _rules(vault, env)
+    for base in (account, home):
+        target = base / ".local" / "state" / "scout" / name
+        for path in [target, *([] if target.suffix else [target / "run-commits.jsonl"])]:  # a folder: all of it
+            assert hook_paths.protected_write(path, vault, env) == hook_paths.ENGINE, path
+            assert sbx.decide(rules, str(path)) == "deny", path
+
+
+def test_the_changes_owner_store_the_engine_writes_is_the_one_denied(world, account) -> None:
+    """The store scout.changes.store reads and writes (the account's home, whatever HOME says) is in the deny list
+    of a run whose HOME is a temp dir: a run can't add rows to the run-commit ledger or the engagement rows."""
+    from scout.changes import store
+
+    home, vault, env = world
+    owner = store.owner_dir(env)
+    assert owner == account / ".local" / "state" / "scout" / hook_paths.CHANGES_OWNER_NAME
+    assert not owner.is_relative_to(home)
+    rules = _rules(vault, env)
+    for rel in ("run-commits.jsonl", "engagement.jsonl", "settings.json"):
+        assert hook_paths.protected_write(owner / rel, vault, env) == hook_paths.ENGINE, rel
+        assert sbx.decide(rules, str(owner / rel)) == "deny", rel
+
+
+def test_the_lab_veto_store_is_denied_under_both_homes(world, account) -> None:
+    """The run brokers' owner folder (its limits, counts and the Lab's vetoes) is protected as a tree."""
+    home, vault, env = world
+    rules = _rules(vault, env)
+    for base in (account, home):
+        vetoes = base / ".local" / "state" / "scout" / hook_paths.RUN_BROKERS_NAME / "lab-vetoes.jsonl"
+        assert hook_paths.protected_write(vetoes, vault, env) == hook_paths.ENGINE
+        assert sbx.decide(rules, str(vetoes)) == "deny"
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        ".gitconfig",
+        ".config/git/config",
+        ".zshrc",
+        "Library/LaunchAgents/x.plist",
+        ".claude/settings.json",
+        ".claude/CLAUDE.md",
+        ".claude.json",
+        ".codex/config.toml",
+        ".scout-secrets/linear-api-key",
+        ".ssh/config",
+        ".local/state/scout/engine.json",
+    ],
+)
+def test_every_per_user_path_is_denied_under_the_account_home_too(world, account, rel) -> None:
+    _, vault, env = world
+    assert sbx.decide(_rules(vault, env), str(account / rel)) == "deny", rel
+
+
+def test_the_account_homes_claude_and_ssh_carve_outs_stay_writable(world, account) -> None:
+    """ssh adds to the account's known_hosts whatever HOME says, and claude may keep its sessions there."""
+    _, vault, env = world
+    rules = _rules(vault, env)
+    for rel in sbx.SSH_WRITABLE:
+        assert sbx.decide(rules, str(account / ".ssh" / rel)) == "allow", rel
+    for name in sbx.CLAUDE_HOME_CARVE_DIRS:
+        assert sbx.decide(rules, str(account / ".claude" / name / "x")) == "allow", name
+    assert sbx.decide(rules, str(account / "Documents" / "x.txt")) == "allow"
+
+
+def test_secrets_under_the_account_home_are_unreadable(world, account) -> None:
+    _, vault, env = world
+    secret = account / ".scout-secrets" / "linear-api-key"
+    assert sbx.decide(_rules(vault, env), str(secret), "read") == "deny"
+    assert hook_paths.secret_read(secret, env) == hook_paths.SECRETS
