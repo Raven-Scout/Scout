@@ -402,25 +402,21 @@ final class AppState: ObservableObject {
         self.engineHealth = engineHealth
         self.runProtection = runProtection
         self.delegateStatus = delegateStatus
-        // Settings ▸ Agent copies ▸ Review (#550 V4b3): the same engine, the same way.
-        self.inboxReview = InboxReviewService(
-            runner: runner,
-            environment: ["SCOUT_DATA_DIR": scoutDir.path],
-            scoutctl: { [weak engineHealth] in
-                guard let state = engineHealth?.state, !state.gatesTabs else { return nil }
-                if case .broken = state { return nil }
-                return state.scoutctl
-            }
-        )
-        self.runLedgerService = runLedger
-        // The Changes tab: the same engine, the same way as the inbox review.
-        let changesEngine: @MainActor () -> URL? = { [weak engineHealth] in
+        // One engine gate for every service that follows the found engine and runs nothing while setup gates the
+        // tabs or the engine is broken: Settings ▸ Agent copies ▸ Review (#550 V4b3) and the Changes tab.
+        let gatedEngine: @MainActor () -> URL? = { [weak engineHealth] in
             guard let state = engineHealth?.state, !state.gatesTabs else { return nil }
             if case .broken = state { return nil }
             return state.scoutctl
         }
+        self.inboxReview = InboxReviewService(
+            runner: runner,
+            environment: ["SCOUT_DATA_DIR": scoutDir.path],
+            scoutctl: gatedEngine
+        )
+        self.runLedgerService = runLedger
         let changesService = ChangesService(
-            scoutctl: changesEngine,
+            scoutctl: gatedEngine,
             runner: runner,
             environment: ["SCOUT_DATA_DIR": scoutDir.path],
             logsDirectory: scoutDir.appendingPathComponent(".scout-logs"),
@@ -431,7 +427,7 @@ final class AppState: ObservableObject {
         self.changesDecisions = ChangesDecisions(
             runner: runner,
             environment: ["SCOUT_DATA_DIR": scoutDir.path],
-            scoutctl: changesEngine
+            scoutctl: gatedEngine
         )
         self.resolvePromptService = resolvePrompt
         self.engineRelease = configuration.engineRelease
