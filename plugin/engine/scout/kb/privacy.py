@@ -608,6 +608,18 @@ def _literal_true_delegates(text: str, flag: str = "include_private") -> frozens
     return frozenset(out)
 
 
+def delegate_flags_on(text: str | None) -> dict[str, frozenset[str]]:
+    """For each of :data:`DELEGATE_FLAGS`, the delegate ids a ``scout-config.yaml`` text turns it on for.
+
+    What the policy acts on, not what YAML loads: ``yes`` and ``true`` load the
+    same but only ``true`` counts, so a check that compares loaded data must
+    compare this too.
+    """
+    if text is None:
+        return {flag: frozenset() for flag in DELEGATE_FLAGS}
+    return {flag: _literal_true_delegates(text, flag) for flag in DELEGATE_FLAGS}
+
+
 def load_policy(vault: Path | None) -> Policy:
     """Engine default merged with ``<vault>/scout-config.yaml → privacy:``.
 
@@ -653,8 +665,7 @@ def policy_from_config_text(text: str | None) -> Policy:
         return _engine_default()
     if not isinstance(data, dict):
         return _unreadable_policy(None)
-    literal_true = {flag: _literal_true_delegates(text, flag) for flag in DELEGATE_FLAGS}
-    return policy_from_overlay(data.get("privacy"), literal_true=literal_true)
+    return policy_from_overlay(data.get("privacy"), literal_true=delegate_flags_on(text))
 
 
 def _unreadable_policy(text: str | None) -> Policy:

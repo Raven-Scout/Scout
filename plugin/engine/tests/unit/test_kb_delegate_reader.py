@@ -204,6 +204,8 @@ def test_ignore_sync_only_counts_only_written_as_a_plain_true() -> None:
         "    duet:\n      ignore_sync_only: true\n"
         "    yes-flag:\n      ignore_sync_only: yes\n"
         '    quoted:\n      ignore_sync_only: "true"\n'
+        "    on-flag:\n      ignore_sync_only: on\n"
+        "    one:\n      ignore_sync_only: 1\n"
         "    plain: {}\n"
     )
     policy = policy_from_config_text(text)
@@ -211,10 +213,12 @@ def test_ignore_sync_only_counts_only_written_as_a_plain_true() -> None:
         "duet": True,
         "yes-flag": False,
         "quoted": False,
+        "on-flag": False,
+        "one": False,
         "plain": False,
     }
     assert {d.id: d.include_private for d in policy.delegates} == dict.fromkeys(
-        ("duet", "yes-flag", "quoted", "plain"), False
+        ("duet", "yes-flag", "quoted", "on-flag", "one", "plain"), False
     )
     assert "privacy-overlay-invalid" in policy.warnings
     delegates = policy.to_json()["delegates"]

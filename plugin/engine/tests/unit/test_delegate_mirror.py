@@ -1745,6 +1745,17 @@ def test_ignore_sync_only_needs_both_the_live_and_the_committed_config(vault: Pa
     assert dm.preview(vault, "grok-personal").files == allowlisted
 
 
+def test_ignore_sync_only_leaves_the_agnes_upload_list_as_it_was(vault: Path) -> None:
+    """The flag widens one delegate's mirror, never what repo sync may send to Agnes."""
+    _widget_only(vault, "true")
+    policy = load_policy(vault)
+    assert policy.delegates and any(d.ignore_sync_only for d in policy.delegates)
+    scope = rs.sync_scope(vault, policy)
+    assert scope.outside_sync_only("knowledge-base/topics/misc/plain.md")
+    assert not scope.outside_sync_only("knowledge-base/projects/widget/notes.md")
+    assert rs.scoped_policy_json(policy, scope, [])["sync_only"] == ["knowledge-base/projects/widget/**"]
+
+
 def test_check_tree_refuses_a_full_config_where_sync_only_keeps_it_home(vault: Path) -> None:
     _sync_only_kb(vault)
     config = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
