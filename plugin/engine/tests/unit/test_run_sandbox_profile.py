@@ -590,7 +590,7 @@ def test_an_owner_store_under_the_account_home_is_denied_when_home_is_elsewhere(
     for base in (account, home):
         target = base / ".local" / "state" / "scout" / name
         for path in [target, *([] if target.suffix else [target / "run-commits.jsonl"])]:  # a folder: all of it
-            assert hook_paths.protected_write(path, vault, env) == hook_paths.ENGINE, path
+            assert hook_paths.protected_write(path, vault, env) == hook_paths.OWNER_STATE, path
             assert sbx.decide(rules, str(path)) == "deny", path
 
 

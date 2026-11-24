@@ -142,8 +142,98 @@ def test_exec_searches_path_for_a_bare_name(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_run_can_return_the_argv_without_running() -> None:
     req = RunRequest(Path("/v"), "m", "r", "p", "dm-x", "1", "autonomous", Path("/bin/dummy"))
-    argv = rt_exec.run(DummyRuntime("d"), req, timeout_s=None, execute=False)
+    argv = rt_exec.run(DummyRuntime("d"), req, execute=False)
     assert argv[0] == "/bin/dummy" and "dm-x" in argv
+
+
+# -- the launch environment and working directory (#652 S5) -----------------------------------------------------
+
+_RUNNER_ENV = {
+    "PATH": "/usr/bin:/bin",
+    "SCOUT_MODE": "autonomous",
+    "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-fake",
+    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",
+    "ANTHROPIC_API_KEY": "sk-ant-fake",
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:1",
+    "MY_CLAUDE_NOTE": "kept: the pattern is anchored",
+    "claude_lower": "kept: matching is case-sensitive",
+}
+
+
+def _env_of(runtime: DummyRuntime | ClaudeCode, tmp_path: Path) -> dict[str, str]:
+    """The environment the CLI starts with, as ``exec.run`` builds it (the exec itself is stubbed)."""
+    seen: dict[str, str] = {}
+
+    def fake_exec(launch: Launch, env: dict[str, str]) -> None:
+        seen.update(env)
+        raise RuntimeError("stop")
+
+    req = RunRequest(tmp_path, "autonomous", "r", "p", "dm-x", None, "autonomous", Path("/bin/true"))
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(rt_exec, "exec_launch", fake_exec)
+        with pytest.raises(RuntimeError):
+            rt_exec.run(runtime, req, env=_RUNNER_ENV)
+    return seen
+
+
+def test_a_non_anthropic_runtime_never_gets_the_anthropic_variables(tmp_path: Path) -> None:
+    env = _env_of(DummyRuntime("d", provider="google"), tmp_path)
+    assert not [k for k in env if k.startswith(("CLAUDE_", "ANTHROPIC_"))]
+    assert env["PATH"] == "/usr/bin:/bin" and env["SCOUT_MODE"] == "autonomous"
+    assert env["MY_CLAUDE_NOTE"] and env["claude_lower"]
+    assert env["DUMMY_MARK"] == "1"  # what the adapter adds still arrives
+
+
+def test_an_adapter_cant_keep_the_anthropic_variables_but_can_add_its_own(tmp_path: Path) -> None:
+    dummy = DummyRuntime("d", provider="openai", launch_env_unset=("SCOUT_MODE",))
+    env = _env_of(dummy, tmp_path)
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env and "ANTHROPIC_API_KEY" not in env
+    assert "SCOUT_MODE" not in env
+
+
+def test_an_anthropic_runtime_keeps_the_runners_environment(tmp_path: Path) -> None:
+    env = _env_of(DummyRuntime("d", provider="anthropic"), tmp_path)
+    assert {k: env[k] for k in _RUNNER_ENV} == _RUNNER_ENV
+
+
+def test_claude_codes_environment_is_the_runners_plus_its_marker(tmp_path: Path) -> None:
+    env = _env_of(ClaudeCode(), tmp_path)
+    assert env == {**_RUNNER_ENV, "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1"}
+
+
+def test_exec_moves_to_the_launch_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    where: list[str] = []
+
+    def fake(path: str, argv: list[str], env: dict[str, str]) -> None:
+        where.append(os.getcwd())
+        raise RuntimeError("stop")
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "work").mkdir()
+    monkeypatch.setattr(rt_exec.os, "execve", fake)
+    with pytest.raises(RuntimeError):
+        rt_exec.exec_launch(Launch(argv=("/bin/true",), cwd=tmp_path / "work"), {})
+    assert where == [str((tmp_path / "work").resolve())]
+
+
+def test_a_timed_run_starts_in_the_launch_cwd(tmp_path: Path) -> None:
+    (tmp_path / "work").mkdir()
+    out = tmp_path / "pwd.txt"
+    launch = Launch(argv=("/bin/sh", "-c", f"pwd -P > {out}"), cwd=tmp_path / "work")
+    code = rt_exec.run_with_timeout(launch, {"PATH": "/usr/bin:/bin"}, timeout_s=60, runtime_name="sh")
+    assert code == 0 and out.read_text().strip() == str((tmp_path / "work").resolve())
+
+
+def test_run_takes_its_timeout_from_the_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[int] = []
+
+    def fake(launch: Launch, env: dict[str, str], *, timeout_s: int, runtime_name: str) -> int:
+        seen.append(timeout_s)
+        return 0
+
+    monkeypatch.setattr(rt_exec, "run_with_timeout", fake)
+    req = RunRequest(tmp_path, "m", "r", "p", "dm-x", None, "autonomous", Path("/bin/true"), timeout_s=2700)
+    assert rt_exec.run(DummyRuntime("d"), req, env={}) == 0 and seen == [2700]
 
 
 # -- claude-code auth ------------------------------------------------------------------------------------------

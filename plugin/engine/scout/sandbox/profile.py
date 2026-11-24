@@ -29,6 +29,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from scout.agent_runtimes.base import SandboxPaths
 from scout.kb import hook_paths
 
 SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
@@ -193,9 +194,16 @@ def carve_outs(vault: Path | None, env: Mapping[str, str]) -> list[tuple[str, st
     return out
 
 
-def build_rules(vault: Path | None, env: Mapping[str, str] | None = None) -> list[Rule]:
-    """The file rules, in profile order (last match wins). Raises :class:`ProfileError`."""
+def build_rules(
+    vault: Path | None, env: Mapping[str, str] | None = None, *, runtime_paths: SandboxPaths | None = None
+) -> list[Rule]:
+    """The file rules, in profile order (last match wins). Raises :class:`ProfileError`.
+
+    ``runtime_paths`` is what the run's agent runtime adds (its adapter's ``sandbox_paths``, #652 S6): its
+    protected trees join the kernel's own, and its writable folders join the carve-outs, so a protected tree
+    of either kind under one of them is denied again."""
     env = os.environ if env is None else env
+    extra = runtime_paths or SandboxPaths()
     try:
         specs = hook_paths.protected_specs(vault, env)
     except Exception as e:  # noqa: BLE001 - no list, no profile: the run is skipped, never run unprotected
@@ -210,7 +218,7 @@ def build_rules(vault: Path | None, env: Mapping[str, str] | None = None) -> lis
                 # GIT_CONFIG_GLOBAL=/dev/null names no file a run could change; denying it breaks `> /dev/null`.
                 continue
             protected.append(Rule("deny", "file-write*", "subpath" if spec.tree else "literal", form))
-    for tree in kernel_trees(vault, env):
+    for tree in [*kernel_trees(vault, env), *extra.protected]:
         for form in _forms(str(tree), env):
             protected.append(Rule("deny", "file-write*", "subpath", form))
     secrets: list[Rule] = []
@@ -232,7 +240,7 @@ def build_rules(vault: Path | None, env: Mapping[str, str] | None = None) -> lis
     rules += protected + secrets
     # 2. the carve-outs
     allows: list[Rule] = []
-    for kind, path in carve_outs(vault, env):
+    for kind, path in [*carve_outs(vault, env), *(("subpath", str(p)) for p in extra.writable)]:
         for form in [path] if kind == "regex" else _forms(path, env):
             allows.append(Rule("allow", "file-write*", kind, form))
     rules += allows
@@ -348,8 +356,14 @@ def render(rules: Sequence[Rule], *, network: str = "") -> str:
     return "\n".join(lines) + "\n"
 
 
-def build_profile(vault: Path | None, env: Mapping[str, str] | None = None, *, network: str = "") -> str:
-    return render(build_rules(vault, env), network=network)
+def build_profile(
+    vault: Path | None,
+    env: Mapping[str, str] | None = None,
+    *,
+    network: str = "",
+    runtime_paths: SandboxPaths | None = None,
+) -> str:
+    return render(build_rules(vault, env, runtime_paths=runtime_paths), network=network)
 
 
 def broker_rules(vault: Path, broker_dir: Path, env: Mapping[str, str] | None = None) -> list[Rule]:

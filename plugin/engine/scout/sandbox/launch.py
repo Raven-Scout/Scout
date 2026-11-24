@@ -26,6 +26,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from scout.agent_runtimes.base import SandboxPaths
 from scout.kb.hook_paths import SANDBOX_SWITCH_NAME
 from scout.sandbox import profile as sbx
 
@@ -123,14 +124,17 @@ def prepare(
     available: Callable[[], bool] = sbx.available,
     self_test: Callable[[str], str | None] = sbx.self_test,
     platform: str | None = None,
+    runtime_paths: SandboxPaths | None = None,
 ) -> Prepared:
-    """Decide the run's sandbox status and, when it's ``enforced``, build and self-test the profile."""
+    """Decide the run's sandbox status and, when it's ``enforced``, build and self-test the profile.
+
+    ``runtime_paths`` is what the run's agent runtime adds to the profile (its adapter's ``sandbox_paths``)."""
     env = os.environ if env is None else env
     decided = precheck(vault, env, available=available, platform=platform)
     if decided is not None:
         return decided
     try:
-        text = sbx.build_profile(vault, env)
+        text = sbx.build_profile(vault, env, runtime_paths=runtime_paths)
     except sbx.ProfileError as e:
         return Prepared("failed", str(e))
     problem = self_test(text)

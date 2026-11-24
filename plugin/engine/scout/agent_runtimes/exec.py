@@ -20,6 +20,7 @@ spends none of it) stops the group and exits 124.
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import signal
 import subprocess
@@ -28,8 +29,8 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-from scout.agent_runtimes import awake
-from scout.agent_runtimes.base import AgentRuntime, Launch, RunRequest
+from scout.agent_runtimes import awake, consent
+from scout.agent_runtimes.base import ANTHROPIC_ENV, AgentRuntime, Launch, RunRequest
 
 TIMEOUT_EXIT = 124
 KILL_GRACE_S = 10.0
@@ -44,6 +45,7 @@ def build_request(
     prompt: str,
     binary: Path | None,
     env: Mapping[str, str],
+    timeout_s: int | None = None,
 ) -> RunRequest:
     return RunRequest(
         vault=vault,
@@ -54,12 +56,21 @@ def build_request(
         budget_cap=budget_cap,
         reader=env.get("SCOUT_READER", ""),
         binary=binary,
+        timeout_s=timeout_s,
     )
 
 
-def launch_env(launch: Launch, base: Mapping[str, str]) -> dict[str, str]:
-    """The CLI's environment: this process's, plus what the adapter adds."""
-    env = dict(base)
+def unset_patterns(runtime: AgentRuntime, launch: Launch) -> tuple[str, ...]:
+    """The variables to remove from the CLI's environment: the adapter's, plus the Anthropic ones for any other
+    provider. The second part isn't the adapter's to waive."""
+    extra = () if runtime.provider == consent.ALWAYS else ANTHROPIC_ENV
+    return (*launch.env_unset, *extra)
+
+
+def launch_env(launch: Launch, base: Mapping[str, str], unset: tuple[str, ...] = ()) -> dict[str, str]:
+    """The CLI's environment: this process's, minus each variable matching an ``unset`` pattern, plus what the
+    adapter adds."""
+    env = {k: v for k, v in base.items() if not any(fnmatch.fnmatchcase(k, pat) for pat in unset)}
     env.update(launch.env)
     return env
 
@@ -73,6 +84,8 @@ def _restore_signals() -> None:
 
 def exec_launch(launch: Launch, env: Mapping[str, str]) -> None:
     """Replace this process with the CLI. Only returns by raising (OSError when it can't start)."""
+    if launch.cwd is not None:
+        os.chdir(launch.cwd)
     _restore_signals()
     sys.stdout.flush()
     sys.stderr.flush()
@@ -146,6 +159,7 @@ def run_with_timeout(
         proc = subprocess.Popen(  # noqa: S603 - the adapter's argv
             list(launch.argv),
             env=dict(env),
+            cwd=launch.cwd,
             stdin=subprocess.PIPE if launch.stdin is not None else None,
             start_new_session=True,
             restore_signals=True,
@@ -194,22 +208,21 @@ def run(
     runtime: AgentRuntime,
     req: RunRequest,
     *,
-    timeout_s: int | None,
     env: Mapping[str, str] | None = None,
     execute: bool = True,
 ) -> Sequence[str] | int:
-    """Exec the run (no timeout), or run it under the timeout and return its exit code.
+    """Exec the run (``req.timeout_s`` None), or run it under that timeout and return its exit code.
 
     ``execute=False`` returns the argv instead (``--print-argv``, tests).
     """
     launch = runtime.headless_argv(req)
-    full_env = launch_env(launch, os.environ if env is None else env)
+    full_env = launch_env(launch, os.environ if env is None else env, unset_patterns(runtime, launch))
     if not execute:
         return launch.argv
-    if timeout_s is None:
+    if req.timeout_s is None:
         exec_launch(launch, full_env)
         raise AssertionError("unreachable: exec returned")  # pragma: no cover
-    return run_with_timeout(launch, full_env, timeout_s=timeout_s, runtime_name=runtime.display_name)
+    return run_with_timeout(launch, full_env, timeout_s=req.timeout_s, runtime_name=runtime.display_name)
 
 
 __all__ = [
@@ -221,4 +234,5 @@ __all__ = [
     "launch_env",
     "run",
     "run_with_timeout",
+    "unset_patterns",
 ]

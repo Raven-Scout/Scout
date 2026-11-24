@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -15,6 +15,7 @@ from scout.agent_runtimes.base import (
     ProcessMarkers,
     RunRequest,
     RuntimeAuth,
+    SandboxPaths,
 )
 from scout.errors import ConfigError
 
@@ -32,14 +33,22 @@ class DummyRuntime:
         caps: frozenset[Capability] = frozenset(),
         binary: Path | None = None,
         version: str | None = "1.0.0",
-        caps_own_spend: bool = False,
+        declared: frozenset[Capability] = frozenset(),
+        interactive_host: bool = False,
+        sandbox: SandboxPaths | None = None,
+        launch_env_unset: tuple[str, ...] = (),
+        launch_cwd: Path | None = None,
     ) -> None:
         self.id = runtime_id
-        self.caps_own_spend = caps_own_spend
+        self.declared_capabilities = declared
+        self.interactive_host = interactive_host
         self.provider = provider
         self.caps = caps
         self.binary = binary
         self._version = version
+        self._sandbox = sandbox or SandboxPaths()
+        self._env_unset = launch_env_unset
+        self._cwd = launch_cwd
 
     def locate(self, hint: Path | None) -> Path | None:
         return hint or self.binary
@@ -51,7 +60,10 @@ class DummyRuntime:
         return RuntimeAuth(signed_in=True, mode="login", detail="dummy")
 
     def capabilities(self, vault: Path, binary: Path, version: str | None) -> frozenset[Capability]:
-        return self.caps
+        return self.caps | self.declared_capabilities
+
+    def sandbox_paths(self, env: Mapping[str, str]) -> SandboxPaths:
+        return self._sandbox
 
     def validate_model(self, value: object, *, where: str) -> str:
         if isinstance(value, str) and value.strip().lower().startswith("dm-"):
@@ -69,7 +81,7 @@ class DummyRuntime:
         argv = [str(binary), "run", "--model", req.model, "--title", req.run_name]
         if req.budget_cap is not None:
             argv += ["--usd", req.budget_cap]
-        return Launch(argv=(*argv, req.prompt), env={"DUMMY_MARK": "1"})
+        return Launch(argv=(*argv, req.prompt), env={"DUMMY_MARK": "1"}, env_unset=self._env_unset, cwd=self._cwd)
 
     def classify_failure(self, log_tail: str, exit_code: int) -> Failure:
         return Failure(FailureKind.OTHER, None, f"exit {exit_code}")

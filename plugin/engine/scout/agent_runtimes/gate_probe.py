@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any
 
 from scout import safe_write
+from scout.agent_runtimes.base import HOOK_CAPABILITIES, TIER_L_REQUIRES, AgentRuntime, Capability
 from scout.agent_runtimes.fake_anthropic import FakeAnthropic, ScriptedTurn
 
 # The kb-read-gate's mark (scout.hooks.kb_read_gate.MARK); a test pins that the two agree.
@@ -620,3 +621,44 @@ def cached_probe(
     res = runner(claude_bin, plugin_root=plugin_root, flags=flags, vault=vault, version=version)
     _write_cache(vault, res)
     return res
+
+
+# -- every other runtime (#652 S6) -----------------------------------------------------------------------------
+
+# The hook capabilities a run on the vault needs (Tier L's), which this module's probe proves for Claude Code.
+GATE_CAPABILITIES: frozenset[Capability] = TIER_L_REQUIRES & HOOK_CAPABILITIES
+
+
+@dataclass(frozen=True)
+class RuntimeProbe:
+    """The runners' gate probe for a runtime other than claude-code. The CLI exits 0 on a pass, else 3."""
+
+    ok: bool
+    reason: str
+    runtime: str
+    version: str | None
+
+    def to_json(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def runtime_probe(adapter: AgentRuntime, vault: Path, binary: Path | None = None) -> RuntimeProbe:
+    """Whether *adapter*'s CLI is proven to load Scout's gates here: its verified capabilities (spec §8.3 rule 4:
+    unverified means absent) include every one in :data:`GATE_CAPABILITIES`. The adapter's own probe decides, as
+    :func:`cached_probe` decides for Claude Code. Anything that goes wrong is a fail (fail closed)."""
+    name = adapter.display_name
+    try:
+        found = adapter.locate(binary)
+        if found is None:
+            return RuntimeProbe(False, f"{name} isn't installed", adapter.id, None)
+        version = adapter.version(found)
+        if version is None:
+            return RuntimeProbe(False, f"can't read the {name} version", adapter.id, None)
+        caps = adapter.capabilities(vault, found, version)
+    except Exception as e:  # noqa: BLE001 - a probe that can't run proves nothing
+        return RuntimeProbe(False, f"the {name} probe couldn't run: {type(e).__name__}: {e}", adapter.id, None)
+    missing = sorted(c.value for c in GATE_CAPABILITIES - caps)
+    if missing:
+        why = f"Scout's privacy hooks aren't proven to load in {name} {version} (missing: {', '.join(missing)})"
+        return RuntimeProbe(False, why, adapter.id, version)
+    return RuntimeProbe(True, f"Scout's privacy hooks are proven to load in {name} {version}", adapter.id, version)
