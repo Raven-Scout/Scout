@@ -25,7 +25,7 @@ _READ_COMMANDS = {
     "cat", "rg", "grep", "egrep", "fgrep", "ls", "find", "head", "tail", "less", "more", "sed", "awk", "gawk",
     "mawk", "wc", "tree", "bat", "nl", "strings", "stat", "du", "file", "cut", "sort", "uniq", "diff", "cmp",
     "comm", "od", "xxd", "hexdump", "tac", "rev", "paste", "column", "fold", "fmt", "pr", "zcat", "base64",
-    "iconv", "jq", "yq", "view", "vi", "vim", "nano", "most", "pg",
+    "iconv", "jq", "yq", "view", "vi", "vim", "nano", "most", "pg", "ag", "ack", "fd", "ugrep",
 }  # fmt: skip
 _PREFIX_WORDS = {
     "xargs", "sudo", "command", "builtin", "env", "nice", "time", "exec", "timeout", "gtimeout", "stdbuf",
@@ -79,6 +79,13 @@ _RECURSIVE_FLAG = re.compile(r"^-(?:[A-Za-z]*[rR][A-Za-z]*|-recursive|-dereferen
 # knowledge-base/ontology/schema.yaml and parser.py are tooling, not notes: reading them is fine.
 ONTOLOGY_TOOLING = re.compile(r"(?:^|/)(?:knowledge-base|knowledge_base)/ontology/(?:schema\.ya?ml|parser\.py)$")
 WHOLE_VAULT_GLOBS = {"*", "**", "**/*", "*.md", "**/*.md", "**/*.*"}
+# The file formats the KB keeps facts in: notes, and the data files beside them (ontology entities,
+# the CSV and JSON tables an ingestion writes). A file filter naming one of these does not keep a
+# search rooted at the vault out of the KB (#541). Code (``*.py``, ``*.sh``) and logs do.
+KB_FILE_EXTENSIONS = ("md", "markdown", "yaml", "yml", "csv", "tsv", "json", "txt", "html", "htm")
+# ripgrep's ``-t`` names for those formats, and ``all``. ripgrep has no ``tsv`` type (its ``csv`` type
+# covers ``*.tsv``).
+_KB_RG_TYPES = {"all", "md", "markdown", "yaml", "csv", "json", "txt", "html"}
 
 
 class _Stripped:
@@ -361,6 +368,7 @@ def _recursive(name: str, args: list[str]) -> _Recursive | None:
         filters = [g for g in globs if not g.strip("\"'").startswith("!")]
         depth = _int(_flag_value(args, {"--max-depth", "--maxdepth", "-d"}))
         types = _flag_values(args, {"-t", "--type"}) + [a.split("=", 1)[1] for a in args if a.startswith("--type=")]
+        types += [a[2:] for a in args if re.match(r"^-t[A-Za-z0-9]", a)]  # attached: `-tpy`
         if any(a == "--type-add" or a.startswith("--type-add=") for a in args):
             types = []  # a type defined in the command itself: it can name anything
         return _filtered(_Recursive(roots, True, depth, _exclusions(args)), filters, types)
@@ -393,10 +401,12 @@ def _pattern_flag(args: list[str]) -> bool:
 def _filtered(rec: _Recursive, filters: list[str], types: list[str] | None = None) -> _Recursive | None:
     """None when a file filter keeps the search out of the KB, root or no root: ``--include=*.py``,
     ``-g '*.py'``, ``-g 'docs/*.md'``, ``rg -t py``. A filter bounds the search only if it can't
-    match a KB note (``*people*``, ``*.m?``, ``*.{md,txt}`` and ``*.MD`` all can)."""
+    match a KB file (``*people*``, ``*.m?``, ``*.{md,txt}``, ``*.MD`` and ``*.yaml`` all can).
+    ripgrep ignores ``-t`` when an include glob is given (``rg -t py -g '*.md'`` searches notes), so
+    the types bound the search only when there is no include glob."""
     if filters and not any(_names_kb(f) or f.strip("\"'") in WHOLE_VAULT_GLOBS or _may_match_kb(f) for f in filters):
         return None
-    if types and not any(t.strip("\"'") in ("md", "markdown", "all") for t in types):
+    if types and not filters and not any(t.strip("\"'") in _KB_RG_TYPES for t in types):
         return None
     return rec
 
@@ -444,11 +454,13 @@ def _glob_regex(glob: str) -> re.Pattern[str]:
 
 
 def _may_match_kb(glob: str) -> bool:
-    """Whether a file filter could match a KB note: tried on note names built from its own words
-    (``*people*`` → ``people.md``) under each KB folder, by file name for a glob with no ``/``."""
+    """Whether a file filter could match a KB file: tried on file names built from its own words
+    (``*people*`` → ``people.md``), in each format the KB keeps (:data:`KB_FILE_EXTENSIONS`), under
+    each KB folder; by file name for a glob with no ``/``."""
     g = glob.strip("\"'").removeprefix("!")
-    words = [w for w in re.findall(r"[A-Za-z0-9_-]+", g) if w.lower() not in ("md", "markdown")]
-    names = {"x.md", *(n for w in words for n in (f"{w}.md", f"{w}x.md", f"x{w}.md", f"x{w}x.md"))}
+    words = [w for w in re.findall(r"[A-Za-z0-9_-]+", g) if w.lower() not in KB_FILE_EXTENSIONS]
+    stems = {"x", *(s for w in words for s in (w, f"{w}x", f"x{w}", f"x{w}x"))}
+    names = {f"{stem}.{ext}" for stem in stems for ext in KB_FILE_EXTENSIONS}
     rx = _glob_regex(g)
     if "/" not in g:
         return any(rx.fullmatch(n) for n in names)
