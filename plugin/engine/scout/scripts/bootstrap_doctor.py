@@ -12,6 +12,7 @@ import platform
 import plistlib
 import re
 import shlex
+import stat
 import subprocess
 import xml.parsers.expat
 from dataclasses import dataclass, field
@@ -450,6 +451,51 @@ def _check_scout_tz(*, vault: Path) -> list[str]:
         f"scripts/scout-tz.sh date +%Y printed {shown!r}, not a year: it is older than this plugin or edited, so "
         "the dates and weekdays runs write come out wrong. Run /scout-update (`scoutctl bootstrap drift` shows a "
         "kept edit)."
+    ]
+
+
+_UNDO_TMP_FOLDERS = ("", "scripts", "docs/wishlist", "knowledge-base")  # "" is the vault root (not recursive)
+_UNDO_TMP_STALE = timedelta(minutes=10)
+_UNDO_TMP_SHOWN = 5
+
+
+def _check_undo_leftovers(*, vault: Path, now: datetime | None = None) -> list[str]:
+    """Warn about ``.<name>.<hex>.scout-undo`` files a crashed undo left beside their targets.
+
+    The undo write path stages one next to each file it replaces and removes it on success, so one older than
+    ten minutes is a crash's leftover. The name test matches ``scout.changes.actions._sweep``. Read-only: it
+    never deletes, never follows a link, and an unreadable entry is skipped.
+    """
+    cutoff = (now or datetime.now(UTC)).timestamp() - _UNDO_TMP_STALE.total_seconds()
+    found: set[str] = set()
+
+    def visit(folder: Path, *, recurse: bool) -> None:
+        try:
+            entries = list(os.scandir(folder))
+        except OSError:
+            return
+        for entry in entries:
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if stat.S_ISDIR(st.st_mode):
+                if recurse:
+                    visit(Path(entry.path), recurse=True)
+            elif stat.S_ISREG(st.st_mode):
+                name = entry.name
+                if name.startswith(".") and name.endswith(".scout-undo") and st.st_mtime < cutoff:
+                    found.add(Path(entry.path).relative_to(vault).as_posix())
+
+    for rel in _UNDO_TMP_FOLDERS:
+        visit(vault / rel if rel else vault, recurse=rel in ("knowledge-base",))
+    if not found:
+        return []
+    paths = sorted(found)
+    shown = ", ".join(paths[:_UNDO_TMP_SHOWN]) + (", ..." if len(paths) > _UNDO_TMP_SHOWN else "")
+    return [
+        f"{len(paths)} leftover undo temp file{'' if len(paths) == 1 else 's'} from an interrupted undo: {shown}. "
+        "Nothing reads them; delete them."
     ]
 
 
@@ -1479,6 +1525,7 @@ def run_doctor(
     warnings.extend(_check_backlog_lint(vault=vault))
     warnings.extend(_check_action_items_conflicts(vault=vault))
     warnings.extend(_check_scout_tz(vault=vault))
+    warnings.extend(_check_undo_leftovers(vault=vault))
     meta: dict[str, WarningMeta] = {}
 
     def protection(found: list[str]) -> list[str]:
