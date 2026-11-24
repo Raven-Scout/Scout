@@ -377,7 +377,7 @@ def decide(
         if not isinstance(command, str):
             raise ValueError("Bash call without a command")
         from scout.kb import hook_paths
-        from scout.kb.live_run import DELEGATE_FORM, HOME_FORM, assigns_by_expansion, run_escape
+        from scout.kb.live_run import DELEGATE_FORM, HOME_FORM, expansion_escape, run_escape
 
         def resolve(raw: str) -> str | None:
             """The path a word names, with the environment's variables put in; None when the shell fills in
@@ -417,9 +417,7 @@ def decide(
                     return found
             return None
 
-        if assigns_by_expansion(command):
-            return _deny_home()
-        escape = run_escape(command, protect=protect, secret=secret)
+        escape = expansion_escape(command) or run_escape(command, protect=protect, secret=secret)
         if escape == "env":
             return _deny_run_env()
         if escape == HOME_FORM:

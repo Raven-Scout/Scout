@@ -970,6 +970,28 @@ def test_commands_that_change_the_run_env_are_flagged(command: str) -> None:
         "unset $v",
         "export ${v}=/x",
         "let $v=1",
+        # review 2 of #800: a name built only in part, or by a glob (`HOM?` with a file named HOME), and the
+        # targets behind read's option values
+        'v=OME; eval "H${v}=/x"',
+        "v=OME; export H$v=/x",
+        "v=OME; read H$v <<< /x",
+        "v=OME; printf -v H$v /x",
+        'v=OME; typeset "H${v}=/x"',
+        "read HOM? <<< /x",
+        "export HOM?=.claude",
+        "export HOM[E]=.claude",
+        "for H$v in /x; do :; done",
+        "let H$v=1",
+        "(( HOME = 0 ))",
+        "(( H$v = 1 ))",
+        "read -d '' HOME <<< /x",
+        "read -t 5 HOME",
+        "read -rp prompt HOME",
+        "read -k HOME",
+        "mapfile -t HOME < f",
+        'unset "$var"',
+        'export "$@"',
+        "eval ${v}=x",
     ],
 )
 def test_commands_that_point_home_elsewhere_are_named(command: str) -> None:
@@ -997,6 +1019,22 @@ def test_commands_that_point_home_elsewhere_are_named(command: str) -> None:
         'while IFS= read -r line; do echo "$line"; done < notes.txt',
         "v=x; read -r v <<< y",
         "printf '%s\\n' \"$HOME\"",
+        "HOME=${HOME}/ ls",
+        "HOME=~/ ls",
+        "HOME+= ls",
+        "read -t $T ans",
+        'read -p "$prompt" ans',
+        "read -r -d '' body <<< x",
+        "local x=$1",
+        "printf -v out '%s' \"$x\"",
+        "mapfile -t lines < notes.txt",
+        'declare -a arr=("$@")',
+        'getopts "ab:" opt',
+        "let i=$i+1",
+        "export -p",
+        "(( i++ ))",
+        "(( n = n + 1 ))",
+        "for i in 1 2 3; do echo $i; done",
     ],
 )
 def test_keeping_or_reading_home_is_not_flagged(command: str) -> None:
@@ -1004,16 +1042,40 @@ def test_keeping_or_reading_home_is_not_flagged(command: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "command",
-    [": ${HOME:=/x}", ": ${HOME=/x}", ": ${HOME::=/x}; echo x >> ~/f", "echo ${HOME::=/x}", "v=HOME; : ${(P)v::=/x}"],
+    ("command", "form"),
+    [
+        (": ${HOME:=/x}", "HOME"),
+        (": ${HOME=/x}", "HOME"),
+        (": ${HOME::=/x}; echo x >> ~/f", "HOME"),
+        ("echo ${HOME::=/x}", "HOME"),
+        ("v=HOME; : ${(P)v::=/x}", "HOME"),
+        ("v=HOME; : ${(P)${v}::=/x}", "HOME"),
+        (": ${(P)$(echo HOME)::=/x}", "HOME"),
+        (": ${!v:=/x}", "HOME"),
+        (": ${XDG_CONFIG_HOME:=/x}; git commit -m m", "XDG_CONFIG_HOME"),
+        (": ${SCOUT_MODE::=}", "env"),
+    ],
 )
-def test_an_expansion_that_assigns_home_or_a_built_name_is_found(command: str) -> None:
-    assert live_run.assigns_by_expansion(command)
+def test_an_expansion_that_assigns_a_name_that_matters_or_a_built_one_is_named(command: str, form: str) -> None:
+    assert live_run.expansion_escape(command) == form
 
 
-@pytest.mark.parametrize("command", ["echo ${HOME}", "echo ${HOME:-/x}", "ls ${HOME}/notes", "echo ${(P)v}"])
-def test_an_expansion_that_only_reads_is_not(command: str) -> None:
-    assert not live_run.assigns_by_expansion(command)
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo ${HOME}",
+        "echo ${HOME:-/x}",
+        "ls ${HOME}/notes",
+        "echo ${(P)v}",
+        'echo "${HOME=}"',
+        "echo ${(j:,:)arr}",
+        "echo ${(s:=:)line}",
+        "echo ${(Pj:,:)name}",
+        ": ${OTHER:=x}",
+    ],
+)
+def test_an_expansion_that_only_reads_or_sets_another_name_is_not(command: str) -> None:
+    assert live_run.expansion_escape(command) is None
 
 
 @pytest.mark.parametrize(
@@ -1023,11 +1085,20 @@ def test_an_expansion_that_only_reads_is_not(command: str) -> None:
         "export XDG_CONFIG_HOME=./x; git commit -m m",
         "env XDG_CONFIG_HOME=./x git commit -m m",
         "declare -x XDG_CONFIG_HOME=./x",
+        "XDG_CONFIG_HOME+=/x; git commit -m m",
+        "IFS= read -r XDG_CONFIG_HOME <<< /x; git commit -m m",
+        "export XDG_CONFIG_HO''ME=/x",
+        "local XDG_CONFIG_HOME",
     ],
 )
 def test_pointing_git_at_another_global_config_dir_is_named(command: str) -> None:
     """git reads ``$XDG_CONFIG_HOME/git/config`` as its global config, which can set core.hooksPath."""
     assert run_escape(command) == live_run.XDG_CONFIG_FORM
+
+
+@pytest.mark.parametrize("command", ["read SCOUT_MODE <<< x", "local SCOUT_READER", "SCOUT_MODE+=x git commit -m m"])
+def test_the_run_env_goes_through_the_same_name_checks(command: str) -> None:
+    assert run_escape(command) == "env"
 
 
 def test_a_run_env_change_still_wins_over_home() -> None:

@@ -243,6 +243,16 @@ def _owner_state() -> str:
         'v=HO; v+=ME; typeset "$v=$PWD/h"; git commit -m msg',
         "v=HO; v+=ME; read $v <<< $PWD/h; git commit -m msg",
         'v=HO; v+=ME; eval "$v=$PWD/h"; git commit -m msg',
+        # review 2 of #800: a name built in part, or by a glob, which the shell may expand to HOME
+        "read HOM? <<< $PWD/h; git commit -m msg",
+        "export HOM?=.claude; echo x >> ~/settings.json",
+        "v=OME; export H$v=$PWD/h; git commit -m msg",
+        "v=OME; read H$v <<< /x; echo x >> ~/settings.json",
+        "v=OME; printf -v H$v /x; echo x >> ~/settings.json",
+        'v=OME; typeset "H${{v}}=/x"; echo x >> ~/settings.json',
+        'v=OME; eval "H${{v}}=/x"; echo x >> ~/settings.json',
+        "v=HOME; : ${{(P)${{v}}::=/x}}; echo x >> ~/settings.json",
+        "read -d '' HOME <<< /x",
     ],
 )
 def test_run_denies_a_command_that_points_home_elsewhere(vault, command):
@@ -264,6 +274,14 @@ def test_run_denies_a_command_that_points_home_elsewhere(vault, command):
         'echo "HOME is $HOME"',
         "read -r HOME_DIR <<< x",
         'while IFS= read -r line; do echo "$line"; done < notes.txt',
+        "read -t $T ans",
+        'read -p "$prompt" ans',
+        "read -r -d '' body <<< x",
+        "printf -v out '%s' x",
+        'getopts "ab:" opt',
+        "let i=$i+1",
+        "for f in $HOME/docs/*; do echo $f; done",
+        'echo "${HOME=}"',
     ],
 )
 def test_run_may_keep_or_read_its_home(vault, command):
@@ -301,6 +319,9 @@ def _events(vault: Path) -> list[dict]:
         ("GIT_CONFIG_COUNT=1 git commit -m x", "GIT_CONFIG_*"),
         ("XDG_CONFIG_HOME=./x git commit -m x", "XDG_CONFIG_HOME"),
         ("export XDG_CONFIG_HOME=./x; git commit -m x", "XDG_CONFIG_HOME"),
+        ("XDG_CONFIG_HOME+=/x; git commit -m x", "XDG_CONFIG_HOME"),
+        (": ${XDG_CONFIG_HOME:=./x}; git commit -m x", "XDG_CONFIG_HOME"),
+        ("IFS= read -r XDG_CONFIG_HOME <<< ./x; git commit -m x", "XDG_CONFIG_HOME"),
         ("git commit-tree abc -m x", "commit-tree"),
         ("git update-ref refs/heads/main abc", "update-ref"),
         ("rm .git/hooks/pre-commit", ".git/hooks"),
@@ -549,6 +570,11 @@ def test_a_run_env_change_or_detach_reaches_python_from_the_shell(vault, tmp_pat
         "read $v <<< /tmp/x; git commit -m msg",
         'printf -v "$v" %s x',
         ": ${(P)v::=/tmp/x}",
+        # a name built by a glob or in part: only the namer word in command position sends it on
+        "read HOM? <<< /tmp/x; git commit -m msg",
+        "IFS= read -r H$v <<< /tmp/x",
+        "v=OME; for H$v in /x; do :; done",
+        "(( H$v = 1 ))",
     ],
 )
 def test_a_home_change_reaches_python_from_the_shell(vault, tmp_path, command):
@@ -576,7 +602,13 @@ def test_a_run_env_change_is_denied_through_the_real_cli(vault):
 
 @pytest.mark.parametrize(
     "command",
-    ["git add notes/a.md && git commit -m x 2>&1", "scripts/git-safe-commit.sh msg notes/a.md >&2", "ls notes"],
+    [
+        "git add notes/a.md && git commit -m x 2>&1",
+        "scripts/git-safe-commit.sh msg notes/a.md >&2",
+        "ls notes",
+        "scripts/scoutctl kb read projects/widgets/widgets.md",  # `read` as a subcommand is no namer
+        "git log --format=export -1",
+    ],
 )
 def test_ordinary_run_commands_still_exit_in_the_shell(vault, tmp_path, command):
     payload = _payload("Bash", {"command": command}, vault).getvalue()

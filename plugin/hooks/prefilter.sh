@@ -177,11 +177,17 @@ bash_pattern() {
     #    Every mention goes to Python, which denies a change and lets `HOME=$HOME` or a read through.
     #    A quoted or escaped name (`HO''ME=x`, `H\OME=x`) is matched below, once quotes are removed.
     alt 'HOME'
-    # -- A variable whose name is built at run time, so no name above need appear: `export $v=…`,
-    #    `read "$v"`, `printf -v "$v" …`, zsh's `${(P)v::=…}`. Python denies a run's assignment to a
-    #    name it can't read.
-    alt "$word"'(export|declare|typeset|local|readonly|integer|float|unset|read|select|getopts|vared|mapfile|readarray|let)([^A-Za-z0-9_.-][^;&|]*)?[$`]'
+    # -- A builtin that sets or unsets the variables it names, and arithmetic, which assigns: its target
+    #    need not spell HOME (`export $v=…`, `read H$v`, `read HOM?` with a file named HOME, `printf -v
+    #    "$v"`), so Python reads every one, and denies a target it can't read for certain. And zsh's
+    #    `${(P)v::=…}`, whose name is v's value.
+    #    Only in command position (so `scoutctl kb read` is not one): the command's start, after `;`, `&`,
+    #    `|`, `(`, `{` or a newline, after a keyword or precommand modifier, past any `NAME=` words.
+    cmd='(^"command": *"|[;&|({]|\\[nt]|(^|[^A-Za-z0-9_.-])(do|then|else|elif|if|while|until|time|command|builtin|exec|noglob|nocorrect|sudo|nice|-|!) )'
+    cmd="$cmd"'[[:space:]]*([A-Za-z_][A-Za-z0-9_]*\+?=[^[:space:];&|]*[[:space:]]+)*'
+    alt "$cmd"'(export|declare|typeset|local|readonly|integer|float|unset|read|select|getopts|vared|mapfile|readarray|let|for)([^A-Za-z0-9_.-]|$)'
     alt 'printf[^;&|]* -v'
+    alt '\(\('
     alt '\$\{\([^)]*P'
 }
 

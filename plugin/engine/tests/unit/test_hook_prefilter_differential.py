@@ -20,8 +20,9 @@ A deliberate change to a filter belongs in ``INTENDED_DIFFERENCES`` with the rea
 difference fails.
 
 One deliberate change so far: the Bash pattern gained ``ADDED_ALTERNATIVES`` (any mention of HOME, and a builtin
-given a name built at run time), because the gates expand ``~`` and ``$HOME`` with the run's own HOME, and a
-command that points HOME elsewhere first names files they never check; and the last, quote-stripped match gained
+that sets what it names, in command position, since its target may be built at run time), because the gates
+expand ``~`` and ``$HOME`` with the run's own HOME, and a command that points HOME elsewhere first names files
+they never check; and the last, quote-stripped match gained
 ``STRIPPED_NAMES`` (HOME, SCOUT_MODE and SCOUT_READER), so ``HO''ME=x`` or ``SCOUT_MO\\DE=`` is no way round. The
 pattern must be the old one plus exactly those, and a case may differ from the old command only by now reaching
 Python where the old one let it through, for a command one of them matches.
@@ -62,16 +63,23 @@ ENTRIES: dict[str, tuple[str, str]] = {
 INTENDED_DIFFERENCES: dict[str, str] = {}
 
 # The alternatives appended to the Bash pattern after the move, as prefilter.sh assembles them: any mention of
-# HOME, and a builtin that sets what it names given a name built at run time (`export $v=…`, `read "$v"`,
-# `printf -v "$v"`, zsh's `${(P)v::=…}`).
+# HOME; a builtin that sets or unsets what it names, in command position (its target may be built at run time:
+# `export $v=…`, `read HOM?`); `printf -v`; arithmetic; and zsh's `${(P)v::=…}`.
+COMMAND_POSITION = (
+    r'(^"command": *"|[;&|({]|\\[nt]|(^|[^A-Za-z0-9_.-])(do|then|else|elif|if|while|until|time|command|builtin|exec'
+    r"|noglob|nocorrect|sudo|nice|-|!) )[[:space:]]*([A-Za-z_][A-Za-z0-9_]*\+?=[^[:space:];&|]*[[:space:]]+)*"
+)
 ADDED_ALTERNATIVES = (
     "HOME",
-    r"(^|[^A-Za-z0-9_.-]|\\[nt])(export|declare|typeset|local|readonly|integer|float|unset|read|select|getopts|vared"
-    r"|mapfile|readarray|let)([^A-Za-z0-9_.-][^;&|]*)?[$`]",
+    COMMAND_POSITION + r"(export|declare|typeset|local|readonly|integer|float|unset|read|select|getopts|vared|mapfile"
+    r"|readarray|let|for)([^A-Za-z0-9_.-]|$)",
     r"printf[^;&|]* -v",
+    r"\(\(",
     r"\$\{\([^)]*P",
 )
 ADDED_PATTERN = "|".join(ADDED_ALTERNATIVES)
+# The same for Python's re, which has no POSIX classes.
+ADDED_PATTERN_RE = re.compile(ADDED_PATTERN.replace("[^[:space:];&|]", r"[^\s;&|]").replace("[[:space:]]", r"\s"))
 # Names the last match finds once quotes and backslashes are removed, beside the KB's own.
 STRIPPED_NAMES = "HOME|SCOUT_(MODE|READER)"
 # A run's commands that point HOME elsewhere, or change the run env, and that the old pattern let through: each
@@ -98,6 +106,10 @@ HOME_CHANGES = (
     "read $v <<< x",
     'printf -v "$v" %s x',
     ": ${(P)v::=x}",
+    "read HOM? <<< x",
+    "IFS= read -r H$v <<< x",
+    "for H$v in x; do :; done",
+    "(( H$v = 1 ))",
 )
 
 # The gate tests whose string literals make up the Bash corpus.
@@ -447,7 +459,7 @@ def _widened(case: Case, old: Outcome, new: Outcome) -> bool:
         return False
     value = found[0]
     stripped = value.translate(str.maketrans("", "", "'\"\\"))
-    added = re.search(ADDED_PATTERN, value) is not None or re.search(STRIPPED_NAMES, stripped) is not None
+    added = ADDED_PATTERN_RE.search(value) is not None or re.search(STRIPPED_NAMES, stripped) is not None
     return added and new.python == f"hook kb-read-gate\n{case.payload}"
 
 

@@ -369,18 +369,30 @@ HOME_FORM = "HOME"
 _SAME_HOME = ("$HOME", "${HOME}", "~", "$HOME/", "${HOME}/", "~/")
 # An assignment as bash and zsh read it: a name, an optional subscript (`HOME[1,-1]=`), then `=` or `+=`.
 _ASSIGN_ANY = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\[[^\]]*\])?(\+?=)")
-# A name the shell builds at run time (`$v`, `${v}`, a substitution): after expansion it may be HOME.
-_BUILT_NAME = re.compile(r"^[$`]")
-# The same, as a command's first word: `eval "$v=…"` assigns once the outer shell has put `$v` in.
-_BUILT_ASSIGN = re.compile(r"^[$`][^=\s]*\+?=")
-# A parameter expansion that assigns: `${HOME:=…}`, `${HOME=…}`, zsh's `${HOME::=…}`, and `${(P)v::=…}`
-# (zsh's (P) flag: the name is v's value).
-_PARAM_ASSIGN = re.compile(r"\$\{(?:HOME:{0,2}=|\([^)]*P[^)]*\)[^}]*=)")
-# Builtins that set or unset the variables they name.
+# A name, as a builtin's target or an assignment's left side, that the parser can read for certain: anything else
+# (`$v`, `H$v`, `${v}`, a backtick, a glob such as `HOM?` or `HOM[E]`, which the shell may expand to a file's name)
+# may be HOME once the shell has expanded it.
+_PLAIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# A parameter expansion that assigns a name that matters, or one built at run time: `${HOME:=…}`, `${HOME=…}` (with a
+# value: an empty one changes nothing), zsh's `${HOME::=…}` (always assigns), `${(P)v::=…}` (zsh's (P) flag: the
+# name is v's value), and bash's `${!v:=…}`.
+_PROTECTED_NAMES = "HOME|XDG_CONFIG_HOME|SCOUT_MODE|SCOUT_READER"
+_PARAM_ASSIGN = re.compile(rf"\$\{{(?:({_PROTECTED_NAMES})(?:::=|:?=(?!\}}))|\([^)]*P[^)]*\).*?=|!.*?=)")
+# Builtins that set or unset the variables they name, and the options whose value is the next word (not a name).
 _DECLARERS = ("export", "declare", "typeset", "local", "readonly", "integer", "float")
-_NAMERS = {*_DECLARERS, "unset", "read", "mapfile", "readarray", "vared", "getopts", "select", "for", "let", "printf"}
-# `let`'s arithmetic assignment to HOME: `HOME=0`, `HOME+=1`, `HOME<<=1` (not `HOME==0`).
-_LET_HOME = re.compile(r"^\s*HOME\s*(?:\*\*|<<|>>|[-+*/%&|^])?=(?!=)")
+_NAMER_VALUE_OPTIONS = {
+    "read": "dinNptu",  # bash and zsh; `-a`/`-A` (an array) take the target itself, so they are flags here
+    "mapfile": "dnOsuCc",
+    "readarray": "dnOsuCc",
+    "vared": "Mmprif",
+}
+_NAMERS = {*_DECLARERS, "unset", "for", "select", "getopts", "printf", "let", *_NAMER_VALUE_OPTIONS}
+# An arithmetic assignment (`let`, `(( … ))`): a left side, then `=`, `+=`, `<<=` and the like (not `==`).
+_ARITH_ASSIGN = re.compile(r"([^\s=+\-*/%&|^<>!(),]+)\s*(?:\*\*|<<|>>|[-+*/%&|^])?=(?!=)")
+# A command word whose left side is a name built at run time from name characters, `$…`, `${…}` or a backtick
+# (`$v=x`, `H${v}=x`): `eval` makes it an assignment. A glob there (`HOM?=x`) never assigns.
+_BUILT_HEAD = re.compile(r"[A-Za-z0-9_]*[$`][A-Za-z0-9_{}$`]*\+?=")
+_ARITH_OPS = {"=", "+=", "-=", "*=", "/=", "%=", "<<=", ">>=", "&=", "|=", "^=", "**="}
 _SEGMENTS = re.compile(r"&&|\|\||[;\n`]|(?<!>)\||\$\(|\(|\)")  # ">|" is a redirect, not a pipe
 # An "&" that isn't the first half of "&&" or "&>". Whether it backgrounds is _backgrounds' call.
 _AMPERSAND = re.compile(r"&(?![&>])")
@@ -1373,58 +1385,126 @@ def _hook_write_form(words: list[str], targets: list[str], cwd: str) -> str | No
     return None
 
 
-def assigns_by_expansion(command: str) -> bool:
-    """True when ``command`` holds a parameter expansion that assigns HOME, or a name built at run time:
-    ``${HOME:=…}``, ``${HOME=…}``, zsh's ``${HOME::=…}`` and ``${(P)v::=…}``. Read on the whole text, since the
-    parser splits segments at ``(``, and a nested ``sh -c`` or ``eval`` is a substring of it."""
-    return _PARAM_ASSIGN.search(command) is not None
+def expansion_escape(command: str) -> str | None:
+    """The form of a parameter expansion in ``command`` that assigns a name that matters (HOME, XDG_CONFIG_HOME, the
+    run's own variables) or one built at run time: ``${HOME:=…}``, ``${HOME::=…}``, ``${(P)v::=…}``. Read on the
+    whole text, since the parser splits segments at ``(``, and a nested ``sh -c`` or ``eval`` is a substring of it."""
+    m = _PARAM_ASSIGN.search(command)
+    if m is None:
+        return None
+    return _name_form(m[1]) if m[1] else HOME_FORM
 
 
-def _home_escape(words: list[str]) -> str | None:
-    """HOME_FORM when this command could point HOME anywhere but itself, or set a variable whose name it builds at
-    run time (which may be HOME): its own assignments (``HOME=x cmd``, ``HOME+=…``, ``HOME[1]=…``), an earlier
-    segment's the parser recorded (``HOME=x; …``), or a builtin that sets or unsets what it names
-    (``export``/``typeset``/… ``HOME=…``, ``local HOME``, ``unset HOME``, ``read HOME``, ``for``/``select HOME
-    in``, ``getopts x HOME``, ``vared HOME``, ``printf -v HOME``, ``let HOME=0``, and any of them given ``$v``).
-    ``export HOME`` alone changes nothing. An expansion that assigns is :func:`assigns_by_expansion`'s."""
+def _name_form(name: str) -> str | None:
+    """The form a run's change to the variable ``name`` takes, or None when it may change it."""
+    if name in RUN_VARS:
+        return "env"
+    if name == "HOME":
+        return HOME_FORM
+    return XDG_CONFIG_FORM if name == "XDG_CONFIG_HOME" else None
+
+
+def _target_form(word: str, *, assigns: bool, value_matters: bool = True) -> str | None:
+    """The form of setting the target ``word`` (``NAME``, ``NAME=value``, ``NAME+=value``, ``NAME[sub]=value``):
+    HOME_FORM for a name the parser can't read for certain, the name's own form for one that matters, else None.
+    ``assigns``: a bare ``NAME`` sets it too (``read NAME``, ``local NAME``), not only ``NAME=…``."""
+    name, op, _ = re.match(r"([^=+]*(?:\+(?!=)[^=+]*)*)(\+?=)?(.*)", word, re.S).groups()  # type: ignore[union-attr]
+    if not _PLAIN_NAME.fullmatch(name):
+        return HOME_FORM
+    form = _name_form(name)
+    if form is None or (op is None and not assigns):
+        return None
+    if form == HOME_FORM and value_matters and op is not None and not _sets_home(word):
+        return None  # `HOME=$HOME`, `HOME=~`, `HOME+=`: HOME stays as it is
+    return form
+
+
+def _name_escape(words: list[str]) -> str | None:
+    """The form of this command's change to a variable that matters, or to one it names at run time (which may be
+    HOME): HOME_FORM, XDG_CONFIG_FORM or "env". It reads the command's own assignments (``HOME=x cmd``, ``HOME+=…``,
+    ``HOME[1]=…``, and ``$v=…`` or ``H$v=…`` as a command word, which ``eval`` makes an assignment), an earlier
+    segment's the parser recorded (``HOME=x; …``), an arithmetic assignment (``(( HOME = 0 ))``, ``let``), and the
+    targets of the builtins that set or unset what they name: ``export``/``typeset``/… (``export HOME`` alone
+    changes nothing), ``unset``, ``read``, ``mapfile``, ``vared``, ``getopts``, ``printf -v``, ``for``/``select``.
+    A target is denied when it isn't a plain name (``$v``, ``H$v``, ``HOM?``): the parser can't rule out HOME.
+    An expansion that assigns is :func:`expansion_escape`'s."""
     recorded = _STATE["vars"].get("HOME")
     if recorded is not None and recorded not in ([v] for v in _SAME_HOME):
         return HOME_FORM
     i = 0
     while i < len(words) and (_ASSIGN_ANY.match(words[i]) or words[i] in _KEYWORDS or words[i] in _PREFIX):
-        if _sets_home(words[i]):
-            return HOME_FORM
+        if _ASSIGN_ANY.match(words[i]):
+            form = _target_form(re.sub(r"\[[^\]]*\]", "", words[i], count=1), assigns=False)
+            if form is not None:
+                return form
         i += 1
     if i == len(words):
         return None
-    if _BUILT_ASSIGN.match(words[i]):
-        return HOME_FORM
-    name, args = _basename(words[i]), words[i + 1 :]
+    head, args = words[i], words[i + 1 :]
+    if _BUILT_HEAD.match(head):
+        return HOME_FORM  # `$v=…`, `H${v}=…`: `eval` makes it an assignment to a name built at run time
+    if args and args[0] in _ARITH_OPS:
+        return _target_form(f"{head}=x", assigns=False, value_matters=False)  # `(( HOME = 0 ))`
+    name = _basename(head)
     if name not in _NAMERS:
         return None
-    if name == "printf":
-        targets = args[args.index("-v") + 1 :][:1] if "-v" in args else []
-    elif name in ("for", "select"):
-        targets = args[:1]
-    elif name == "let":
-        if any(_LET_HOME.match(a) for a in args):
-            return HOME_FORM
-        targets = [a for a in args if _BUILT_NAME.match(a)]
-    else:
-        targets = [a for a in args if not a.startswith(("-", "+"))]
-    options = [a for a in args if a.startswith(("-", "+"))]
+    if name == "let":
+        for arg in args:
+            for m in _ARITH_ASSIGN.finditer(arg):
+                form = _target_form(f"{m[1]}=x", assigns=False, value_matters=False)
+                if form is not None:
+                    return form
+        return None
+    targets = _targets(name, args)
+    options = [a for a in args if a.startswith(("-", "+")) and a not in ("-", "--")]
     for target in targets:
-        if _BUILT_NAME.match(target) or _sets_home(target):
-            return HOME_FORM
-        if name in _DECLARERS and "=" in target and options and target.split("=", 1)[1] == "HOME":
-            return HOME_FORM  # `declare -n ref=HOME`: every later `ref=…` sets HOME
-        if target == "HOME" and not (name == "export" and not options):
-            return HOME_FORM
+        if name == "export" and not options and _PLAIN_NAME.fullmatch(target):
+            continue  # `export HOME`, `export SCOUT_MODE`: the value stays as it is
+        form = _target_form(target, assigns=True)
+        if form is not None:
+            return form
+        if name in _DECLARERS and "-n" in options and "=" in target:
+            form = _name_form(target.split("=", 1)[1])  # `declare -n ref=HOME`: every later `ref=…` sets HOME
+            if form is not None:
+                return form
     return None
 
 
+def _targets(name: str, args: list[str]) -> list[str]:
+    """The words ``name``'s builtin sets or unsets, among ``args``: not its options, and not their values."""
+    if name in ("for", "select"):
+        return args[:1]
+    if name == "getopts":
+        return args[1:2]
+    if name == "printf":
+        for i, a in enumerate(args):
+            if a == "-v":
+                return args[i + 1 : i + 2]
+            if a.startswith("-v"):
+                return [a[2:]]
+            if a == "--" or not a.startswith("-"):
+                break
+        return []
+    takes = _NAMER_VALUE_OPTIONS.get(name, "")
+    out: list[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a.startswith(("-", "+")) and len(a) > 1 and a != "--" and not out:
+            letters = a[1:]
+            first = next((k for k, c in enumerate(letters) if c in takes), None)
+            if first is not None and first == len(letters) - 1:
+                i += 1  # its value is the next word: `-t $T`, `-p "$prompt"`, `-d ''`
+            i += 1
+            continue
+        if a != "--":
+            out.append(a)
+        i += 1
+    return out
+
+
 def _words_escape(words: list[str], depth: int) -> str | None:
-    form = _home_escape(words)
+    form = _name_escape(words)
     while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS):
         if _sets_run_var(words[0]):
             return "env"
