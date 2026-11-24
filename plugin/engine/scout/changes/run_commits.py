@@ -11,12 +11,19 @@ ledger, and the owner's own commits).
 way to commit is the run broker, which runs ``git-safe-commit.sh`` outside the sandbox. ``Broker.commit`` writes a
 ``begin`` row before the helper runs and an ``end`` row after (:func:`broker_begin`, :func:`broker_end`), each with
 the broker's run id and the run's mode. The helper commits with ``GIT_REFLOG_ACTION`` set to a nonce of its own and
-prints the commit whose HEAD reflog entry carries it (``scout-commit <sha>``, or ``scout-commit unresolved``), so an
-owner commit landing around it is never taken for the run's. A begin with no end (the broker stopped mid-commit, or
-the end row couldn't be written) or an end that committed with no sha is a *gap*: a commit that may be the run's but
-can't be named. ``scoutctl broker profile`` writes a ``profile`` row for the broker's run, ``tightened`` or not
-(:func:`mark_broker_profile`). ``sandbox verify`` records nothing from git for a run whose every broker in the
-window was tightened and left no gap (:func:`broker_was_on`); otherwise it records the git window too. The owner's
+prints the commit whose HEAD reflog entry carries it (``scout-commit <sha>``; ``scout-commit unresolved`` when a
+commit may exist but can't be named; ``scout-commit none`` when its commit failed and HEAD didn't move), so an owner
+commit landing around it is never taken for the run's. A begin with no end (the broker stopped mid-commit, or the end
+row couldn't be written), or an end with no sha that doesn't show no commit was made (exit 2–4, which the helper
+gives only before it commits, or ``none``), is a *gap*: a commit that may be the run's but can't be named.
+``scoutctl broker profile`` writes a ``profile`` row for the broker's run, ``tightened`` or not
+(:func:`mark_broker_profile`). An end row's sha is exact (``by: broker``) only when its run's profile was tightened:
+a broker whose profile wasn't, or the periodic tick's drain (no run of its own; it records no queued entry's claimed
+run, and its commits carry no mode, so they land in the generic ``run`` lane), runs the helper where a run can still
+write ``.git/logs``, so its sha is best effort (``by: run``). The helper names only a reflog entry added since its
+commit started, so an older planted line can't win, and a helper stopped mid-commit leaves a gap.
+``sandbox verify`` records nothing from git for a run whose every broker in the window was tightened and left no gap
+(:func:`broker_state` ``on``); otherwise it records the git window too. The owner's
 commits never go through the broker, so they stay ``interactive``, in a linked worktree or the vault's own
 checkout.
 
@@ -36,12 +43,16 @@ which run health shows (yellow, for the last run) as an integrity check that cou
 
 Reader API (stable; scout.changes.scan, scout.changes.actions, scout.health and the integrity check use it):
 :func:`read` (a :class:`Ledger`: ``commits`` by sha, ``windows``, ``profiles``, ``gaps``, ``unbrokered``),
-:func:`is_broker_recorded`, :func:`broker_runs`, :func:`broker_gaps`, :func:`broker_was_on`,
+:func:`is_broker_recorded`, :func:`broker_runs`, :func:`broker_gaps`, :func:`broker_state`,
+:func:`broker_was_on`,
 :func:`unbrokered_since`, :func:`mode_lane`.
 
 Cutover: the ledger starts with the first run after upgrading to the release that ships it; the broker's exact record
 starts once ``/scout-update`` has re-rendered ``scripts/git-safe-commit.sh``: until then the helper names no sha,
-so every broker commit is a gap and ``sandbox verify`` records the git window as for a broker-less run. Rows are
+so every broker commit is a gap and ``sandbox verify`` records the git window as for a broker-less run.
+
+Commits are looked up by sha alone, not by vault: a sha names the same commit in any clone, and a commit a run made
+stays the run's wherever it travels; the broker marks, gaps and health readers do filter by vault. Rows are
 about 150 bytes (a window row holds every known commit, about 45 bytes each); the file is append-only and nothing
 compacts it yet."""
 
@@ -71,6 +82,8 @@ _SHA_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 BY_RANK = {"worktree": 0, "run": 1, "broker": 2}
 # The line git-safe-commit.sh prints last on stdout, under its mutex.
 SHA_LINE = re.compile(r"^scout-commit ([0-9a-f]{40}|[0-9a-f]{64})$")
+# The helper's exits that come before it runs `git commit` (usage, the mutex, nothing to commit): no commit was made.
+NO_COMMIT_EXITS = frozenset({2, 3, 4})
 # git reads that a run without its broker can't steer: replace refs, grafts and a planted .git/shallow are ignored.
 HARDENED_GIT_ENV = {"GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull, "GIT_SHALLOW_FILE": os.devnull}
 
@@ -123,8 +136,12 @@ class Ledger:
     windows: tuple[Window, ...] = ()
     profiles: tuple[BrokerRun, ...] = ()
     gaps: tuple[Gap, ...] = ()
-    # (vault key, when) of each broker-less run whose commits the git window recorded.
-    unbrokered: tuple[tuple[str, datetime], ...] = ()
+    # Every sha any row names as a commit (end rows, and `by` rows of any value, a bare `by: broker` one too),
+    # ungraded: :func:`recorded_shas`.
+    named: frozenset[str] = frozenset()
+    # (vault key, when, why) of each run whose commits the git window recorded: "no-broker" (Phase 1c, the
+    # sandbox off, a profile that wasn't tightened) or "broker-gap" (a broker commit it couldn't name).
+    unbrokered: tuple[tuple[str, datetime, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -180,7 +197,9 @@ def read() -> Ledger:
     profiles: list[BrokerRun] = []
     begun: dict[str, Gap] = {}
     gaps: list[Gap] = []
-    unbrokered: list[tuple[str, datetime]] = []
+    unbrokered: list[tuple[str, datetime, str]] = []
+    named: set[str] = set()
+    ends: list[tuple[str, str, str, datetime, str]] = []
 
     def add(sha: str, mode: str, by: str, ts: datetime | None) -> None:
         seen = commits.get(sha)
@@ -205,8 +224,12 @@ def read() -> Ledger:
                 started = begun.pop(row["id"], None) if isinstance(row.get("id"), str) else None
                 sha = row.get("sha")
                 if isinstance(sha, str) and _SHA_RE.fullmatch(sha):
-                    add(sha, mode, "broker", ts)
-                elif row.get("exit") == 0:
+                    named.add(sha)
+                uncertain = row.get("uncertain") is True
+                if isinstance(sha, str) and _SHA_RE.fullmatch(sha) and not uncertain:
+                    ends.append((key, run, mode, ts, sha))
+                elif uncertain or not (row.get("none") is True or row.get("exit") in NO_COMMIT_EXITS):
+                    # No sha, and nothing shows no commit was made (a helper stopped or failing after `git commit`)
                     gaps.append(started or Gap(key, run, mode, ts))
             continue
         if "window" in row:
@@ -217,17 +240,32 @@ def read() -> Ledger:
                 taken = _ts(w.get("taken_at")) if isinstance(w, dict) else None
                 windows.append(Window(tips, known, mode, ts, taken))
                 if isinstance(key, str) and ts is not None:
-                    unbrokered.append((key, ts))
+                    unbrokered.append((key, ts, _why(row)))
             continue
         sha, by = row.get("sha"), row.get("by")
+        if isinstance(sha, str) and _SHA_RE.fullmatch(sha) and isinstance(by, str):
+            named.add(sha)
         # A broker's record is an end row; a bare `by: broker` row is never trusted.
         if not isinstance(sha, str) or not _SHA_RE.fullmatch(sha) or by not in ("run", "worktree"):
             continue
         add(sha, mode, str(by), ts)
         if by == "run" and isinstance(key, str) and ts is not None:
-            unbrokered.append((key, ts))
+            unbrokered.append((key, ts, _why(row)))
+    # A broker's sha is exact only when its run got the tightened profile: a broker whose profile wasn't (the run
+    # kept the 1c sandbox and could write .git/logs) or a drain with no run of its own (the periodic tick) runs the
+    # helper where a run can still steer git, so its sha is best effort, `run` grade.
+    tightened = {(b.vault_key, b.run) for b in profiles if b.tightened and b.run}
+    for key, run, mode, ts, sha in ends:
+        add(sha, mode, "broker" if (key, run) in tightened else "run", ts)
     gaps.extend(begun.values())
-    return Ledger(commits, tuple(windows), tuple(profiles), tuple(sorted(gaps, key=lambda g: g.ts)), tuple(unbrokered))
+    gaps_by_time = tuple(sorted(gaps, key=lambda g: g.ts))
+    return Ledger(commits, tuple(windows), tuple(profiles), gaps_by_time, frozenset(named), tuple(unbrokered))
+
+
+def recorded_shas(ledger: Ledger | None = None) -> frozenset[str]:
+    """Every sha any ledger row names as a commit, whatever its grade (``by`` of any value, every end row): the
+    widest set of commits a run may have made. It says nothing about trust: that is :func:`broker_state`'s."""
+    return (read() if ledger is None else ledger).named
 
 
 def is_broker_recorded(sha: str, ledger: Ledger | None = None) -> bool:
@@ -235,10 +273,15 @@ def is_broker_recorded(sha: str, ledger: Ledger | None = None) -> bool:
     return hit is not None and hit.by == "broker"
 
 
-def unbrokered_since(vault: Path, since: datetime) -> list[datetime]:
-    """When each broker-less run of ``vault`` since ``since`` had its commits attributed by the git window."""
+def _why(row: Mapping[str, Any]) -> str:
+    return "broker-gap" if row.get("why") == "broker-gap" else "no-broker"
+
+
+def unbrokered_since(vault: Path, since: datetime) -> list[tuple[datetime, str]]:
+    """``(when, why)`` of each run of ``vault`` since ``since`` whose commits the git window attributed: why is
+    ``no-broker`` or ``broker-gap`` (the broker was on but couldn't name a commit, usually an old helper)."""
     key = store.vault_key(vault)
-    return sorted({ts for k, ts in read().unbrokered if k == key and ts >= since})
+    return sorted({(ts, why) for k, ts, why in read().unbrokered if k == key and ts >= since})
 
 
 # --- the broker's record (exact) -------------------------------------------------------------------------------------
@@ -271,27 +314,36 @@ def broker_gaps(vault: Path, since: datetime) -> list[Gap]:
     return [g for g in read().gaps if g.vault_key == key and g.ts >= since]
 
 
-def broker_was_on(vault: Path, start: Mapping[str, Any]) -> bool:
-    """Whether this run's commits are all in the broker's record: at least one broker run of this vault had its
-    profile decided after the run's start snapshot, every one of them got the tightened profile, and no broker
-    commit since is a gap. The session lock serialises a vault's runs, so the window is this run's."""
+def broker_state(vault: Path, start: Mapping[str, Any]) -> str:
+    """How this run's commits stand in the broker's record: ``on`` (at least one broker run of this vault had its
+    profile decided after the run's start snapshot, all of them tightened, and no broker commit since is a gap),
+    ``gap`` (all tightened, but a broker commit couldn't be named: usually an old git-safe-commit.sh) or ``off``.
+    The session lock serialises a vault's runs, so the window is this run's."""
     extra = start.get("changes")
     taken = _ts(extra.get("taken_at")) if isinstance(extra, dict) else None
     if taken is None:
-        return False
+        return "off"
     runs = broker_runs(vault, taken)
-    return bool(runs) and all(r.tightened for r in runs) and not broker_gaps(vault, taken)
+    if not runs or not all(r.tightened for r in runs):
+        return "off"
+    return "gap" if broker_gaps(vault, taken) else "on"
 
 
-def sha_from_helper(stdout: str) -> tuple[bool, str | None]:
-    """``(the helper said, its sha)`` from git-safe-commit.sh's last stdout line: ``scout-commit <sha>``, or
-    ``scout-commit unresolved`` (said, no sha). A helper from before the line says nothing."""
+def broker_was_on(vault: Path, start: Mapping[str, Any]) -> bool:
+    """Whether every commit this run made is in the broker's exact record (:func:`broker_state` is ``on``)."""
+    return broker_state(vault, start) == "on"
+
+
+def sha_from_helper(stdout: str) -> tuple[str, str | None]:
+    """``(what the helper said, its sha)`` from git-safe-commit.sh's last stdout line: ``sha`` (``scout-commit
+    <sha>``), ``unresolved`` (a commit may exist but can't be named), ``none`` (no commit was made) or ``silent``
+    (a helper from before the line, or one that stopped before it)."""
     lines = stdout.strip().splitlines()
     last = lines[-1].strip() if lines else ""
     m = SHA_LINE.match(last)
     if m:
-        return True, m.group(1)
-    return last == "scout-commit unresolved", None
+        return "sha", m.group(1)
+    return {"scout-commit unresolved": "unresolved", "scout-commit none": "none"}.get(last, "silent"), None
 
 
 def broker_begin(vault: Path, run: str | None, mode: object) -> str | None:
@@ -306,14 +358,30 @@ def broker_begin(vault: Path, run: str | None, mode: object) -> str | None:
     return rid
 
 
-def broker_end(vault: Path, rid: str | None, run: str | None, mode: object, *, exit_code: int, sha: str | None) -> bool:
-    """Write the end row of a broker commit. Whether it saved; never raises."""
+def broker_end(
+    vault: Path,
+    rid: str | None,
+    run: str | None,
+    mode: object,
+    *,
+    exit_code: int,
+    sha: str | None,
+    uncertain: bool = False,
+    none: bool = False,
+) -> bool:
+    """Write the end row of a broker commit. ``uncertain``: the helper was stopped (a timeout), so git may have
+    committed without the sha being named, a gap. ``none``: the helper said its commit failed with HEAD unmoved.
+    Whether it saved; never raises."""
     row: dict[str, Any] = {
         "broker": "end", "id": rid or uuid.uuid4().hex, "run": run or "", "mode": _mode(mode), "exit": exit_code,
         "vault_key": store.vault_key(vault),
     }  # fmt: skip
     if sha is not None and _SHA_RE.fullmatch(sha):
         row["sha"] = sha
+    if uncertain:
+        row["uncertain"] = True
+    elif none and "sha" not in row:
+        row["none"] = True
     try:
         _append(row)
     except Exception:  # noqa: BLE001 - a begin with no end is a gap the readers see
@@ -454,7 +522,9 @@ def _vouched(vault: Path, start: dict, ref: str, tip: str, base: str | None, gen
         return False
 
 
-def record(vault: Path, start: dict, env: Mapping[str, str] | None = None, *, label: str) -> Recorded | None:
+def record(
+    vault: Path, start: dict, env: Mapping[str, str] | None = None, *, label: str, why: str = "no-broker"
+) -> Recorded | None:
     """Record a broker-less run's commits by the git window: a row per commit, one per window it couldn't list.
     None when the refs couldn't be read, a commit the run started with is gone, or the ledger couldn't be written;
     never raises, so the integrity check that follows always runs."""
@@ -463,11 +533,11 @@ def record(vault: Path, start: dict, env: Mapping[str, str] | None = None, *, la
         commits, windows = window(vault, start, env, label=label)
         key = store.vault_key(vault)
         for c in commits:
-            _append({"sha": c.sha, "mode": c.mode, "by": c.by, "vault_key": key})
+            _append({"sha": c.sha, "mode": c.mode, "by": c.by, "vault_key": key, "why": why})
         for w in windows:
             taken = w.taken_at.isoformat() if w.taken_at else None
             win = {"tips": list(w.tips), "known": list(w.known), "taken_at": taken}
-            _append({"window": win, "mode": w.mode, "vault_key": key})
+            _append({"window": win, "mode": w.mode, "vault_key": key, "why": why})
     except Exception:  # noqa: BLE001 - reported by the caller (exit 12), and the integrity check still runs
         return None
     return Recorded(len(commits), len(windows))

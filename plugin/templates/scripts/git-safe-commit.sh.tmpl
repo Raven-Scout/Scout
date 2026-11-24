@@ -233,18 +233,44 @@ done
 # helper knows, so the sha below is the commit git just made, never "whatever
 # HEAD is now": the owner's own commits don't take this mutex.
 NONCE="git-safe-commit-$$-$(date +%s)-$RANDOM$RANDOM"
+# Only entries added from here on can be ours: an older line that carries the
+# nonce (planted by a run that could write .git/logs) never names the commit.
+# Pure bash: a no-flock host runs this with a PATH that may lack wc and tr.
+reflog_count() {
+  local n=0 _l
+  while IFS= read -r _l; do n=$((n + 1)); done < <(git reflog show --format=%H HEAD 2>/dev/null || true)
+  echo "$n"
+}
+# Newest first, the entries since BEFORE; the oldest match is ours (a hook that
+# commits inherits the nonce).
+our_sha() {
+  local new=$(($(reflog_count) - BEFORE)) h gs sha=""
+  if [ "$new" -gt 0 ]; then
+    while IFS=$'\t' read -r h gs; do
+      case "$gs" in "$NONCE: "* | "$NONCE") sha="$h" ;; esac
+    done < <(git reflog show --format='%H%x09%gs' -n "$new" HEAD 2>/dev/null || true)
+  fi
+  echo "$sha"
+}
+BEFORE="$(reflog_count)"
+# The last stdout line is for the run broker, which records the commit as the
+# run's (the changes map, scout.changes.run_commits): `scout-commit <sha>`,
+# `scout-commit unresolved` (a commit may have been made but can't be named: a
+# gap the readers see, never a guess) or `scout-commit none` (HEAD didn't move).
 GIT_REFLOG_ACTION="$NONCE" git commit -q -m "$MSG" -- "${COMMIT[@]}" || {
-  unstage_ours
+  # git can fail after HEAD moved (the new index couldn't be written): then a
+  # commit exists, and it is still named.
+  if [ "$(reflog_count)" -gt "$BEFORE" ]; then
+    trap - TERM INT
+    SHA="$(our_sha)"
+    echo "scout-commit ${SHA:-unresolved}"
+  else
+    unstage_ours
+    echo "scout-commit none"
+  fi
   die 5 "git commit failed"
 }
 trap - TERM INT  # committed: nothing of ours is left staged to take back
-# Newest first; the oldest match is ours (a hook that commits inherits the nonce).
-SHA=""
-while IFS=$'\t' read -r h gs; do
-  case "$gs" in "$NONCE: "* | "$NONCE") SHA="$h" ;; esac
-done < <(git reflog show --format='%H%x09%gs' -n 200 HEAD 2>/dev/null || true)
+SHA="$(our_sha)"
 echo "git-safe-commit: committed $(git rev-parse --short "${SHA:-HEAD}") (${#COMMIT[@]} path(s))" >&2
-# The last stdout line, for the run broker: it records the commit as the run's
-# (the changes map, scout.changes.run_commits). "unresolved" (no reflog) makes a
-# gap the readers see, never a guess.
 echo "scout-commit ${SHA:-unresolved}"

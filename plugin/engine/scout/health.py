@@ -1149,28 +1149,41 @@ def integrity_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) ->
 
 
 def unbrokered_attribution_findings(*, vault: Path, now: datetime) -> list[Finding]:
-    """Runs in the last week whose commits the changes map had to work out from git, without the run broker's record
-    (scout.changes.run_commits): best effort, not sound against a run that rewrites the vault's git dir."""
+    """Runs in the last week whose commits the changes map had to work out from git, without the run broker's exact
+    record (scout.changes.run_commits): best effort, not sound against a run that rewrites the vault's git dir.
+    A run whose broker was on but couldn't name a commit (usually an old git-safe-commit.sh) is told apart."""
     from scout.changes import run_commits
 
-    when = run_commits.unbrokered_since(vault, now - INTEGRITY_WINDOW)
-    if not when:
+    rows = run_commits.unbrokered_since(vault, now - INTEGRITY_WINDOW)
+    if not rows:
         return []
+    days = INTEGRITY_WINDOW.days
+    gap = [ts for ts, why in rows if why == "broker-gap"]
+    if len(gap) == len(rows):
+        summary = (
+            f"{count(len(gap), 'run')} in the last {days} days had the commit broker on, but it couldn't name every "
+            "commit it made, so the changes map worked out which commits were Scout's from git instead (best "
+            "effort). Automatic rollback never acts on those."
+        )
+        fix = "Run /scout-update: an old scripts/git-safe-commit.sh doesn't name the commits it makes."
+    else:
+        summary = (
+            f"{count(len(rows), 'run')} in the last {days} days committed without the commit broker, so the "
+            "changes map worked out which commits were Scout's from git. A run that can write the git dir can "
+            "hide its own commits there, so those runs' changes may not all be tested, and automatic rollback "
+            "never acts on them."
+        )
+        fix = (
+            "See `runs.broker_unavailable` (or why the sandbox was off) for why the broker didn't run; "
+            "/scout-update brings an old git-safe-commit.sh up to date."
+        )
     return [
         Finding(
             id="changes.unbrokered_attribution",
             severity="yellow",
-            since=when[0],
-            summary=(
-                f"{count(len(when), 'run')} in the last {INTEGRITY_WINDOW.days} days committed without the commit "
-                "broker, so the changes map worked out which commits were Scout's from git. A run that can write "
-                "the git dir can hide its own commits there, so those runs' changes may not all be tested, and "
-                "automatic rollback never acts on them."
-            ),
-            fix=(
-                "See `runs.broker_unavailable` (or why the sandbox was off) for why the broker didn't run; "
-                "/scout-update brings an old git-safe-commit.sh up to date."
-            ),
+            since=rows[0][0],
+            summary=summary,
+            fix=fix,
             source="state",
         )
     ]

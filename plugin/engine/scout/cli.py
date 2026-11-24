@@ -314,10 +314,12 @@ def cli_sandbox_verify(
         # A brokered run's commits were recorded by its broker, exactly; a broker-less run's are worked out from git
         # (best effort, not sound: scout.changes.run_commits), before the check makes its restore commits, so those
         # are never counted as the run's.
-        if run_commits.broker_was_on(data_dir, start):
+        state = run_commits.broker_state(data_dir, start)
+        if state == "on":
             recorded: run_commits.Recorded | None = run_commits.Recorded(0, 0, brokered=True)
         else:
-            recorded = run_commits.record(data_dir, start, label=label)
+            why = "broker-gap" if state == "gap" else "no-broker"
+            recorded = run_commits.record(data_dir, start, label=label, why=why)
         result = integrity.verify(data_dir, start, label=label)
         if recorded is None:
             # The changes map would judge this run's commits by their subjects, which the run chose. Run health shows
@@ -332,8 +334,15 @@ def cli_sandbox_verify(
         else:
             made = count(recorded.commits, "commit")
             extra = f", and {count(recorded.windows, 'window')} too big to list" if recorded.windows else ""
+            if state == "gap":
+                cause = (
+                    "the commit broker was on but couldn't name every commit it made (usually an old "
+                    "scripts/git-safe-commit.sh: run /scout-update)"
+                )
+            else:
+                cause = "no commit broker"
             typer.echo(
-                f"changes map: no commit broker, so {made} this run made {agree(recorded.commits, 'was', 'were')} "
+                f"changes map: {cause}, so {made} this run made {agree(recorded.commits, 'was', 'were')} "
                 f"worked out from git (best effort){extra}"
             )
     for line in result.lines():

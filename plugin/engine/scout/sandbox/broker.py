@@ -96,6 +96,7 @@ _DONE = {"commit": {0, 4}, "telegram": {0, 3}}
 REFUSED = "refused"  # the request breaks the rules: moved to failed/
 RUN_LIMIT = "run_limit"  # over its run's allowance: moved to failed/ (a client never queues past it)
 HOUR_LIMIT = "hour_limit"  # the hour is full: stays queued, not counted as an attempt
+STOPPED = "stopped"  # the helper ran past its time and was stopped: git may have committed (a retryable exit 5)
 
 # The variables a commit runs with (spec §5.3); nothing else reaches git, the helper or the hook.
 _COMMIT_ENV_KEYS = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "SCOUT_MODE", "SCOUT_READER")
@@ -323,7 +324,7 @@ def run_commit(
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         _stop_group(proc)
-        return Reply(5, f"git-safe-commit: the commit took longer than {int(timeout)}s and was stopped\n")
+        return Reply(5, f"git-safe-commit: the commit took longer than {int(timeout)}s and was stopped\n", kind=STOPPED)
     except BaseException:
         # Stopped (the drain's SIGTERM from the wrapper's watchdog): the helper and its hook are in their own process
         # group, so they would outlive us and the run's lock. Take the group down with us.
@@ -529,6 +530,9 @@ class Broker:
     sender: Callable[[Mapping[str, Any]], Reply] | None = None  # None: :func:`send_telegram` into this vault
     clock: Callable[[], datetime] = lambda: datetime.now(UTC)
     run_id: str | None = None
+    # The run a drain applies the queue for (the wrapper's drain as its run ends): what its commits are recorded under
+    # in the changes map's run-commit ledger. A queued entry's own `run` is the run's claim, never used for that.
+    commit_run: str | None = None
 
     def _send(self, fields: Mapping[str, Any]) -> Reply:
         return self.sender(fields) if self.sender is not None else send_telegram(fields, vault=self.vault)
@@ -560,14 +564,21 @@ class Broker:
         # The changes map's run-commit ledger (scout.changes.run_commits), the record a run can't forge: a begin row
         # before the helper runs and an end row after, so a commit whose result is lost (the broker stopped, a row
         # that couldn't be written) is a gap the readers see, never silence.
-        run = self.run_id or (req["run"] if isinstance(req.get("run"), str) and _RUN_ID.match(req["run"]) else None)
+        # The live broker's own run, or the run a drain was started for; never a queued entry's claim. A tick drain
+        # has neither, so its commits are best effort (scout.changes.run_commits.read), in the generic `run` lane.
+        run = self.run_id or self.commit_run
         mode = self.env.get("SCOUT_MODE")
         rid = run_commits.broker_begin(self.vault, run, mode)
         reply = run_commit(self.vault, message, paths, override, self.env)
-        # The helper names the commit git just made (its reflog entry, by a nonce of its own); a helper from before
-        # that line, or one that couldn't, names none, and a commit with no sha is a gap. Never HEAD read now.
-        _, sha = run_commits.sha_from_helper(reply.stdout) if reply.exit == 0 else (False, None)
-        if rid is None or not run_commits.broker_end(self.vault, rid, run, mode, exit_code=reply.exit, sha=sha):
+        # The helper names the commit git just made (its reflog entry, by a nonce of its own), even when git failed
+        # after HEAD moved; one from before that line, or one that couldn't, names none, and an end with no sha that
+        # doesn't show no commit was made is a gap. Never HEAD read now.
+        said, sha = run_commits.sha_from_helper(reply.stdout)
+        stopped = reply.kind == STOPPED
+        saved = run_commits.broker_end(
+            self.vault, rid, run, mode, exit_code=reply.exit, sha=sha, uncertain=stopped, none=said == "none"
+        )
+        if rid is None or not saved:
             print("broker: couldn't record the commit for the changes map", file=sys.stderr)
         return reply
 
@@ -1088,6 +1099,8 @@ def drain(
     env = dict(os.environ if env is None else env)
     with contextlib.suppress(OSError):
         close_stale_runs(env, vault)  # before any entry is credited
+    if broker is None and run and _RUN_ID.match(run):
+        broker = Broker.for_vault(vault, env, commit_run=run)
     try:
         return _drain(vault, env=env, broker=broker, deadline_s=deadline_s)
     finally:

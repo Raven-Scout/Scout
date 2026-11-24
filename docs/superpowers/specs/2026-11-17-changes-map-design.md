@@ -165,9 +165,17 @@ as the run ledger (`scoutctl runs --json`, #661).
     each with the broker's run id and the run's mode. The helper commits with
     `GIT_REFLOG_ACTION` set to a nonce of its own and names the commit whose reflog entry
     carries it, git's own record of the commit it just made, so an owner commit landing
-    around it is never taken for the run's. A begin with no end, or an end that committed with
-    no sha, is a *gap*. `scoutctl broker profile` writes a `profile` row for the broker's run,
-    tightened or not. `sandbox verify` records nothing from git for a run when at least one
+    around it is never taken for the run's, even when git fails after HEAD moved. A begin with
+    no end, one the helper was stopped in, or any end with no sha that doesn't show no commit
+    was made (exit 2–4, which the helper gives only before it commits, or its
+    `scout-commit none`: the commit failed and HEAD didn't move) is a *gap*. Every sha any row
+    names, whatever its grade, is `recorded_shas()`, the integrity check's blame set (#786).
+    `scoutctl broker profile` writes a
+    `profile` row for the broker's run, tightened or not, and an end row's sha is exact only
+    when its run's profile was tightened: a broker that kept the 1c profile, or the periodic
+    tick's drain (no run of its own; never a queued entry's claimed run; no mode, so the
+    generic `run` lane), runs where a run can still write `.git/logs`, so its sha is best
+    effort. The helper names only a reflog entry added since its commit started. `sandbox verify` records nothing from git for a run when at least one
     broker profile was decided after its snapshot, all of them tightened, and nothing since is
     a gap; otherwise it records the git window too. The owner's commits never go through the
     broker, so they stay interactive, in a linked worktree or the vault's own checkout.

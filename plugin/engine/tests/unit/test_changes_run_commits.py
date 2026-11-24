@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -342,7 +343,8 @@ def test_bad_rows_are_skipped_and_a_bad_mode_is_unknown() -> None:
         {
             good: run_commits.RunCommit(good, "unknown", "run"),
             "e" * 40: run_commits.RunCommit("e" * 40, "unknown", "run"),
-        }
+        },
+        named=frozenset({good, "e" * 40, "f" * 40}),  # an unknown `by` is still a sha a row names
     )
     assert run_commits.mode_lane("unknown") == "run"
 
@@ -584,17 +586,28 @@ def helper_vault(repo: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return repo
 
 
-def _broker_commit(vault: Path, message: str, rel: str, text: str) -> str:
+BROKER_RUN = "scout-broker.abc123"
+
+
+def _live_broker(vault: Path):  # noqa: ANN202
+    """A run's live broker whose `broker profile` handed over the tightened profile."""
     from scout.sandbox import broker
 
+    assert run_commits.mark_broker_profile(vault, BROKER_RUN, tightened=True)
+    return broker.Broker.for_vault(vault, run_id=BROKER_RUN)
+
+
+def _broker_commit(vault: Path, message: str, rel: str, text: str) -> str:
     (vault / rel).write_text(text)
-    reply = broker.Broker.for_vault(vault).handle({"v": 1, "verb": "commit", "message": message, "paths": [rel]})
+    reply = _live_broker(vault).handle({"v": 1, "verb": "commit", "message": message, "paths": [rel]})
     assert reply.exit == 0, reply.stderr
     return _git(vault, "rev-parse", "HEAD")
 
 
-def _broker_row(vault: Path, sha: str, mode: str = "research", run: str = "scout-broker.abc123") -> None:
-    """What `Broker.commit` writes around a commit that landed: a begin row, then an end row with its sha."""
+def _broker_row(vault: Path, sha: str, mode: str = "research", run: str = BROKER_RUN) -> None:
+    """What a tightened run's `broker profile` and `Broker.commit` write around a commit that landed: the profile row,
+    a begin row, then an end row with its sha."""
+    assert run_commits.mark_broker_profile(vault, run, tightened=True)
     rid = run_commits.broker_begin(vault, run, mode)
     assert rid is not None
     assert run_commits.broker_end(vault, rid, run, mode, exit_code=0, sha=sha)
@@ -620,10 +633,9 @@ def test_an_owner_commit_racing_the_runs_never_takes_its_place(helper_vault: Pat
         "git -c core.hooksPath=/dev/null commit -q -m 'owner: racing edit' -- README.md\n"
     )
     hook.chmod(0o755)
-    from scout.sandbox import broker
 
     (helper_vault / "SKILL.md").write_text("run\n")
-    reply = broker.Broker.for_vault(helper_vault).handle(
+    reply = _live_broker(helper_vault).handle(
         {"v": 1, "verb": "commit", "message": "fix: run's edit", "paths": ["SKILL.md"]}
     )
     assert reply.exit == 0, reply.stderr
@@ -651,10 +663,11 @@ def test_the_helper_names_its_sha_last_on_stdout(helper_vault: Path) -> None:
         ["bash", str(helper_vault / "scripts" / "git-safe-commit.sh"), "notes: direct", "SKILL.md"],
         capture_output=True, text=True, check=True, env={**os.environ, "SCOUT_RUN_BROKER": ""},
     )  # fmt: skip
-    assert run_commits.sha_from_helper(out.stdout) == (True, _git(helper_vault, "rev-parse", "HEAD"))
-    assert run_commits.sha_from_helper("scout-commit unresolved\n") == (True, None)
-    assert run_commits.sha_from_helper("") == (False, None)
-    assert run_commits.sha_from_helper("scout-commit HEAD\n") == (False, None)
+    assert run_commits.sha_from_helper(out.stdout) == ("sha", _git(helper_vault, "rev-parse", "HEAD"))
+    assert run_commits.sha_from_helper("scout-commit unresolved\n") == ("unresolved", None)
+    assert run_commits.sha_from_helper("scout-commit none\n") == ("none", None)
+    assert run_commits.sha_from_helper("") == ("silent", None)
+    assert run_commits.sha_from_helper("scout-commit HEAD\n") == ("silent", None)
 
 
 def test_a_helper_without_a_reflog_says_unresolved_and_the_commit_is_a_gap(helper_vault: Path) -> None:
@@ -678,9 +691,8 @@ def test_a_helper_from_before_the_sha_line_leaves_a_gap_not_a_guess(helper_vault
 
 
 def test_a_failed_commit_is_no_gap(helper_vault: Path) -> None:
-    from scout.sandbox import broker
 
-    reply = broker.Broker.for_vault(helper_vault).handle(
+    reply = _live_broker(helper_vault).handle(
         {"v": 1, "verb": "commit", "message": "fix: nothing", "paths": ["SKILL.md"]}
     )
     assert reply.exit == 4  # nothing to commit
@@ -961,7 +973,9 @@ def test_malformed_broker_rows_are_skipped() -> None:
         {"schema": 1, "broker": "end", "id": 7, "run": 7, "exit": 1, "vault_key": "k", "ts": ts},  # failed, no id
     )
     ledger = run_commits.read()
-    assert (ledger.commits, ledger.profiles, ledger.gaps) == ({}, (), ())
+    assert (ledger.commits, ledger.profiles) == ({}, ())
+    # The failed end names no commit, but one may have landed: it fails closed as a gap.
+    assert [(g.vault_key, g.run) for g in ledger.gaps] == [("k", "")]
 
 
 def test_an_unborn_or_missing_vault_snapshots_empty(tmp_path: Path) -> None:
@@ -979,3 +993,196 @@ def test_a_ref_line_git_didnt_give_in_full_is_skipped(repo: Path, monkeypatch: p
     head = _git(repo, "rev-parse", "HEAD")
     monkeypatch.setattr(integrity, "_git", lambda *a, **k: f"garbage\n{head} commit   refs/heads/main\n")
     assert run_commits._all_refs(repo, os.environ) == {"refs/heads/main": (head, head)}
+
+
+# --- review of the redesign: a broker's sha is exact only for a tightened run ----------------------------------------
+
+
+@pytest.mark.parametrize(("profile", "by"), [(True, "broker"), (False, "run"), (None, "run")])
+def test_an_end_row_is_exact_only_when_its_run_was_tightened(repo: Path, profile: bool | None, by: str) -> None:
+    sha = _git(repo, "rev-parse", "HEAD")
+    if profile is not None:
+        assert run_commits.mark_broker_profile(repo, BROKER_RUN, tightened=profile)
+    rid = run_commits.broker_begin(repo, BROKER_RUN, "research")
+    assert run_commits.broker_end(repo, rid, BROKER_RUN, "research", exit_code=0, sha=sha)
+    assert run_commits.read().commits[sha].by == by
+    assert run_commits.is_broker_recorded(sha) is (by == "broker")
+
+
+def test_a_drain_records_its_own_run_never_the_entrys_claim(helper_vault: Path) -> None:
+    from scout.sandbox import broker
+
+    assert run_commits.mark_broker_profile(helper_vault, BROKER_RUN, tightened=True)
+    (helper_vault / "SKILL.md").write_text("claimed\n")
+    claim = {"v": 1, "verb": "commit", "message": "fix: x", "paths": ["SKILL.md"], "run": BROKER_RUN}
+    tick = broker.Broker.for_vault(helper_vault)  # the periodic tick's drain: no run of its own
+    assert tick.handle(claim).exit == 0
+    sha = _git(helper_vault, "rev-parse", "HEAD")
+    assert run_commits.read().commits[sha].by == "run"  # the claimed (tightened) run doesn't make it exact
+    assert _lane(helper_vault, sha) == "dreaming"  # SCOUT_MODE in this env; a real tick has none: `run` lane
+
+    (helper_vault / "SKILL.md").write_text("own\n")
+    own = broker.Broker.for_vault(helper_vault, commit_run=BROKER_RUN)  # the run-end drain, `--run` its own
+    assert own.handle({**claim, "run": "scout-broker.zzz999"}).exit == 0
+    assert run_commits.read().commits[_git(helper_vault, "rev-parse", "HEAD")].by == "broker"
+
+
+def test_drain_with_a_run_commits_under_that_run(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.sandbox import broker
+
+    seen: list[object] = []
+    monkeypatch.setattr(broker, "_drain", lambda vault, *, env, broker, deadline_s: seen.append(broker))
+    broker.drain(repo, run=BROKER_RUN)
+    broker.drain(repo)
+    assert getattr(seen[0], "commit_run", None) == BROKER_RUN and seen[1] is None
+
+
+def test_a_planted_older_reflog_line_with_the_nonce_never_wins(helper_vault: Path) -> None:
+    """Review: a run that could write .git/logs read the helper's nonce and planted an older reflog line carrying it
+    for an owner commit. The helper looks only at entries added since its commit started."""
+    seed = _git(helper_vault, "rev-list", "--max-parents=0", "HEAD")
+    hook = helper_vault / ".git" / "hooks" / "post-commit"
+    hook.write_text(
+        "#!/bin/bash\n"
+        'log="$(git rev-parse --git-dir)/logs/HEAD"\n'
+        f"printf '%s %s Owner <o@example.invalid> 1700000000 +0000\\t%s: planted\\n' {'0' * 40} {seed} "
+        '"$GIT_REFLOG_ACTION" | cat - "$log" > "$log.new" && mv "$log.new" "$log"\n'
+    )
+    hook.chmod(0o755)
+    sha = _broker_commit(helper_vault, "fix: run's edit", "SKILL.md", "run\n")
+    assert set(run_commits.read().commits) == {sha} and seed not in run_commits.read().commits
+
+
+def test_a_helper_stopped_mid_commit_is_a_gap(helper_vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.sandbox import broker
+
+    monkeypatch.setattr(
+        broker, "run_commit", lambda *a, **k: broker.Reply(5, "git-safe-commit: took longer\n", kind=broker.STOPPED)
+    )
+    (helper_vault / "SKILL.md").write_text("x\n")
+    assert (
+        _live_broker(helper_vault).handle({"v": 1, "verb": "commit", "message": "m", "paths": ["SKILL.md"]}).exit == 5
+    )
+    [gap] = run_commits.read().gaps
+    assert gap.run == BROKER_RUN
+
+
+def test_run_commit_marks_a_timeout_as_stopped(helper_vault: Path) -> None:
+    from scout.sandbox import broker
+
+    (helper_vault / "scripts" / "git-safe-commit.sh").write_text("#!/bin/bash\nsleep 30\n")
+    reply = broker.run_commit(helper_vault, "m", ["SKILL.md"], None, dict(os.environ), timeout=0.5)
+    assert (reply.exit, reply.kind) == (5, broker.STOPPED)
+
+
+def test_an_old_helper_is_named_as_the_cause_in_verify_and_health(helper_vault: Path) -> None:
+    from scout.health import unbrokered_attribution_findings
+
+    runner = CliRunner()
+    snap = runner.invoke(app, ["sandbox", "snapshot", "--vault", str(helper_vault)])
+    old = helper_vault / "scripts" / "git-safe-commit.sh"
+    old.write_text(old.read_text().replace('echo "scout-commit ${SHA:-unresolved}"', ""))
+    sha = _broker_commit(helper_vault, "fix: old helper", "SKILL.md", "old\n")
+    snap_doc = json.loads(snap.stdout)
+    assert run_commits.broker_state(helper_vault, snap_doc) == "gap"
+
+    result = runner.invoke(
+        app, ["sandbox", "verify", "--vault", str(helper_vault), "--label", "research"], input=snap.stdout
+    )
+
+    assert "the commit broker was on but couldn't name every commit" in result.stdout
+    assert "run /scout-update" in result.stdout
+    assert run_commits.read().commits[sha].by == "run"  # the git window caught it
+    [finding] = unbrokered_attribution_findings(vault=helper_vault, now=NOW + timedelta(seconds=1))
+    assert "had the commit broker on" in finding.summary and "/scout-update" in finding.fix
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "extra", "gap"),
+    [
+        (5, {}, True),  # git failed with nothing to show HEAD didn't move: a commit may exist
+        (1, {}, True),  # the helper died after `git commit` (set -e, a signal)
+        (143, {}, True),
+        (5, {"none": True}, False),  # the helper said its commit failed with HEAD unmoved
+        (2, {}, False),  # usage, the mutex and nothing to commit come before `git commit`
+        (3, {}, False),
+        (4, {}, False),
+        (0, {}, True),
+        (5, {"uncertain": True}, True),
+    ],
+)
+def test_an_end_with_no_sha_is_a_gap_unless_no_commit_was_made(
+    repo: Path, exit_code: int, extra: dict[str, bool], gap: bool
+) -> None:
+    """Review of #786: a helper failing or stopped after `git commit` ran leaves a commit nobody named, and
+    broker_was_on must not stay true over it."""
+    start = _snap(repo)
+    assert run_commits.mark_broker_profile(repo, BROKER_RUN, tightened=True)
+    rid = run_commits.broker_begin(repo, BROKER_RUN, "research")
+    assert run_commits.broker_end(repo, rid, BROKER_RUN, "research", exit_code=exit_code, sha=None, **extra)
+    assert (len(run_commits.read().gaps) == 1) is gap
+    assert run_commits.broker_was_on(repo, start) is not gap
+
+
+def test_none_is_never_written_beside_a_sha(repo: Path) -> None:
+    sha = "a" * 40
+    assert run_commits.broker_end(repo, None, BROKER_RUN, "research", exit_code=5, sha=sha, none=True)
+    assert run_commits.recorded_shas() == {sha} and run_commits.read().gaps == ()
+
+
+def _git_failing_after_commit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A `git` on PATH whose `commit` makes the commit, then fails (as when git can't write the new index)."""
+    real = shutil.which("git")
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    (shim / "git").write_text(
+        f'#!/bin/bash\n"{real}" "$@"; rc=$?\nfor a in "$@"; do [ "$a" = commit ] && exit 1; done\nexit $rc\n'
+    )
+    (shim / "git").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{shim}:{os.environ['PATH']}")
+
+
+def test_a_commit_git_reports_failed_after_head_moved_is_still_named(
+    helper_vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = _git(helper_vault, "rev-parse", "HEAD")
+    _git_failing_after_commit(tmp_path, monkeypatch)
+    (helper_vault / "SKILL.md").write_text("half\n")
+    reply = _live_broker(helper_vault).handle(
+        {"v": 1, "verb": "commit", "message": "fix: half done", "paths": ["SKILL.md"]}
+    )
+    sha = _git(helper_vault, "rev-parse", "HEAD")
+    assert reply.exit == 5 and sha != head
+    ledger = run_commits.read()
+    assert ledger.commits[sha].by == "broker" and ledger.gaps == ()
+
+
+def test_a_hook_refusal_says_none_and_is_no_gap(helper_vault: Path) -> None:
+    hook = helper_vault / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/bash\nexit 1\n")
+    hook.chmod(0o755)
+    (helper_vault / "SKILL.md").write_text("refused\n")
+    out = subprocess.run(
+        ["bash", str(helper_vault / "scripts" / "git-safe-commit.sh"), "fix: refused", "SKILL.md"],
+        capture_output=True, text=True, env={**os.environ, "SCOUT_RUN_BROKER": ""},
+    )  # fmt: skip
+    assert out.returncode == 5 and run_commits.sha_from_helper(out.stdout) == ("none", None)
+    reply = _live_broker(helper_vault).handle({"v": 1, "verb": "commit", "message": "fix: r", "paths": ["SKILL.md"]})
+    assert reply.exit == 5
+    assert run_commits.read().gaps == () and run_commits.recorded_shas() == frozenset()
+
+
+def test_recorded_shas_names_every_row_whatever_its_grade(repo: Path) -> None:
+    """The integrity check's blame set (#786): every sha any row names, with no grading."""
+    exact, loose, bare, worktree, run = "a" * 40, "b" * 40, "c" * 40, "d" * 40, "e" * 40
+    _write_rows(
+        {"schema": 1, "sha": bare, "mode": "research", "by": "broker"},  # never trusted, still named
+        {"schema": 1, "sha": worktree, "mode": "research", "by": "worktree"},
+        {"schema": 1, "sha": run, "mode": "research", "by": "run"},
+    )
+    _broker_row(repo, exact)
+    assert run_commits.broker_end(repo, None, "scout-broker.untight", "research", exit_code=0, sha=loose)
+    ledger = run_commits.read()
+    assert run_commits.recorded_shas(ledger) == {exact, loose, bare, worktree, run}
+    assert run_commits.recorded_shas() == run_commits.recorded_shas(ledger)
+    assert bare not in ledger.commits and ledger.commits[loose].by == "run"
