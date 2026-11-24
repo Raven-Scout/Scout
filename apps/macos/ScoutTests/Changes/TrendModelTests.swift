@@ -112,8 +112,29 @@ struct TrendModelTests {
     }
 
     // MARK: - View
-    // The tests that read the accessibility tree live in ChangesViewTests: that suite is serialized,
-    // and the tree reader flips an app-wide switch that two suites must not toggle at once.
+
+    private static func trendView(days: [EngagementDay], changes: [ChangeRow]) -> some View {
+        EngagementTrendView(days: days, changes: changes, today: date("2026-11-12"), calendar: calendar, onSelect: { _ in })
+            .frame(width: 700)
+    }
+
+    @Test("with no engagement the trend says so")
+    func emptyTrendSaysSo() async {
+        let nodes = await AccessibilityTree.nodes(of: Self.trendView(days: [], changes: []), size: CGSize(width: 700, height: 400))
+        let shown = nodes.flatMap { [$0.label, $0.value] }
+        #expect(shown.contains("No engagement recorded yet."), "empty state missing:\n\(nodes)")
+    }
+
+    @Test("each trend marker is announced in plain words, never as a bare change id")
+    func trendMarkersSpeakPlainly() async throws {
+        let change = try Self.change("chg-00000000000a", at: "2026-11-10T12:00:00+00:00", verdict: "helped")
+        let days = [try Self.day("2026-11-10", feedback: 2, noise: 1)]
+        let nodes = await AccessibilityTree.nodes(of: Self.trendView(days: days, changes: [change]),
+                                                  size: CGSize(width: 700, height: 400))
+        let shown = nodes.flatMap { [$0.label, $0.value] }.filter { !$0.isEmpty }
+        for text in shown { #expect(!text.contains("chg-"), "bare id in: \(text)") }
+        #expect(shown.contains("Say so when a search finds nothing, helped"), "marker label missing:\n\(nodes)")
+    }
 
     @Test("no days and no changes: no weeks and no markers")
     func emptyDocumentsRenderEmptyStates() {
