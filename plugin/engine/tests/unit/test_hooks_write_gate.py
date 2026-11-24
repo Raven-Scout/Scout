@@ -18,6 +18,7 @@ import pytest
 
 from scout.hooks import kb_read_gate as gate
 from scout.kb.hook_paths import protected_write
+from tests.unit._prefilter_root import with_prefilter
 
 PLUGIN = Path(__file__).parent.parent.parent.parent
 RUN = {"SCOUT_MODE": "morning-briefing", "SCOUT_READER": "autonomous"}
@@ -296,7 +297,7 @@ def _sh(env: dict, payload: str, cwd: Path, root: Path, matcher: str) -> subproc
     cmd = _entry(matcher)["hooks"][0]["command"]
     return subprocess.run(
         ["sh", "-c", cmd],
-        env={**clean, **env, "CLAUDE_PLUGIN_ROOT": str(root)},
+        env={**clean, **env, "CLAUDE_PLUGIN_ROOT": str(with_prefilter(root))},
         cwd=cwd,
         input=payload,
         capture_output=True,
