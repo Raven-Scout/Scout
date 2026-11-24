@@ -10,6 +10,63 @@ entries from PRs opened before fragments existed; prepare moves them too.
 
 ## [Unreleased]
 
+## [0.18.23] - 2026-11-23
+
+### Changed
+- **`scoutctl kb search` prints a bounded result and says what it left out** (`engine/scout/kb/read.py`, `engine/scout/cli.py`). A search with no `--glob` still covers every listed file, not only `knowledge-base/` (the phases use that to find every link to a moved folder), so one common word could print tens of thousands of lines, most of them from the dated `action-items/` files, into a run's context.
+  - **The caps.** At most 20 matching lines per file and 200 in all, each line cut to 400 characters around its match. When the total cap bites, every top-level folder with matches keeps a share of the output, so a large `action-items/` can't crowd the knowledge base out.
+  - **The closing lines.** In parentheses after the matches: how many matching lines and files there really are, how many were left out per top-level folder, and how to see them (a `--glob`, a more specific pattern, or a higher cap).
+  - **Lifting them.** `--max-matches N`, `--max-per-file N` and `--max-line N`; 0 means no limit. `--all` prints every matching line (long lines still cut). A search that fits under the caps prints exactly what it printed before.
+  - **`--json` is unchanged**: every match, whole, unless a `--max-*` option is given; then the output is still a list of matches and the closing lines go to stderr.
+  - **The phases that act on every match pass `--all`** (`phases/modes/kb-deep-work.md`, `phases/core/kb-management.md`, `phases/connectors/granola.md`, `templates/docs/kb-page-standard.md`): finding every inline owner comment, every link to a folder being moved, every transcript breadcrumb.
+
+### Fixed
+- `scoutctl action-items edit-comment` / `delete-comment` could reach a line of another task. The comment lister only stopped at a blank or unindented line, so in a list indented by one space it ran on into the next task's sub-bullets, and under a parent task into a child task's. `--index` could then edit or delete the neighbour's comment or its `/scout-plan` marker. A task's comments now end at the first line indented no deeper than the task, and a child task's sub-bullets are skipped. (#556)
+- **The connector snapshot is built from the packaged `connectors.yaml` only** (`engine/scout/scripts/connectors_snapshot.py`, `engine/scout/connectors.py`). It used to read the roster through the vault it ran in, so regenerating it, or running `--check`, on a Mac whose vault had a `.scout-state/connectors.local.yaml` overlay could write that vault's renamed or added rows into the snapshot the app ships, or report drift that CI didn't see. A malformed overlay also stopped the command. The new `load_seed_registry()` never reads a vault. The committed snapshot and its app copies were already clean and are unchanged. ([#543](https://github.com/Raven-Scout/Scout/issues/543))
+- **A delegate mirror can be linked when `privacy.sync_only` doesn't list `scout-config.yaml` (#550).** The
+  allowlist kept the config home, but a mirror can't hold anything without it, so `delegate link` always refused
+  (`config_not_mirrored`). The config is now the one file the allowlist can't keep out of a mirror, as the
+  generated policy file is for Agnes. The mirror's copy then holds the `privacy` block alone, and none of the
+  config's other keys. When the allowlist lists the config, the mirror's copy keeps those keys as before.
+- **The mirror's `privacy` block holds only what the policy reads.** It's rebuilt, at every level, from the
+  keys and fields the policy uses, in their canonical form, so a note, an address or any other value beside a
+  setting stays home. `sync_only` itself never goes: no label depends on it.
+- **The mirror's config is checked against a fresh rebuild on every push, even when it is HEAD's blob
+  unchanged.** Before, a copy equal to the vault's own config skipped that check.
+- **A hidden note named "Scout" no longer keeps the config out of every mirror.** `scout-config.yaml` is
+  Scout's own name for the file, so it's no longer matched against hidden notes' names. Its contents are still
+  scanned.
+- `scoutctl bootstrap upgrade` installs a brain file missing from the vault. Since v0.18.22 an upgrade recorded `RESPOND.md` as installed without writing it, so Telegram replies ran without their brain. The next upgrade now writes it, which also repairs a vault an earlier upgrade left without it, and says so (`installed (was missing): RESPOND.md`, and `installed` in `--json`). `bootstrap doctor` warns (yellow) when any brain file (`SKILL.md`, `DREAMING.md`, `RESEARCH.md`, `RESPOND.md`) is missing. When the vault's git history shows the file was deleted, the warning names the commit and says to turn the run off in the schedule (or `triggers.yaml` for replies) instead, because the next upgrade restores it.
+- **A recursive search from the vault root filtered to a data format is a KB read** (`engine/scout/kb/raw_read.py`, #541). The `kb-read-gate` hook and the eval's `privacy_hygiene` check share one classifier. It already counted a shell search rooted at the vault or above (`rg x`, `grep -r x .`, `find .`, `ls -R`, `tree`), but let one through when its file filter named any format other than Markdown: `grep -r x . --include='*.yaml'` walked `knowledge-base/` and read the YAML, CSV and JSON files kept there. A filter now keeps a search out of the KB only if it can't match a file in a format the KB keeps facts in: `md`, `markdown`, `yaml`, `yml`, `csv`, `tsv`, `json`, `txt`, `html`, `htm`, and for `rg -t` the types `yaml`, `csv`, `json`, `txt`, `html` besides `md`. As ripgrep does, an `rg -t` type no longer bounds a search that also has an include glob (`rg -t py -g '*.md' x` searches notes, and was allowed). `ag`, `ack`, `fd` and `ugrep` given a KB path are flagged like `rg`. Still allowed: a search given a folder outside the KB (`rg x scripts/`, `grep -r x .scout-logs --include='*.json'`), a filter that names such a folder (`-g 'scripts/*.yaml'`), a filter for code or logs (`*.py`, `*.sh`, `*.jsonl`, `*.log`), and a search that excludes the KB folders. `rg -tpy` (the type attached to the flag) is now read like `rg -t py`; it was denied before. The Grep and Glob tool rules are unchanged.
+  - **This changes what `privacy_hygiene` counts**, so `raw_kb_read` numbers from eval runs scored before this release are not comparable one-to-one with later ones: an earlier run that searched the vault root with a data-format filter was scored as clean on that call.
+- **A delegate mirror's `scout-config.yaml` holds only what the engine there reads (#550).** It was the vault's
+  config with the `privacy` block rewritten, so every other key went verbatim, at every level: connector
+  settings, tokens, addresses. Only a key that named a hidden note stayed home. The mirror's copy is now built
+  from an allowlist, whether or not `privacy.sync_only` lists the config: the `privacy` block, `user.timezone`
+  (when it names a real zone; the legacy top-level `timezone` counts), `user.name` and `user.display_name`, and
+  `kb_structure.projects_dir` and `skip_projects` when they point at mirrored folders. Everything else stays
+  home, `user.email` included, and a value that names a hidden note is dropped. The pre-push check rebuilds it
+  and refuses any other copy.
+- **The mirror's `privacy` block no longer carries `surfaces` or the `federation` keys.** No delegate's label
+  or read depends on them: surfaces class the laptop's outbound checks, and the federation keys are for
+  `agent:*` readers. They named chat ids and email addresses. The clone uses the engine defaults for them.
+- **Connector health counts each tool call once, and counts subagent calls** (`engine/scout/hooks/session_tool_log.py`, `engine/scout/hooks/connector_log.py`). The Stop hook that fills `.scout-logs/connector-calls-*.jsonl` replayed only the session's own transcript, so a connector a run reached only through a subagent (`gh`, WebFetch, an MCP server) looked as if it was never called. It also replayed the whole transcript every time Stop fired, so a session that stopped twice logged every call twice. It now replays the subagent transcripts too (`<transcript>/subagents/*.jsonl`), and each row carries the call's id (`id`), so a call already in the log for that session is skipped. The older PostToolUse hook (`scoutctl hook connector-log`) writes the same id; a vault that still wires it no longer gets double counts, and can now remove that entry and save a Python start on every tool call.
+- **A vault that enabled Telegram as `notify:telegram` gets its Telegram sections** (`engine/scout/scripts/connector_probes.py`, #559). `notify:telegram` is Telegram's key in the connector roster (`engine/scout/connectors.yaml`), while the phase sections are gated on `telegram`, the key `/scout-setup` writes. A `connectors.enabled` that listed only the roster key assembled no Telegram section: no wrap notification in SKILL.md or RESEARCH.md, no "Telegram Messages Waiting" section, and no reply instructions in RESPOND.md, and the run still exited 0. `notify:telegram` is now read as `telegram` (in `CONNECTOR_KEY_ALIASES`, like `gmail` → `email`) wherever a vault's config is loaded. The next `scoutctl bootstrap upgrade` rewrites the key to `telegram` in `scout-config.yaml` and adds the sections; vaults that already list `telegram` are unchanged.
+- **`scoutctl bootstrap doctor` warns when `notify.wrap_channels` names no enabled connector** (`engine/scout/scripts/bootstrap_doctor.py`, #559). Such a vault sends no wrap notification at all, and the only sign was a `warning:` line on stderr of whichever `scoutctl` command happened to load the config. That line is still printed; doctor now reports the same condition as a warning.
+
+### Performance
+- **The `restrict_tools` gate starts faster on every MCP call** (#542; `engine/bin/scoutctl`, `engine/scout/hooks/__main__.py`). In a vault whose `connectors.custom.yaml` uses `restrict_tools`, the `mcp-tool-gate` hook runs before each MCP tool call. The launcher now sends `scoutctl hook mcp-tool-gate` to the thin entry `python -m scout.hooks`, as it does for the privacy hooks, so the call no longer imports `scout.cli` and typer. The decisions and their text are unchanged, `hooks.json` is unchanged, and `python -m scout.cli hook mcp-tool-gate` still works for a direct call.
+- **The outbound privacy gate builds the private terms once per tool call, not once per field**
+  (`engine/scout/hooks/outbound_gate.py`, `engine/scout/kb/outbound.py`). Each build walks the vault, so the
+  check cost about a second per string in the tool's input: a call with eleven strings ran past the gate's
+  10 s deadline, which denies the call in a scheduled run and lets it through unchecked for the owner.
+  The gate now asks `outbound_terms` once and matches every field against the result.
+
+### Documentation
+- **Two phase lines no longer contradict the "no 'Last verified' line" page rule** (`phases/research/research-targets.md`, `phases/modes/kb-deep-work.md`, `templates/knowledge-base/research-queue.md.tmpl`, `engine/scout/scripts/migrate_perfile.py`, `README.md`). Write-protocol rule 2 says a page carries no "Last verified" line and the date lives in `last_verified:` frontmatter, but two lines still used the old wording (#572).
+  - A research run's continuity note in `knowledge-base/research-queue.md` (the run log) is now called the "Last run …" note, so it can't be read as a page's verification line. The run log's seeded header says the same. A vault's existing run log keeps its old header and notes, and the upgrade from a single-file queue still carries over a legacy `**Last verified` note unchanged.
+  - The dreaming run's cache table describes `.scout-cache/kb-filter.md` as replacing a read of every KB file's `last_verified:` / `last_updated:` frontmatter, which is what the staleness score further down already reads first. It used to say "Last updated" headers.
+
 ## [0.18.22] - 2026-11-22
 
 ### Added
