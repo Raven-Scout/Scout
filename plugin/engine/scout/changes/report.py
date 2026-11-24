@@ -48,18 +48,25 @@ def changes_report(
     rows ``engagement_report`` reads; days are local dates in ``tz``. ``calibrating`` and ``auto_rollback`` come from
     the owner store's settings, which a run can't write. ``skipped_rows`` counts change rows only. ``needs_ok`` lists
     every readable ``governance-pending/`` file with the owner's decision on its current diff (``awaiting-ok``,
-    ``approved`` or ``rejected``), that diff's ``diff_hash`` and whether applying it is a ``governance`` change;
-    ``needs_ok_skipped`` counts files that didn't fit. A row is a rollback, with ``reverts``, only when git shows its
-    commit put the target's own lines back (scout.changes.scan, re-derived on every read). A row is ``governance``
-    only when its commit moved pending files to ``applied/`` that the owner approved
-    (scout.changes.governance.approved_application). While ``verified`` is false nothing is re-derived, so the
-    ledger's own flag shows unconfirmed; nothing can be undone then either.
+    ``approved`` or ``rejected``), that diff's ``diff_hash`` and whether applying it is a ``governance`` change, with
+    ``why_gloss`` and ``targets_gloss`` (scout.changes.gloss; null where there is none) and the file's ``context``
+    paragraph (null when it has none); ``needs_ok_skipped`` counts files that didn't fit. Each change's
+    ``why.gloss`` is worked out the same way, never taken from the ledger. A row is a rollback, with ``reverts``,
+    only when git shows its commit put the target's own lines back (scout.changes.scan, re-derived on every read). A
+    row is ``governance`` only when its commit moved pending files to ``applied/`` that the owner approved, and
+    applied their diffs and nothing else (scout.changes.governance.approved_application). While ``verified`` is
+    false nothing is re-derived, so the ledger's own flag shows unconfirmed; nothing can be undone then either.
 
     Git and ``.scout-logs/`` are read from ``vault``; owner rows are keyed to ``owner_vault`` (default ``vault``),
     which the CLI sets to the installed vault, as ``engagement --json`` does, so a worktree cwd undercounts nothing."""
+    from scout.changes.gloss import Glossary
     from scout.changes.governance import approved_application, read_pending, state_of
     from scout.changes.settings import read_settings
-    from scout.changes.verdicts import evaluate  # verdicts counts through daily_counts, below: import it late
+    from scout.changes.verdicts import (  # verdicts counts through daily_counts, below: import it late
+        BASELINE_DAYS,
+        evaluate,
+        is_tested,
+    )
 
     changes, skipped = read_changes(vault)
     signals, _ = read_signals(vault, env, owner_vault=owner_vault)
@@ -93,15 +100,26 @@ def changes_report(
     # clock, plus a DST hour), and what rolls it back comes after it, so older rows can't change what is shown.
     # Leaving them out bounds the work a stale or forged row can cause.
     floor = since - timedelta(days=settings.review_days + 2)
-    signals = merge_inline(signals, inline_comments(vault, since=floor, now=now))
-    tests = evaluate([c for c in unique.values() if floor <= c.ts <= now], signals, now=now, tz=tz, settings=settings)
+    evaluated = [c for c in unique.values() if floor <= c.ts <= now]
+    # Inline comments only feed the verdicts, and a verdict reads no further back than its change's baseline: so git
+    # is asked about the window from the oldest tested change's baseline (plus a day for the local-date boundary),
+    # never the report's whole range, and not at all when nothing is tested.
+    tested = [c.ts for c in evaluated if is_tested(c)]
+    if tested:
+        inline_since = min(tested) - timedelta(days=BASELINE_DAYS + 1)
+        signals = merge_inline(signals, inline_comments(vault, since=inline_since, now=now))
+    tests = evaluate(evaluated, signals, now=now, tz=tz, settings=settings)
     pending, pending_skipped = read_pending(vault)
+    glossary = Glossary(vault)
     needs_ok = [
         {
             "id": p.id,
             "summary": p.summary,
             "why": p.why,
+            "why_gloss": glossary.of_value(p.why),
             "targets": list(p.targets),
+            "targets_gloss": [glossary.of_value(t) for t in p.targets],
+            "context": p.context or None,
             "path": p.path,
             "state": state_of(vault, signals, p),
             "diff_hash": p.hash,
@@ -109,6 +127,8 @@ def changes_report(
         }
         for p in pending
     ]
+    # Every why is glossed here, from the vault as it is now: the ledger is run-writable, so its own gloss is not shown.
+    shown = [replace(c, why=replace(c.why, gloss=glossary.of_why(c.why))) for c in inside[:limit]]
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": now.isoformat(),
@@ -118,7 +138,7 @@ def changes_report(
         "verified": verified,
         "calibrating": settings.calibrated_on is None,
         "auto_rollback": settings.auto_rollback,
-        "changes": [{**c.to_row(), "test": tests[c.id]} for c in inside[:limit]],
+        "changes": [{**c.to_row(), "test": tests[c.id]} for c in shown],
         "counts": counts,
         "needs_ok": needs_ok,
         "needs_ok_skipped": pending_skipped,

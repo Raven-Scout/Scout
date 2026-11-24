@@ -38,7 +38,7 @@
       },
       "ts": "2026-11-16T00:00:00+00:00",
       "why": {
-        "gloss": "The test found it hurt",
+        "gloss": "A test found the earlier change hurt",
         "inferred": false,
         "ref": "verdict:chg-000000000000",
         "type": "verdict"
@@ -184,7 +184,7 @@
       },
       "ts": "2026-11-13T12:00:00+00:00",
       "why": {
-        "gloss": "Why it happened",
+        "gloss": "Red items carried with no reply",
         "inferred": false,
         "ref": "pattern-249",
         "type": "pattern"
@@ -235,7 +235,7 @@
       },
       "ts": "2026-11-12T12:00:00+00:00",
       "why": {
-        "gloss": "Why it happened",
+        "gloss": "Red items carried with no reply",
         "inferred": false,
         "ref": "pattern-249",
         "type": "pattern"
@@ -277,7 +277,7 @@
       },
       "ts": "2026-11-10T12:00:00+00:00",
       "why": {
-        "gloss": "Why it happened",
+        "gloss": "Red items carried with no reply",
         "inferred": false,
         "ref": "pattern-249",
         "type": "pattern"
@@ -337,7 +337,7 @@
       },
       "ts": "2026-10-27T12:00:00+00:00",
       "why": {
-        "gloss": "Why it happened",
+        "gloss": "Red items carried with no reply",
         "inferred": false,
         "ref": "pattern-249",
         "type": "pattern"
@@ -356,18 +356,26 @@
   "generated_at": "2026-11-16T12:00:00+00:00",
   "needs_ok": [
     {
-      "diff_hash": "062c40aea93c47c1d4ec600bb08634139853c2c6b0d094d9b5a5882c6f7c0a1b",
+      "context": "A red item nobody answers for six days is noise, not a reminder.",
+      "diff_hash": "5e83d9633ca59573d55e5ccea8dc081d390342a954ee6d2852144644e39880fd",
       "governance": true,
       "id": "gov-skip-carried-red",
       "path": "governance-pending/skip-carried-red.md",
       "state": "awaiting-ok",
       "summary": "Let the briefing drop a red item nobody answered for six days",
       "targets": [
-        "briefing"
+        "briefing",
+        "pattern-249"
       ],
-      "why": "The same red item was carried for six days with no reply."
+      "targets_gloss": [
+        null,
+        "Red items carried with no reply"
+      ],
+      "why": "The same red item was carried for six days with no reply.",
+      "why_gloss": null
     },
     {
+      "context": null,
       "diff_hash": "1aff12783b8fb4c0763e8274410c48cccf1c124882aeb8b093b89bdbbd3e5098",
       "governance": false,
       "id": "gov-tighten-the-wrap",
@@ -375,7 +383,9 @@
       "state": "approved",
       "summary": "Keep the dreaming wrap to five lines",
       "targets": [],
-      "why": "pattern-288"
+      "targets_gloss": [],
+      "why": "pattern-288",
+      "why_gloss": "A mistake that kept recurring"
     }
   ],
   "needs_ok_skipped": 1,
