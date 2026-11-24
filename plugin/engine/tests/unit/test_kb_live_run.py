@@ -986,6 +986,20 @@ def test_other_options_prefixes_and_broken_quotes_are_not_flagged(command: str) 
         "git commit -m x\\\\&",  # two backslashes are one literal backslash: the "&" is real
         "git commit -m x <&- &",
         "a<&b&",
+        # A backtick substitution ends at the next backtick, whatever quotes sit inside it.
+        "git commit -m `echo '` & echo `'`",
+        'git commit -m "`echo \'`" & echo "`\'`"',
+        # "<<EOF" in a comment or inside a string that runs over lines opens no here-document.
+        "true # <<EOF\nsleep 5 &\nEOF",
+        'echo "a\n<<EOF b"\nsleep 5 &\nEOF',
+        "echo 'a\n<<EOF b'\nsleep 5 &\nEOF",
+        # A substitution that closes on the operator's own line leaves its here-document without a body.
+        "echo $(cat <<EOF) x\nsleep 5 &\nEOF",
+        "echo `cat <<EOF` x\nsleep 5 &\nEOF",
+        'echo "$(cat <<EOF)" x\nsleep 5 &\nEOF',
+        # zsh reads `$$'\'<<EOF'` as one string, so it runs the lines bash would take as a body.
+        "echo x$$'\\'<<EOF'\n{ echo BG; } &\nwait\nEOF",
+        "echo x$$'\\' <<'EOF''\nsleep 5 &\nEOF",
     ],
 )
 def test_commands_that_detach_are_flagged(command: str) -> None:
@@ -1046,6 +1060,13 @@ SCOUT_WRAP"""
         "cat \\\\<&3",  # an escaped backslash, then a real "<&"
         "echo a\\&b",  # an escaped "&" is a letter
         "echo a \\&\\& true",
+        "git commit -m \"$(cat <<'EOF'\nR&D, and it's done\nEOF\n)\"",  # a here-document inside "$(…)"
+        "git commit -m \"`cat <<'EOF'\nR&D\nEOF\n`\"",
+        "cat <<EOF # the notes\nR&D\nEOF",
+        'cat <<EOF "a\nb"\nR&D\nEOF',  # the body starts after the line's own end, past the string
+        "echo `echo it's` 'R&D'",
+        "(cat <<EOF) | cat\nR&D\nEOF",  # a subshell's here-document does take the lines below
+        "cat <<A `cat <<B`\nR&D\nA",
     ],
 )
 def test_ordinary_commands_and_reads_are_not_flagged(command: str) -> None:
