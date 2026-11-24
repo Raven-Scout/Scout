@@ -470,6 +470,8 @@ class StagedFile:
     page_rules: Callable[[], PageRules | None]
     # A new daily file's earlier daily file; its lines count as this file's old version.
     baseline_text: str | None = None
+    # Per-commit marks for checks that run once however many files are staged; shared across the lint.
+    once: set[str] = field(default_factory=set)
 
 
 StagedCheck = Callable[[StagedFile], list[Finding]]
@@ -694,6 +696,25 @@ def _bullet_count_findings(f: StagedFile, rules: PageRules, staged: str, old: st
     ]
 
 
+def _lab(f: StagedFile) -> list[Finding]:
+    """The lab's format check (:mod:`scout.lab.lint`) on a staged file under ``knowledge-base/lab/``.
+
+    Sibling files are read from the index, not the working tree. ``lab.md`` is checked once per
+    commit whenever any lab file is staged, so a new thread without it, or a front page flipped
+    private, is caught.
+    """
+    if not f.rel.startswith("knowledge-base/lab/"):
+        return []
+    from scout.lab.lint import INDEX_REL, StagedIndex, index_findings, lab_findings
+
+    source = StagedIndex(f.repo)
+    out = lab_findings(f.repo, f.rel, staged_text_lossy(f.repo, f.rel), source, include_index=False)
+    if INDEX_REL not in f.once:
+        f.once.add(INDEX_REL)
+        out += index_findings(source, source.read(INDEX_REL))
+    return out
+
+
 # The checks `lint_staged` runs on each in-scope staged file, in output order.
 # A new check is one function here, and its id goes in `lint_config.KNOWN_CHECKS`.
 # It reports `Finding(blocking=True)` for what should refuse a commit, and the
@@ -709,6 +730,7 @@ STAGED_CHECKS: tuple[StagedCheck, ...] = (
     _page_sections,
     _page_narration,
     _page_bullets,
+    _lab,
 )
 
 
@@ -716,6 +738,7 @@ def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
     result = LintResult()
     known: set[str] | None = None
     debts = _LineDebt(repo, cfg)
+    once: set[str] = set()
 
     def known_targets() -> set[str]:
         nonlocal known
@@ -749,6 +772,11 @@ def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
         key=lambda sp: "block" not in (cfg.mode_for(sp.rel, "mega-line"), cfg.mode_for(sp.rel, "diary")),
     )
     for sp in claim_order:
+        if sp.rel.startswith("knowledge-base/lab/") and not sp.rel.endswith(".md"):
+            from scout.lab.lint import StagedIndex, lab_findings
+
+            result.findings += lab_findings(repo, sp.rel, "", StagedIndex(repo))
+            continue
         if not cfg.in_scope(sp.rel):
             continue
         size_base = sp.head_rel
@@ -760,7 +788,7 @@ def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
                 baseline_text = head_text(repo, baseline)
         added = _new_lines(repo, sp.rel, sp.head_rel, baseline_text)
         staged = StagedFile(
-            repo, cfg, sp.rel, size_base, added, staged_rels, known_targets, debts, page_rules, baseline_text
+            repo, cfg, sp.rel, size_base, added, staged_rels, known_targets, debts, page_rules, baseline_text, once
         )
         for check in STAGED_CHECKS:
             result.findings += check(staged)
