@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from scout import config
+from scout import config, plural
 from scout.errors import LabError
 from scout.lab import ops, paths, writer
 from scout.lab.model import EID_RE, Comment, Experiment, Thread, TimelineEntry
@@ -222,7 +222,8 @@ def start(vault: Path, slug: str, eid: str, now: _dt.datetime | None = None) -> 
             raise LabError(f"{eid} cannot start yet: not before {_shown(not_before)}")
         held = holds(thread, exp)
         if held:
-            raise LabError(f"{eid} is held by {len(held)} comment(s) from the owner; answer them first")
+            them = plural.agree(len(held), "it", "them")
+            raise LabError(f"{eid} is held by {plural.count(len(held), 'comment')} from the owner; answer {them} first")
         new_note = writer.set_frontmatter(note_text, status="running", started=moment.strftime(_FM_TIME))
         new_front = _set_line(text, thread, eid, slug, "running", f"started {_shown(moment)}")
         ops._write_files([(note, new_note), (paths.front_page(vault, slug), new_front)])
@@ -278,7 +279,9 @@ def veto(
     now: _dt.datetime | None = None,
     env: Mapping[str, str] | None = None,
 ) -> Experiment:
-    """Owner verb: planned -> vetoed, with an ``owner`` timeline entry. Allowed on active or paused threads.
+    """Owner verb: planned or running -> vetoed, with an ``owner`` timeline entry. Allowed on active or paused
+    threads. A running experiment can be vetoed too: a run can set ``status: running`` by hand, and the owner's
+    veto must still land.
 
     The veto also goes into the owner's store (:func:`scout.sandbox.broker.record_veto`, in the folder ``env``'s
     HOME names; default this process's), which a run can't write, so the broker refuses the experiment even if a
@@ -295,8 +298,8 @@ def veto(
         thread, text, note, note_text, exp = _load(vault, slug, eid, active=False)
         if thread.status not in ("active", "paused"):
             raise LabError(f"cannot veto on {ops._article(thread.status)} {thread.status} thread")
-        if exp.status != "planned":
-            raise LabError(f"cannot veto: {eid} is {exp.status}; only a planned experiment can be vetoed")
+        if exp.status not in ("planned", "running"):
+            raise LabError(f"cannot veto: {eid} is {exp.status}; only a planned or running experiment can be vetoed")
         entry = TimelineEntry(_shown(moment), "owner", [f"**Veto:** {eid} by {author}"])
         new_timeline = ops._timeline_with(slug, thread, entry, timeline)
         new_note = writer.set_frontmatter(note_text, status="vetoed")

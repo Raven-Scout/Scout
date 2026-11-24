@@ -17,6 +17,7 @@ from typing import Any
 
 import yaml
 
+from scout import plural
 from scout.errors import LabError
 from scout.kb.frontmatter import frontmatter_block
 from scout.kb.privacy import visibility_value
@@ -273,7 +274,7 @@ def add_reply(text: str, target: str, index: int, body: str, stamp: str) -> str:
     lines = _split(text)
     comments, _, indent = _comment_scope(t, target)
     if not 1 <= index <= len(comments):
-        raise LabError(f"{target} has {len(comments)} comment(s); there is no comment {index}")
+        raise LabError(f"{target} has {plural.count(len(comments), 'comment')}; there is no comment {index}")
     parent = comments[index - 1]
     new = _comment_line(indent + 2, "scout", stamp, body)
     lines.insert(_last_line(parent.line, parent.replies), new)

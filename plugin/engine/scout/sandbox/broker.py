@@ -46,7 +46,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from scout import safe_write
+from scout import plural, safe_write
 from scout.kb import hook_paths
 
 PROTOCOL = 1
@@ -1074,9 +1074,8 @@ class Broker:
             return Reply(EXIT_NOT_RUN, f"experiment not run: {EXPERIMENTS_OFF}\n", kind=REFUSED)
         allowed = self.lab_limits.experiments_per_run
         if self.experiments_run >= allowed:
-            return Reply(
-                EXIT_LIMIT, f"experiment refused: this run has run its {allowed} experiment(s)\n", kind=RUN_LIMIT
-            )
+            ran = plural.count(allowed, "experiment")
+            return Reply(EXIT_LIMIT, f"experiment refused: this run has run its {ran}\n", kind=RUN_LIMIT)
         try:
             requested = _requested_timeout(req)
             slug, eid, argv, cap, commit = validate_experiment(req, self.vault, self.lab_limits, self.clock(), self.env)

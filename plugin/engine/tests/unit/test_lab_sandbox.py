@@ -86,7 +86,8 @@ def test_profile_text_orders_deny_before_allow(tmp_path: Path) -> None:
     net = text.index("(deny network*)")
     assert text.index("(deny file-read-data") < net < text.index("(allow network-outbound (remote unix-socket")
     execs = text[text.index("(deny process-exec") :]
-    assert '(literal "/usr/bin/git")' in execs and '(literal "/bin/launchctl")' in execs
+    # Resolved like every other path: on ubuntu /bin is a link to /usr/bin.
+    assert f'(literal "{real("/usr/bin/git")}")' in execs and f'(literal "{real("/bin/launchctl")}")' in execs
     for form in ("(deny job-creation)", "(deny appleevent-send)", "(deny file-mount)"):
         assert form in text
     mach = text[text.index("(deny mach-lookup") :]

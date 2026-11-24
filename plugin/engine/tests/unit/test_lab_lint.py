@@ -179,14 +179,14 @@ def test_index_private_threads_are_counted_not_listed(vault: Path) -> None:
     page = _text(vault, FRONT).replace("visibility: normal", "visibility: private")
     (secret / "secret.md").write_text(page, encoding="utf-8")
     assert [f.message for f in _lint(vault, INDEX, INDEX_TEXT)] != []
-    assert _lint(vault, INDEX, INDEX_TEXT + "\n_1 private thread(s) not listed._\n") == []
-    wrong = _lint(vault, INDEX, INDEX_TEXT + "\n_3 private thread(s) not listed._\n")
+    assert _lint(vault, INDEX, INDEX_TEXT + "\n_1 private thread not listed._\n") == []
+    wrong = _lint(vault, INDEX, INDEX_TEXT + "\n_3 private threads not listed._\n")
     assert len(wrong) == 1 and wrong[0].blocking and "private" in wrong[0].message
     # a private thread is never named in lab.md: linking it, in any spelling, blocks
     for link in ("[[secret]]", "[[secret|a thread]]", "[[lab/secret/secret]]", "[[secret-timeline]]"):
-        [f] = _lint(vault, INDEX, INDEX_TEXT + f"- {link} — hi\n_1 private thread(s) not listed._\n")
+        [f] = _lint(vault, INDEX, INDEX_TEXT + f"- {link} — hi\n_1 private thread not listed._\n")
         assert f.blocking and "links private thread 'secret'" in f.message, link
-    assert _lint(vault, INDEX, INDEX_TEXT + "- [[secretive]] — another note\n_1 private thread(s) not listed._\n") == []
+    assert _lint(vault, INDEX, INDEX_TEXT + "- [[secretive]] — another note\n_1 private thread not listed._\n") == []
 
 
 def _private_thread(vault: Path) -> None:

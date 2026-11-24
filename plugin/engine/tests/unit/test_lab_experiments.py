@@ -256,7 +256,7 @@ def test_abandon_planned_and_running_but_not_done(tmp_path: Path) -> None:
         experiments.abandon(vault, "summary-drift", "E2", "again", now=LATE)
 
 
-def test_veto_only_from_planned(tmp_path: Path) -> None:
+def test_veto_from_planned(tmp_path: Path) -> None:
     vault = _vault(tmp_path)
     with pytest.raises(LabError, match="E1 is done"):
         experiments.veto(vault, "summary-drift", "E1", "alex", now=LATE)
@@ -269,6 +269,18 @@ def test_veto_only_from_planned(tmp_path: Path) -> None:
         experiments.veto(vault, "summary-drift", "E2", "alex", now=LATE)
     with pytest.raises(LabError, match="vetoed, not planned"):
         experiments.start(vault, "summary-drift", "E2", now=LATE)
+
+
+def test_veto_from_running(tmp_path: Path) -> None:
+    """A run can't pre-empt the owner by starting the experiment first: a running one is vetoed too."""
+    vault = _vault(tmp_path)
+    _clear_q3_comments(vault)
+    experiments.start(vault, "summary-drift", "E2", now=LATE)
+    exp = experiments.veto(vault, "summary-drift", "E2", "alex", now=LATE)
+    assert exp.status == "vetoed"
+    assert "· vetoed · 2026-11-21 — by alex" in _line(vault, "E2")
+    with pytest.raises(LabError, match="only a planned or running experiment can be vetoed"):
+        experiments.veto(vault, "summary-drift", "E1", "alex", now=LATE)
 
 
 def test_veto_allowed_on_paused_not_on_closed(tmp_path: Path) -> None:

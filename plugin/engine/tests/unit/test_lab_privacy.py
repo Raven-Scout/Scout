@@ -94,7 +94,7 @@ def test_private_spelled_otherwise_leaves_the_thread_out_of_lab_md(tmp_path: Pat
     ops.write_index(vault)
     index = paths.index_path(vault).read_text(encoding="utf-8")
     assert f"[[{SLUG}]]" not in index and "Keeping cached summaries" not in index
-    assert "_1 private thread(s) not listed._" in index
+    assert "_1 private thread not listed._" in index
     # and lint agrees: the thread counts as private, so lab.md must not list it and must count it
     assert index_findings(_Source(vault), index) == []
     listed = index.replace("## Active\n", f"## Active\n- [[{SLUG}]] — hi\n")

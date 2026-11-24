@@ -222,30 +222,30 @@ def test_concurrent_writers_both_land(tmp_path: Path) -> None:
 # --- proposals, run verbs, index --------------------------------------------------------
 
 
-def _propose(vault: Path, slug: str = "probe-drift") -> Thread:
+def _propose(vault: Path, slug: str = "cache-warmup") -> Thread:
     return ops.propose(
         vault,
         slug,
-        "Probe drift",
-        "Do linear probes drift across checkpoints?",
-        ["Does drift track data mix?"],
-        [("probe-notes", "background")],
+        "Cache warmup",
+        "Does a warm cache halve page load time?",
+        ["Does it depend on page size?"],
+        [("cache-notes", "background")],
         now=NOW,
     )
 
 
 def test_propose_creates_three_files_and_index(tmp_path: Path) -> None:
     assert _propose(tmp_path).status == "proposed"
-    t = parse_front_page("probe-drift", paths.front_page(tmp_path, "probe-drift").read_text(encoding="utf-8"))
+    t = parse_front_page("cache-warmup", paths.front_page(tmp_path, "cache-warmup").read_text(encoding="utf-8"))
     assert t.status == "proposed"
     assert t.problems == []
     assert [q.qid for q in t.open] == ["Q1"]
-    entries = parse_timeline(paths.timeline_path(tmp_path, "probe-drift").read_text(encoding="utf-8"))
+    entries = parse_timeline(paths.timeline_path(tmp_path, "cache-warmup").read_text(encoding="utf-8"))
     assert entries[0].tag == "proposal"
-    assert entries[0].bullets == ["**Proposed:** Do linear probes drift across checkpoints?"]
+    assert entries[0].bullets == ["**Proposed:** Does a warm cache halve page load time?"]
     index = paths.index_path(tmp_path).read_text(encoding="utf-8")
     needs = index.split("## Needs you")[1].split("## Active")[0]
-    assert "- [[probe-drift]] — Do linear probes drift across checkpoints?" in needs
+    assert "- [[cache-warmup]] — Does a warm cache halve page load time?" in needs
 
 
 def test_a_private_threads_timeline_says_it_is_private(tmp_path: Path) -> None:
@@ -272,7 +272,7 @@ def test_a_private_threads_timeline_says_it_is_private(tmp_path: Path) -> None:
     assert [e.tag for e in parse_timeline(again)] == ["owner", "owner", "proposal"]
     # A normal thread's timeline has no frontmatter.
     _propose(tmp_path)
-    assert paths.timeline_path(tmp_path, "probe-drift").read_text(encoding="utf-8").startswith("# Probe drift")
+    assert paths.timeline_path(tmp_path, "cache-warmup").read_text(encoding="utf-8").startswith("# Cache warmup")
 
 
 def test_propose_refuses_sixth_open_proposal(tmp_path: Path) -> None:
@@ -289,10 +289,10 @@ def test_propose_refuses_bad_or_existing_slug(tmp_path: Path) -> None:
     with pytest.raises(LabError, match="slug"):
         _propose(tmp_path, "Bad Slug")
     _propose(tmp_path)
-    before = paths.front_page(tmp_path, "probe-drift").read_bytes()
+    before = paths.front_page(tmp_path, "cache-warmup").read_bytes()
     with pytest.raises(LabError, match="already exists"):
         _propose(tmp_path)
-    assert paths.front_page(tmp_path, "probe-drift").read_bytes() == before
+    assert paths.front_page(tmp_path, "cache-warmup").read_bytes() == before
 
 
 def test_propose_failure_leaves_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -306,7 +306,7 @@ def test_propose_failure_leaves_nothing(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(ops, "atomic_write_text", flaky)
     with pytest.raises(OSError, match="disk full"):
         _propose(tmp_path)
-    assert not paths.thread_dir(tmp_path, "probe-drift").exists()
+    assert not paths.thread_dir(tmp_path, "cache-warmup").exists()
 
 
 def test_research_write_refused_on_paused(tmp_path: Path) -> None:
@@ -438,7 +438,7 @@ def test_write_index_sections_and_keeps_before_the_lab(tmp_path: Path) -> None:
     text = paths.index_path(vault).read_text(encoding="utf-8")
     sections = {s.split("\n", 1)[0].strip(): s for s in text.split("## ")[1:]}
     assert list(sections) == ["Needs you", "Active", "Paused", "Closed", "Before the lab"]
-    assert "[[probe-drift]]" in sections["Needs you"]
+    assert "[[cache-warmup]]" in sections["Needs you"]
     assert "[[summary-drift]] — What is the cheapest signal" in sections["Active"]
     assert "stale" not in text and "[[lab]]" not in text and "no-front-page" not in text
     assert "[[slow-one]]" in sections["Paused"]
@@ -468,7 +468,7 @@ def test_index_omits_private_threads_with_count(tmp_path: Path) -> None:
     ops.propose(vault, "secret-one", "Secret", "A hidden question?", [], [], visibility="private", now=NOW)
     text = paths.index_path(vault).read_text(encoding="utf-8")
     assert "secret-one" not in text and "hidden question" not in text
-    assert "_1 private thread(s) not listed._" in text
+    assert "_1 private thread not listed._" in text
     assert "[[summary-drift]]" in text
 
 

@@ -248,27 +248,27 @@ def test_set_experiment_line_rejects_bad_status() -> None:
 
 def test_new_front_page_parses_clean() -> None:
     text = new_front_page(
-        "probes",
-        "Do probes generalise: a test",
-        "Do linear probes transfer across model families?",
-        ["Do they survive fine-tuning?", "What about · middle dots?"],
-        [("probe-topic", "baseline results")],
+        "caching",
+        "Does caching help: a test",
+        "Does a warm cache help in every browser?",
+        ["Does it survive a restart?", "What about · middle dots?"],
+        [("cache-topic", "baseline results")],
         "2026-11-22",
         "normal",
     )
-    t = parse_front_page("probes", text)
+    t = parse_front_page("caching", text)
     assert t.problems == []
     assert t.status == "proposed"
-    assert t.title == "Do probes generalise: a test"
+    assert t.title == "Does caching help: a test"
     assert t.frontmatter["next_q"] == 3
     assert t.frontmatter["next_e"] == 1
     assert t.visibility == "normal"
     assert [q.qid for q in t.open] == ["Q1", "Q2"]
     assert t.open[1].text == "What about - middle dots?"
-    assert [e.target for e in t.evidence] == ["probe-topic"]
+    assert [e.target for e in t.evidence] == ["cache-topic"]
     out, qid = add_question(text, "Third?", "2026-11-23")
     assert qid == "Q3"
-    assert parse_front_page("probes", out).problems == []
+    assert parse_front_page("caching", out).problems == []
 
 
 def test_new_front_page_without_questions_or_evidence() -> None:

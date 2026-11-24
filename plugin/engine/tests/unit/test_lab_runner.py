@@ -9,6 +9,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -372,8 +373,9 @@ def test_the_owners_process_count_is_the_kernels(monkeypatch: pytest.MonkeyPatch
     """Asked of the kernel (the lowest RLIMIT_NPROC at which a helper can still fork), not read from ``ps``."""
     count = runner._owner_process_count()
     assert count is not None and count >= 1
-    ps = subprocess.run(["/bin/ps", "-A", "-o", "ruid="], capture_output=True, text=True).stdout.split()
-    assert count <= ps.count(str(os.getuid())) + 50  # in the neighbourhood of what ps lists (churn aside)
+    if sys.platform == "darwin":  # Linux's RLIMIT_NPROC counts threads, which ps doesn't list
+        ps = subprocess.run(["/bin/ps", "-A", "-o", "ruid="], capture_output=True, text=True).stdout.split()
+        assert count <= ps.count(str(os.getuid())) + 50  # in the neighbourhood of what ps lists (churn aside)
     monkeypatch.setattr(runner.subprocess, "run", lambda argv, **_: subprocess.CompletedProcess(argv, 1, "", ""))
     assert runner._owner_process_count() is None
     monkeypatch.setattr(runner.subprocess, "run", lambda argv, **_: subprocess.CompletedProcess(argv, 0, "x\n", ""))

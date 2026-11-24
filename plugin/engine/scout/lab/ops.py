@@ -17,7 +17,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
-from scout import config
+from scout import config, plural
 from scout.errors import LabError
 from scout.lab import paths, writer
 from scout.lab.model import CLOSE_PREFIX, Thread, TimelineEntry
@@ -474,7 +474,7 @@ def _render_index(vault: Path) -> str:
     except (OSError, UnicodeDecodeError):
         existing = ""
     if hidden:
-        out.extend([f"_{hidden} private thread(s) not listed._", ""])
+        out.extend([f"_{plural.count(hidden, 'private thread')} not listed._", ""])
     keep = _before_the_lab(existing)
     if keep:
         out.extend(keep)

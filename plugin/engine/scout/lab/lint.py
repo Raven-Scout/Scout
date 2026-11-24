@@ -19,6 +19,7 @@ from typing import Protocol
 
 import yaml
 
+from scout import plural
 from scout.errors import LabError
 from scout.kb.frontmatter import frontmatter_block
 from scout.kb.lint import Finding
@@ -40,7 +41,7 @@ _EID = re.compile(rf"(?<![\w-]){EID_RE}(?!\w)")
 _ID_BULLETS = ("- **Questions:**", "- **Steers handled:**")
 _EXPERIMENT_NAME = re.compile(rf"^(?P<slug>.+)-(?P<eid>{EID_RE})-.+\.md$")
 _LINK = re.compile(r"\[\[([^\]|#]+)")
-_PRIVATE_COUNT = re.compile(r"^_(\d+) private thread\(s\) not listed\._\s*$", re.MULTILINE)
+_PRIVATE_COUNT = re.compile(r"^_(\d+) private threads? not listed\._\s*$", re.MULTILINE)
 
 
 def _bad(rel: str, message: str, line: int | None = None) -> Finding:
@@ -375,7 +376,8 @@ def index_findings(source: Source, text: str | None) -> list[Finding]:
         out.append(
             _bad(
                 rel,
-                f"there are {private} private thread folder(s) but the '_<n> private thread(s) not listed._' "
+                f"there {plural.are(private)} {plural.count(private, 'private thread folder')} but the "
+                f"'_<n> private threads not listed._' "
                 f"line {say}",
             )
         )

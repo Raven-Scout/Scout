@@ -630,7 +630,7 @@ def test_second_experiment_in_one_run_hits_limit(vault: Path, fake_run: FakeRun)
     assert b.handle(dict(REQ)).exit == 0
     reply = b.handle(dict(REQ))
     assert reply.exit == broker.EXIT_LIMIT and reply.kind == broker.RUN_LIMIT
-    assert reply.stderr == "experiment refused: this run has run its 1 experiment(s)\n"
+    assert reply.stderr == "experiment refused: this run has run its 1 experiment\n"
     assert len(fake_run.calls) == 1 and b.experiments_run == 1
 
 
@@ -639,7 +639,7 @@ def test_the_owner_can_allow_more_experiments_a_run(vault: Path, fake_run: FakeR
     b = _broker(vault)
     assert [b.handle(dict(REQ)).exit for _ in range(3)] == [0, 0, broker.EXIT_LIMIT]
     assert [c["timeout_s"] for c in fake_run.calls] == [90, 90]
-    assert "its 2 experiment(s)" in b.handle(dict(REQ)).stderr
+    assert "its 2 experiments" in b.handle(dict(REQ)).stderr
 
 
 def test_a_runner_refusal_is_answered_and_still_uses_the_runs_allowance(
@@ -866,7 +866,7 @@ def test_the_client_runs_its_experiment_through_the_served_broker(
     assert len(fake_run.calls) == 1
     out = capsys.readouterr()
     assert "result line" in out.out and "progress line" in out.err
-    assert "this run has run its 1 experiment(s)" in out.err
+    assert "this run has run its 1 experiment" in out.err
     assert "broker: experiment -> exit 0" in out.out
 
 
@@ -1222,6 +1222,20 @@ def test_an_uncommitted_veto_set_back_to_running_is_still_refused(
     assert reply.stderr.startswith(f"experiment refused: vetoed: the owner vetoed {SLUG} {EID} at ")
     assert broker.client_experiment(SLUG, EID, ARGV, env=_owner_session_env(vault)) == broker.EXIT_REFUSED
     assert capsys.readouterr().err.splitlines()[-1].startswith("experiment refused: vetoed: ")
+    assert fake_run.calls == []
+
+
+def test_the_owner_can_veto_a_note_a_run_set_to_running_by_hand(vault: Path, fake_run: FakeRun) -> None:
+    """A run hand-edits ``status: running`` (lifecycle-only, so not dirty): the owner's veto still lands, in
+    the store first, and the broker refuses the experiment."""
+    from scout.lab import experiments
+
+    _set(vault, "status", "running")
+    assert experiments.veto(vault, SLUG, EID, "alex", now=AFTER_NOTICE).status == "vetoed"
+    assert [json.loads(line)["eid"] for line in _store().read_text(encoding="utf-8").splitlines()] == [EID]
+    _set(vault, "status", "running")  # the run puts it back; the store still holds the veto
+    reply = _broker(vault).handle(dict(REQ))
+    assert reply.exit == broker.EXIT_REFUSED and reply.stderr.startswith("experiment refused: vetoed: ")
     assert fake_run.calls == []
 
 
