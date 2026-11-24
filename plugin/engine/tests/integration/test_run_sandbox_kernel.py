@@ -484,3 +484,48 @@ def test_real_claude_finishes_a_session_inside_the_sandbox(world: World) -> None
     assert any((world.home / ".claude" / "projects").rglob("*.jsonl"))  # claude wrote its transcript
     assert json.loads((world.home / ".claude.json").read_text()) == {}  # and couldn't touch its config
     assert sys.platform == "darwin"
+
+
+# -- a HOME that isn't the account's home ----------------------------------------------------------------------
+
+
+def test_a_run_with_a_temp_home_cant_write_the_owner_stores_under_the_account_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _owner_store_follows_home
+) -> None:
+    """The changes map's owner store is found under the account's home (pwd), whatever HOME says. A run started
+    with HOME set to a temp dir is still refused, by the kernel, a write into it (the run-commit ledger, the
+    owner's engagement rows) and into the run brokers' folder (limits, counts, the Lab's vetoes)."""
+    import pwd
+    import types
+
+    from scout.changes import store
+
+    root = tmp_path.resolve()
+    account = root / "account"
+    account.mkdir()
+    monkeypatch.setattr(hook_paths, "account_home", _owner_store_follows_home)  # the real lookup
+    monkeypatch.setattr(pwd, "getpwuid", lambda _uid: types.SimpleNamespace(pw_dir=str(account)))
+    w = World(root)
+    assert Path(w.env["HOME"]) != account
+    owner = store.owner_dir(w.env)
+    assert owner.is_relative_to(account)
+    state = account / ".local" / "state" / "scout"
+    brokers = state / hook_paths.RUN_BROKERS_NAME
+    for folder in (owner, brokers):
+        folder.mkdir(parents=True, exist_ok=True)  # outside the sandbox: only the run's write is judged
+    for target in (
+        owner / "run-commits.jsonl",
+        owner / "engagement.jsonl",
+        brokers / "lab-vetoes.jsonl",
+        state / hook_paths.SANDBOX_SWITCH_NAME,
+    ):
+        res = w.sh(f"printf '{{}}\\n' >> '{target}'")
+        assert res.returncode != 0, (target, res.stderr)
+        assert not target.exists(), target
+        assert sbx.decide(w.rules, str(target)) == "deny", target
+    moved = w.sh(f"mv '{owner}' '{owner}.old'")
+    assert moved.returncode != 0 and owner.is_dir()
+    ordinary = account / "Documents" / "x.txt"
+    ordinary.parent.mkdir()
+    assert w.sh(f"printf x > '{ordinary}'").returncode == 0  # the account's home isn't denied as a whole
+    assert ordinary.read_text() == "x"
