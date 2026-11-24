@@ -227,6 +227,22 @@ def _deny_unresolved(form: str) -> str:
     )
 
 
+# A run's read of a path the gate can't work out is denied, as a write of one is (#637 round 3): the shell may
+# fill it in with a KB note. False only allows those reads again (the KB reads it can work out stay denied).
+DENY_UNRESOLVED_READS = True
+
+
+def _deny_unresolved_read() -> str:
+    return (
+        f"{MARK} In a scheduled run, a shell command doesn't read a file whose path Scout's gate can't work out: "
+        "this one reads a path built from a command substitution, a backtick, a variable the command doesn't set, "
+        "or xargs input it can't see (it follows echo, printf, git ls-files, find, grep -l and rg -l piped straight "
+        "in), and it may be a knowledge-base/ note. Write the "
+        "path out, or set the variable in the same command (`d=docs; cat $d/a.md`); `$(date +%F)` in a file name "
+        f"is fine. {_REPLACEMENT}"
+    )
+
+
 def _deny_inline_write(form: str) -> str:
     return (
         f"{MARK} This command runs {form}: a program that writes files and names a file that decides which of "
@@ -369,7 +385,7 @@ def decide(
         if not isinstance(command, str):
             raise ValueError("Bash call without a command")
         from scout.kb import hook_paths
-        from scout.kb.live_run import DELEGATE_FORM, run_escape
+        from scout.kb.live_run import DELEGATE_FORM, KB_READ, UNRESOLVED_READ, run_escape
 
         def resolve(raw: str) -> str | None:
             """The path a word names, with the environment's variables put in; None when the shell fills in
@@ -400,7 +416,7 @@ def decide(
             if target is None:
                 return None
             # A glob reads whatever it matches: judge each match, and the literal spelling (`.scout-in*/agents/*`).
-            targets = _glob_targets(target)
+            targets = globs(target)
             if targets is None:
                 return hook_paths.TOO_MANY  # fail closed: a hook that times out allows the call
             for one in targets:
@@ -409,9 +425,42 @@ def decide(
                     return found
             return None
 
-        escape = run_escape(command, protect=protect, secret=secret)
+        def kb_read(raw: str, covers: bool) -> str | None:
+            """A reading command's file, as the shell hands it over: a KB note (after its glob, if any), or a path
+            the gate can't work out (a substitution, a variable the command doesn't set, unseen xargs input).
+            ``covers``: the command reads files below it (an xargs lister's root), so a folder holding the KB counts."""
+            target = resolve(raw)
+            if target is None:
+                return UNRESOLVED_READ if DENY_UNRESOLVED_READS else None
+            targets = globs(target)
+            if targets is None:
+                return hook_paths.TOO_MANY
+            for one in targets:
+                here = paths.resolve_path(one)
+                rel = _vault_rel(vault, here)
+                if rel is None:
+                    if covers and vault.resolve().is_relative_to(here):
+                        return KB_READ  # a folder above the vault
+                elif rel != "." and is_kb_path(rel):
+                    return KB_READ
+                elif covers and (rel == "." or any(d.startswith(rel + "/") for d in KB_DIRS)):
+                    return KB_READ
+            return None
+
+        memo: dict[str, list[str] | None] = {}
+
+        def globs(target: str) -> list[str] | None:
+            if target not in memo:
+                memo[target] = _glob_targets(target)
+            return memo[target]
+
+        escape = run_escape(command, protect=protect, secret=secret, kb_read=kb_read)
         if escape == "env":
             return _deny_run_env()
+        if escape == KB_READ:
+            return _deny_bash()
+        if escape == UNRESOLVED_READ:
+            return _deny_unresolved_read()
         if escape == DELEGATE_FORM:
             return _deny_delegate_write()
         if escape == "detach":

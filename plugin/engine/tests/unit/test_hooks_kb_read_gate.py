@@ -725,7 +725,8 @@ def test_a_glob_too_wide_to_judge_is_refused_fast(vault: Path, command: str) -> 
     started = time.monotonic()
     reason = _denied(_decision(vault, "Bash", {"command": command}))
     assert time.monotonic() - started < 5  # the hook's own timeout is 15 s
-    assert "more files than Scout's gate checks" in reason
+    # The first form in the text names the deny: a KB read before the wide glob is denied as one.
+    assert "more files than Scout's gate checks" in reason or "knowledge-base/" in reason
 
 
 def test_a_glob_with_too_many_matches_is_refused(vault: Path) -> None:
