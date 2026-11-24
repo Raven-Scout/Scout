@@ -109,10 +109,12 @@ from scout.kb.git_io import (
     SYMLINK_MODE,
     StagedPath,
     head_blob,
+    head_paths,
     head_text_lossy,
     index_modes,
     index_text_lossy,
     staged_blob,
+    staged_gitlinks,
     staged_paths,
     staged_text_lossy,
     tracked_files,
@@ -196,6 +198,16 @@ _MESSAGES = {
     "engine-file-link": "a scheduled run may not make a settings file a symlink, or a linked one a file "
     "(scout-config.yaml, any file at the top of the vault or in a dot-folder, any .yaml, .yml, .json or .toml): "
     "git stores a link as its target's name, and Scout reads the file behind it — leave that to the owner",
+    "settings-file-case": "this settings file's name differs only in case (or Unicode form) from one Scout reads "
+    "or one already in the vault. A disk that ignores case holds them as one file, so what Scout reads isn't what "
+    "the commit shows under the usual name. Use the usual spelling",
+    "settings-file-case-run": "a scheduled run may not add or rename a settings file under a name that differs "
+    "only in case from one Scout reads or one already in the vault — leave that to the owner",
+    "gitlink": "this path is a gitlink (a submodule's entry), so it has no content the checks can read",
+    "gitlink-run": "a scheduled run may not add or change a gitlink (a submodule's entry): what it brings in "
+    "can't be checked — leave that to the owner",
+    "config-removed": "a scheduled run may not take scout-config.yaml out of the commit while it holds a "
+    "privacy: block or is still on this computer — leave that to the owner",
     "config-link": "scout-config.yaml is a symlink: this commit is checked as if the file held the link's target "
     "name, while Scout reads the file behind it. Commit the settings as a regular file",
     "privacy-overlay-unreadable": "scout-config.yaml doesn't parse, so the engine's default privacy policy applies, "
@@ -251,6 +263,7 @@ class _Ctx:
     _index: tuple[dict[str, tuple[str, str]], dict[str, str], frozenset[str]] | None = None
     _sync: tuple[Any, tuple[str, ...], bool] | None = None
     _home: LocalOnlyRules | None = None
+    _head_names: dict[str, set[str]] | None = None
 
     @property
     def shared_edits_checked(self) -> bool:
@@ -295,6 +308,15 @@ class _Ctx:
             clashes.update(files.keys() & folders.keys())
             self._index = (files, folders, frozenset(clashes))
         return self._index
+
+    def head_names(self) -> dict[str, set[str]]:
+        """HEAD's paths by :func:`scout.repo_sync.fold` of each."""
+        if self._head_names is None:
+            names: dict[str, set[str]] = {}
+            for path in head_paths(self.repo):
+                names.setdefault(fold(path), set()).add(path)
+            self._head_names = names
+        return self._head_names
 
     def sync_inputs(self) -> tuple[Any, tuple[str, ...], bool]:
         """What repo sync adds to the policies' Local-Only rules: the upload allowlist pinned for the
@@ -449,10 +471,20 @@ def privacy_staged(repo: Path, *, env: Mapping[str, str]) -> list[Finding]:
             raise PolicyUnreadable("the commit's scout-config.yaml doesn't parse")
         out.append(Finding(CONFIG_FILE, "privacy-overlay-unreadable", False, _MESSAGES["privacy-overlay-unreadable"]))
     paths = staged_paths(repo)
+    for rel in staged_gitlinks(repo):
+        if ctx.scheduled:
+            out.append(Finding(rel, "privacy-widening", True, _MESSAGES["gitlink-run"]))
+        elif _engine_file(rel) or _md(rel):
+            out.append(Finding(rel, "settings-file-replaced", False, _MESSAGES["gitlink"]))
     if ctx.scheduled:
         out += _local_only_moves(ctx, paths)
     for sp in paths:
         rel = sp.rel
+        if _engine_file(rel) and _other_spelling(ctx, rel):
+            if ctx.scheduled:
+                out.append(Finding(rel, "privacy-widening", True, _MESSAGES["settings-file-case-run"]))
+                continue
+            out.append(Finding(rel, "settings-file-replaced", False, _MESSAGES["settings-file-case"]))
         if (sp.symlink or sp.type_change) and _engine_file(rel):
             if ctx.scheduled:
                 out.append(Finding(rel, "privacy-widening", True, _MESSAGES["engine-file-link"]))
@@ -474,9 +506,13 @@ def privacy_staged(repo: Path, *, env: Mapping[str, str]) -> list[Finding]:
             if _facts(rel, staged).declared == "none" and not shared_sources(_head_window(rel, staged)):
                 continue  # R23: a note declaring federation_scope is shared wherever it lives
         out += _file_findings(ctx, sp, staged if staged is not None else staged_text_lossy(repo, rel))
-    if ctx.scheduled and ctx.config_removed and _privacy_block(_config_data(ctx.head_config)) is not None:
-        # Deleting the config drops its privacy: block (staged_paths lists no deletions).
-        out.append(Finding(CONFIG_FILE, "privacy-widening", True, _MESSAGES["config-widening"]))
+    if ctx.scheduled and ctx.config_removed:
+        # Deleting the config drops its privacy: block (staged_paths lists no deletions). And one that is
+        # still on disk, under any spelling the disk may open as this name, is still the policy Scout reads.
+        if _privacy_block(_config_data(ctx.head_config)) is not None:
+            out.append(Finding(CONFIG_FILE, "privacy-widening", True, _MESSAGES["config-widening"]))
+        elif _config_on_disk(repo):
+            out.append(Finding(CONFIG_FILE, "privacy-widening", True, _MESSAGES["config-removed"]))
     return out
 
 
@@ -489,6 +525,37 @@ def _engine_file(rel: str) -> bool:
     a dot-file, or a settings format anywhere. Wider than the files the engine reads today, on purpose."""
     parts = rel.split("/")
     return len(parts) == 1 or any(p.startswith(".") for p in parts) or rel.lower().endswith(_SETTINGS_SUFFIXES)
+
+
+# Settings files Scout or its host reads by name: another spelling of one is never an ordinary file.
+_SETTINGS_NAMES = {
+    fold(name): name
+    for name in (
+        CONFIG_FILE,
+        "connectors.custom.yaml",
+        ".mcp.json",
+        ".scout-state/schedule.yaml",
+        ".scout-state/triggers.yaml",
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+    )
+}
+
+
+def _other_spelling(ctx: _Ctx, rel: str) -> bool:
+    """Whether ``rel`` is a second spelling of a name: of a settings file Scout reads, of a path at
+    HEAD, or of another entry in the commit. A disk that ignores case holds the two as one file."""
+    key = fold(rel)
+    return (
+        _SETTINGS_NAMES.get(key, rel) != rel
+        or key in ctx.index()[2]
+        or any(path != rel for path in ctx.head_names().get(key, ()))
+    )
+
+
+def _config_on_disk(repo: Path) -> bool:
+    key = fold(CONFIG_FILE)
+    return any(fold(entry.name) == key for entry in repo.iterdir())
 
 
 _LINK_HOPS = 8  # how many links a link may lead through; more reads as a loop

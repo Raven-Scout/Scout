@@ -1466,6 +1466,63 @@ def test_a_run_may_not_turn_a_linked_engine_file_back_into_a_file(vault: Path) -
     assert checks(vault) == []
 
 
+_REPLACED = "settings-file-replaced"
+
+
+@pytest.mark.parametrize("name", ["Scout-Config.yaml", "SCOUT-CONFIG.YAML"])
+def test_a_run_may_not_rename_the_config_to_another_case(vault: Path, name: str) -> None:
+    """Git then has no ``scout-config.yaml``, and a case-insensitive disk still opens the renamed file as it."""
+    stage(vault, _CONFIG, "vault_name: demo\n")  # no privacy: block, as in a new vault
+    commit(vault, "the owner's config")
+    git(vault, "mv", _CONFIG, name)
+    stage(vault, name, _WIDER)
+    assert (name, "privacy-widening", True, None) in checks(vault, RUN)
+    assert hook(vault, RUN)[0] != 0
+    assert (name, _REPLACED, False, None) in checks(vault)
+
+
+@pytest.mark.parametrize(
+    ("rel", "twin"),
+    [(_CONFIG, "Scout-Config.yaml"), ("connectors.custom.yaml", "Connectors.Custom.yaml"), (".mcp.json", ".MCP.json")],
+)
+def test_a_run_may_not_add_a_settings_file_under_a_second_spelling(vault: Path, rel: str, twin: str) -> None:
+    """Two index entries a case-insensitive disk holds as one file: the last one checked out wins."""
+    stage(vault, rel, "vault_name: demo\n")
+    commit(vault, "the owner's file")
+    git(vault, "update-index", "--add", "--cacheinfo", "100644", _blob(vault, _WIDER), twin)
+    assert (twin, "privacy-widening", True, None) in checks(vault, RUN)
+    assert (twin, _REPLACED, False, None) in checks(vault)
+
+
+def test_a_run_may_not_drop_a_config_that_is_still_on_disk(vault: Path) -> None:
+    """Untracked, it is still the policy Scout reads, and now no commit shows what it says."""
+    stage(vault, _CONFIG, "vault_name: demo\n")
+    commit(vault, "the owner's config")
+    git(vault, "rm", "-q", "--cached", _CONFIG)
+    assert checks(vault, RUN) == [(_CONFIG, "privacy-widening", True, None)]
+    assert checks(vault) == []
+
+
+def _index_gitlink(vault: Path, rel: str) -> None:
+    git(vault, "update-index", "--add", "--cacheinfo", "160000", git(vault, "rev-parse", "HEAD").strip(), rel)
+
+
+@pytest.mark.parametrize("rel", [_CONFIG, "knowledge-base/topics/misc/sub.md", ".scout-state"])
+def test_a_gitlink_is_reported_not_read(vault: Path, rel: str) -> None:
+    """A gitlink (a submodule's entry) has no text to read: it is named, and a run's is refused."""
+    _index_gitlink(vault, rel)
+    assert (rel, _REPLACED, False, None) in checks(vault)
+    assert (rel, "privacy-widening", True, None) in checks(vault, RUN)
+    hook(vault)  # the other lint rules don't read it either
+    assert hook(vault, RUN)[0] != 0
+
+
+def test_a_runs_gitlink_anywhere_is_refused(vault: Path) -> None:
+    _index_gitlink(vault, "notes/sub")
+    assert checks(vault) == []
+    assert checks(vault, RUN) == [("notes/sub", "privacy-widening", True, None)]
+
+
 # ----- a run changing a non-note file in a share (#594) ---------------------------
 
 SHARED = "knowledge-base/topics/misc/"

@@ -85,6 +85,7 @@ WARNING_CHECKS = frozenset(
         "privacy-overlay-unreadable",
         "local-only-unchecked",
         "link-leaves-scope",
+        "settings-file-replaced",
         "page-config",
         "lab-understanding-size",
     }

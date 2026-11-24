@@ -47,6 +47,7 @@ def main_root(repo: Path) -> Path:
 
 
 SYMLINK_MODE = "120000"
+GITLINK_MODE = "160000"  # a submodule's entry: a commit id, no blob to read
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ class StagedPath:
     head_rel: str | None
     symlink: bool = False
     type_change: bool = False
+    gitlink: bool = False
 
 
 def _has_head(repo: Path) -> bool:
@@ -67,7 +69,22 @@ def _has_head(repo: Path) -> bool:
 
 def staged_paths(repo: Path) -> list[StagedPath]:
     """What the commit adds, changes, renames or copies. A type change (``T``: a file replaced by a
-    symlink, or the reverse) is a modification: the path existed at HEAD and its content is new (#606)."""
+    symlink, or the reverse) is a modification: the path existed at HEAD and its content is new (#606).
+    Gitlinks are left out: they have no content to check (:func:`staged_gitlinks` lists them)."""
+    return [sp for sp in _staged(repo) if not sp.gitlink]
+
+
+def staged_gitlinks(repo: Path) -> list[str]:
+    """The paths the commit makes a gitlink (a submodule's entry), or whose gitlink it changes."""
+    return [sp.rel for sp in _staged(repo) if sp.gitlink]
+
+
+def head_paths(repo: Path) -> set[str]:
+    """Every path at HEAD (empty before the first commit)."""
+    return _names(repo, "ls-tree", "-r", "-z", "--name-only", "HEAD") if _has_head(repo) else set()
+
+
+def _staged(repo: Path) -> list[StagedPath]:
     out = git(repo, "diff", "--cached", "--raw", "-z", "-M", "--abbrev=1", "--diff-filter=ACMRT").stdout
     parts = [p for p in out.split("\0") if p]
     result: list[StagedPath] = []
@@ -75,14 +92,14 @@ def staged_paths(repo: Path) -> list[StagedPath]:
     while i < len(parts):
         # ":<HEAD mode> <staged mode> <HEAD sha> <staged sha> <status>[score]", then the path or paths.
         _, mode, _, _, status = parts[i].split(" ")
-        symlink = mode == SYMLINK_MODE
+        symlink, gitlink = mode == SYMLINK_MODE, mode == GITLINK_MODE
         if status[0] in "RC":
             src, dst = parts[i + 1], parts[i + 2]
-            result.append(StagedPath(dst, src if status[0] == "R" else None, symlink))
+            result.append(StagedPath(dst, src if status[0] == "R" else None, symlink, gitlink=gitlink))
             i += 3
         else:
             rel = parts[i + 1]
-            result.append(StagedPath(rel, rel if status[0] in "MT" else None, symlink, status[0] == "T"))
+            result.append(StagedPath(rel, rel if status[0] in "MT" else None, symlink, status[0] == "T", gitlink))
             i += 2
     return result
 
