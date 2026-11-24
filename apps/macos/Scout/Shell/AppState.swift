@@ -219,6 +219,10 @@ final class AppState: ObservableObject {
         )
 
         let git = GitService(repoURL: scoutDir, runner: runner)
+        // The git the app's writers commit through. Each successful commit counts as one app edit
+        // (engagement); `changesDecisions` is built further down, so the recorder is bound to it there.
+        let engagement = EngagementRecorder()
+        let appEditGit = EngagementRecordingGit(base: git, record: { await engagement.record() })
         let tracker = UsageTrackerService(
             trackerURL: scoutDir.appendingPathComponent(".scout-logs/usage-tracker.jsonl"),
             fileEvents: events
@@ -301,7 +305,7 @@ final class AppState: ObservableObject {
             actionItemsDirectory: actionItemsDir,
             scoutDirectory: scoutDir,
             runner: runner,
-            gitService: git
+            gitService: appEditGit
         )
         let boardWriter = BoardWriter(
             scoutctl: scoutctlExe,
@@ -309,7 +313,7 @@ final class AppState: ObservableObject {
             actionItemsDirectory: actionItemsDir,
             scoutDirectory: scoutDir,
             runner: runner,
-            git: git
+            git: appEditGit
         )
         let writerBox = ActionItemsWriterBox(writer: writerActor, boardWriter: boardWriter)
         let envState = ActionItemsEnvironmentState()
@@ -326,12 +330,12 @@ final class AppState: ObservableObject {
             return scoutDir.appendingPathComponent(config.directoryDefaultRelative)
         }
         let researchDoc = PerFileDocumentService(directoryURL: perFileDir(.research), fileEvents: events)
-        let perFileWriter = PerFileItemWriter(scoutDirectory: scoutDir, gitService: git)
+        let perFileWriter = PerFileItemWriter(scoutDirectory: scoutDir, gitService: appEditGit)
         let perFileWriterBox = PerFileItemWriterBox(writer: perFileWriter)
 
         // Knowledge Base: tree service over `knowledge-base/` + whole-file writer.
         let kbService = KnowledgeBaseService(scoutDirectory: scoutDir, fileEvents: events)
-        let kbWriter = KnowledgeBaseFileWriter(scoutDirectory: scoutDir, gitService: git)
+        let kbWriter = KnowledgeBaseFileWriter(scoutDirectory: scoutDir, gitService: appEditGit)
         let kbWriterBox = KnowledgeBaseWriterBox(writer: kbWriter)
         let kbPrivacy = KBPrivacyLabelService(
             scoutctl: scoutctlExe,
@@ -396,11 +400,13 @@ final class AppState: ObservableObject {
             fileEvents: events
         )
         self.changesService = changesService
-        self.changesDecisions = ChangesDecisions(
+        let changesDecisions = ChangesDecisions(
             runner: runner,
             environment: ["SCOUT_DATA_DIR": scoutDir.path],
             scoutctl: gatedEngine
         )
+        self.changesDecisions = changesDecisions
+        engagement.bind(changesDecisions)
         self.resolvePromptService = resolvePrompt
         self.engineRelease = configuration.engineRelease
         self.engineTarballURL = configuration.engineTarballURL

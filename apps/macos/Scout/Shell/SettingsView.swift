@@ -167,6 +167,12 @@ struct SettingsView: View {
                 }
             }
         }
+
+        section(label: "Changes map") {
+            SettingsCard {
+                ChangesMapSettingsSection(decisions: appState.changesDecisions)
+            }
+        }
     }
 
     @ViewBuilder private var engineTab: some View {

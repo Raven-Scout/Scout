@@ -34,6 +34,7 @@ struct ChangesView: View {
             // A VStack, not a LazyVStack: the same height-estimation loop as #83.
             VStack(alignment: .leading, spacing: 16) {
                 header
+                if Self.showsConsentCard(decisions.consent) { ConsentCard(decisions: decisions) }
                 content
             }
             .frame(maxWidth: 920, alignment: .leading)
@@ -56,8 +57,16 @@ struct ChangesView: View {
         .task {
             // AppState reads at launch; this covers a window opened before the engine was ready.
             if case .idle = service.state { await service.refresh() }
+            // The owner's out-of-vault answer: read when the tab appears, and again after each refresh.
+            _ = await decisions.perform(.consentShow)
+        }
+        .onChange(of: service.snapshot) { _, _ in
+            Task { _ = await decisions.perform(.consentShow) }
         }
     }
+
+    /// The question shows only once the engine has said "not asked"; unread or unreadable shows nothing.
+    static func showsConsentCard(_ answer: ConsentAnswer) -> Bool { answer == .notAsked }
 
     // MARK: - Header
 

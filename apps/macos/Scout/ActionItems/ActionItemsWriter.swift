@@ -238,7 +238,7 @@ actor ActionItemsWriter {
     private let actionItemsDirectory: URL
     private let scoutDirectory: URL
     private let runner: any ProcessRunner
-    private let gitService: GitService?
+    private let gitService: (any GitServiceProtocol)?
 
     /// Tail of the serial task chain. Each new submission awaits the previous
     /// task's completion before running, giving us a true serial queue on top
@@ -252,7 +252,7 @@ actor ActionItemsWriter {
         actionItemsDirectory: URL,
         scoutDirectory: URL,
         runner: any ProcessRunner,
-        gitService: GitService?
+        gitService: (any GitServiceProtocol)?
     ) {
         self.scoutctl = scoutctl
         self.argumentsPrefix = argumentsPrefix
@@ -311,7 +311,7 @@ actor ActionItemsWriter {
         actionItemsDirectory: URL,
         scoutDirectory: URL,
         runner: any ProcessRunner,
-        gitService: GitService?
+        gitService: (any GitServiceProtocol)?
     ) async throws -> WriteResult {
         let dateISO = ActionItemsDay.stem(for: displayedDate)
         let dailyFile = actionItemsDirectory.appendingPathComponent("action-items-\(dateISO).md")
