@@ -137,6 +137,7 @@ def result_dict(
         "snapshots_recorded": list(getattr(result, "snapshots_recorded", None) or []),
         "skipped": list(getattr(result, "skipped", None) or []),
         "conflict_markers": list(getattr(result, "conflict_markers", None) or []),
+        "installed": list(getattr(result, "installed", None) or []),
         "vault_edits": [
             {
                 "path": e.path,

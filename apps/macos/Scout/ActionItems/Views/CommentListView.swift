@@ -4,10 +4,10 @@ import SwiftUI
 /// SCOUT-generated lines, `// user` for human replies, in mono; comment
 /// body in serif. Sits in a sunk panel with a left hairline rule.
 ///
-/// Each comment row exposes hover-revealed edit/delete affordances backed
-/// by `scoutctl action-items edit-comment` / `delete-comment`. The 1-based
-/// `index` here counts the comments shown; the card maps it to scoutctl's
-/// `--index`, which also counts `/scout-plan` markers, through
+/// Each comment row that `scoutctl` can address exposes hover-revealed
+/// edit/delete affordances backed by `scoutctl action-items edit-comment` /
+/// `delete-comment`. The 1-based `index` here counts the comments shown; the
+/// card maps it to scoutctl's `--index` through
 /// `ActionTask.commentSelector(at:)`.
 struct CommentListView: View {
     let comments: [TaskComment]
@@ -17,6 +17,14 @@ struct CommentListView: View {
     /// Invoked when the user clicks delete on a comment. The closure
     /// receives the 1-based index of the comment.
     var onDelete: ((Int) async -> Void)? = nil
+
+    /// Edit and delete show only for a comment `scoutctl` can reach by
+    /// `--index`. For any other form (an inline `//==<< … >>==//` note, a
+    /// quote line, a comment after a blank line) the index would be a guess,
+    /// and a guess can land on another task's line (#556).
+    static func offersActions(_ comment: TaskComment, canEdit: Bool, canDelete: Bool) -> Bool {
+        comment.engineIndex != nil && (canEdit || canDelete)
+    }
 
     var body: some View {
         if comments.isEmpty {
@@ -74,7 +82,7 @@ private struct CommentRow: View {
                             .foregroundStyle(DS.Ink.p4)
                     }
                     Spacer(minLength: 8)
-                    if hovering && !editing, (onEdit != nil || onDelete != nil) {
+                    if hovering && !editing, CommentListView.offersActions(comment, canEdit: onEdit != nil, canDelete: onDelete != nil) {
                         actions
                     }
                 }

@@ -348,6 +348,9 @@ if [ -n "$BROKER_DIR" ]; then
         echo "=== claude-with-retry: run brokers on: commits and Telegram go through the broker ===" >> "$LOG_FILE"
     else
         echo "=== claude-with-retry: run brokers unavailable (exit $broker_rc); the run keeps the 1c sandbox ===" >> "$LOG_FILE"
+        # Whatever `broker profile` recorded, this run is not tightened: say so, so its commits come from git.
+        "$SCOUTCTL_BIN" broker profile --unapplied --vault "$BROKER_VAULT" --dir "$BROKER_DIR" \
+            < /dev/null >> "$LOG_FILE" 2>&1 || true
     fi
     unset broker_rc BROKER_PROFILE
 fi

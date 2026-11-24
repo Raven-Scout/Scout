@@ -42,6 +42,7 @@ def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (v / ".scout-state" / "last-assembled").mkdir(parents=True)
     for name in ("SKILL", "DREAMING", "RESEARCH", "RESPOND"):
         (v / ".scout-state" / "last-assembled" / f"{name}.md").write_text("x\n", encoding="utf-8")
+        (v / f"{name}.md").write_text("x\n", encoding="utf-8")
     (v / ".scout-state" / "schedule.yaml").write_text("schema_version: 1\nslots: {}\n", encoding="utf-8")
     (v / "scout-config.yaml").write_text(
         "plugin:\n  version_at_last_setup: 0.18.0\n  version_at_last_update: 0.18.0\n", encoding="utf-8"

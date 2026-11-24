@@ -557,3 +557,187 @@ def test_shell_split_and_substitution_edges() -> None:
 )
 def test_edge_forms_into_the_kb_are_flagged(command: str) -> None:
     assert raw_kb_read(command, cwd=VAULT, vault=VAULT, env={"HOME": "/home/alex"})
+
+
+# ----- #541: a vault-rooted recursive search filtered to a data format the KB holds -----------------
+
+# The four forms the issue names.
+ISSUE_541_FORMS = [
+    "grep -r Priya .",
+    "rg Priya",
+    "find . -name '*.yaml'",
+    "grep -r Priya . --include='*.yaml'",
+]
+
+
+@pytest.mark.parametrize("command", ISSUE_541_FORMS)
+def test_issue_541_forms_are_flagged_from_the_vault_root_and_above(command: str) -> None:
+    assert raw_kb_read(command, cwd=VAULT, vault=VAULT)
+    assert raw_kb_read(command, cwd="/home/alex", vault=VAULT)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "grep -rn --include=*.yaml Priya",
+        "grep -r --include '*.yml' Priya .",
+        "grep -rl Priya --include=*.csv .",
+        "rg Priya -g '*.yaml'",
+        "rg Priya --glob='*.{yaml,yml}' .",
+        "rg -l Priya --iglob '*.JSON'",
+        "rg Priya -g '**/*.csv'",
+        "rg -t yaml Priya",
+        "rg --type=json Priya .",
+        "rg -tcsv Priya",
+        "rg Priya -g '*.txt'",
+    ],
+)
+def test_a_data_file_filter_does_not_bound_a_vault_rooted_search(command: str) -> None:
+    assert judged(command)
+    assert judged(command, cwd="/home/alex")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # rooted outside the KB
+        "grep -r Priya scripts --include='*.yaml'",
+        "rg Priya -g '*.yaml' .scout-logs",
+        "rg -t json Priya .scout-cache",
+        "find scripts -name '*.yaml'",
+        "cd /tmp && grep -r Priya . --include='*.yaml'",
+        "rg Priya .scout-logs/",
+        "rg -n Priya scripts/ docs/",
+        # filtered to a folder that isn't the KB
+        "rg Priya -g 'scripts/*.yaml'",
+        "rg Priya -g '.scout-logs/**/*.json'",
+        "rg Priya -g 'action-items/*.md'",
+        # filtered to code, or to a format the KB keeps no facts in
+        "grep -r Priya . --include='*.py'",
+        "rg Priya -g '*.sh'",
+        "rg -t py Priya",
+        "rg -tpy Priya",
+        "rg Priya -g '*.jsonl'",
+        "rg Priya -g '*.log'",
+        # the KB excluded (`--exclude-dir=knowledge-base` names a KB path, which main already denies)
+        "rg Priya -g '*.yaml' -g '!knowledge-base/**' -g '!action-items/context/**'",
+    ],
+)
+def test_a_data_file_search_kept_out_of_the_kb_is_allowed(command: str) -> None:
+    assert not judged(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # ripgrep ignores -t when an include glob is given: these search the glob's files
+        "rg x -g '*.md' -tpy",
+        "rg -t py -g '*.md' x",
+        "rg -tpy -g '*.yaml' x",
+        "rg x --type=py --glob='*.json'",
+        "rg x --type py --iglob '*.MD'",
+        # an html page the KB keeps
+        "rg x -g '*.html'",
+        "rg -t html x",
+    ],
+)
+def test_an_rg_type_does_not_bound_an_include_glob_that_reaches_the_kb(command: str) -> None:
+    assert judged(command)
+    assert judged(command, cwd="/home/alex")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rg -tpy x",
+        "rg -t py x -g '!knowledge-base/**'",  # a negated glob is no include: the type still bounds it
+        "rg -t py -g '*.py' x",
+    ],
+)
+def test_an_rg_type_bounds_a_search_with_no_include_glob(command: str) -> None:
+    assert not judged(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ag Priya knowledge-base",
+        "ack Priya knowledge-base/people.md",
+        "fd people knowledge-base",
+        "ugrep -r x knowledge-base",
+    ],
+)
+def test_other_search_tools_naming_the_kb_are_flagged(command: str) -> None:
+    assert raw_kb_read(command)
+
+
+def test_a_data_file_search_below_the_vault_root_is_allowed() -> None:
+    assert not judged("grep -r Priya . --include='*.yaml'", cwd=f"{VAULT}/scripts")
+    assert judged("grep -r Priya . --include='*.yaml'", cwd=f"{VAULT}/knowledge-base/ontology")
+
+
+def test_a_data_file_search_from_the_vault_root_is_denied_by_the_hook(vault) -> None:  # noqa: F811
+    assert _denied(_decision(vault, "Bash", {"command": "grep -r Priya . --include='*.yaml'"}))
+    assert _decision(vault, "Bash", {"command": "grep -r Priya scripts --include='*.yaml'"}) is None
+
+
+# ----- ag, ack, fd, ugrep from the vault root ------------------------------------------------
+
+OTHER_TOOL_ROOT_FORMS = [
+    "ag Priya",
+    "ag Priya .",
+    "ag -l Priya",
+    "ag -g people",
+    "ack Priya",
+    "ack -f",
+    "fd people",
+    "fd",
+    "fd . -X cat",
+    "fd -e yaml -x cat {}",
+    "fd -e md people",
+    "ugrep -r Priya .",
+    "ugrep -r Priya . --include='*.yaml'",
+    "ugrep -rn Priya -g '*.json'",
+]
+
+
+@pytest.mark.parametrize("command", OTHER_TOOL_ROOT_FORMS)
+def test_other_search_tools_from_the_vault_root_are_flagged(command: str) -> None:
+    assert judged(command)
+    assert judged(command, cwd="/home/alex")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ag Priya scripts",
+        "ack Priya scripts/",
+        "fd people scripts",
+        "fd people --search-path scripts",
+        "fd -e py",
+        "fd -e sh -X cat",
+        "ugrep -r Priya scripts",
+        "ugrep -r Priya . --include='*.py'",
+        "ugrep Priya notes.txt",
+    ],
+)
+def test_other_search_tools_kept_out_of_the_kb_are_allowed(command: str) -> None:
+    assert not judged(command)
+
+
+def test_other_search_tools_below_the_vault_root_are_allowed() -> None:
+    assert not judged("ag Priya", cwd=f"{VAULT}/scripts")
+    assert not judged("fd . -X cat", cwd=f"{VAULT}/scripts")
+    assert judged("fd . -X cat", cwd=f"{VAULT}/knowledge-base")
+
+
+@pytest.mark.parametrize("command", ["ag Priya", "ack Priya", "fd people", "ugrep -r Priya ."])
+def test_the_shell_sends_other_search_tools_to_python(vault, tmp_path, command: str) -> None:  # noqa: F811
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 2  # Python was needed (and, missing here, fails closed)
+
+
+def test_an_ag_search_from_the_vault_root_is_denied_by_the_hook(vault) -> None:  # noqa: F811
+    assert _denied(_decision(vault, "Bash", {"command": "ag Priya"}))
+    assert _decision(vault, "Bash", {"command": "ag Priya scripts"}) is None
