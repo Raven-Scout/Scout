@@ -1,6 +1,7 @@
 - **Action Items: collapsing a card keeps the comment you were writing.** A click on an open card's title or
   header closes it, and an unsent comment in its composer, or an unsaved edit to a comment, went with it
-  without a word. The text is now kept: open the card again and it is back where you left it. A closed card
+  without a word, as it did when you left Action Items for another page. The text is now kept: open the card
+  again, or come back to Action Items, and it is back where you left it. A closed card
   holding one shows a small "Draft" tag. A kept draft goes when you Cancel it, when it is sent or saved, or when
   the action item is completed or archived. It is never written to the vault, and quitting Scout asks first
   while one remains.

@@ -19,7 +19,8 @@ private final class DraftCardLog {
 /// card's own hand-off (`takeKeys`) can give them back.
 private struct DraftCardProbe: View {
     let task: ActionTask
-    let store: CommentDraftStore
+    /// Nil builds the card as the app does, with its default store.
+    let store: CommentDraftStore?
     let log: DraftCardLog
     var handsBackOnRelease = true
     @State private var cursor: UUID?
@@ -30,9 +31,7 @@ private struct DraftCardProbe: View {
 
     var body: some View {
         VStack {
-            TaskCardView(task: task, kind: .urgent, displayedDate: SmokeFixtures.day,
-                         scoutDirectory: URL(fileURLWithPath: "/tmp/scout"), drafts: store, onOp: { _, _ in })
-                .environment(\.openKBNote, StableAction { _ in })
+            card.environment(\.openKBNote, StableAction { _ in })
             Spacer()
         }
         .padding(20)
@@ -64,6 +63,17 @@ private struct DraftCardProbe: View {
         .onChange(of: ActionItemsKeyboardContext.listOwnsKeys(listFocused: listFocused,
                                                               commentEditorFocused: commentEditorFocused),
                   initial: true) { _, owns in log.listOwnsKeys = owns }
+    }
+
+    @ViewBuilder private var card: some View {
+        let scout = URL(fileURLWithPath: "/tmp/scout")
+        if let store {
+            TaskCardView(task: task, kind: .urgent, displayedDate: SmokeFixtures.day,
+                         scoutDirectory: scout, drafts: store, onOp: { _, _ in })
+        } else {
+            TaskCardView(task: task, kind: .urgent, displayedDate: SmokeFixtures.day,
+                         scoutDirectory: scout, onOp: { _, _ in })
+        }
     }
 }
 
@@ -125,6 +135,44 @@ struct CommentDraftWindowTests {
             try await settle(600)
             let reopened = editors(in: window.contentView)
             #expect(reopened.map(\.string) == ["Hello world"], "opening the card again lost the text")
+        }
+    }
+
+    /// Leaving Action Items for another page tears the whole list down, every
+    /// card's @State with it, and coming back builds it afresh. The card is
+    /// built as the app builds it (its default store), so this also checks
+    /// the drafts live above the page, not in it.
+    @Test("leave Action Items for another page and come back: the unsent comment is still there")
+    func leavingThePageKeepsTheText() async throws {
+        try await KeyWindowGate.run {
+            let store = CommentDraftStore.shared
+            let task = SmokeFixtures.task(subject: "Reply to Sam", body: "About the handover.")
+            let key = CommentComposerView.draftKey(task, SmokeFixtures.day)
+            store.discard(key)
+            defer { store.discard(key) }
+            store.update("Hello", for: key, task: task)
+            let window = try await open(DraftCardProbe(task: task, store: nil, log: DraftCardLog()))
+            defer { window.close() }
+
+            let editor = try #require(editors(in: window.contentView).first, "the composer didn't open on the draft")
+            window.makeFirstResponder(editor)
+            editor.setSelectedRange(NSRange(location: editor.string.utf16.count, length: 0))
+            WindowEvents.type(" world", in: window)
+            try await settle()
+            #expect(store.text(for: key) == "Hello world", "typing didn't reach the kept draft")
+
+            // Another page: the list and its cards are gone from the window.
+            window.contentView = NSHostingView(rootView: Text("Knowledge base").frame(width: 560, height: 520))
+            try await settle()
+            #expect(editors(in: window.contentView).isEmpty)
+            #expect(store.text(for: key) == "Hello world", "leaving the page dropped the draft")
+
+            // Back to Action Items: a new list, new cards, no @State carried over.
+            window.contentView = NSHostingView(rootView: DraftCardProbe(task: task, store: nil, log: DraftCardLog())
+                .frame(width: 560, height: 520))
+            try await settle(600)
+            #expect(editors(in: window.contentView).map(\.string) == ["Hello world"],
+                    "coming back to Action Items lost the text")
         }
     }
 
