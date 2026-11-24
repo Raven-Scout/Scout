@@ -233,6 +233,9 @@ struct RunProtectionOnRunsTests {
         #expect(notFound.message.contains("The run's log names the file and the commit."))
         let stuck = ProtectedFileBlock(restored: false, commits: [], showChange: {}, openLog: {})
         #expect(stuck.title.contains("couldn't put it back") && stuck.message.contains("by hand"))
+        // A branch another session has checked out is left alone: say so, and that a reset or stash won't fix it.
+        #expect(stuck.message.contains("Another session has the branch checked out, so Scout left that branch alone"))
+        #expect(stuck.message.contains("git reset --hard or git stash there keeps the bad file"))
         // Only this run's own mode: a run that started right after another's restore never shows that commit.
         #expect(SessionLogService.restoreCommitPrefix(mode: "evening-consolidation")
                 == "Scout: restore protected files a evening-consolidation run changed in git")

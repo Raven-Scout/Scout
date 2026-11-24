@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unicodedata
@@ -66,6 +67,7 @@ REF_PREFIXES = ("refs/heads/", "refs/tags/", "refs/stash", "refs/replace/")
 # An unmerged index entry's key: the path, then this, then its stage (a NUL can't be in a git path).
 STAGE_SEP = "\0"
 GIT_TIMEOUT_S = 60
+_OID_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 # verify()'s result: the status the runner records, and scoutctl's exit code for it.
 STATUS_EXIT = {"clean": 0, "restored": 10, "unrestored": 11, "error": 12}
@@ -148,16 +150,47 @@ def _checked_out_elsewhere(vault: Path, env: Mapping[str, str]) -> dict[str, str
     vault is itself a linked worktree. Used only to decide not to write, never to decide whose change it was.
     """
     out: dict[str, str] = {}
-    for admin, branch in _worktrees(vault, env):
-        out.setdefault(branch, os.path.basename(admin))
+    for admin in _other_admins(vault, env):
+        branch = _held_branch(vault, env, admin)
+        if branch:
+            out.setdefault(branch, os.path.basename(admin))
     common = Path(_git(vault, ["rev-parse", "--git-common-dir"], env).strip())
     common = common if common.is_absolute() else vault / common
     own = os.path.realpath(_git(vault, ["rev-parse", "--absolute-git-dir"], env).strip())
     if os.path.realpath(common) != own:
-        main_branch = _symbolic_head(vault, env, git_dir=os.path.realpath(common))
+        main_branch = _held_branch(vault, env, os.path.realpath(common))
         if main_branch:
             out.setdefault(main_branch, "main work tree")
     return out
+
+
+_BRANCH_IN_PROGRESS = ("rebase-merge/head-name", "rebase-apply/head-name")
+
+
+def _held_branch(vault: Path, env: Mapping[str, str], git_dir: str) -> str | None:
+    """The branch a work tree has checked out, or is rebasing or bisecting on a detached HEAD (as git itself counts
+    a branch checked out): a restore commit there would break that session's ``git rebase --continue``."""
+    branch = _symbolic_head(vault, env, git_dir=git_dir)
+    if branch:
+        return branch
+    for name in _BRANCH_IN_PROGRESS:
+        text = _read_small(Path(git_dir, name))
+        if text and text.startswith("refs/heads/"):
+            return text
+    start = _read_small(Path(git_dir, "BISECT_START"))
+    if not start:
+        return None
+    if start.startswith("refs/heads/"):
+        return start
+    # BISECT_START holds the branch name bisect started from, or a commit id when it started detached.
+    return None if _OID_RE.fullmatch(start) else f"refs/heads/{start}"
+
+
+def _read_small(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8").strip() or None
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def _worktrees(vault: Path, env: Mapping[str, str]) -> list[list[str]]:
@@ -167,6 +200,16 @@ def _worktrees(vault: Path, env: Mapping[str, str]) -> list[list[str]]:
     vault's own git dirs). The vault's own admin dir, when the vault is itself a linked worktree, is left out, and
     so is a prunable one: its work tree is gone, so no session works there.
     """
+    out = []
+    for real in _other_admins(vault, env):
+        branch = _symbolic_head(vault, env, git_dir=real)
+        if branch:
+            out.append([real, branch])
+    return out
+
+
+def _other_admins(vault: Path, env: Mapping[str, str]) -> list[str]:
+    """The admin dir (real path) of each other linked worktree whose work tree is still there, sorted."""
     common = Path(_git(vault, ["rev-parse", "--git-common-dir"], env).strip())
     common = common if common.is_absolute() else vault / common
     own = os.path.realpath(_git(vault, ["rev-parse", "--absolute-git-dir"], env).strip())
@@ -174,15 +217,8 @@ def _worktrees(vault: Path, env: Mapping[str, str]) -> list[list[str]]:
         admins = sorted(p for p in (common / "worktrees").iterdir() if p.is_dir())
     except OSError:
         return []
-    out = []
-    for admin in admins:
-        real = os.path.realpath(admin)
-        if real == own or not _worktree_present(real):
-            continue
-        branch = _symbolic_head(vault, env, git_dir=real)
-        if branch:
-            out.append([real, branch])
-    return out
+    reals = (os.path.realpath(admin) for admin in admins)
+    return [real for real in reals if real != own and _worktree_present(real)]
 
 
 def _worktree_present(admin: str) -> bool:
@@ -406,7 +442,8 @@ class BrokerRecord:
 
     Only a record from a run whose sole way into git was its broker is one: the enforced sandbox with the broker's
     tightened profile (Phase 1d) denies every write in the vault's git dirs, so every commit, ref move and index
-    write the run caused went through the broker, which recorded the commits it made. ``shas`` are full commit ids.
+    write the run caused went through the broker, which recorded the commits it made. ``shas`` are full commit ids:
+    every commit the ledger names, at any grade, so blame is fail closed.
     """
 
     shas: frozenset[str]
@@ -426,7 +463,10 @@ def broker_record(vault: Path, start: dict, env: Mapping[str, str]) -> BrokerRec
     # profile, and none left a commit it couldn't name. The session lock serialises a vault's runs.
     if not run_commits.broker_was_on(vault, start):
         return None
-    return BrokerRecord(frozenset(sha for sha, c in run_commits.read().commits.items() if c.by == "broker"))
+    # Whether the record can clear anyone is broker_was_on's call alone. Blame is fail closed, so it takes every
+    # commit any ledger row names, whatever its grade: exact ("broker") or not ("run": an untightened broker's row,
+    # a tick drain's; "worktree": a vouch, which may be wrong).
+    return BrokerRecord(run_commits.recorded_shas())
 
 
 def _new_commits(vault: Path, tip: str, start: dict, env: Mapping[str, str]) -> list[str] | None:

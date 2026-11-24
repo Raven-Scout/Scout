@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from scout.changes import run_commits
+from scout.changes import run_commits, store
 from scout.cli import app
 from scout.kb import hook_paths
 from scout.sandbox import integrity
@@ -762,6 +762,52 @@ def test_a_branch_the_main_work_tree_has_checked_out_isnt_rewritten(vault: Vault
     assert integrity._checked_out_elsewhere(run_wt, integrity._git_env(vault.env)) == {}
 
 
+def test_a_branch_mid_rebase_in_another_worktree_isnt_rewritten(vault: Vault) -> None:
+    # Mid-rebase the worktree's HEAD is detached, but git still counts the branch as checked out there: a restore
+    # commit on it would break that session's `git rebase --continue` ("cannot lock ref").
+    wt = _worktree(vault, "rb", "claude/rb")
+    _commit(vault, wt, "notes.md", "theirs\n", "owner: notes")
+    _commit(vault, vault.path, "notes.md", "ours\n", "owner: other notes")
+    rebase = subprocess.run(["git", "-C", str(wt), "rebase", "main"], env=vault.env, capture_output=True)
+    git_dir = Path(_wt_git(vault, wt, "rev-parse", "--absolute-git-dir").strip())
+    assert rebase.returncode != 0 and (git_dir / "rebase-merge").is_dir()
+    snap = vault.snapshot()
+    _plant_on_branch(vault, "claude/rb", RUNNER_SCRIPT, "#!/bin/sh\necho planted\n")
+
+    result = integrity.verify(vault.path, snap, vault.env, record=None)
+
+    assert result.status == "unrestored"
+    assert result.held_by == {"refs/heads/claude/rb": "rb"}
+
+
+def test_a_branch_the_main_work_tree_is_bisecting_isnt_rewritten(vault: Vault) -> None:
+    run_wt = _worktree(vault, "run", "run-branch")
+    vault.git("bisect", "start")  # BISECT_START names the branch bisect started from
+    vault.git("checkout", "-q", "--detach")
+    snap = integrity.snapshot(run_wt, vault.env)
+    _plant_on_branch(vault, "main", RUNNER_SCRIPT, "#!/bin/sh\necho planted\n")
+
+    result = integrity.verify(run_wt, snap, vault.env, record=None)
+
+    assert result.held_by == {"refs/heads/main": "main work tree"}
+
+
+def test_what_a_detached_work_tree_holds(vault: Vault, tmp_path: Path) -> None:
+    gd = tmp_path / "admin"
+    (gd / "rebase-apply").mkdir(parents=True)
+    held = lambda: integrity._held_branch(vault.path, integrity._git_env(vault.env), str(gd))  # noqa: E731
+    (gd / "HEAD").write_text("0" * 40 + "\n", encoding="utf-8")
+    assert held() is None
+    (gd / "rebase-apply" / "head-name").write_text("detached HEAD\n", encoding="utf-8")
+    assert held() is None  # a rebase started detached holds no branch
+    (gd / "BISECT_START").write_text("a" * 40 + "\n", encoding="utf-8")
+    assert held() is None  # nor does a bisect started detached
+    (gd / "BISECT_START").write_text("refs/heads/topic\n", encoding="utf-8")
+    assert held() == "refs/heads/topic"
+    (gd / "rebase-apply" / "head-name").write_text("refs/heads/other\n", encoding="utf-8")
+    assert held() == "refs/heads/other"
+
+
 # -- the broker record, read from the shared ledger (scout.changes.run_commits) ---------------------------------------
 
 
@@ -833,6 +879,29 @@ def test_the_ledger_record_names_only_broker_commits(ledger: Vault) -> None:
 
     assert record == integrity.BrokerRecord(frozenset({run}))
     assert ledger.verify(snap).status == "restored"
+
+
+def test_a_run_grade_row_still_blames_never_clears(ledger: Vault) -> None:
+    # A commit the ledger names below broker grade (a tick drain's, an untightened broker's) is still the run's: a
+    # lower grade can't clear a protected-file change, only make it the run's.
+    _enforced(ledger)
+    _commit(ledger, ledger.path, SETTINGS, '{"approved": true}\n', "owner: settings", **OWNER)
+    start_blob, base = ledger.blob("main", SETTINGS), ledger.git("rev-parse", "main").strip()
+    snap = ledger.snapshot()
+    snap["changes"] = run_commits.snapshot_extra(ledger.path, ledger.env)
+    drained = _commit(ledger, ledger.path, SETTINGS, '{"drained": true}\n', "dreaming: drained")
+    _broker_run(ledger, [])  # this run's broker: tightened, no commits of its own
+    run_commits._append({"sha": drained, "mode": "dreaming", "by": "run", "vault_key": store.vault_key(ledger.path)})
+    owner_wt = _worktree(ledger, "owner2", "claude/owner2", start=base)
+    owner = _commit(ledger, owner_wt, RUNNER_SCRIPT, "#!/bin/sh\necho owner\n", "owner: tweak", **OWNER)
+
+    record = integrity.broker_record(ledger.path, snap, ledger.env)
+    result = ledger.verify(snap)
+
+    assert record is not None and drained in record.shas and owner not in record.shas
+    assert result.status == "restored" and result.changed["refs/heads/main"] == [SETTINGS]
+    assert "refs/heads/claude/owner2" in result.foreign  # the owner's commit is still left alone
+    assert ledger.blob("main", SETTINGS) == start_blob
 
 
 def test_a_sandboxed_run_cant_write_the_ledger(ledger: Vault) -> None:
