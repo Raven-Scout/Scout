@@ -1636,7 +1636,8 @@ def _ansi_c(command: str) -> str:
     """``command`` with each ``$'…'`` (outside other quotes) decoded into a plain single-quoted word, so
     ``$'knowledge\\x2dbase/x.md'`` is read as ``'knowledge-base/x.md'``. The spans are :func:`_quoted_spans`'s, read
     the zsh way (the shell runs use). An even run of ``$`` before the quote (``$$'…'``) is bash's ``$$`` and a plain
-    quote, so when the quote holds a backslash (the two readings end it apart) a run's read fails closed."""
+    quote: it is left as written (so :func:`_backgrounds` reads it both ways, #793), and when the quote holds a
+    backslash (the two readings end it apart) a run's read fails closed."""
     if "$'" not in command:
         return command
     out: list[str] = []
@@ -1651,8 +1652,12 @@ def _ansi_c(command: str) -> str:
         if not run:
             continue
         body = command[a + 1 : b - 1]
-        if run % 2 == 0 and "\\" in body:
-            _STATE["unparsed"] = True
+        if run % 2 == 0:
+            # Left as written, so _backgrounds still reads it both ways (#793); with a backslash inside, the two
+            # readings end the quote apart, so a run's read can't be judged.
+            if "\\" in body:
+                _STATE["unparsed"] = True
+            continue
         decoded = _unescape(body)
         out += [command[at : a - 1], "'" + decoded.replace("'", "'\\''") + "'"]
         at = b
