@@ -1684,6 +1684,67 @@ def test_sync_only_without_the_config_mirrors_its_privacy_block_alone(vault: Pat
     assert set(yaml.safe_load(_show(bare, "scout-config.yaml"))) == {"privacy"}
 
 
+WIDGET_ONLY = '  sync_only: ["knowledge-base/projects/widget/**"]\n'
+
+
+def _widget_only(vault: Path, grok_flag: str | None) -> None:
+    """An allowlist of the widget project alone, and grok-personal with ``ignore_sync_only: <grok_flag>``."""
+    config = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    if grok_flag is not None:
+        config = config.replace("    grok-personal: {}\n", f"    grok-personal:\n      ignore_sync_only: {grok_flag}\n")
+    _commit_files(vault, {"scout-config.yaml": (config + WIDGET_ONLY).encode()}, "sync only the widget project")
+    privacy_migrate.accept(vault)
+
+
+def test_ignore_sync_only_lets_one_delegate_past_the_upload_allowlist(vault: Path, tmp_path: Path) -> None:
+    """``sync_only`` keeps everything else home from Agnes; a delegate set to ignore it sees the rest of the vault.
+
+    Never a local-only path or the phone inbox, never a private note without include_private, and never
+    for another delegate.
+    """
+    _widget_only(vault, "true")
+    bare = _bare(tmp_path, "grok")
+    result = _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert {"knowledge-base/projects/widget/notes.md", "knowledge-base/topics/misc/plain.md", "inbox.md"} <= files
+    assert "trading/positions.md" not in files and result.left_out == 0
+    blobs = "\n".join(_all_blobs(bare).values())
+    assert TRADING_CANARY not in blobs and INBOX_CANARY not in blobs
+    assert not [c for rel, c in CANARIES.items() if c in blobs], "a private or local-only file reached the mirror"
+    # Past the allowlist, the config is a full mirror config again, and the flag itself stays home.
+    mirrored = yaml.safe_load(_show(bare, "scout-config.yaml"))
+    assert mirrored["user"] == {"name": "Alex"}
+    assert "sync_only" not in mirrored["privacy"] and mirrored["privacy"]["delegates"] == {"grok-personal": {}}
+    # A later sync checks the mirror again (check_tree) under the same rules, and passes.
+    _commit(vault, "knowledge-base/topics/later.md", "---\ntitle: Later\n---\n\nA later note.\n", "later")
+    assert not dm.sync(vault, "grok-personal").unchanged
+    assert "knowledge-base/topics/later.md" in _head_files(bare)
+    # duet, not set to ignore it, still gets the allowlist alone.
+    duet = _bare(tmp_path, "duet")
+    _link(vault, "duet", duet)
+    assert not [f for f in _head_files(duet) if f.startswith("knowledge-base/topics/")]
+
+
+@pytest.mark.parametrize("flag", ["yes", '"true"', None])
+def test_ignore_sync_only_not_written_as_true_keeps_the_allowlist(vault: Path, flag: str | None) -> None:
+    _widget_only(vault, flag)
+    allowlisted = dm.preview(vault, "grok-personal")
+    assert allowlisted.files < 10  # the widget project and the config
+
+
+def test_ignore_sync_only_needs_both_the_live_and_the_committed_config(vault: Path) -> None:
+    """A flag written to the live config but not committed (or the reverse) widens nothing."""
+    _widget_only(vault, None)
+    allowlisted = dm.preview(vault, "grok-personal").files
+    config = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    flagged = config.replace("    grok-personal: {}\n", "    grok-personal:\n      ignore_sync_only: true\n")
+    (vault / "scout-config.yaml").write_text(flagged, encoding="utf-8")  # live only
+    assert dm.preview(vault, "grok-personal").files == allowlisted
+    _commit_files(vault, {"scout-config.yaml": flagged.encode()}, "flag it")
+    (vault / "scout-config.yaml").write_text(config, encoding="utf-8")  # committed only
+    assert dm.preview(vault, "grok-personal").files == allowlisted
+
+
 def test_check_tree_refuses_a_full_config_where_sync_only_keeps_it_home(vault: Path) -> None:
     _sync_only_kb(vault)
     config = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))

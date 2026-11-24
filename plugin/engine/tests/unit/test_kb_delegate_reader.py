@@ -197,6 +197,31 @@ def test_bad_delegate_entries_are_dropped_with_a_warning(overlay: dict[str, Any]
     assert "privacy-overlay-invalid" in policy.warnings
 
 
+def test_ignore_sync_only_counts_only_written_as_a_plain_true() -> None:
+    """Like include_private: a YAML 1.1 ``yes`` or a quoted ``"true"`` widens nothing, with a warning."""
+    text = (
+        "privacy:\n  delegates:\n"
+        "    duet:\n      ignore_sync_only: true\n"
+        "    yes-flag:\n      ignore_sync_only: yes\n"
+        '    quoted:\n      ignore_sync_only: "true"\n'
+        "    plain: {}\n"
+    )
+    policy = policy_from_config_text(text)
+    assert {d.id: d.ignore_sync_only for d in policy.delegates} == {
+        "duet": True,
+        "yes-flag": False,
+        "quoted": False,
+        "plain": False,
+    }
+    assert {d.id: d.include_private for d in policy.delegates} == dict.fromkeys(
+        ("duet", "yes-flag", "quoted", "plain"), False
+    )
+    assert "privacy-overlay-invalid" in policy.warnings
+    delegates = policy.to_json()["delegates"]
+    assert delegates["duet"] == {"include_private": False, "ignore_sync_only": True}
+    assert delegates["plain"] == {"include_private": False}  # absent when off: other vaults' policy hash stays
+
+
 def test_the_policy_json_names_delegates_only_when_set() -> None:
     assert "delegates" not in policy_from_overlay(None).to_json()
     data = policy_from_overlay({"delegates": {"duet": {"include_private": True}, "grok": {}}}).to_json()
