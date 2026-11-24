@@ -160,6 +160,11 @@ struct MenuBarExtraContent: View {
     }
 
     private var upcomingSection: some View {
+        // The schedule, observed here: AppState re-publishes none of it.
+        Observing(state.scheduleService) { upcomingList }
+    }
+
+    private var upcomingList: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("UPCOMING")
                 .font(DS.font(.micro, weight: .semibold))

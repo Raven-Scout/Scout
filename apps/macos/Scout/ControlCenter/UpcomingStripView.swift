@@ -5,6 +5,11 @@ struct UpcomingStripView: View {
     @EnvironmentObject var state: AppState
 
     var body: some View {
+        // The services this reads; AppState re-publishes none of their changes.
+        Observing(state.scheduleService) { observedBody }
+    }
+
+    @ViewBuilder private var observedBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
                 Text("Heartbeat schedule")

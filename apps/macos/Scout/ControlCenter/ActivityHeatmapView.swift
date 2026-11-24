@@ -20,6 +20,11 @@ struct ActivityHeatmapView: View {
     }
 
     var body: some View {
+        // The services this reads; AppState re-publishes none of their changes.
+        Observing(state.sessionLogService) { observedBody }
+    }
+
+    @ViewBuilder private var observedBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             let cells = buildCells(range: range)

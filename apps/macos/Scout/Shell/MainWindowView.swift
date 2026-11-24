@@ -28,16 +28,16 @@ struct MainWindowView: View {
             SidebarView(selection: $selection,
                         sessionsBadge: appState.sessionsNeedsYouCount,
                         proposalsBadge: proposalsService.pendingCount,
-                        wishlistBadge: appState.wishlistDocumentService.activeCount,
-                        researchBadge: appState.researchDocumentService.activeCount,
+                        wishlistBadge: appState.wishlistActiveCount,
+                        researchBadge: appState.researchActiveCount,
                         settingsBadge: updates.availableCount,
-                        settingsAttention: appState.engineHealth.needsAttention,
-                        healthAttention: appState.runLedgerService.needsAttention,
-                        tabsGated: appState.engineHealth.state.gatesTabs)
+                        settingsAttention: appState.engineNeedsAttention,
+                        healthAttention: appState.runHealthNeedsAttention,
+                        tabsGated: appState.engineGatesTabs)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
         } detail: {
             Group {
-                if Self.showsOnboarding(state: appState.engineHealth.state,
+                if Self.showsOnboarding(gatesTabs: appState.engineGatesTabs,
                                         onboardingActive: appState.onboarding != nil) {
                     if let onboarding = appState.onboarding {
                         // Identity per flow, so a new flow's `.task` runs `start()`.
@@ -108,7 +108,13 @@ struct MainWindowView: View {
     /// sheet. Static + pure so it can be unit-tested over every `EngineState`
     /// without a view.
     nonisolated static func showsOnboarding(state: EngineState, onboardingActive: Bool) -> Bool {
-        state.gatesTabs || onboardingActive
+        showsOnboarding(gatesTabs: state.gatesTabs, onboardingActive: onboardingActive)
+    }
+
+    /// The same decision from `AppState.engineGatesTabs`, which the window
+    /// observes instead of every engine health change.
+    nonisolated static func showsOnboarding(gatesTabs: Bool, onboardingActive: Bool) -> Bool {
+        gatesTabs || onboardingActive
     }
 
     @ViewBuilder

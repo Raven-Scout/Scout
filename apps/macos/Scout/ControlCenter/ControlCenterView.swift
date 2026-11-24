@@ -76,9 +76,12 @@ struct ControlCenterView: View {
             VStack(alignment: .leading, spacing: 0) {
                 PowerStateBanner(service: state.powerStateService)
                 ConnectorAlertBanner()
-                RunHealthBanner(health: state.runLedgerService.health,
-                                firstSeen: state.runLedgerService.firstSeen) {
-                    state.requestedSidebar = .health
+                // Only the banner follows the ledger, not the whole page.
+                Observing(state.runLedgerService) {
+                    RunHealthBanner(health: state.runLedgerService.health,
+                                    firstSeen: state.runLedgerService.firstSeen) {
+                        state.requestedSidebar = .health
+                    }
                 }
                 header
                 if Self.railBelow(pageWidth: pageWidth) {
@@ -346,6 +349,11 @@ struct SignalsRailCard: View {
     @EnvironmentObject var state: AppState
 
     var body: some View {
+        // The services this reads; AppState re-publishes none of their changes.
+        Observing(state.sessionLogService, state.scheduleService, state.scoutUsageService) { observedBody }
+    }
+
+    @ViewBuilder private var observedBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             RailCardHeader(title: "Signals")
             let signals = computeSignals()

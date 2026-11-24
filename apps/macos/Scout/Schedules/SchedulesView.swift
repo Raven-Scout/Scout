@@ -29,8 +29,8 @@ struct SchedulesView: View {
     @ObservedObject private var drafts = SlotDraftStore.shared
 
     /// Run health's `slot.*` findings ("hasn't run for 3 days"), by slot
-    /// key. `AppState` re-publishes the run ledger's changes, so this page
-    /// redraws when they arrive.
+    /// key. Read inside `Observing(appState.runLedgerService)`: `AppState`
+    /// re-publishes none of the ledger's changes.
     private var slotWarnings: [String: [RunOutcomeDisplay.SlotWarning]] {
         RunOutcomeDisplay.slotWarnings(appState.runLedgerService.health)
     }
@@ -189,19 +189,23 @@ struct SchedulesView: View {
         case .slots:
             switch viewMode {
             case .table:
-                SchedulesMasterTable(
-                    slots: filteredSlots,
-                    newDraftSlot: newDraftSlot,
-                    selectedSlotKey: $selectedSlotKey,
-                    warnings: slotWarnings
-                )
+                Observing(appState.runLedgerService) {
+                    SchedulesMasterTable(
+                        slots: filteredSlots,
+                        newDraftSlot: newDraftSlot,
+                        selectedSlotKey: $selectedSlotKey,
+                        warnings: slotWarnings
+                    )
+                }
             case .cards:
-                SchedulesMasterCards(
-                    slots: filteredSlots,
-                    newDraftSlot: newDraftSlot,
-                    selectedSlotKey: $selectedSlotKey,
-                    warnings: slotWarnings
-                )
+                Observing(appState.runLedgerService) {
+                    SchedulesMasterCards(
+                        slots: filteredSlots,
+                        newDraftSlot: newDraftSlot,
+                        selectedSlotKey: $selectedSlotKey,
+                        warnings: slotWarnings
+                    )
+                }
             case .timeline:
                 SchedulesTimelineView(
                     slots: filteredSlots,

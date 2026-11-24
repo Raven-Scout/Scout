@@ -6,6 +6,12 @@ struct NowStripView: View {
     @EnvironmentObject var state: AppState
 
     var body: some View {
+        // Follows exactly what the three columns read (AppState re-publishes none of it).
+        Observing(state.sessionLogService, state.scoutUsageService,
+                  state.budgetSettingsService, state.scheduleService) { strip }
+    }
+
+    private var strip: some View {
         // CC-Hero: previous HStack used the default `.center` alignment,
         // which let the column dividers (flexible-height Rectangles) stretch
         // the card to ~360 px while pushing the actual text content into

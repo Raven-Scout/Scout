@@ -195,14 +195,14 @@ struct SettingsView: View {
                 onSetUp: {
                     if appState.beginOnboarding() != nil { showingSetup = true }
                 })
-            if !appState.engineHealth.state.gatesTabs {
+            if !appState.engineGatesTabs {
                 RunProtectionSection(service: appState.runProtection, vault: appState.scoutDirectory)
             }
         }
         .id(SettingsAnchor.engine)
 
         // Labels itself, and shows only once the engine reports an agent copy (#550).
-        if !appState.engineHealth.state.gatesTabs {
+        if !appState.engineGatesTabs {
             AgentCopiesSection(service: appState.delegateStatus, review: appState.inboxReview)
         }
     }

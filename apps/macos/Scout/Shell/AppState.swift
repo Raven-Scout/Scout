@@ -32,6 +32,22 @@ final class AppState: ObservableObject {
     /// `sessionIndexService.needsYouCount` alone, so the window does not
     /// re-render on every index refresh.
     @Published private(set) var sessionsNeedsYouCount: Int = 0
+    /// The few child-service values the shell itself shows: the Wishlist and
+    /// Research badges, the Settings and Health dots, and the window gate.
+    /// Each is derived from its service's published values and set only when
+    /// it changes. `AppState` re-publishes nothing else of its services: a
+    /// view that reads one wraps that part in `Observing`, so a usage refresh
+    /// or a ledger re-read redraws the cards that show it, not every view
+    /// holding `AppState` and every scene `ScoutApp.body` builds.
+    @Published private(set) var wishlistActiveCount: Int = 0
+    @Published private(set) var researchActiveCount: Int = 0
+    /// `engineHealth.state.gatesTabs`: the window shows onboarding, and
+    /// Settings ▸ Engine leaves off the sections an engine must back.
+    @Published private(set) var engineGatesTabs: Bool = false
+    /// `engineHealth.needsAttention`: the Settings row's dot.
+    @Published private(set) var engineNeedsAttention: Bool = false
+    /// `runLedgerService.needsAttention`: the Health row's dot.
+    @Published private(set) var runHealthNeedsAttention: Bool = false
 
     // Existing Control Center services
     /// The FSEvents source every document service watches through. Production
@@ -415,40 +431,37 @@ final class AppState: ObservableObject {
         self.resolveClaude = configuration.resolveClaude
         self.fileDownloader = configuration.fileDownloader
 
-        // Forward child-service changes so AppState.objectWillChange fires when
-        // wishlist/research item counts update (drives sidebar badge reactivity).
-        // DispatchQueue.main avoids badge lag that can occur with RunLoop.main
-        // during modal run-loop tracking.
-        wishlistDoc.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.objectWillChange.send() }
+        // The shell's own badges, dots and gate, derived from each service's
+        // published values (which carry the new value) and set only when they
+        // change. Nothing else of these services reaches AppState's
+        // objectWillChange: the views that show a service observe it
+        // themselves (`Observing`), so its refreshes redraw only them.
+        // Synchronous, like `@ObservedObject`: no main-queue hop for a badge
+        // to lag behind (the services publish on the main actor).
+        wishlistDoc.$items
+            .map { PerFileDocumentService.countActive($0) }
+            .removeDuplicates()
+            .sink { [weak self] count in self?.wishlistActiveCount = count }
             .store(in: &cancellables)
-        researchDoc.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.objectWillChange.send() }
+        researchDoc.$items
+            .map { PerFileDocumentService.countActive($0) }
+            .removeDuplicates()
+            .sink { [weak self] count in self?.researchActiveCount = count }
             .store(in: &cancellables)
-        // Same forwarding for the engine health service — drives the window
-        // gate and the Settings sidebar badge (spec §5) through AppState's
-        // own objectWillChange rather than requiring every observer to also
-        // hold an @ObservedObject on engineHealth directly.
-        engineHealth.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.objectWillChange.send() }
+        engineHealth.$state
+            .map(\.gatesTabs)
+            .removeDuplicates()
+            .sink { [weak self] gates in self?.engineGatesTabs = gates }
             .store(in: &cancellables)
-        // The status bar's cost cell and the usage card read the usage
-        // summary through AppState.
-        usage.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.objectWillChange.send() }
+        engineHealth.$state.combineLatest(engineHealth.$doctor, engineHealth.$lastError)
+            .map { EngineHealthService.attentionNeeded(state: $0, doctor: $1, lastError: $2) }
+            .removeDuplicates()
+            .sink { [weak self] attention in self?.engineNeedsAttention = attention }
             .store(in: &cancellables)
-        // The onboarding gate, the unfinished-switch flag and the Action
-        // Items check follow the engine state. Every refresh publishes (no
-        // de-duplication): the switch flag reads the disk, which can change
-        // while the state value doesn't.
-        // The Health row's attention dot follows run health.
-        runLedger.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.objectWillChange.send() }
+        runLedger.$state
+            .map { RunLedgerService.attentionNeeded($0) }
+            .removeDuplicates()
+            .sink { [weak self] attention in self?.runHealthNeedsAttention = attention }
             .store(in: &cancellables)
         // Runs the ledger records take its status (a safety skip is a skip,
         // not a run that hung); the rest keep their log-derived status.
@@ -469,6 +482,10 @@ final class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak logs] keys in logs?.applyScheduleKeys(keys) }
             .store(in: &cancellables)
+        // The onboarding gate, the unfinished-switch flag and the Action
+        // Items check follow the engine state. Every refresh publishes (no
+        // de-duplication): the switch flag reads the disk, which can change
+        // while the state value doesn't.
         engineHealth.$state
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.engineStateDidChange() }
@@ -489,12 +506,6 @@ final class AppState: ObservableObject {
         engineHealth.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.recomputeStatus() }
-            .store(in: &cancellables)
-        // The Control Center's Today column shows the real daily budget.
-        budgetSettings.$settings
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         sessionIndex.$needsYouCount
             .removeDuplicates()

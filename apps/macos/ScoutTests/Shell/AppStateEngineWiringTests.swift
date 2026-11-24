@@ -146,29 +146,6 @@ struct AppStateEngineWiringTests {
         #expect(wedged.probeIsInFlight)
         #expect(appState.engineHealth.state == .notInstalled)
     }
-
-    /// `engineHealth` is a nested `ObservableObject` (spec §5, Ruling 32 item
-    /// 4): a change it publishes must also fire `AppState.objectWillChange`
-    /// — the same forwarding `wishlistDoc`/`researchDoc` already get — so the
-    /// window gate and the Settings sidebar badge update without every
-    /// observer needing its own subscription to `engineHealth` directly.
-    /// Built from `.testing(...)`, never `.production()`/`.live`.
-    @Test func engineHealthChangesForwardToAppStateObjectWillChange() async throws {
-        let tmp = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AppStateEngineWiringTests-\(UUID().uuidString)", isDirectory: true)
-        let appState = AppState(configuration: .testing(scoutDirectory: tmp))
-
-        var fired = false
-        let cancellable = appState.objectWillChange.sink { _ in fired = true }
-        defer { cancellable.cancel() }
-
-        appState.engineHealth.objectWillChange.send()
-        // The forwarding sink hops through `.receive(on: DispatchQueue.main)`
-        // — give the main run loop a tick to deliver it.
-        try await Task.sleep(for: .milliseconds(100))
-
-        #expect(fired)
-    }
 }
 
 // MARK: - C8: onboarding gate, launch-time upgrade, Settings actions

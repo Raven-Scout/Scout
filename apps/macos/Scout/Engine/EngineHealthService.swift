@@ -36,6 +36,12 @@ final class EngineHealthService: ObservableObject {
     /// threw, or printed something that isn't a report) — the last one would
     /// otherwise leave the sidebar dot off with health stuck at "Unknown".
     var needsAttention: Bool {
+        Self.attentionNeeded(state: state, doctor: doctor, lastError: lastError)
+    }
+
+    /// `needsAttention` over given values, so `AppState` can derive the sidebar dot from
+    /// the published values as they change.
+    static func attentionNeeded(state: EngineState, doctor: DoctorReport?, lastError: String?) -> Bool {
         if state.gatesTabs { return true }
         if case .broken = state { return true }   // incl. a broken install someone else manages (no gate)
         if let doctor { return doctor.severity == .red || doctor.runHealth?.severity == .red }

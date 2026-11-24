@@ -25,7 +25,10 @@ final class PerFileDocumentService: ObservableObject {
     private var watchTask: Task<Void, Never>?
 
     /// Number of items that are still active — the value the sidebar badge shows.
-    var activeCount: Int { items.filter(\.isActive).count }
+    var activeCount: Int { Self.countActive(items) }
+
+    /// `activeCount` over given items, so `AppState` can derive the sidebar badge from `$items`.
+    static func countActive(_ items: [PerFileItem]) -> Int { items.filter(\.isActive).count }
 
     init(directoryURL: URL, fileEvents: any FileSystemEventSource) {
         self.directoryURL = directoryURL
