@@ -1293,6 +1293,22 @@ def test_a_veto_under_the_account_home_holds_when_home_is_elsewhere(
     assert broker.owner_veto(elsewhere, SLUG, "E9") is None
 
 
+def test_no_home_cancels_another_homes_veto(tmp_path: Path, vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reading is additive: a store with other rows, or none for this experiment, never hides a veto in the other."""
+    from scout.kb import hook_paths
+
+    account, elsewhere = tmp_path / "account", tmp_path / "elsewhere"
+    monkeypatch.setattr(hook_paths, "account_home", lambda: account)
+    in_account, in_elsewhere = ({**os.environ, "HOME": str(home)} for home in (account, elsewhere))
+    broker.record_veto(in_account, vault, SLUG, "E1", T)
+    broker.record_veto(in_elsewhere, vault, SLUG, "E2", T)
+    # HOME elsewhere: both stores are read, each holding a row the other lacks.
+    assert len(broker.veto_stores(in_elsewhere)) == 2
+    assert broker.owner_veto(in_elsewhere, SLUG, "E1") == T.isoformat()  # only in the account's store
+    assert broker.owner_veto(in_elsewhere, SLUG, "E2") == T.isoformat()  # only in HOME's store
+    assert broker.owner_veto(in_elsewhere, SLUG, "E3") is None
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 file")
 def test_an_unreadable_veto_store_refuses(vault: Path, fake_run: FakeRun) -> None:
     broker.record_veto(os.environ, vault, SLUG, "E1", T)

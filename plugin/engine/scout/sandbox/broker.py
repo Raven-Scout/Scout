@@ -339,8 +339,9 @@ def veto_stores(env: Mapping[str, str]) -> list[Path]:
 
 
 def owner_veto(env: Mapping[str, str], slug: str, eid: str) -> str | None:
-    """When an owner's store (:func:`veto_stores`) says ``slug`` ``eid`` was vetoed (the row's ``at``), or None. A
-    missing store has no vetoes; one that exists but can't be read is :class:`Refused`, since a veto can't be ruled
+    """When an owner's store (:func:`veto_stores`) says ``slug`` ``eid`` was vetoed (the row's ``at``), or None.
+    Strictly additive: a veto in any store counts, and nothing in one store can cancel another's. A missing store
+    has no vetoes; one that exists but can't be read is :class:`Refused`, since a veto can't be ruled
     out. Damage doesn't hide a row: every complete JSON object in the file is read (:func:`_json_objects`), wherever
     it sits."""
     for store in veto_stores(env):
