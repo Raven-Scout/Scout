@@ -31,7 +31,7 @@ When Scout gets something wrong and you flag it (a 👎 or a one-line correction
 
 ### It rewrites its own instructions — in the open
 
-Scout doesn't wait for a maintainer to ship an update. Its nightly **Dreaming** session edits its own skill files directly for additive, feedback-aligned fixes, and files an **opt-out proposal** for anything larger (it applies after a few days unless you reject it). Every change is a separate git commit you can read and `git revert` — so the safety model is *transparency + reversibility*, not a checkpoint on every step. (Scout once proposed retiring its own approval gate because it was causing missed-update regressions; the author reviewed the proposal and approved it.)
+Scout doesn't wait for a maintainer to ship an update. Its nightly **Dreaming** session edits its own skill files directly, larger changes included: each change is tested against how much you engage with Scout before and after it, shown in the Mac app's **Changes** tab, and can be undone from there. Only a governance change (one to what Scout may do on its own) waits for your OK, in the same tab. Every change is a separate git commit you can read and `git revert` — so the safety model is *transparency + reversibility*, not a checkpoint on every step. (Scout once proposed retiring its own approval gate because it was causing missed-update regressions; the author reviewed the proposal and approved it.)
 
 ### It drives its own roadmap
 
@@ -146,7 +146,7 @@ Or run interactive sessions in the current conversation:
 ```
 /scout-work           # Walk through today's action items one at a time, approve each action
 /scout-plan           # Plan the day: estimates on a 15-minute grid, calendar blocks after you approve, learns from actual times
-/scout-meta-review    # System-level audit — are sessions running, is the mistake audit trending well, are proposals flowing?
+/scout-meta-review    # System-level audit — are sessions running, is the mistake audit trending well, are self-improvements flowing?
 ```
 
 Ask about a project, person, meeting or decision in any Claude Code session on a machine with a Scout vault, in the vault or in another repository ("where are we on X?"), and the `scout-ask` skill answers from the knowledge base first, checking the live tools only when the record is stale. It finds the vault from Scout's configuration with `scoutctl kb vault` (never from the folder you are in), runs only read commands, which write nothing but Scout's own cache, and outside the vault treats what it reads as context: nothing from the knowledge base goes into that repository's commits, PRs, issues or files.
@@ -440,7 +440,7 @@ scout-plugin/
   .scout-state/schedule.yaml -- When each session type runs (edit here or in the Mac app)
   inbox.md                  -- Quick-capture file (processed every run)
   meetings/                 -- Meeting registry + per-meeting folders (prep/notes/synthesis)
-  dreaming-proposals.md     -- Proposal gate for skill improvements
+  governance-pending/       -- Governance changes waiting for your OK (shown in the Changes tab; created when needed)
   hooks/
     kb-pre-filter.sh        -- Pre-session: bucket KB files by staleness
   scripts/
@@ -479,6 +479,8 @@ scout-plugin/
   .scout-cache/             -- Hook outputs (gitignored, regenerated every run)
   .scout-logs/              -- Run logs and usage-tracker.jsonl (gitignored)
 ```
+
+`dreaming-proposals.md` is no longer seeded: self-improvements go in directly and are tested and undoable from the Changes tab. An older vault may still have one: runs apply the proposals already in it and write no new ones.
 
 The assembled skill files are self-contained — they don't reference the plugin at runtime. You can customize them freely. Run `/scout-update` to bring in the latest phase modules — it merges them with your edits rather than overwriting.
 
