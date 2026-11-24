@@ -314,6 +314,23 @@ _PROGRAM_FIRST: dict[str, set[str]] = {
     **dict.fromkeys(("awk", "gawk", "mawk"), {"-f", "--file"}),
     "jq": {"-f", "--from-file"},
 }
+# Readers that read a folder they're given (its names, or the files below it); the rest only open files.
+_FOLDER_READERS = {"tree", "du", "find", "rg", "ag", "ack", "fd", "ugrep"}
+
+
+def reads_folders(name: str, args: list[str]) -> bool:
+    """Whether ``name args`` reads a folder among its operands: ``ls`` without ``-d``, ``tree``, ``find``, ``rg``…,
+    ``grep -r``. ``cat dir``, ``head dir``, ``grep x dir`` only print an error."""
+    if name == "ls":
+        return not any(a == "--directory" or re.fullmatch(r"-[A-Za-z]*d[A-Za-z]*", a) for a in args)
+    if name in _FOLDER_READERS:
+        return True
+    if name in ("grep", "egrep", "fgrep"):
+        pairs = zip(args, [*args[1:], ""], strict=True)
+        return any(_RECURSIVE_FLAG.match(a) for a in args) or any(
+            a == "--directories=recurse" or (a in ("-d", "--directories") and b == "recurse") for a, b in pairs
+        )
+    return False
 
 
 def read_operands(name: str, args: list[str]) -> list[str] | None:

@@ -105,6 +105,29 @@ def _run(home: Path, command: str, *, cwd: Path | None = None, env: dict | None 
         "rg --files knowledge-base | xargs head -1",
         "echo knowledge-base/a.md | xargs -I{} cat {}",
         "echo knowledge-base/a.md | xargs -I % head %",
+        # review round 2 (zsh, the shell runs use): a comment with an apostrophe, `**`, alternation
+        'cat "$HOME"/Vault/kn*/projects/a/a.md # it\'s',
+        'grep -n x "$HOME"/Vault/k*/a.md # don\'t',
+        "cat **/x.md",
+        "grep -n x **/a.md",
+        "cat k*/**/a.md",
+        "cat (knowledge|x)-base/a.md",
+        "cat kn(o|)wledge-base/a.md",
+        "ls (knowledge-base|docs)",
+        "cat 'kn'(o|)wledge-base/a.md",
+        # forms that resolve: a literal `$` in a bracket, `~+`, `${X:-…}`, `${PWD%/}`
+        "cat knowledge-bas[e\\$]/a.md",
+        "cat k[n$]owledge-base/a.md",
+        "cat ~+/k*/a.md",
+        "cat ${HOME:-/nowhere}/Vault/k*/a.md",
+        "cat ${UNSET_HERE:-k}nowledge-base/a.md",
+        "cat ${PWD%/}/k*/a.md",
+        "d=knowledge-base/; cat ${d%/}/a.md",
+        "f=docs/knowledge-base; cat ${f#docs/}/a.md",
+        # a folder reader given a KB folder
+        "ls action-items/*",
+        "grep -rn x action-items/*",
+        "ag x k*",
     ],
 )
 def test_a_read_that_expands_into_the_kb_is_denied(home: Path, command: str) -> None:
@@ -168,6 +191,26 @@ def test_the_index_is_kb_through_a_glob_too(home: Path) -> None:
         "rg -l alpha scripts | xargs head -1",
         "grep -n x docs/a.md | cut -d: -f1 | xargs -I{} sed -n '{}p' docs/a.md",
         "echo docs/a.md | xargs -I % cat %",
+        # review round 2: a KB folder is no read for a reader that only opens files
+        "grep -n x action-items/*",
+        "cat action-items/*",
+        "head -n 3 action-items/*",
+        "ls -d */",
+        "ls -ld action-items/*",
+        # comments, `#` that isn't one, groups that aren't globs
+        "cat docs/a.md # it's a note",
+        "echo ${#x} $# a#b; cat docs/a.md",
+        "echo $$'plain'; cat docs/a.md",  # an even `$` run with no backslash: both shells read the same word
+        "x=$((1 + 2)); arr=(a b); echo $x $arr",
+        "find docs \\( -name a.md -o -name b.md \\) -print",
+        "(cd docs && cat a.md)",
+        "f() { cat docs/a.md; }; f",
+        "cat <(sort docs/a.md)",
+        # resolvable forms that point elsewhere
+        "ls ~+/docs",
+        "cat ${HOME:-/x}/notes.txt",
+        "cat ${PWD%/}/docs/a.md",
+        "cat docs/[a$]*.md",
         # `<` inside `[[ … ]]` compares strings
         'CUT=$(date -v-7d +%F); for f in action-items/action-items-*.md; do d=$(basename "$f" .md); '
         'if [[ "$d" < "$CUT" ]]; then echo "$f"; fi; done',
@@ -264,6 +307,36 @@ def test_an_unresolved_read_is_still_allowed_outside_a_run(home: Path) -> None:
 def test_an_unresolved_write_keeps_its_own_deny(home: Path) -> None:
     reason = _denied(_run(home, "echo x > $(echo .claude)/settings.json"))
     assert "writes" in reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat docs/a.md 'unterminated",  # an unclosed quote: the words are a guess
+        'cat docs/a.md "unterminated',
+        "cat (a(b)|c)/x.md",  # a nested zsh group
+        "cat (a|$(echo k)nowledge-base)/x.md",  # a substitution inside a group
+        "cat x$$'\\' k*/a.md '",  # bash: `$$` and a plain quote, so k*/a.md is a word; zsh: one `$'…'` word
+        "for f in " + " ".join(f"docs/n{i}.md" for i in range(300)) + "; do cat $f; done",  # past the value cap
+    ],
+)
+def test_a_command_the_gate_has_to_guess_at_is_refused(home: Path, command: str) -> None:
+    assert "more files than" in _denied(_run(home, command))
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["cat docs/[a$]*.md", "ls ~+/docs", "cat ${PWD%/}/docs/a.md", "cat ${HOME:-/x}/notes.txt", "cat ~-/a.md"],
+)
+def test_a_read_that_resolves_records_nothing(home: Path, command: str) -> None:
+    assert _run(home, command) is None
+    expected = ["command_output"] if command.startswith("cat ~-") else []  # `~-` is $OLDPWD: not followed
+    assert [r["payload"]["categories"] for r in _events(home)] == ([expected] if expected else [])
+
+
+def test_a_long_for_list_with_a_write_is_refused(home: Path) -> None:
+    command = "for f in " + " ".join(f"docs/n{i}.md" for i in range(300)) + "; do : > $f; done"
+    assert "more files than" in _denied(_run(home, command))
 
 
 def test_a_glob_with_too_many_wild_parts_is_refused_not_expanded(home: Path) -> None:
@@ -497,3 +570,65 @@ def test_a_lister_above_the_vault_covers_it(home: Path) -> None:
 def test_a_listers_root_glob_over_the_cap_is_refused(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(gate, "GLOB_CAP", 1)
     assert "more files than" in _denied(_run(home, "find scripts/* | xargs cat"))
+
+
+@pytest.mark.parametrize(
+    ("value", "op", "word", "expected"),
+    [
+        (None, ":-", "d", "d"),
+        ("", ":-", "d", "d"),
+        ("v", ":-", "d", "v"),
+        (None, "-", "d", "d"),
+        ("", "-", "d", ""),
+        (None, ":=", "d", "d"),
+        ("", "=", "d", ""),
+        ("v", ":+", "d", "d"),
+        ("", ":+", "d", ""),
+        ("", "+", "d", "d"),
+        (None, "+", "d", ""),
+        ("v", ":?", "", "v"),
+        (None, "?", "", None),  # an error in the shell: nothing the gate can judge
+        (None, "%", "/", ""),
+        ("$__scout_subst__/x", "%", "/*", None),
+        ("a/b/c", "%", "/*", "a/b"),
+        ("a/b/c", "%%", "/*", "a"),
+        ("a/b/c", "#", "*/", "b/c"),
+        ("a/b/c", "##", "*/", "c"),
+        ("abc", "%", "z", "abc"),
+    ],
+)
+def test_param_value(value: str | None, op: str, word: str, expected: str | None) -> None:
+    assert live_run.param_value(value, op, word) == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("cat x # it's", "cat x "),
+        ("echo a\\#b # c", "echo a\\#b "),
+        ("echo \"a # b\" 'c # d' # e", "echo \"a # b\" 'c # d' "),
+        ('echo "a \\" # b" # c', 'echo "a \\" # b" '),
+        ("echo a#b ${#x} $#", "echo a#b ${#x} $#"),
+        ("cat x # one\ncat y", "cat x \ncat y"),
+        ("cat x", "cat x"),
+    ],
+)
+def test_strip_comments(command: str, expected: str) -> None:
+    assert live_run._strip_comments(command) == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("cat (a|b)/x", "cat {a,b}/x"),
+        ("cat (a)/x", "cat a/x"),
+        ("cat (a|b)(c|d)", "cat {a,b}{c,d}"),
+        ("if true; then (cd x; ls); fi", "if true; then (cd x; ls); fi"),
+        ("time (ls)", "time (ls)"),
+        ("cat x", "cat x"),
+    ],
+)
+def test_zsh_groups(command: str, expected: str) -> None:
+    live_run._STATE["unparsed"] = False
+    assert live_run._zsh_groups(command) == expected
+    assert live_run._STATE["unparsed"] is False

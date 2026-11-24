@@ -337,7 +337,8 @@ def _alive(pid: int) -> bool:
 # ----- the PreToolUse gate's check: a run's command that hides it's a run ------------
 
 RUN_VARS = ("SCOUT_MODE", "SCOUT_READER")
-_SEGMENTS = re.compile(r"&&|\|\||[;\n`]|(?<!>)\||\$\(|\(|\)")  # ">|" is a redirect, not a pipe
+# ">|" is a redirect, not a pipe; an escaped `\;`, `\(`, `\)` or `\|` (`find … -exec x {} \;`) is a word.
+_SEGMENTS = re.compile(r"&&|\|\||(?<!\\)[;\n`]|(?<![>\\])\||\$\(|(?<!\\)\(|(?<!\\)\)")
 # A lone "&" (background), not "&&", "&>", ">&", "|&" or "2>&1".
 _BACKGROUND = re.compile(r"(?<![&>|])&(?![&>])")
 _QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
@@ -674,8 +675,88 @@ def _redirects(segment: str) -> tuple[str, list[str], list[str], list[str]]:
 def _tokens(segment: str) -> list[str]:
     try:
         return shlex.split(segment, comments=False, posix=True)
-    except ValueError:
+    except ValueError:  # an unclosed quote: the words are a guess, so a run's read of them can't be judged
+        if _STATE["parsing"]:  # the walk's own segment, not a helper's look at a substitution or a feeder
+            _STATE["unparsed"] = True
         return segment.split()
+
+
+def _reads_something(words: list[str], reads: list[str]) -> bool:
+    from scout.kb import raw_read
+
+    stripped = raw_read._strip(words).words
+    return bool(reads) or bool(stripped and raw_read._command_name(stripped[0]) in raw_read._READ_COMMANDS)
+
+
+def _strip_comments(command: str) -> str:
+    """``command`` without its comments: a ``#`` that starts a word, outside quotes, to the end of its line
+    (``cat x # it's`` is ``cat x``; ``a#b``, ``${#x}`` and ``$#`` keep theirs). Run after :func:`_ansi_c`."""
+    if "#" not in command:
+        return command
+    out: list[str] = []
+    i, n, quote = 0, len(command), None
+    while i < n:
+        c = command[i]
+        if quote is not None:
+            if c == "\\" and quote == '"' and i + 1 < n:
+                out.append(command[i : i + 2])
+                i += 2
+                continue
+            quote = None if c == quote else quote
+        elif c == "\\" and i + 1 < n:
+            out.append(command[i : i + 2])
+            i += 2
+            continue
+        elif c in "'\"":
+            quote = c
+        elif c == "#" and (i == 0 or command[i - 1] in " \t\n;&|()<>"):
+            end = command.find("\n", i)
+            i = n if end < 0 else end
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+# zsh's alternation (`(knowledge|x)-base/a.md`, core zsh even with NO_EXTENDED_GLOB) in a word's place: a group glued
+# to a word, or one after a command's first word. A subshell, `$(`, `<(`, `a=(`, `((` and `f()` are not.
+_RESERVED = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "time", "function", "coproc", "in"}
+
+
+def _zsh_groups(command: str) -> str:
+    """``command`` with each zsh glob group in argument position written as a brace list (``(a|b)`` is ``{a,b}``,
+    ``(a)`` is ``a``), so :func:`scout.kb.raw_read.brace_expand` gives every name it can match. A group it can't
+    rewrite (nested, quoted or with a substitution inside) marks the command unparsed."""
+    if "(" not in command:
+        return command
+    masked = _QUOTED.sub(lambda m: "\0" * len(m[0]), command)
+    out: list[str] = []
+    at = 0
+    for m in re.finditer(r"\(", masked):
+        i = m.start()
+        if i < at:
+            continue
+        before = masked[:i]
+        if before.endswith("\\"):
+            continue  # `\(`: a literal paren (`find . \( -name a -o -name b \)`)
+        glued = (bool(out) and i == at) or (bool(before) and before[-1] not in " \t\n;&|(){}<>=$`")  # `(a|b)(c|d)`
+        if not glued:
+            word = before.rstrip(" \t")
+            if not word or word[-1] in "\n;&|(){}<>=$`" or len(word) == len(before):
+                continue  # command position, or `<(`, `$(`, `a=(`
+            if re.split(r"[\s;&|(){}]", word)[-1] in _RESERVED:
+                continue  # `then (cd x; ls)`, `if ((n > 1))`: a subshell or arithmetic
+        close = masked.find(")", i + 1)
+        inner = command[i + 1 : close] if close > 0 else ""
+        if close < 0 or "(" in masked[i + 1 : close] or "\0" in masked[i + 1 : close] or re.search(r"[$`\\]", inner):
+            _STATE["unparsed"] = True
+            return command
+        if not inner:
+            continue  # `f()`: a function, not a glob
+        alts = inner.split("|")
+        out += [command[at:i], ("{" + ",".join(alts) + "}") if len(alts) > 1 else inner]
+        at = close + 1
+    return "".join([*out, command[at:]])
 
 
 def _sets_run_var(token: str) -> bool:
@@ -907,7 +988,7 @@ _PROTECT: Callable[[str, bool], str | None] | None = None
 # And whether reading a path reads one of Scout's secrets (best effort: only the paths a command spells out).
 _SECRET: Callable[[str], str | None] | None = None
 # And whether a reading command's file (scout.kb.raw_read's readers) is a KB note, by the path the shell hands it.
-_KB_READ: Callable[[str, bool], str | None] | None = None
+_KB_READ: Callable[[str, str], str | None] | None = None
 # The forms that callback returns: a read of a KB note, and a read whose path the gate can't work out.
 KB_READ = "a knowledge-base read"
 UNRESOLVED_READ = "a read the gate can't resolve"
@@ -920,7 +1001,10 @@ MAX_CHECKED_PATHS = 256
 MAX_LITERAL_READS = 4096
 # How deep `sh -c`, `eval` and substitutions nest before a run's command counts as too complex to check.
 MAX_DEPTH = 6
-_STATE: dict[str, Any] = {"checked": 0, "secrets": 0, "reads": 0, "literal": 0, "vars": {}, "bodies": []}
+_STATE: dict[str, Any] = {
+    "checked": 0, "secrets": 0, "reads": 0, "literal": 0, "vars": {}, "bodies": [], "unparsed": False, "capped": False,
+    "parsing": False,
+}  # fmt: skip
 _VAR = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 # An interpreter given its program inline or on stdin.
 _INTERPRETER = re.compile(r"^(python[0-9.]*|pypy[0-9.]*|perl[0-9.]*|node|nodejs|ruby|php|deno|bun)$")
@@ -984,20 +1068,64 @@ def _substitute(path: str) -> list[str]:
     """``path`` with the variables this command set put in, once for each value they can take (a ``for`` loop's
     words); unknown ones stay as written, and so does a command substitution's placeholder."""
     known: dict[str, list[str]] = _STATE["vars"]
-    names = [n for n in dict.fromkeys(m[1] or m[2] for m in _VAR.finditer(path)) if n in known and known[n]]
+    found = [m[1] or m[2] for m in _VAR.finditer(path)] + [m[1] for m in _PARAM.finditer(path)]
+    names = [n for n in dict.fromkeys(found) if n in known and known[n]]
     out = [path]
     for name in names:
-        out = [_put(one, name, value) for one in out for value in known[name]][:64]
+        out = [_put(one, name, value) for one in out for value in known[name]]
+        if len(out) > MAX_CHECKED_PATHS:  # more values than are checked: the call is refused, never cut short
+            _STATE["capped"] = True
+            return out[:MAX_CHECKED_PATHS]
     return out
 
 
 def _put(text: str, name: str, value: str) -> str:
-    """``text`` with ``$name`` / ``${name}`` replaced by ``value``."""
+    """``text`` with ``$name`` / ``${name}`` replaced by ``value``, and ``${name:-word}``, ``${name%pattern}`` and the
+    rest of :data:`_PARAM` worked out from it."""
+
+    def op(m: re.Match[str]) -> str:
+        if m[1] != name:
+            return m[0]
+        found = param_value(value, m[2] or m[4], m[3] if m[2] else m[5])
+        return m[0] if found is None else found
 
     def one(m: re.Match[str]) -> str:
         return value if (m[1] or m[2]) == name else m[0]
 
-    return _VAR.sub(one, text)
+    return _VAR.sub(one, _PARAM.sub(op, text))
+
+
+# `${NAME:-word}` and kin (m[2], m[3]); `${NAME%pattern}`, `%%`, `#`, `##` (m[4], m[5]). A nested `${` is left alone.
+_PARAM = re.compile(r"\$\{([A-Za-z_]\w*)(?:(:?[-=+?])([^{}]*)|(%%?|##?)([^{}]*))\}")
+
+
+def param_value(value: str | None, op: str, word: str) -> str | None:
+    """What ``${NAME<op>word}`` expands to when NAME holds ``value`` (None: unset); None when the gate can't know
+    (``${X:?}``, or a value it only has a placeholder for)."""
+    if op in (":-", ":="):
+        return word if not value else value
+    if op in ("-", "="):
+        return word if value is None else value
+    if op == ":+":
+        return word if value else ""
+    if op == "+":
+        return word if value is not None else ""
+    if op in (":?", "?"):
+        return value or None
+    if value is None:
+        return ""
+    if "$__scout_" in value:
+        return None
+    import fnmatch
+
+    cuts = range(len(value) + 1)
+    if op == "%":  # the shortest suffix that matches
+        return next((value[:i] for i in reversed(cuts) if fnmatch.fnmatchcase(value[i:], word)), value)
+    if op == "%%":
+        return next((value[:i] for i in cuts if fnmatch.fnmatchcase(value[i:], word)), value)
+    if op == "#":
+        return next((value[i:] for i in cuts if fnmatch.fnmatchcase(value[:i], word)), value)
+    return next((value[i:] for i in reversed(cuts) if fnmatch.fnmatchcase(value[:i], word)), value)  # ##
 
 
 def _set_var(name: str, values: list[str]) -> None:
@@ -1158,7 +1286,7 @@ def _check(path: str, removes: bool, cwd: str) -> str | None:
     from scout.kb.hook_paths import TOO_MANY
 
     assert _PROTECT is not None
-    for one in _substitute(path):
+    for one in _substitute(_tilde_dirs(path)):
         _STATE["checked"] += 1
         if _STATE["checked"] > MAX_CHECKED_PATHS:
             return TOO_MANY
@@ -1176,7 +1304,7 @@ def _secret_read(words: list[str], reads: list[str], cwd: str) -> str | None:
         word = word.split("=", 1)[1] if word.startswith("--") and "=" in word else word.lstrip("@<")  # @file
         if not (cwd or "/" in word or word.startswith(("~", "$"))) or word.startswith("-"):
             continue
-        for one in _substitute(word):
+        for one in _substitute(_tilde_dirs(word)):
             _STATE["secrets"] += 1
             if _STATE["secrets"] > MAX_CHECKED_PATHS:
                 return None
@@ -1196,17 +1324,19 @@ def _kb_read(words: list[str], reads: list[str], cwd: str, fed: str | None) -> s
 
     assert _KB_READ is not None
     lead = next((w for w in words if w not in raw_read._KEYWORDS), None)
-    targets = [] if lead == "[[" else [(word, cwd) for word in reads]  # `[[ a < b ]]` compares, it reads nothing
-    roots: list[tuple[str, str]] = []
+    # (word, folder it runs in, how it reads: "file", "folder" or "covers", see KB_READ_HOW)
+    targets = [] if lead == "[[" else [(word, cwd, "file") for word in reads]  # `[[ a < b ]]` compares
+    roots: list[tuple[str, str, str]] = []
     stripped = raw_read._strip(words)
     if stripped.words:
         name = raw_read._command_name(stripped.words[0])
         operands = raw_read.read_operands(name, stripped.words[1:]) if name in raw_read._READ_COMMANDS else None
         if operands is not None:
             where = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
+            how = "folder" if raw_read.reads_folders(name, stripped.words[1:]) else "file"
             if stripped.fed:
                 names, listed = _fed_sources(fed)
-                roots = [(root, cwd) for root in listed]
+                roots = [(root, cwd, "covers") for root in listed]
                 marker = _replace_string(words)
                 if marker is None:
                     operands = [*operands, *names]
@@ -1215,15 +1345,20 @@ def _kb_read(words: list[str], reads: list[str], cwd: str, fed: str | None) -> s
                     operands = [o.replace(marker, n) for o in operands for n in (given if marker in o else [""])]
                     if listed and any(marker in o and o != marker for o in stripped.words[1:]):
                         operands.append(UNSEEN_INPUT)  # a listed path inside a longer word: not one the gate can judge
-            targets += [(word, where) for word in operands]
-    for word, where, covers in [*((w, d, False) for w, d in targets), *((w, d, True) for w, d in roots)]:
-        found = _judge_read(word, where, covers)
+            targets += [(word, where, how) for word in operands]
+    for word, where, how in [*targets, *roots]:
+        found = _judge_read(word, where, how)
         if found is not None:
             return found
     return None
 
 
-def _judge_read(word: str, where: str, covers: bool) -> str | None:
+# How a reader takes a path it's handed: "file" opens files (a folder only prints an error), "folder" also reads a
+# folder (``ls``, ``grep -r``), "covers" reads every file below it (the root an xargs lister lists).
+KB_READ_HOW = ("file", "folder", "covers")
+
+
+def _judge_read(word: str, where: str, how: str) -> str | None:
     from scout.kb import raw_read
     from scout.kb.hook_paths import TOO_MANY
 
@@ -1232,7 +1367,7 @@ def _judge_read(word: str, where: str, covers: bool) -> str | None:
     if expanded is None:
         return TOO_MANY
     for alt in expanded:
-        for one in _substitute(alt):
+        for one in _substitute(_tilde_dirs(alt)):
             one = one.replace(ANY_NAME, "*")  # one name, any name: a glob for it is a superset
             key = "reads" if re.search(r"[*?\[$~]", one) else "literal"
             _STATE[key] += 1
@@ -1240,7 +1375,7 @@ def _judge_read(word: str, where: str, covers: bool) -> str | None:
                 return TOO_MANY
             if not one.startswith(("/", "~", "$")):
                 one = where + one
-            found = _KB_READ(_put_pwd(one, where), covers)
+            found = _KB_READ(_put_pwd(one, where), how)
             if found is not None:
                 return found
     return None
@@ -1274,14 +1409,28 @@ def _put_pwd(word: str, where: str) -> str:
     ``./docs`` stay relative, so the gate joins them to it). ``$OLDPWD`` is a folder the gate doesn't follow."""
     if "PWD" not in word:
         return word
+    here = where.rstrip("/") if where.startswith(("/", "~")) else ("./" + where).rstrip("/")
+
+    def op(m: re.Match[str]) -> str:
+        if m[1] == "OLDPWD":
+            return SUBST
+        if m[1] != "PWD":
+            return m[0]
+        found = param_value(here, m[2] or m[4], m[3] if m[2] else m[5])
+        return SUBST if found is None else found
 
     def one(m: re.Match[str]) -> str:
         name = m[1] or m[2]
         if name == "PWD":
-            return where.rstrip("/") if where.startswith(("/", "~")) else ("./" + where).rstrip("/")
+            return here
         return SUBST if name == "OLDPWD" else m[0]
 
-    return _VAR.sub(one, word)
+    return _VAR.sub(one, _PARAM.sub(op, word))
+
+
+def _tilde_dirs(word: str) -> str:
+    """``~+`` is ``$PWD`` and ``~-`` is ``$OLDPWD`` (bash and zsh), not a user named ``+`` or ``-``."""
+    return re.sub(r"^~([+-])(?=/|$)", lambda m: "$PWD" if m[1] == "+" else "$OLDPWD", word)
 
 
 def _into(cwd: str, dest: str) -> str:
@@ -1450,6 +1599,11 @@ def _ansi_c(command: str) -> str:
             j = i + 2
             while j < n and command[j] != "'":
                 j += 2 if command[j] == "\\" else 1
+            run = len(command[: i + 1]) - len(command[: i + 1].rstrip("$"))
+            if run % 2 == 0 and "\\" in command[i + 2 : j]:
+                # `$$'…\…'`: bash reads `$$` and a plain quote that ends at the first `'`, zsh and sh read `$` and
+                # `$'…'`. With a backslash inside, the words differ: a run's read can't be judged (fail closed).
+                _STATE["unparsed"] = True
             decoded = _unescape(command[i + 2 : min(j, n)])
             out.append("'" + decoded.replace("'", "'\\''") + "'")
             i = j + 1
@@ -1640,7 +1794,7 @@ def run_escape(
     depth: int = 0,
     protect: Callable[[str, bool], str | None] | None = None,
     secret: Callable[[str], str | None] | None = None,
-    kb_read: Callable[[str, bool], str | None] | None = None,
+    kb_read: Callable[[str, str], str | None] | None = None,
 ) -> str | None:
     """Whether a run's shell command gets around the commit hook's checks: "env" (changes SCOUT_MODE/SCOUT_READER
     or clears the environment), "detach" (backgrounds or hands work to another process), else the name of the form
@@ -1664,9 +1818,21 @@ def run_escape(
     outer = depth == 0
     if outer:
         _PROTECT, _SECRET, _KB_READ = protect, secret, kb_read
-        _STATE.update(checked=0, secrets=0, reads=0, literal=0, vars={}, bodies=[])
+        _STATE.update(
+            checked=0, secrets=0, reads=0, literal=0, vars={}, bodies=[], unparsed=False, capped=False, parsing=False
+        )
     try:
-        return _run_escape(command, depth)
+        found = _run_escape(command, depth)
+        # Fail closed where the walk had to guess: an unclosed quote or a zsh group it can't rewrite (a run's
+        # read), or a variable with more values than are checked (a read or a write).
+        guessed = (_STATE["unparsed"] and kb_read is not None) or (
+            _STATE["capped"] and (kb_read is not None or protect is not None)
+        )
+        if outer and found is None and guessed:
+            from scout.kb.hook_paths import TOO_MANY
+
+            return TOO_MANY
+        return found
     finally:
         if outer:
             _PROTECT = _SECRET = _KB_READ = None
@@ -1714,7 +1880,9 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
     if split:
         command, bodies = _split_heredocs(command, start=len(_STATE["bodies"]))
         _STATE["bodies"].extend(bodies)
-    command = _ansi_c(command.replace("\\\n", " "))
+    command = _strip_comments(_ansi_c(command.replace("\\\n", " ")))
+    if _KB_READ is not None:
+        command = _zsh_groups(command)
     # Every verdict with where it sits in the command, so the first form in the text names the deny
     # (`c=$(git commit-tree …) && git update-ref …` is commit-tree; `git update-ref HEAD "$(git commit-tree …)"`
     # is update-ref).
@@ -1753,8 +1921,13 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
         here, position = position, position + len(segment)
         fed = previous if op in ("|", "|&") else None  # the segment piped into this one
         judge_bodies(position)
+        unparsed, _STATE["unparsed"], _STATE["parsing"] = _STATE["unparsed"], False, True
         clean, targets, reads, strings = _redirects(segment)
         words = _tokens(clean)
+        _STATE["parsing"] = False
+        # A segment that doesn't parse is the gate's misreading (a real unclosed quote is a syntax error, and nothing
+        # runs): it fails closed only where it may hide a read (a reading command or an input redirect).
+        _STATE["unparsed"] = unparsed or (_STATE["unparsed"] and _reads_something(words, reads))
         _record_vars(words)
         found = _words_escape(words, depth) or _hook_write_form(words, targets, cwd)
         if found is None and _PROTECT is not None:

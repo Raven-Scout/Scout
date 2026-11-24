@@ -63,7 +63,7 @@ from pathlib import Path
 from typing import IO, Any
 
 from scout import paths
-from scout.kb.live_run import _DIGIT_PARAMS, _SUBST_NAME, _VAR
+from scout.kb.live_run import _DIGIT_PARAMS, _PARAM, _SUBST_NAME, _VAR
 from scout.kb.raw_read import KB_DIRS, filter_reaches_kb, is_kb_note_path, is_kb_path, raw_kb_read
 
 GATE = "kb-read-gate"
@@ -406,11 +406,14 @@ def decide(
         def resolve(raw: str) -> str | None:
             """The path a word names, with the environment's variables put in; None when the shell fills in
             part of it the gate can't know (a substitution, a variable neither the command nor the run sets)."""
-            text = _DIGIT_PARAMS.sub("0", _VAR.sub(lambda m: _env_value(m, env), raw))
-            if "$" in text or "`" in text:
+            text = _PARAM.sub(lambda m: _env_param(m, env), raw)
+            text = _DIGIT_PARAMS.sub("0", _VAR.sub(lambda m: _env_value(m, env), text))
+            if _LEFT_VAR.search(text) or "`" in text:
                 return None
             expanded = hook_paths._expand(text, env)
-            return expanded if os.path.isabs(expanded) else str(cwd / expanded)
+            joined = expanded if os.path.isabs(expanded) else str(cwd / expanded)
+            # `*/` is folders only: keep the slash a join drops, or the glob would match files too.
+            return joined + "/" if text.endswith("/") and not joined.endswith("/") else joined
 
         def protect(raw: str, removes: bool) -> str | None:
             target = resolve(raw)
@@ -441,10 +444,12 @@ def decide(
                     return found
             return None
 
-        def kb_read(raw: str, covers: bool) -> str | None:
+        def kb_read(raw: str, how: str) -> str | None:
             """A reading command's file, as the shell hands it over: a KB note (after its glob, if any), or a path
             the gate can't work out (a substitution, a variable the command doesn't set, unseen xargs input).
-            ``covers``: the command reads files below it (an xargs lister's root), so a folder holding the KB counts."""
+            ``how`` (live_run.KB_READ_HOW): a "file" reader never reads a KB folder it's given (``cat action-items/*``
+            only prints an error for ``context/``), a "folder" reader does, and for "covers" (an xargs lister's root)
+            a folder holding the KB counts too."""
             target = resolve(raw)
             if target is None:
                 if DENY_UNRESOLVED_READS:
@@ -458,11 +463,12 @@ def decide(
                 here = paths.resolve_path(one)
                 rel = _vault_rel(vault, here)
                 if rel is None:
-                    if covers and vault.resolve().is_relative_to(here):
+                    if how == "covers" and vault.resolve().is_relative_to(here):
                         return KB_READ  # a folder above the vault
                 elif rel != "." and is_kb_path(rel):
-                    return KB_READ
-                elif covers and (rel == "." or any(d.startswith(rel + "/") for d in KB_DIRS)):
+                    if how != "file" or not os.path.isdir(here):
+                        return KB_READ
+                elif how == "covers" and (rel == "." or any(d.startswith(rel + "/") for d in KB_DIRS)):
                     return KB_READ
             return None
 
@@ -540,7 +546,7 @@ def _glob_targets(target: str) -> list[str] | None:
     over = threading.Event()
 
     def expand() -> None:
-        for match in itertools.islice(glob.iglob(target), GLOB_CAP + 1):
+        for match in itertools.islice(glob.iglob(target, recursive=True), GLOB_CAP + 1):  # zsh: `**/` recurses
             found.append(match)
         if len(found) > GLOB_CAP:
             over.set()
@@ -551,6 +557,23 @@ def _glob_targets(target: str) -> list[str] | None:
     if worker.is_alive() or over.is_set():
         return None
     return [target, *sorted(found)]
+
+
+# A `$` the shell would still expand: before a name, `{`, `(` or `[`. One before `]`, `/` or the end, or inside a
+# glob bracket (`[a$]`), is the character itself.
+_LEFT_VAR = re.compile(r"\$(?=[A-Za-z_{(\[])")
+
+
+def _env_param(m: re.Match[str], env: Mapping[str, str]) -> str:
+    """``${NAME:-word}``, ``${NAME%pattern}`` … for a NAME live_run left: from the run's environment, unset if not
+    there. A placeholder's name, or a form the gate can't work out, stays as written (unresolved)."""
+    from scout.kb.live_run import param_value
+
+    name = m[1]
+    if name.startswith("__scout_"):
+        return m[0]
+    found = param_value(env.get(name), m[2] or m[4], m[3] if m[2] else m[5])
+    return m[0] if found is None else found
 
 
 def _env_value(m: re.Match[str], env: Mapping[str, str]) -> str:

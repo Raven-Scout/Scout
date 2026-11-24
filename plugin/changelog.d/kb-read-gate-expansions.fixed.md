@@ -10,7 +10,13 @@
   glob budget (over the match cap or the time limit, the call is refused). `xargs` reads what `echo` or
   `printf` prints, or the files under what `git ls-files`, `find`, `grep -l` or `rg -l|--files` lists, so
   `git ls-files scripts | xargs rg x` stays allowed and `find . | xargs cat` doesn't. A match in
-  `knowledge-base/` or `action-items/context/` is denied. A read whose path the gate can't work out (a command
+  `knowledge-base/` or `action-items/context/` is denied. Words are read the way zsh, the shell runs use,
+  reads them: a comment is dropped (`cat x # it's` no longer hides the rest), `**/` recurses, `(a|b)`
+  alternation counts as a brace list, `~+`, `${X:-y}` and `${X%y}` are worked out, and a `$` inside a glob
+  bracket is a character. A command the gate would have to guess at (an unclosed quote, a nested or
+  substituted `(…|…)` group, a variable with more than 256 values) is refused. A KB *folder* counts only for a
+  reader that reads folders (`ls` without `-d`, `tree`, `find`, `rg`, `grep -r` …), so `cat action-items/*` and
+  `ls -d */` pass. A read whose path the gate can't work out (a command
   substitution, a backtick, a variable the command doesn't set, `xargs` input from any other command) is
   allowed for now and recorded as a `kb_read_gate.unresolved_read` event naming only its kind
   (`command_output`, `unset_variable`, `xargs_input`) and the run's mode, never the command or the path;

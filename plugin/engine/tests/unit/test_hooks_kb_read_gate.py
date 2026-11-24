@@ -743,7 +743,7 @@ def test_a_slow_glob_is_refused_not_waited_for(vault: Path, monkeypatch: pytest.
 
     monkeypatch.setattr(gate, "GLOB_BUDGET_S", 0.2)
 
-    def slow(pattern: str) -> object:
+    def slow(pattern: str, **_kw: object) -> object:
         time.sleep(1)
         yield pattern
 
