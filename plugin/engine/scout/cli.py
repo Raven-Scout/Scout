@@ -396,12 +396,16 @@ def cli_broker_serve(
 def cli_broker_profile(
     vault: str = typer.Option(..., "--vault", help="The run's vault."),
     broker_dir: str = typer.Option(..., "--dir", help="The run's broker folder."),
+    unapplied: bool = typer.Option(
+        False, "--unapplied", help="The wrapper's record that the run keeps the 1c profile after all."
+    ),
 ) -> None:
     """Read the run's 1c profile on stdin; print it tightened for a run whose brokers answer (exit 0).
 
     Exit 1 (reason on stderr, `.scout-logs/.run-broker.json` says unavailable) when the broker doesn't answer, the
-    vault's git-safe-commit.sh predates it, or the tightened profile fails its self-test: the run keeps the 1c
-    profile then.
+    vault's git-safe-commit.sh predates it, the tightened profile fails its self-test, or it can't be printed: the
+    run keeps the 1c profile then. The tightened row is written only once the profile is printed, and the wrapper
+    passes ``--unapplied`` whenever it doesn't apply it, so a row that says tightened never sits over a 1c run.
     """
     import sys
 
@@ -410,6 +414,10 @@ def cli_broker_profile(
 
     data_dir = Path(vault)
     run = Path(broker_dir).name
+    if unapplied:
+        # A later untightened row turns broker_state off for this run: its commits are attributed from git.
+        run_commits.mark_broker_profile(data_dir, run, tightened=False)
+        return
     try:
         text = broker.build_profile(data_dir, Path(broker_dir), sys.stdin.read())
     except broker.BrokerError as e:
@@ -418,9 +426,14 @@ def cli_broker_profile(
         broker.write_status(data_dir, "unavailable", str(e))
         typer.echo(f"[scout:broker] unavailable: {e}", err=True)
         raise typer.Exit(1) from None
+    try:
+        typer.echo(text, nl=False)  # click flushes: once this returns, the wrapper has the profile
+    except OSError as e:
+        run_commits.mark_broker_profile(data_dir, run, tightened=False)
+        broker.write_status(data_dir, "unavailable", f"the tightened profile couldn't be handed over: {e}")
+        raise typer.Exit(1) from None
     broker.write_status(data_dir, "on", "commits and Telegram go through the run's broker")
     run_commits.mark_broker_profile(data_dir, run, tightened=True)
-    typer.echo(text, nl=False)
 
 
 @broker_app.command("commit", context_settings={"ignore_unknown_options": True, "allow_interspersed_args": False})

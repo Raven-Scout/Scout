@@ -253,6 +253,9 @@ our_sha() {
   echo "$sha"
 }
 BEFORE="$(reflog_count)"
+# The reflog alone can't say HEAD stayed put (core.logAllRefUpdates=false keeps
+# none), so a failed commit compares HEAD too: moved means a sha or unresolved.
+HEAD_BEFORE="$(git rev-parse -q --verify HEAD 2>/dev/null || true)"
 # The last stdout line is for the run broker, which records the commit as the
 # run's (the changes map, scout.changes.run_commits): `scout-commit <sha>`,
 # `scout-commit unresolved` (a commit may have been made but can't be named: a
@@ -260,7 +263,8 @@ BEFORE="$(reflog_count)"
 GIT_REFLOG_ACTION="$NONCE" git commit -q -m "$MSG" -- "${COMMIT[@]}" || {
   # git can fail after HEAD moved (the new index couldn't be written): then a
   # commit exists, and it is still named.
-  if [ "$(reflog_count)" -gt "$BEFORE" ]; then
+  if [ "$(reflog_count)" -gt "$BEFORE" ] ||
+    [ "$(git rev-parse -q --verify HEAD 2>/dev/null || true)" != "$HEAD_BEFORE" ]; then
     trap - TERM INT
     SHA="$(our_sha)"
     echo "scout-commit ${SHA:-unresolved}"

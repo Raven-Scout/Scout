@@ -786,6 +786,52 @@ def test_broker_profile_marks_the_run_either_way(
     assert run_commits.broker_was_on(repo, snap) is ok
 
 
+def test_a_profile_that_cant_be_handed_over_is_never_recorded_tightened(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The tightened row lands only once the wrapper has the profile: a broken pipe leaves the run untightened, so
+    a direct `git commit -m "fix: …"` under the 1c profile is attributed from git, not filed as the owner's."""
+    import typer
+
+    from scout.sandbox import broker
+
+    monkeypatch.setattr(broker, "build_profile", lambda *_a, **_k: "(version 1)\n")
+    echo = typer.echo
+
+    def broken(message: object = None, *a: object, **k: object) -> None:
+        if message == "(version 1)\n":
+            raise BrokenPipeError(32, "Broken pipe")
+        echo(message, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(typer, "echo", broken)
+    snap = _snap(repo)
+    bdir = tmp_path / BROKER_RUN
+    result = CliRunner().invoke(app, ["broker", "profile", "--vault", str(repo), "--dir", str(bdir)], input="")
+    assert result.exit_code == 1, result.output
+    assert [(r.run, r.tightened) for r in run_commits.broker_runs(repo, NOW - timedelta(days=1))] == [
+        (BROKER_RUN, False)
+    ]
+    assert broker.read_status(repo)["status"] == "unavailable"
+    assert not run_commits.broker_was_on(repo, snap)
+
+
+def test_the_wrapper_records_a_profile_it_did_not_apply(repo: Path, tmp_path: Path) -> None:
+    """`broker profile` printed and recorded the tightened profile, but the wrapper fell back to 1c anyway: its
+    `--unapplied` row turns the broker off for that run."""
+    snap = _snap(repo)
+    assert run_commits.mark_broker_profile(repo, BROKER_RUN, tightened=True)
+    assert run_commits.broker_was_on(repo, snap)
+    bdir = tmp_path / BROKER_RUN
+    result = CliRunner().invoke(
+        app, ["broker", "profile", "--unapplied", "--vault", str(repo), "--dir", str(bdir)], input=""
+    )
+    assert result.exit_code == 0 and result.output == "", result.output
+    assert not run_commits.broker_was_on(repo, snap)
+    wrapper = (TEMPLATES / "scripts" / "claude-with-retry.sh.tmpl").read_text()
+    fallback = wrapper.split("run brokers unavailable (exit $broker_rc)", 1)[1].split("\n    fi\n", 1)[0]
+    assert 'broker profile --unapplied --vault "$BROKER_VAULT" --dir "$BROKER_DIR"' in fallback
+
+
 def test_bare_broker_rows_are_never_trusted() -> None:
     _write_rows({"schema": 1, "sha": "a" * 40, "mode": "research", "by": "broker", "ts": NOW.isoformat()})
     assert run_commits.read().commits == {}
@@ -956,6 +1002,22 @@ def test_health_flags_runs_attributed_without_the_broker(repo: Path) -> None:
     assert "1 run in the last 7 days committed without the commit broker" in finding.summary
     assert sha
     assert unbrokered_attribution_findings(vault=repo.parent, now=NOW) == []  # another vault's runs
+
+
+def test_health_says_when_the_vault_is_shallow(repo: Path, tmp_path: Path) -> None:
+    from scout.health import shallow_vault_findings
+
+    assert shallow_vault_findings(vault=repo) == []
+    assert shallow_vault_findings(vault=tmp_path / "not-a-repo") == []
+    for n in range(3):
+        _commit(repo, f"notes: {n}", {f"notes/{n}.md": f"{n}\n"})
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", f"file://{repo}", str(shallow)], check=True, capture_output=True
+    )
+    [finding] = shallow_vault_findings(vault=shallow)
+    assert (finding.id, finding.severity, finding.source) == ("changes.shallow_vault", "yellow", "git")
+    assert "--unshallow" in finding.fix
 
 
 def _broker_commit_row(repo: Path) -> str:
@@ -1155,6 +1217,31 @@ def test_a_commit_git_reports_failed_after_head_moved_is_still_named(
     assert reply.exit == 5 and sha != head
     ledger = run_commits.read()
     assert ledger.commits[sha].by == "broker" and ledger.gaps == ()
+
+
+def test_head_moving_without_a_reflog_is_never_none(
+    helper_vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no reflog (core.logAllRefUpdates=false, no logs/HEAD) the helper can't count entries, so a commit git
+    reports failed after HEAD moved is judged by HEAD itself: `unresolved`, a gap, never `none`."""
+    _git(helper_vault, "config", "core.logAllRefUpdates", "false")
+    shutil.rmtree(helper_vault / ".git" / "logs", ignore_errors=True)
+    _git_failing_after_commit(tmp_path, monkeypatch)
+    helper = ["bash", str(helper_vault / "scripts" / "git-safe-commit.sh")]
+    for body in ("one\n", "two\n"):
+        head = _git(helper_vault, "rev-parse", "HEAD")
+        (helper_vault / "SKILL.md").write_text(body)
+        out = subprocess.run(
+            [*helper, "fix: no reflog", "SKILL.md"], capture_output=True, text=True,
+            env={**os.environ, "SCOUT_RUN_BROKER": ""},
+        )  # fmt: skip
+        assert out.returncode == 5 and _git(helper_vault, "rev-parse", "HEAD") != head, out.stderr
+        assert run_commits.sha_from_helper(out.stdout) == ("unresolved", None)
+    (helper_vault / "SKILL.md").write_text("three\n")
+    reply = _live_broker(helper_vault).handle({"v": 1, "verb": "commit", "message": "fix: x", "paths": ["SKILL.md"]})
+    assert reply.exit == 5
+    [gap] = run_commits.read().gaps
+    assert gap.run == BROKER_RUN
 
 
 def test_a_hook_refusal_says_none_and_is_no_gap(helper_vault: Path) -> None:

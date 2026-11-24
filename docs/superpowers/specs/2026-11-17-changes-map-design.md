@@ -168,16 +168,24 @@ as the run ledger (`scoutctl runs --json`, #661).
     around it is never taken for the run's, even when git fails after HEAD moved. A begin with
     no end, one the helper was stopped in, or any end with no sha that doesn't show no commit
     was made (exit 2–4, which the helper gives only before it commits, or its
-    `scout-commit none`: the commit failed and HEAD didn't move) is a *gap*. Every sha any row
-    names, whatever its grade, is `recorded_shas()`, the integrity check's blame set (#786).
+    `scout-commit none`: the commit failed and HEAD didn't move, judged by HEAD itself as well
+    as the reflog, which `core.logAllRefUpdates=false` leaves empty) is a *gap*. Every sha a
+    row names outright (end rows, and rows of any `by`), whatever its grade, is
+    `recorded_shas()`, the integrity check's blame set (#786); the git windows are left out,
+    since their members are a best-effort walk that can take in the owner's commits.
     `scoutctl broker profile` writes a
-    `profile` row for the broker's run, tightened or not, and an end row's sha is exact only
+    `profile` row for the broker's run, tightened or not; the tightened row only once the
+    profile is printed, and the wrapper adds an untightened one (`--unapplied`) whenever it
+    keeps the 1c profile after all, so a tightened row never sits over a 1c run. An end row's sha is exact only
     when its run's profile was tightened: a broker that kept the 1c profile, or the periodic
     tick's drain (no run of its own; never a queued entry's claimed run; no mode, so the
     generic `run` lane), runs where a run can still write `.git/logs`, so its sha is best
     effort. The helper names only a reflog entry added since its commit started. `sandbox verify` records nothing from git for a run when at least one
     broker profile was decided after its snapshot, all of them tightened, and nothing since is
-    a gap; otherwise it records the git window too. The owner's commits never go through the
+    a gap; otherwise it records the git window too. Every history walk here reads git with
+    `GIT_SHALLOW_FILE=/dev/null`, so a run can't hide commits behind a planted `.git/shallow`;
+    on a genuinely shallow vault (`git clone --depth`) those walks fail, and run health says so
+    (`changes.shallow_vault`, yellow; the fix is `git fetch --unshallow`). The owner's commits never go through the
     broker, so they stay interactive, in a linked worktree or the vault's own checkout.
     Automatic rollback acts only on broker-recorded commits (a code-level check in
     `scout/changes/actions.py`).

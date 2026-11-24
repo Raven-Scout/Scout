@@ -263,8 +263,13 @@ def read() -> Ledger:
 
 
 def recorded_shas(ledger: Ledger | None = None) -> frozenset[str]:
-    """Every sha any ledger row names as a commit, whatever its grade (``by`` of any value, every end row): the
-    widest set of commits a run may have made. It says nothing about trust: that is :func:`broker_state`'s."""
+    """Every sha a ledger row names outright, whatever its grade: each end row's sha, and each row with a sha and a
+    ``by`` of any value (``broker``, ``run``, ``worktree``, one this version doesn't know). It says nothing about
+    trust: that is :func:`broker_state`'s.
+
+    It leaves out the git windows (:attr:`Ledger.windows`): a window names tips and known commits, not members, and
+    its members are a best-effort walk of git that can take in the owner's commits made during the run, so a blame
+    set built from them would blame runs for others' commits. A run attributed only by a window has no sha here."""
     return (read() if ledger is None else ledger).named
 
 

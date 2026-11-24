@@ -877,6 +877,7 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
     findings.extend(integrity_findings(rows, vault=vault, now=now))
     findings.extend(broker_findings(rows, vault=vault))
     findings.extend(unbrokered_attribution_findings(vault=vault, now=now))
+    findings.extend(shallow_vault_findings(vault=vault))
     lock_skips = [r for r in rows if r.outcome == "skipped_lock" and r.finished_at >= cutoff]
     if len(lock_skips) >= LOCK_SKIP_THRESHOLD:
         findings.append(
@@ -1146,6 +1147,34 @@ def integrity_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) ->
             )
         ]
     return []
+
+
+def shallow_vault_findings(*, vault: Path) -> list[Finding]:
+    """A shallow vault (a `git clone --depth` checkout): the changes map's and integrity check's history walks
+    ignore `.git/shallow` so a run can't hide commits with it, and on a shallow vault those walks fail. Say so,
+    rather than let attribution stop quietly. A planted `.git/shallow` only makes this show, never hides anything."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(vault), "rev-parse", "--is-shallow-repository"],
+            capture_output=True, text=True, check=False, timeout=10,
+        )  # fmt: skip
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0 or proc.stdout.strip() != "true":
+        return []
+    return [
+        Finding(
+            id="changes.shallow_vault",
+            severity="yellow",
+            since=None,
+            summary=(
+                "This vault is a shallow git clone, so the changes map can't walk its history: it can't work out "
+                "which commits were Scout's runs', and those changes aren't tested or offered for undo."
+            ),
+            fix="In the vault, run `git fetch --unshallow` (or clone it again without --depth).",
+            source="git",
+        )
+    ]
 
 
 def unbrokered_attribution_findings(*, vault: Path, now: datetime) -> list[Finding]:
