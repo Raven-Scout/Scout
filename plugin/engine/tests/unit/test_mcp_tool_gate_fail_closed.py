@@ -156,9 +156,19 @@ def test_scout_data_dir_blocks_whatever_the_payload_cwd(broken: tuple[World, Cod
     assert _denied(outcome, code), outcome
 
 
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_payload_cwd_in_a_vault_is_blocked_wherever_the_hook_runs(broken: tuple[World, Codes], shell: str) -> None:
+    # The hook process's own $PWD is outside every vault; the session's cwd, in the payload, is not.
+    world, code = broken
+    for cwd in (world.vault, world.vault / "projects" / "repo"):
+        for env in (OWNER, RUN):
+            outcome = world.run(_payload(str(cwd)), cwd=world.outside, shell=shell, env=env)
+            assert _denied(outcome, code), (cwd, env, outcome)
+
+
 def test_a_cwd_reaching_the_vault_through_a_symlink_is_blocked(broken: tuple[World, Codes]) -> None:
     world, code = broken
-    outcome = world.run(_payload(str(world.outside / "into-vault" / "repo")), cwd=world.vault)
+    outcome = world.run(_payload(str(world.outside / "into-vault" / "repo")), cwd=world.outside)
     assert _denied(outcome, code), outcome
 
 
@@ -174,7 +184,7 @@ def test_a_compact_payload_is_read_the_same(broken: tuple[World, Codes]) -> None
     compact = json.dumps({"cwd": str(world.vault), "tool_name": TOOL}, separators=(",", ":"))
     assert _denied(world.run(compact, cwd=world.vault), code)
     compact = json.dumps({"cwd": str(world.outside), "tool_name": TOOL}, separators=(",", ":"))
-    assert _not_blocked(world.run(compact, cwd=world.vault))
+    assert world.run(compact, cwd=world.vault) == Outcome(0, "", "")
 
 
 # ----- a cwd the shell cannot read for certain: blocked -----------------------------------------
@@ -193,19 +203,25 @@ UNKNOWN_CWDS = {
 @pytest.mark.parametrize("shell", SHELLS)
 @pytest.mark.parametrize("cwd", list(UNKNOWN_CWDS.values()), ids=list(UNKNOWN_CWDS))
 def test_an_unknown_cwd_is_blocked(broken: tuple[World, Codes], cwd: object, shell: str) -> None:
+    # Wherever the hook itself runs: the shell can't tell the session's vault, so the gate must start.
     world, code = broken
-    assert _denied(world.run(_payload(cwd), cwd=world.vault, shell=shell), code)
+    for here in (world.vault, world.outside):
+        assert _denied(world.run(_payload(cwd), cwd=here, shell=shell), code), here
 
 
 # ----- outside a vault, or not an MCP call: never blocked ---------------------------------------
 
 
 @pytest.mark.parametrize("shell", SHELLS)
-def test_a_payload_cwd_outside_any_vault_is_not_blocked(broken: tuple[World, Codes], shell: str) -> None:
-    # The hook's own cwd is in the vault (so the filter starts the engine); the session's is not.
+def test_a_payload_cwd_outside_any_vault_never_starts_the_engine_from_inside_one(
+    broken: tuple[World, Codes], shell: str
+) -> None:
+    # The reverse case: the hook's own cwd is in the vault, the session's is not. The gate would find no
+    # vault (it goes by the payload's cwd), so the shell leaves without starting it.
     world, _ = broken
     for env in (OWNER, RUN):
-        assert _not_blocked(world.run(_payload(str(world.outside)), cwd=world.vault, shell=shell, env=env))
+        out = world.run(_payload(str(world.outside)), cwd=world.vault, shell=shell, env=env)
+        assert out == Outcome(0, "", ""), (env, out)
 
 
 @pytest.mark.parametrize("shell", SHELLS)
@@ -220,18 +236,21 @@ def test_a_session_outside_any_vault_never_starts_the_engine(broken: tuple[World
     ids=["bash", "read", "empty-object", "empty", "not-json"],
 )
 def test_what_is_not_an_mcp_call_is_not_blocked(broken: tuple[World, Codes], payload: str) -> None:
+    # Left in the shell (a cwd outside every vault), or started and not blocked (no cwd to go by).
     world, _ = broken
-    assert _not_blocked(world.run(payload, cwd=world.vault)), payload
+    out = world.run(payload, cwd=world.vault)
+    assert out == Outcome(0, "", "") or _not_blocked(out), (payload, out)
 
 
 # ----- a working engine: unchanged --------------------------------------------------------------
 
 
 @pytest.mark.parametrize("shell", SHELLS)
-@pytest.mark.parametrize("payload", [_payload("/x"), _payload("/x") + "\n", "{}"], ids=["plain", "newline", "{}"])
-def test_a_working_engine_gets_the_payload_and_answers(tmp_path: Path, shell: str, payload: str) -> None:
+@pytest.mark.parametrize("how", ["plain", "newline", "{}"])
+def test_a_working_engine_gets_the_payload_and_answers(tmp_path: Path, shell: str, how: str) -> None:
     world = World(tmp_path, WORKING)
-    outcome = world.run(payload, cwd=world.vault, shell=shell)
+    payload = {"plain": _payload(str(world.vault)), "newline": _payload(str(world.vault)) + "\n", "{}": "{}"}[how]
+    outcome = world.run(payload, cwd=world.outside, shell=shell)
     assert outcome == Outcome(0, DENY + "\n", "")
     # The filter reads the payload once (a trailing newline goes, as with every filter's read_payload).
     assert world.log.read_text() == f"hook mcp-tool-gate\n{payload.rstrip(chr(10))}"

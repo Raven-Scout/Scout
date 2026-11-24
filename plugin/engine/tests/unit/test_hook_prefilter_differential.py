@@ -53,6 +53,25 @@ ENTRIES: dict[str, tuple[str, str]] = {
 # Cases where the new command is meant to differ from the old one: {case id: reason}. Empty on purpose.
 INTENDED_DIFFERENCES: dict[str, str] = {}
 
+# The filters that find the session's vault from the payload's cwd, as their Python hooks do (#803
+# follow-up 1). The old commands walked up from their own $PWD, so for these the world puts the
+# case's place into the payload as Claude Code does (`"cwd"`, before the tool call): the old command
+# and the new one then look at the same place, and every other decision is still compared.
+PAYLOAD_CWD = frozenset({"mcp-tool-gate", "outbound-gate", "kb-read-label", "shared-read-record"})
+# A payload that is not a JSON object has no cwd to go by. Python then goes by its own working
+# directory, so the new filters start it where the old ones may not have (and the owner's payload
+# reaches it through read_payload, which drops trailing newlines): the one intended difference.
+NO_CWD_TO_READ = "no cwd in the payload: the filter now starts Python, which decides (#803 follow-up 1)"
+
+
+def _intended(case: Case) -> str | None:
+    if case.id in INTENDED_DIFFERENCES:
+        return INTENDED_DIFFERENCES[case.id]
+    if case.entry in PAYLOAD_CWD and not case.payload.lstrip().startswith("{"):
+        return NO_CWD_TO_READ
+    return None
+
+
 # The gate tests whose string literals make up the Bash corpus.
 CORPUS_SOURCES = (
     "tests/unit/test_hooks_kb_read_gate.py",
@@ -390,12 +409,24 @@ def world(tmp_path_factory: pytest.TempPathFactory) -> World:
     return World(tmp_path_factory.mktemp("prefilter"))
 
 
+def _with_cwd(world: World, case: Case) -> Case:
+    """``case`` with the place it runs in as the payload's top-level ``"cwd"``, for a PAYLOAD_CWD entry
+    whose payload is a JSON object (as Claude Code sends it: cwd before the tool call)."""
+    payload = case.payload.lstrip()
+    if case.entry not in PAYLOAD_CWD or not payload.startswith("{"):
+        return case
+    rest = payload[1:]
+    sep = "" if rest.lstrip().startswith("}") else ", "
+    return case._replace(payload='{"cwd": ' + json.dumps(str(world.cwd(case.cwd))) + sep + rest)
+
+
 def _differences(world: World, cases: list[Case]) -> list[str]:
     """The cases where the old and the new command disagree, one line each."""
 
     def both(case: Case) -> str | None:
+        case = _with_cwd(world, case)
         old, new = world.run(OLD[case.entry], case), world.run(NEW[case.entry], case)
-        if old == new or case.id in INTENDED_DIFFERENCES:
+        if old == new or _intended(case):
             return None
         return f"{case.id}: old={old!r} new={new!r}"
 
