@@ -54,6 +54,8 @@ def test_scope_and_exclusions(tmp_path: Path) -> None:
     assert cfg.in_scope("knowledge-base/projects/widget/widget.md")
     assert cfg.in_scope("action-items/action-items-2026-09-28.md")
     assert not cfg.in_scope("SKILL.md")
+    assert cfg.in_scope("knowledge-base/topics/misc/Plan.MD")  # #605: any case of .md is a note
+    assert cfg.in_scope("action-items/Notes.Md")
     assert not cfg.in_scope("docs/superpowers/plans/x.md")
     assert not cfg.in_scope("knowledge-base/projects/acme-pilot/sprint-brief-lanes.csv")
     assert not cfg.in_scope("action-items/archive/action-items-2026-08-01.md")
