@@ -283,10 +283,10 @@ def veto(
     threads. A running experiment can be vetoed too: a run can set ``status: running`` by hand, and the owner's
     veto must still land.
 
-    The veto also goes into the owner's store (:func:`scout.sandbox.broker.record_veto`, in the folder ``env``'s
-    HOME names; default this process's), which a run can't write, so the broker refuses the experiment even if a
-    run rewrites the files before they are committed. That store is written first: when it can't be, this raises
-    and no file changes."""
+    The veto also goes into the owner's stores (:func:`scout.sandbox.broker.record_veto`: under ``env``'s HOME,
+    default this process's, and under the account's home when HOME is another folder), which a run can't write, so
+    the broker refuses the experiment even if a run rewrites the files before they are committed. The stores are
+    written first: when one can't be, this raises and no file changes."""
     from scout.sandbox import broker
 
     paths.check_slug(slug)
