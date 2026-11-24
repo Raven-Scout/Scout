@@ -196,7 +196,7 @@ class _Seen:
             blobs = dm.BlobReader(self.vault)
             try:
                 vis = dm.visibility(self.vault, dm._head(self.vault), self.delegate, blobs)
-                self._scanner = dm.hidden_terms(self.vault, vis.entries, sorted(vis.hidden), blobs)
+                self._scanner = dm.hidden_terms(self.vault, vis.entries, sorted(vis.hidden), blobs, shown=vis.shown)
             finally:
                 blobs.close()
             self._visible = {e.path for e, _label in vis.visible}

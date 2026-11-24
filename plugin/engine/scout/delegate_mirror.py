@@ -172,6 +172,7 @@ from scout.kb.outbound import (
     note_from_text,
     terms_of,
     with_shared,
+    without_terms_in,
 )
 from scout.kb.privacy import (
     HEAD_BYTES,
@@ -925,10 +926,23 @@ def _plumbing(rel: str) -> bool:
 class Scanner:
     """Finds what names a file the delegate can't see: the outbound matchers, plus hidden vault paths."""
 
-    def __init__(self, terms: PrivateTerms, hidden: Sequence[str] = (), links: Collection[str] = ()) -> None:
+    def __init__(
+        self,
+        terms: PrivateTerms,
+        hidden: Sequence[str] = (),
+        links: Collection[str] = (),
+        shown: Collection[str] = (),
+    ) -> None:
+        """``shown`` is the folders the delegate sees (:func:`shown_text`): a hidden path that one of them
+        already holds (``topics/acme`` beside the folder ``topics/acme/``) is no term."""
         named = [p for p in hidden if not _plumbing(p)]
         stems = sorted({_stem(p) for p in named})
         self.terms = terms
+        folders = _fold_path(shown_text(shown))
+
+        def held(t: str) -> bool:
+            return re.search(_BEFORE + re.escape(_fold_path(t)) + _AFTER, folders) is not None
+
         path_notes = [
             PrivateNote(
                 path=f"path:{t}",
@@ -939,6 +953,7 @@ class Scanner:
                 pattern=re.compile(_BEFORE + re.escape(_fold_path(t)) + _AFTER),
             )
             for t in sorted({t for t in (_path_term(p) for p in named if p not in links) if t is not None})
+            if not held(t)
         ]
         if path_notes:
             # The pre-check is the union of patterns, not rebuilt from terms: the citing form and the
@@ -1342,21 +1357,36 @@ def _readings_name_hidden(parts: Sequence[str], scan: Scanner, rel: str) -> str 
     return None
 
 
-def hidden_terms(vault: Path, entries: Sequence[TreeEntry], hidden: Sequence[str], blobs: BlobReader) -> Scanner:
-    """What the mirror may not name: each hidden note's forms and path, and what was shared with the owner."""
+def shown_text(shown: Collection[str]) -> str:
+    """The folders a delegate sees as one text to match names in, kept apart by ``" / "``: no term spans it."""
+    return " / ".join(sorted(shown))
+
+
+def hidden_terms(
+    vault: Path, entries: Sequence[TreeEntry], hidden: Sequence[str], blobs: BlobReader, *, shown: Collection[str]
+) -> Scanner:
+    """What the mirror may not name: each hidden note's forms and path, and what was shared with the owner.
+
+    ``shown`` is :attr:`Visibility.shown`, the folders the delegate sees. The mirror already shows their names,
+    so a hidden note's name or path that one of them holds is no term: a private ``ontology/entities/acme.md``
+    must not empty the ``topics/acme/`` the owner granted, nor a private ``knowledge-base/knowledge-base.md``
+    every note under ``knowledge-base/``. Its other names, and links to it, still are.
+    """
     from scout.kb.shared_reads import SharedReadsUnreadable
 
     by_path = {e.path: e for e in entries}
+    folders = shown_text(shown)
     notes = []
     for rel in hidden:
         e = by_path[rel]
         if rel.lower().endswith(".md") and e.mode != SYMLINK_MODE:
-            notes.append(note_from_text(rel, decode_head(blobs.read(e.sha)[:HEAD_BYTES])))
+            note = note_from_text(rel, decode_head(blobs.read(e.sha)[:HEAD_BYTES]))
+            notes.append(without_terms_in(note, folders) if folders else note)
     try:
         terms = with_shared(terms_of(notes), vault)
     except SharedReadsUnreadable as e:
         raise RepoSyncError("shared_reads_unreadable", f"refused: the shared-reads ledger can't be read ({e})") from e
-    return Scanner(terms, hidden, links={rel for rel in hidden if by_path[rel].mode == SYMLINK_MODE})
+    return Scanner(terms, hidden, links={rel for rel in hidden if by_path[rel].mode == SYMLINK_MODE}, shown=shown)
 
 
 def _link_target(entry: TreeEntry, target: bytes) -> str | None:
@@ -1406,6 +1436,11 @@ class Visibility:
     hidden: set[str]
     agent_files: list[str] = field(default_factory=list)  # visible, but agents' instructions: left out, no term
 
+    @property
+    def shown(self) -> frozenset[str]:
+        """Every folder that holds a file this delegate sees: names the mirror shows anyway (:func:`hidden_terms`)."""
+        return frozenset(_folders([e.path for e, _ in self.visible]))
+
 
 def _refused(rules: LocalOnlyRules, rel: str) -> bool:
     """:meth:`LocalOnlyRules.refused`, but the vault's config passes ``privacy.sync_only`` (module docstring)."""
@@ -1448,13 +1483,16 @@ def visibility(vault: Path, head: str, delegate: str, blobs: BlobReader) -> Visi
     return out
 
 
-def scan_fingerprint(vault: Path, policy: Policy, entries: Sequence[TreeEntry], hidden: Collection[str]) -> str:
+def scan_fingerprint(
+    vault: Path, policy: Policy, entries: Sequence[TreeEntry], hidden: Collection[str], *, shown: Collection[str]
+) -> str:
     """Everything a file's scan result depends on besides its own path and bytes.
 
     The engine version and matcher settings, the delegate's policy, each hidden
-    file (path, blob, mode), the shared-reads ledger, and each hidden note on
-    disk (its ``source:`` adds shared notes). Equal fingerprints mean a file with
-    the same path and blob scans the same, so its result can be reused.
+    file (path, blob, mode), the folders the delegate sees (one can clear a hidden
+    note's name: :func:`hidden_terms`), the shared-reads ledger, and each hidden
+    note on disk (its ``source:`` adds shared notes). Equal fingerprints mean a
+    file with the same path and blob scans the same, so its result can be reused.
     """
     from scout.kb import outbound
 
@@ -1469,6 +1507,7 @@ def scan_fingerprint(vault: Path, policy: Policy, entries: Sequence[TreeEntry], 
         h.update(f"h\0{rel}\0{e.sha}\0{e.mode}\n".encode())
         if rel.lower().endswith(".md"):
             h.update(f"d\0{_stat_key(vault / rel)}\n".encode())
+    h.update(json.dumps(["shown", *sorted(shown)]).encode())
     ledger = vault / outbound.LEDGER_DIR
     with contextlib.suppress(OSError):
         for f in sorted(ledger.iterdir()):
@@ -1571,8 +1610,8 @@ def plan(
     policy, rules = seen.policy, seen.rules
     out = Plan(delegate=delegate, hidden_paths=set(seen.hidden), vault=_vault_mark(vault))
     out.agent_files = sorted(seen.agent_files)
-    out.fingerprint = scan_fingerprint(vault, policy, seen.entries, seen.hidden)
-    scan = hidden_terms(vault, seen.entries, sorted(seen.hidden), blobs)
+    out.fingerprint = scan_fingerprint(vault, policy, seen.entries, seen.hidden, shown=seen.shown)
+    scan = hidden_terms(vault, seen.entries, sorted(seen.hidden), blobs, shown=seen.shown)
     kept: list[tuple[MirrorFile, Label, str | None]] = []  # file, label, its text when it is text
     config: TreeEntry | None = None
     for e, label in seen.visible:
@@ -1866,8 +1905,8 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
     blobs = BlobReader(vault)
     try:
         seen = visibility(vault, head, delegate, blobs)
-        fingerprint = scan_fingerprint(vault, seen.policy, seen.entries, seen.hidden)
-        scan = hidden_terms(vault, seen.entries, sorted(seen.hidden), blobs)
+        fingerprint = scan_fingerprint(vault, seen.policy, seen.entries, seen.hidden, shown=seen.shown)
+        scan = hidden_terms(vault, seen.entries, sorted(seen.hidden), blobs, shown=seen.shown)
         checked: set[tuple[str, str]] = set()
         # TODO(#637, Phase 1c): this skip trusts the signed checked_fingerprint, which is sound only while runs
         # can't read ~/.scout-secrets (the signing key). Until #637 gates that folder and Phase 1c sandboxes a

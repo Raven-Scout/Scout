@@ -627,11 +627,11 @@ def test_the_shared_reads_ledger_feeds_both_fingerprints(vault: Path) -> None:  
     from scout.kb.shared_reads import LEDGER_DIR
 
     policy = load_policy(vault)
-    before = dm.sync_inputs(vault), dm.scan_fingerprint(vault, policy, [], [])
+    before = dm.sync_inputs(vault), dm.scan_fingerprint(vault, policy, [], [], shown=())
     ledger = vault / LEDGER_DIR
     ledger.mkdir(parents=True, exist_ok=True)
     (ledger / "2026-11.jsonl").write_text("{}\n", encoding="utf-8")
-    after = dm.sync_inputs(vault), dm.scan_fingerprint(vault, policy, [], [])
+    after = dm.sync_inputs(vault), dm.scan_fingerprint(vault, policy, [], [], shown=())
     assert before[0] != after[0] and before[1] != after[1]
     assert dm._stat_key(vault / "no-such-note.md") == "-"
 

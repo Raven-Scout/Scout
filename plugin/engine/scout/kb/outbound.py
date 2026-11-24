@@ -384,6 +384,40 @@ def terms_of(notes: Iterable[PrivateNote]) -> PrivateTerms:
     )
 
 
+def without_terms_in(note: PrivateNote, text: str) -> PrivateNote:
+    """``note`` without the terms that ``text`` itself holds, matched as :func:`find_mentions` would.
+
+    For a delegate's mirror (``scout.delegate_mirror.hidden_terms``): a folder the delegate sees names
+    itself, so a hidden note that shares its name doesn't make that word a secret. Its link keys stay: a
+    link to the note is still a link to it. ``text`` should keep paths apart with something no term can
+    span (``" / "``), since a term's words may be joined by space, ``-`` or ``_``.
+    """
+    (folded, _), (bare, _) = _folds(text)
+
+    def held(term: str) -> bool:
+        return any(
+            p is not None and p.search(form) for p, form in ((_term_regex([term]), folded), (_bare_regex([term]), bare))
+        )
+
+    if not note.terms or not (
+        (note.pattern is not None and note.pattern.search(folded))
+        or (note.bare_pattern is not None and note.bare_pattern.search(bare))
+    ):
+        return note
+    keep = tuple(t for t in note.terms if not held(t))
+    if keep == note.terms:
+        return note
+    return PrivateNote(
+        path=note.path,
+        slug=note.slug,
+        terms=keep,
+        link_keys=note.link_keys,
+        link_path=note.link_path,
+        pattern=_term_regex(keep),
+        bare_pattern=_bare_regex(keep) if note.bare_pattern is not None else None,
+    )
+
+
 def _words(text: str) -> int:
     return len([w for w in _SPLIT.split(text) if w])
 

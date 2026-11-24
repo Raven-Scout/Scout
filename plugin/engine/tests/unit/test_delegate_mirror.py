@@ -795,6 +795,73 @@ def test_a_file_whose_path_names_a_hidden_note_is_left_out(vault: Path, tmp_path
     assert result.left_out >= 1
 
 
+ACME_PLAN = (
+    "# Plan\n\nAcme renewal is on track.\nAcme Holdings signed the order form.\n"
+    "See [the client file](../../ontology/entities/acme.md).\nNothing else here.\n"
+)
+
+
+def test_a_hidden_note_named_like_a_folder_the_delegate_sees_no_longer_empties_that_folder(
+    vault: Path, tmp_path: Path
+) -> None:
+    """A folder the delegate sees names itself, not a hidden note of the same name.
+
+    A delegate granted a client's folders lost every file in them, and every line naming the client,
+    because the vault's private client file, its KB index and a sibling note share the folders' names.
+    """
+    private = "---\ntitle: {}\n{}visibility: private\n---\n\nPrivate.\n"
+    _commit_files(
+        vault,
+        {
+            "knowledge-base/ontology/entities/acme.md": private.format("Acme", "aliases: [Acme Holdings]\n").encode(),
+            "knowledge-base/topics/acme.md": private.format("Acme topic", "").encode(),  # path term: topics/acme
+            "knowledge-base/knowledge-base.md": b"---\nvisibility: private\n---\n\n# Index\n",
+            "knowledge-base/topics/acme/plan.md": ACME_PLAN.encode(),
+        },
+        "a client folder beside private notes of its name",
+    )
+    bare = _bare(tmp_path, "grok")
+    result = _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert {"knowledge-base/topics/acme/plan.md", "knowledge-base/topics/misc/plain.md"} <= files
+    assert not {"knowledge-base/ontology/entities/acme.md", "knowledge-base/topics/acme.md"} & files
+    assert "knowledge-base/knowledge-base.md" not in files
+    plan = _show(bare, "knowledge-base/topics/acme/plan.md")
+    assert "Acme renewal is on track." in plan and "Nothing else here." in plan
+    # Its alias isn't a folder the delegate sees, and a link to the hidden file is still a link to it.
+    assert "Acme Holdings" not in plan and "entities/acme" not in plan
+    assert result.left_out == 0
+
+
+def test_a_hidden_name_no_shown_folder_holds_still_drops_and_redacts(vault: Path, tmp_path: Path) -> None:
+    """Only a folder the delegate sees clears a name: not a file's name, nor a folder holding only hidden files."""
+    _commit_files(
+        vault,
+        {
+            "knowledge-base/ontology/entities/orbit.md": b"---\ntitle: Orbit\nvisibility: private\n---\n\nPrivate.\n",
+            "knowledge-base/topics/orbit/terms.md": b"---\nvisibility: private\n---\n\nPrivate too.\n",
+            "knowledge-base/topics/misc/orbit-call.md": b"# Call\n\nnothing private here\n",
+            "knowledge-base/topics/misc/vendors.md": b"# Vendors\n\nOrbit is a vendor.\nAnother vendor.\n",
+        },
+        "a hidden client with no shown folder",
+    )
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert "knowledge-base/topics/misc/orbit-call.md" not in files
+    assert not any(f.startswith("knowledge-base/topics/orbit/") for f in files)
+    vendors = _show(bare, "knowledge-base/topics/misc/vendors.md")
+    assert "Orbit" not in vendors and "Another vendor." in vendors
+
+
+def test_the_scan_fingerprint_changes_with_the_folders_the_delegate_sees(vault: Path) -> None:
+    """A new shown folder can clear a name, so a memoised scan from before it must not be reused."""
+    policy = load_policy(vault)
+    before = dm.scan_fingerprint(vault, policy, [], [], shown=frozenset({"knowledge-base"}))
+    after = dm.scan_fingerprint(vault, policy, [], [], shown=frozenset({"knowledge-base", "knowledge-base/acme"}))
+    assert before != after
+
+
 def test_a_name_spelled_with_combining_accents_still_matches() -> None:
     terms = terms_of([note_from_text("people/jose-ruiz.md", "---\nname: José Ruiz\n---\n")])
     nfd = "Met José Ruiz today.\nOther.\n"
