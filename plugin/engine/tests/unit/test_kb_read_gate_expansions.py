@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from scout.hooks import kb_read_gate as gate
-from scout.kb import live_run
+from scout.kb import live_run, raw_read
 from scout.kb.raw_read import brace_expand, read_operands
 from tests.unit.test_hooks_kb_read_gate import RUN, _denied, _payload
 
@@ -128,6 +128,13 @@ def _run(home: Path, command: str, *, cwd: Path | None = None, env: dict | None 
         "ls action-items/*",
         "grep -rn x action-items/*",
         "ag x k*",
+        # review round 3: diff reads a folder; groups after `}` and in a redirect; `~-` after the command's cd
+        "cd action-items; mkdir -p ../e; diff -N context ../e",
+        "cat {,}(kn*|x)-base/a.md",
+        "x=k; cat ${x}(n*|y)-base/a.md",
+        "cat < (kn*|x)-base/a.md",
+        "cd action-items; cat < (con*|x)/x.md",
+        "cd kn*-base; cd ..; cat ~-/a.md",
     ],
 )
 def test_a_read_that_expands_into_the_kb_is_denied(home: Path, command: str) -> None:
@@ -211,6 +218,18 @@ def test_the_index_is_kb_through_a_glob_too(home: Path) -> None:
         "cat ${HOME:-/x}/notes.txt",
         "cat ${PWD%/}/docs/a.md",
         "cat docs/[a$]*.md",
+        # review round 3: a quoted regex is no path (the secret check judged it, #798's replay); a quoted
+        # character is literal (no glob, brace, `$` or `~`)
+        'grep -o "projects/(alpha|beta|gamma|delta|eps|zeta)[^/]*/[^/]*\\.md" docs/a.md | sort -u',
+        'grep -o "projects/(alpha|beta)[^/]*" docs/a.md',
+        'grep -o -e "projects/(alpha|beta|gamma|delta|eps|zeta)[^/]*/[^/]*\\.md" docs/a.md',
+        "grep -o -f scripts/a.md docs/a.md",
+        "awk '/projects\\/(a|b)[^/]*\\/[^/]*\\/[^/]*/ {print}' docs/a.md",
+        'cat "k*/a.md"',
+        "cat 'k*'/a.md",
+        'cat "kn{o,}wledge-base/a.md"',
+        "cat '$HOME'/notes.txt",
+        'cat "~+"/a.md',
         # `<` inside `[[ … ]]` compares strings
         'CUT=$(date -v-7d +%F); for f in action-items/action-items-*.md; do d=$(basename "$f" .md); '
         'if [[ "$d" < "$CUT" ]]; then echo "$f"; fi; done',
@@ -316,12 +335,17 @@ def test_an_unresolved_write_keeps_its_own_deny(home: Path) -> None:
         'cat docs/a.md "unterminated',
         "cat (a(b)|c)/x.md",  # a nested zsh group
         "cat (a|$(echo k)nowledge-base)/x.md",  # a substitution inside a group
-        "cat x$$'\\' k*/a.md '",  # bash: `$$` and a plain quote, so k*/a.md is a word; zsh: one `$'…'` word
+        "cat x$$'\\' docs/a.md '",  # bash: `$$` and a plain quote; zsh: one `$'…'` word. The words differ
         "for f in " + " ".join(f"docs/n{i}.md" for i in range(300)) + "; do cat $f; done",  # past the value cap
     ],
 )
 def test_a_command_the_gate_has_to_guess_at_is_refused(home: Path, command: str) -> None:
     assert "more files than" in _denied(_run(home, command))
+
+
+def test_an_even_dollar_quote_is_read_the_bash_way_too(home: Path) -> None:
+    # bash: `$$`, a plain `'\'`, then k*/a.md as a word of its own, which reads the KB
+    assert "knowledge-base/" in _denied(_run(home, "cat x$$'\\' k*/a.md '"))
 
 
 @pytest.mark.parametrize(
@@ -330,7 +354,7 @@ def test_a_command_the_gate_has_to_guess_at_is_refused(home: Path, command: str)
 )
 def test_a_read_that_resolves_records_nothing(home: Path, command: str) -> None:
     assert _run(home, command) is None
-    expected = ["command_output"] if command.startswith("cat ~-") else []  # `~-` is $OLDPWD: not followed
+    expected = ["unset_variable"] if command.startswith("cat ~-") else []  # `~-` before the command's own cd
     assert [r["payload"]["categories"] for r in _events(home)] == ([expected] if expected else [])
 
 
@@ -348,6 +372,20 @@ def test_a_glob_over_the_match_cap_is_refused(home: Path, monkeypatch: pytest.Mo
     monkeypatch.setattr(gate, "GLOB_CAP", 1)  # scripts/ holds two files
     reason = _denied(_run(home, "cat scripts/* docs/*"))
     assert "more files than" in reason
+
+
+def test_an_over_cap_glob_that_cant_reach_the_vault_is_allowed(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gate, "GLOB_CAP", 1)
+    outside = tmp_path / "tasks"
+    for name in ("a.out", "b.out", "c.out"):
+        (outside / "s" / name).parent.mkdir(parents=True, exist_ok=True)
+        (outside / "s" / name).write_text("x\n")
+    assert _run(home, f"ls -lt {outside}/*/*.out") is None
+    (tmp_path / "kb-link").symlink_to(home / "Vault" / "knowledge-base")
+    assert "more files than" in _denied(_run(home, f"ls -lt {tmp_path}/kb-link/*"))  # resolves into the vault
+    assert "more files than" in _denied(_run(home, "cat */*.md"))  # inside the vault: still refused
 
 
 def test_a_glob_that_runs_out_of_time_is_refused(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -556,7 +594,9 @@ def test_pwd_and_cd_helpers() -> None:
     assert live_run._put_pwd("$PWD/a.md", "") == "./a.md"
     assert live_run._put_pwd("$PWD/a.md", "docs/") == "./docs/a.md"
     assert live_run._put_pwd("${PWD}/a.md", "/abs/") == "/abs/a.md"
-    assert live_run._put_pwd("$OLDPWD/a.md", "") == SUBST + "/a.md"
+    assert live_run._put_pwd("$OLDPWD/a.md", "") == live_run.UNKNOWN_OLDPWD + "/a.md"
+    assert live_run._put_pwd("$OLDPWD/a.md", "docs/", "kb/") == "./kb/a.md"
+    assert live_run._put_pwd("${OLDPWD%/}/a.md", "docs/", "/abs/") == "/abs/a.md"
     assert live_run._put_pwd("$HOME/a.md", "") == "$HOME/a.md"
     assert live_run._into("docs/", "-") == ""
     assert live_run._into("docs/", "/tmp/") == "/tmp/"
@@ -632,3 +672,31 @@ def test_zsh_groups(command: str, expected: str) -> None:
     live_run._STATE["unparsed"] = False
     assert live_run._zsh_groups(command) == expected
     assert live_run._STATE["unparsed"] is False
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "expected"),
+    [
+        ("grep", ["-o", "x", "f"], {1}),
+        ("grep", ["-e", "x", "-e", "y", "f"], {1, 3}),
+        ("grep", ["-f", "pats", "f"], set()),
+        ("grep", ["-A", "3", "x", "f"], {2}),
+        ("grep", ["--", "-x", "f"], {1}),
+        ("rg", ["--regexp", "x", "f"], {1}),
+        ("sed", ["-i", "", "s/a/b/", "f"], {1, 2}),
+        ("sed", ["-n", "-e", "1p", "f"], {2}),
+        ("awk", ["-F", ":", "{print}", "f"], {2}),
+        ("jq", ["-e", ".", "f"], {1}),  # jq's -e is a flag: the filter is still first
+        ("cat", ["f"], set()),
+    ],
+)
+def test_program_positions(name: str, args: list[str], expected: set[int]) -> None:
+    assert raw_read.program_positions(name, args) == expected
+
+
+def test_a_secret_named_after_a_pattern_is_still_judged(home: Path) -> None:
+    secrets = home / ".scout-secrets"
+    secrets.mkdir()
+    (secrets / "token").write_text("t\n")
+    assert _run(home, "grep -o x ~/.scout-secrets/token") is not None
+    assert _run(home, "grep -f ~/.scout-secrets/token docs/a.md") is not None

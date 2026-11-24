@@ -756,6 +756,29 @@ def _reads_something(words: list[str], reads: list[str]) -> bool:
     return bool(reads) or bool(stripped and raw_read._command_name(stripped[0]) in raw_read._READ_COMMANDS)
 
 
+# Characters a quote keeps literal (no glob, brace or tilde expansion, and no `$` inside single quotes), marked in
+# private-use code points before shlex drops the quotes, for the KB read check only: the gate judges a marked
+# character as itself (`cat "k*/a.md"` reads a file named `k*`, not a glob).
+_SHIELD = {"*": "\ue000", "?": "\ue001", "[": "\ue002", "{": "\ue003", "~": "\ue004"}
+_SHIELD_DOLLAR = "\ue005"
+UNSHIELD = {**{v: k for k, v in _SHIELD.items()}, _SHIELD_DOLLAR: "$"}
+
+
+def _shield_quoted(text: str) -> str:
+    spans = _quoted_spans(text)
+    if not spans:
+        return text
+    out: list[str] = []
+    at = 0
+    for a, b in spans:
+        single = text[a] == "'"
+        inner = text[a + 1 : b - 1]
+        marked = "".join(_SHIELD.get(c, _SHIELD_DOLLAR if single and c == "$" else c) for c in inner)
+        out += [text[at : a + 1], marked, text[b - 1]]
+        at = b
+    return "".join([*out, text[at:]])
+
+
 def _strip_comments(command: str) -> str:
     """``command`` without its comments: a ``#`` that starts a word (the rule :func:`_quoted_spans` and
     :func:`_close` use) outside quotes, to the end of its line. ``cat x # it's`` is ``cat x``; ``a#b``, ``${#x}``,
@@ -796,13 +819,16 @@ def _zsh_groups(command: str) -> str:
         before = masked[:i]
         if before.endswith("\\"):
             continue  # `\(`: a literal paren (`find . \( -name a -o -name b \)`)
-        glued = (bool(out) and i == at) or (bool(before) and before[-1] not in " \t\n;&|(){}<>=$`")  # `(a|b)(c|d)`
+        # Glued to a word (`kn(o|)w`, `${x}(…)`, `{,}(…)`, `(a|b)(c|d)`); only `$(`, `<(`, `>(`, `=(` and `((` aren't.
+        glued = (bool(out) and i == at) or (bool(before) and before[-1] not in " \t\n;&|(<>=$`")
         if not glued:
             word = before.rstrip(" \t")
-            if not word or word[-1] in "\n;&|(){}<>=$`" or len(word) == len(before):
-                continue  # command position, or `<(`, `$(`, `a=(`
-            if re.split(r"[\s;&|(){}]", word)[-1] in _RESERVED:
-                continue  # `then (cd x; ls)`, `if ((n > 1))`: a subshell or arithmetic
+            if not word or len(word) == len(before) or word[-1] in "\n;&|({`)":
+                continue  # command position: a subshell (`x; (cd y)`), or `((`
+            last = re.split(r"[\s;&|(){}]", word)[-1]
+            if last in _RESERVED or word.split()[-1] == "}":
+                continue  # `then (cd x; ls)`, `if ((n > 1))`, `{ …; } (…)`: a subshell or arithmetic
+            # anything else is an argument, a redirect's target too (`cat < (kn*|x)-base/a.md`)
         close = masked.find(")", i + 1)
         inner = command[i + 1 : close] if close > 0 else ""
         if close < 0 or "(" in masked[i + 1 : close] or "\0" in masked[i + 1 : close] or re.search(r"[$`\\]", inner):
@@ -1357,7 +1383,13 @@ def _secret_read(words: list[str], reads: list[str], cwd: str) -> str | None:
     """Whether a command names one of Scout's secrets (best effort: a path it spells out, or one after a ``cd``)."""
     if _SECRET is None or (words and _basename(words[0]) in _LISTS_ONLY):
         return None
-    for word in [*words[1:], *reads]:
+    from scout.kb import raw_read
+
+    stripped = raw_read._strip(words).words
+    lead = len(words) - len(stripped)  # where the command word sits, past prefixes (`timeout 5 grep …`)
+    name = raw_read._command_name(stripped[0]) if stripped else ""
+    patterns = {lead + 1 + i for i in raw_read.program_positions(name, stripped[1:])}  # a regex is no path
+    for word in [*(w for i, w in enumerate(words) if i and i not in patterns), *reads]:
         word = word.split("=", 1)[1] if word.startswith("--") and "=" in word else word.lstrip("@<")  # @file
         if not (cwd or "/" in word or word.startswith(("~", "$"))) or word.startswith("-"):
             continue
@@ -1371,7 +1403,7 @@ def _secret_read(words: list[str], reads: list[str], cwd: str) -> str | None:
     return None
 
 
-def _kb_read(words: list[str], reads: list[str], cwd: str, fed: str | None) -> str | None:
+def _kb_read(words: list[str], reads: list[str], cwd: str, fed: str | None, oldpwd: str | None = None) -> str | None:
     """Ask _KB_READ about each file a reading command reads (scout.kb.raw_read's readers, past their prefixes),
     and each input redirect, as the shell hands them over: brace lists expanded, the command's own variables put
     in, from the folder it runs in (``cd``, ``env -C``). An ``xargs`` reader also reads what it is fed: the words
@@ -1394,7 +1426,9 @@ def _kb_read(words: list[str], reads: list[str], cwd: str, fed: str | None) -> s
             if stripped.fed:
                 names, listed = _fed_sources(fed)
                 roots = [(root, cwd, "covers") for root in listed]
-                marker = _replace_string(words)
+                marker = _replace_string([_unshield(w) for w in words])
+                if marker is not None and not any(marker in o for o in operands):
+                    marker = "".join(_SHIELD.get(c, c) for c in marker)  # `xargs -I{} cat "{}"`
                 if marker is None:
                     operands = [*operands, *names]
                 else:  # `xargs -I{} cat {}`: each input line goes where the marker is
@@ -1404,7 +1438,7 @@ def _kb_read(words: list[str], reads: list[str], cwd: str, fed: str | None) -> s
                         operands.append(UNSEEN_INPUT)  # a listed path inside a longer word: not one the gate can judge
             targets += [(word, where, how) for word in operands]
     for word, where, how in [*targets, *roots]:
-        found = _judge_read(word, where, how)
+        found = _judge_read(word, where, how, oldpwd)
         if found is not None:
             return found
     return None
@@ -1415,7 +1449,7 @@ def _kb_read(words: list[str], reads: list[str], cwd: str, fed: str | None) -> s
 KB_READ_HOW = ("file", "folder", "covers")
 
 
-def _judge_read(word: str, where: str, how: str) -> str | None:
+def _judge_read(word: str, where: str, how: str, oldpwd: str | None = None) -> str | None:
     from scout.kb import raw_read
     from scout.kb.hook_paths import TOO_MANY
 
@@ -1432,10 +1466,14 @@ def _judge_read(word: str, where: str, how: str) -> str | None:
                 return TOO_MANY
             if not one.startswith(("/", "~", "$")):
                 one = where + one
-            found = _KB_READ(_put_pwd(one, where), how)
+            found = _KB_READ(_put_pwd(one, where, oldpwd), how)
             if found is not None:
                 return found
     return None
+
+
+def _unshield(word: str) -> str:
+    return "".join(UNSHIELD.get(c, c) for c in word)
 
 
 def _replace_string(words: list[str]) -> str | None:
@@ -1461,26 +1499,37 @@ def _replace_string(words: list[str]) -> str | None:
     return None
 
 
-def _put_pwd(word: str, where: str) -> str:
+# `$OLDPWD` before the command's own first `cd`: a variable it didn't set (unresolved, recorded as unset_variable).
+UNKNOWN_OLDPWD = "$__scout_oldpwd__"
+
+
+def _put_pwd(word: str, where: str, oldpwd: str | None = None) -> str:
     """``$PWD`` is the folder the command runs in, not the hook's: ``where`` from the session's cwd (``.`` and
-    ``./docs`` stay relative, so the gate joins them to it). ``$OLDPWD`` is a folder the gate doesn't follow."""
+    ``./docs`` stay relative, so the gate joins them to it). ``$OLDPWD`` is the folder before the command's last
+    ``cd`` (``oldpwd``), unknown before its first."""
     if "PWD" not in word:
         return word
-    here = where.rstrip("/") if where.startswith(("/", "~")) else ("./" + where).rstrip("/")
+
+    def form(folder: str) -> str:
+        return folder.rstrip("/") if folder.startswith(("/", "~")) else ("./" + folder).rstrip("/")
+
+    values = {"PWD": form(where), "OLDPWD": None if oldpwd is None else form(oldpwd)}
 
     def op(m: re.Match[str]) -> str:
-        if m[1] == "OLDPWD":
-            return SUBST
-        if m[1] != "PWD":
+        if m[1] not in values:
             return m[0]
-        found = param_value(here, m[2] or m[4], m[3] if m[2] else m[5])
+        value = values[m[1]]
+        if value is None:
+            return UNKNOWN_OLDPWD
+        found = param_value(value, m[2] or m[4], m[3] if m[2] else m[5])
         return SUBST if found is None else found
 
     def one(m: re.Match[str]) -> str:
         name = m[1] or m[2]
-        if name == "PWD":
-            return here
-        return SUBST if name == "OLDPWD" else m[0]
+        if name not in values:
+            return m[0]
+        value = values[name]
+        return UNKNOWN_OLDPWD if value is None else value
 
     return _VAR.sub(one, _PARAM.sub(op, word))
 
@@ -1964,6 +2013,7 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
     # Both readings of `$$'` (see _quoted_spans): a background under either one is a background.
     detach = any(_backgrounds(_mask_quoted(command, even_dollars_escape=way)) for way in (False, True))
     cwd = ""  # follows each `cd`, so `cd .git/hooks && rm pre-commit` reads as the path it writes
+    oldpwd: str | None = None  # the folder before the last `cd` (`$OLDPWD`, `~-`): unknown until one
     previous: str | None = None
     position = 0
     for segment, op in _segments_with_ops(command):
@@ -1990,14 +2040,20 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
         if found is None:
             found = _secret_read(words, reads, cwd)
         if found is None and _KB_READ is not None:
-            found = _kb_read(words, reads, cwd, fed)
+            shielded = _shield_quoted(segment)
+            if shielded == segment:
+                found = _kb_read(words, reads, cwd, fed, oldpwd)
+            else:  # the same words, with what their quotes keep literal marked so (see _SHIELD)
+                kb_clean, _writes, kb_reads, _strings = _redirects(shielded)
+                found = _kb_read(_tokens(kb_clean), kb_reads, cwd, fed, oldpwd)
         if found == "env":
             return "env"
         results.append((here, found))
         previous = segment
         if words[:1] in (["cd"], ["pushd"]):
             dests = [w for w in words[1:] if w not in ("-L", "-P", "-e", "-@", "--")]
-            cwd = _into(cwd, _substitute(dests[0])[0] if dests else "~")
+            dest = _substitute(dests[0])[0] if dests else "~"
+            cwd, oldpwd = ((oldpwd or "") if dest == "-" else _into(cwd, dest)), cwd
         elif words[:1] == ["popd"]:
             cwd = ""  # back where the pushd started, as far as a run's `pushd x && …; popd` goes
     judge_bodies(len(command) + 1)

@@ -458,7 +458,11 @@ def decide(
                 return None
             targets = globs(target)
             if targets is None:
-                return hook_paths.TOO_MANY
+                # Too many matches to judge: refused, unless the glob's fixed folder (resolved) can't reach the vault
+                # (`ls -lt /tmp/x/*/*`): no KB note is there to find.
+                fixed = paths.resolve_path(_fixed_prefix(target))
+                outside = _vault_rel(vault, fixed) is None and not vault.resolve().is_relative_to(fixed)
+                return None if outside else hook_paths.TOO_MANY
             for one in targets:
                 here = paths.resolve_path(one)
                 rel = _vault_rel(vault, here)
@@ -477,7 +481,7 @@ def decide(
 
         def globs(target: str) -> list[str] | None:
             if target not in memo:
-                memo[target] = _glob_targets(target)
+                memo[target] = _literal_globs(target)
             return memo[target]
 
         escape = run_escape(command, protect=protect, secret=secret, kb_read=kb_read)
@@ -523,6 +527,28 @@ def decide(
     from scout.kb.privacy import FULL_READERS
 
     return None if reader in FULL_READERS else _deny_read()
+
+
+def _fixed_prefix(target: str) -> str:
+    """The folders of ``target`` before its first wildcard component (``/tmp/x/*/y`` → ``/tmp/x``)."""
+    parts = target.split("/")
+    cut = next((i for i, part in enumerate(parts) if glob.has_magic(part)), len(parts))
+    return "/".join(parts[:cut]) or "/"
+
+
+def _literal_globs(target: str) -> list[str] | None:
+    """:func:`_glob_targets` for a path whose quoted characters live_run marked (``UNSHIELD``): each is matched as
+    itself, and the spelling judged is the literal one."""
+    from scout.kb.live_run import UNSHIELD
+
+    if not any(c in UNSHIELD for c in target):
+        return _glob_targets(target)
+    literal = "".join(UNSHIELD.get(c, c) for c in target)
+    if not glob.has_magic(target):
+        return [literal]
+    escaped = "".join(glob.escape(UNSHIELD[c]) if c in UNSHIELD else c for c in target)
+    found = _glob_targets(escaped)
+    return None if found is None else [literal, *found[1:]]
 
 
 GLOB_BUDGET_S = 2.0  # how long a glob in a command may take to expand; the hook itself times out at 15 s

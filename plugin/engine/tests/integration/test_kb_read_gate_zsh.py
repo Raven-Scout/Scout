@@ -29,7 +29,7 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     for rel in [*kb, "knowledge-base/kbnote-index.md", "action-items/context/kbnote-ctx.md"]:
         (v / rel).parent.mkdir(parents=True, exist_ok=True)
         (v / rel).write_text(f"kbnote x alpha {rel}\n")
-    for rel in ("docs/a.md", "scripts/a.md", "action-items/action-items-2026-11-23.md"):
+    for rel in ("docs/a.md", "scripts/a.md", "action-items/action-items-2026-11-23.md", ".scout-state/index.md"):
         (v / rel).parent.mkdir(parents=True, exist_ok=True)
         (v / rel).write_text("plain x alpha\n")
     (v / "scout-config.yaml").write_text("user: {}\n")
@@ -73,6 +73,13 @@ PRINTS_A_NOTE = [
     "cat ${PWD%/}/k*/a.md",
     "ls action-items/*",
     "for f in " + " ".join(f"docs/n{i}.md" for i in range(300)) + " knowledge-base/a.md; do cat $f 2>/dev/null; done",
+    # round 3: diff reads a folder; zsh groups after `}` and as a redirect's target; `~-` after the command's cd
+    "cd action-items; mkdir -p ../e; diff -N context ../e",
+    "cat {,}(kn*|x)-base/*/*/*.md",
+    "x=k; cat ${x}(n*|y)-base/*/*/*.md",
+    "cat < (kn*|x)-base/*/*/a.md",
+    "cd action-items; cat < (con*|x)/x.md",
+    "cd kn*-base; cd ..; cat ~-/*/*/*.md",
     # round 1: globs, the command's own variables, braces, ANSI-C, xargs, cd
     "cat k*/projects/a/a.md",
     "cat */a.md",
@@ -101,6 +108,11 @@ PRINTS_NO_NOTE = [
     "find docs \\( -name a.md -o -name b.md \\) -print",
     "git ls-files docs 2>/dev/null | xargs cat 2>/dev/null",
     "grep -l x docs/*.md | xargs grep -H alpha",
+    # round 3: a quoted regex over a non-KB file; quoted characters are literal
+    'grep -o "projects/(alpha|beta|gamma|delta|eps|zeta)[^/]*/[^/]*\\.md" .scout-state/index.md | sort -u',
+    'grep -o -e "projects/(alpha|beta)[^/]*" .scout-state/index.md',
+    'cat "k*/a.md" 2>/dev/null',
+    'cat "kn{o,}wledge-base/a.md" 2>/dev/null',
 ]
 
 
