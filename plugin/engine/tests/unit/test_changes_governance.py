@@ -16,7 +16,9 @@ from scout.changes.governance import (
     decision,
     decision_ref,
     diff_paths,
+    filed_by,
     read_pending,
+    spent_at,
     undo_requested,
 )
 from scout.changes.models import Signal
@@ -343,6 +345,40 @@ def test_an_approval_used_by_an_earlier_application_is_spent(repo):
     rows = [_row("approve", "a", _hash_of(GOOD), AT - timedelta(hours=4, minutes=30))]
     assert approved_application(repo, rows, first) is True
     assert approved_application(repo, rows, second) is False
+
+
+def test_a_merge_that_brings_the_pending_file_back_needs_a_new_approval(repo):
+    """Review fix: a merge that restores the pending file from a side branch is TREESAME to that branch for the path,
+    so git's default history simplification follows the side branch, finds the original filing and misses the
+    earlier application. Read along first parents (as name_status diffs), the merge is the new filing and the earlier
+    move spends the old approval, for a bound and an unbound one alike."""
+    filing = _file(repo, "a", GOOD, AT - timedelta(hours=5))
+    _git(repo, "branch", "side")
+    first = _move(repo, "a", at=AT - timedelta(hours=4))
+    _git(repo, "checkout", "-q", "side")
+    (repo / "README.md").write_text("side\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "side work", at=AT - timedelta(hours=3, minutes=30))
+    _git(repo, "checkout", "-q", "-")
+    _git(repo, "merge", "-q", "--no-ff", "--no-commit", "side", at=AT - timedelta(hours=3))
+    _git(repo, "checkout", "side", "--", f"{PENDING_DIR}/a.md")
+    _git(repo, "rm", "-q", f"{PENDING_DIR}/applied/a.md")
+    _git(repo, "commit", "-q", "-m", "merge side", at=AT - timedelta(hours=3))
+    (repo / "SKILL.md").write_text("edited alongside\n")
+    _git(repo, "add", "SKILL.md")
+    second = _move(repo, "a", at=AT)
+    h = _hash_of(GOOD)
+    for rows in (
+        [_row("approve", "a", h, AT - timedelta(hours=4, minutes=30), filing)],
+        [_row("approve", "a", h, AT - timedelta(hours=4, minutes=30))],
+    ):
+        assert approved_application(repo, rows, first) is True
+        assert approved_application(repo, rows, second) is False
+    # HEAD's lookups read the same way: the pending file at HEAD~1 (the merge) was filed by the merge itself.
+    _git(repo, "reset", "-q", "--hard", "HEAD~1")
+    [item] = read_pending(repo)[0]
+    assert filed_by(repo, item) == _git(repo, "rev-parse", "HEAD")
+    assert spent_at(repo, item) == AT - timedelta(hours=4)
 
 
 def test_every_move_in_the_commit_needs_its_own_approval(repo):

@@ -259,6 +259,13 @@ def decision(
     return state
 
 
+# How the filing and spent lookups walk history: along first parents, each merge diffed against its first parent (as
+# scan.name_status diffs a commit), renames as a delete plus an add. git's default history simplification would follow
+# a merge's side branch whenever the merge is TREESAME to it for the path, so a merge that brings a pending file back
+# would show the side branch's old filing and hide the application before it, letting a spent decision count again.
+_ALONG_FIRST_PARENTS = ("--first-parent", "-m", "--no-renames")
+
+
 def filed_by(vault: Path, item: Pending) -> str | None:
     """The sha of the commit that filed ``item`` as it is now: the newest commit that added its
     ``governance-pending/<slug>.md``, provided ``HEAD`` holds that file with this exact :func:`item_hash` (so no
@@ -273,7 +280,8 @@ def filed_by(vault: Path, item: Pending) -> str | None:
         head = None
     if head is None or head.hash != item.hash:
         return None
-    sha = (_git(vault, "log", "-n", "1", "--no-renames", "--diff-filter=A", "--format=%H", "--", path) or "").strip()
+    found = _git(vault, "log", *_ALONG_FIRST_PARENTS, "-n", "1", "--diff-filter=A", "--format=%H", "--", path)
+    sha = (found or "").strip()
     return sha if _FULL_SHA_RE.match(sha) else None
 
 
@@ -283,17 +291,18 @@ _ALL_SPENT = datetime.max.replace(tzinfo=UTC)
 
 def spent_at(vault: Path, item: Pending, *, before: str | None = None) -> datetime | None:
     """For decisions not bound to a filing (:func:`decision`): when a decision about ``item`` was last acted on, the
-    commit time of the newest commit that took this exact file (same slug, same :func:`item_hash`) out of
-    ``governance-pending/``, whether ``apply`` moved it to ``applied/``, deleted a ``governance: false`` one, or
-    ``discard`` deleted it. None when none did. Outside a git repository, None; when the repository can't be read,
-    every decision counts as spent. A bound decision needs none of this: commit order says which filing it was for.
+    commit time of the newest commit (along first parents) that took this exact file (same slug, same
+    :func:`item_hash`) out of ``governance-pending/``, whether ``apply`` moved it to ``applied/``, deleted a
+    ``governance: false`` one, or ``discard`` deleted it. None when none did. Outside a git repository, None; when the
+    repository can't be read, every decision counts as spent. A bound decision needs none of this: commit order says
+    which filing it was for.
 
     ``before`` (a commit sha) reads only the history before that commit instead of all of ``HEAD``'s."""
     from scout.changes.scan import _git  # the scanner's git runner: no locks, a timeout, never raises
 
     path = f"{PENDING_DIR}/{item.slug}.md"
     revs = [f"{before}^"] if before else []
-    log = _git(vault, "log", "--no-renames", "--diff-filter=D", "--format=%H %cI", *revs, "--", path)
+    log = _git(vault, "log", *_ALONG_FIRST_PARENTS, "--diff-filter=D", "--format=%H %cI", *revs, "--", path)
     if log is None:
         # No repository at all: nothing was ever applied (and `apply` refuses without git). A repository git can't
         # read: fail closed.
@@ -326,10 +335,10 @@ def approved_application(vault: Path, signals: Sequence[Signal], apply_sha: str)
     :func:`item_hash`) was ``approved`` as of the commit. The scanner trusts the move alone, so without this a run
     could make any edit immune to its test and its undo by moving an unapproved pending file itself.
 
-    As of the commit means :func:`decision` with the filing (the newest commit before ``apply_sha`` that added the
-    pending file) and with unbound rows counted only up to the commit's time, in whole seconds, and only after an
-    earlier application of the same file (:func:`spent_at` before ``apply_sha``). A bound row counts whatever its time:
-    commit order ties it to its filing. The applied file must parse as a governance item (a ``governance: false``
+    As of the commit means :func:`decision` with the filing (the newest first-parent commit before ``apply_sha`` that
+    added the pending file) and with unbound rows counted only up to the commit's time, in whole seconds, and only after
+    an earlier application of the same file (:func:`spent_at` before ``apply_sha``). A bound row counts whatever its
+    time: commit order ties it to its filing. The applied file must parse as a governance item (a ``governance: false``
     item is deleted on apply, never moved). False whenever git can't say."""
     from scout.changes.scan import name_status
 
@@ -365,7 +374,9 @@ def _approved_move(vault: Path, signals: Sequence[Signal], apply_sha: str, slug:
     if item is None or not item.governance:
         return False
     path = f"{PENDING_DIR}/{slug}.md"
-    found = _git(vault, "log", "-n", "1", "--no-renames", "--diff-filter=A", "--format=%H", f"{apply_sha}^", "--", path)
+    found = _git(
+        vault, "log", *_ALONG_FIRST_PARENTS, "-n", "1", "--diff-filter=A", "--format=%H", f"{apply_sha}^", "--", path
+    )
     filing = (found or "").strip()
     unbound = {decision_ref(verb, item.id, item.hash) for verb in ("approve", "reject")}
     rows = [s for s in signals if s.ref not in unbound or s.ts.replace(microsecond=0) <= applied_at]
