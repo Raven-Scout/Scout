@@ -423,6 +423,48 @@ jobs:
           done <<< "$tracked"
           exit $status
 
+      # 9b. The changes map documents (`scoutctl changes --json`, `scoutctl
+      #     engagement --json`, `scoutctl changes digest --json`) the app's
+      #     Changes tab decodes: same rule as the run ledger.
+      - name: Changes map fixtures are byte-identical across clients
+        run: |
+          set -uo pipefail
+          status=0
+          for name in changes engagement changes-digest; do
+            canonical=plugin/engine/tests/fixtures/contract/$name.json
+            checked=0
+            checked_list=" "
+            for copy in apps/*/[Ss]cout*Tests/Fixtures/$name.json; do
+              [ -f "$copy" ] || continue
+              checked=$((checked + 1))
+              checked_list="$checked_list$copy "
+              if cmp -s "$canonical" "$copy"; then
+                echo "OK  $copy"
+              else
+                echo "::error file=$copy::$name.json is not byte-identical to $canonical — regenerate it with SCOUT_REGEN_CONTRACT=1 (tests/unit/test_changes_contract.py), then cp it over $copy"
+                status=1
+              fi
+            done
+            if [ "$checked" -eq 0 ]; then
+              echo "::error::no client copy of $name.json found — the glob may be stale"
+              status=1
+            fi
+
+            tracked="$(git ls-files -- "*/$name.json")"
+            while IFS= read -r path; do
+              [ -n "$path" ] || continue
+              [ "$path" = "$canonical" ] && continue
+              case "$checked_list" in
+                *" $path "*) echo "OK  $path (discovered)" ;;
+                *)
+                  echo "::error file=$path::tracked $name.json copy was never compared by this step — add it to, or make it match, the apps/*/[Ss]cout*Tests/Fixtures/ glob"
+                  status=1
+                  ;;
+              esac
+            done <<< "$tracked"
+          done
+          exit $status
+
       # 10. The delegate mirror status (`scoutctl delegate status --json`) the
       #     app's Settings ▸ Agent copies card reads (#550): same rule as the
       #     doctor fixture.
