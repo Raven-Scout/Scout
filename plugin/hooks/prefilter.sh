@@ -224,6 +224,68 @@ bash_needs_python() {
     [ "$?" -ne 1 ]
 }
 
+# Whether the session of payload $p may be in a vault, by the rule of _may_be_in_a_vault in
+# engine/scout/hooks/__main__.py: SCOUT_DATA_DIR set, or a scout-config.yaml at or above the payload's
+# cwd. What the shell cannot read for certain counts as in a vault (unknown stays closed): no cwd, one
+# that is not a string, is empty or relative (`~` included), or holds a JSON escape, or a grep that
+# fails. Every "cwd" key in the payload is checked, not just the top-level one (the shell does not
+# parse JSON, and a tool input may have its own), each as written and with its symlinks resolved.
+may_be_in_a_vault() {
+    [ -n "$SCOUT_DATA_DIR" ] && return 0
+    tool grep
+    cws=$(printf '%s' "$p" | LC_ALL=C "$t" -oE -e '"cwd"[[:space:]]*:[[:space:]]*("([^"\\]|\\.)*"|.)') || return 0
+    while IFS= read -r cw; do
+        cw="${cw#*\"cwd\"}"
+        cw="${cw#*:}"
+        cw="${cw#"${cw%%[![:space:]]*}"}"
+        case "$cw" in \"*\") ;; *) return 0 ;; esac
+        cw="${cw#\"}"
+        cw="${cw%\"}"
+        case "$cw" in /*) ;; *) return 0 ;; esac
+        case "$cw" in *\\*) return 0 ;; esac
+        for w in "$cw" "$(cd -P -- "$cw" 2>/dev/null && pwd -P)"; do
+            [ -n "$w" ] || continue
+            while [ "$w" != / ] && [ ! -f "$w/scout-config.yaml" ]; do
+                w="${w%/*}"
+                w="${w:-/}"
+            done
+            [ -f "$w/scout-config.yaml" ] && return 0
+        done
+    done <<EOF
+$cws
+EOF
+    return 1
+}
+
+# Runs the restrict_tools gate ($@) on the payload and ends the filter. The gate always exits 0 (its
+# deny is JSON on stdout), so any other exit means it did not run: 126 for a shim naming a missing
+# interpreter, 127 for no scoutctl, 1 for a crash before the gate, 2 for a Python or typer usage
+# error, 128 + n for a signal. Claude Code lets a call through on every exit but 0 and 2, so passing
+# that on would lift every restriction without a word. The call is blocked instead when it is an MCP
+# call in a session that may be in a vault; anything else gets a non-blocking 1, since hooks.json is
+# plugin-wide and a broken engine must not block MCP outside a vault.
+mcp_gate() {
+    if ! read_payload; then
+        echo "[scout:mcp-tool-gate] Scout's MCP tool gate could not read this call, so it is blocked in this vault's sessions." >&2
+        verdict 2
+    fi
+    printf '%s' "$p" | "$@" && verdict 0
+    s=$?
+    tool grep
+    n=$(printf '%s' "$p" | LC_ALL=C "$t" -oE -e '"tool_name"[[:space:]]*:[[:space:]]*"mcp__[A-Za-z0-9_.-]*')
+    case "$?" in
+    0)
+        n="mcp__${n#*\"mcp__}"
+        n="${n%%[!A-Za-z0-9_.-]*}"
+        ;;
+    1) verdict 1 ;; # not an MCP call: nothing to gate
+    *) n="this MCP call" ;;
+    esac
+    may_be_in_a_vault || verdict 1
+    echo "[scout:mcp-tool-gate] Scout's MCP tool gate could not start (status $s), so $n is blocked in this vault's sessions: its restrict_tools limits can't be checked. To fix it, run /scout-update or \`scoutctl bootstrap doctor\`." >&2
+    verdict 2
+}
+
 name="${1-}"
 [ "$#" -gt 0 ] && shift
 filter="$name"
@@ -234,7 +296,8 @@ case "$filter" in
 
 # PreToolUse, every MCP call, every session. The restrict_tools gate: Python starts only in a vault
 # whose connectors.custom.yaml might set the key: the literal text, any backslash (a double-quoted
-# YAML key can spell it with escapes, #590) or a NUL byte.
+# YAML key can spell it with escapes, #590) or a NUL byte. When it cannot start, the call is blocked
+# in a session that may be in a vault (mcp_gate).
 mcp-tool-gate)
     find_vault
     f="$d/connectors.custom.yaml"
@@ -242,15 +305,14 @@ mcp-tool-gate)
     tool grep
     # shellcheck disable=SC1003 # the pattern ends in an escaped backslash: any backslash in the file
     LC_ALL=C "$t" -qsE -e 'restrict_tools|\\' "$f"
-    [ "$?" -eq 1 ] || { "$@"; verdict "$?"; } # the key, or grep failed
+    [ "$?" -eq 1 ] || mcp_gate "$@" # the key, or grep failed
     # No key: Python only if the file holds a NUL byte (tr drops them; cmp then finds a difference).
     tool tr
     tr=$t
     tool cmp
     # shellcheck disable=SC2094 # both only read the file
     LC_ALL=C "$tr" -d '\000' 2>/dev/null <"$f" | "$t" -s - "$f" && verdict 0
-    "$@"
-    verdict "$?"
+    mcp_gate "$@"
     ;;
 
 # PreToolUse, MCP write tools. Skipped only for a session that is neither a run nor in a vault.

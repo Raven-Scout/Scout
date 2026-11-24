@@ -341,7 +341,10 @@ def test_hooks_json_runs_the_gate_on_mcp_calls():
     command = _pre_tool_use_command()
     assert 'c="${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl"; ' in command
     assert '/bin/sh "$h" mcp-tool-gate "$c" hook mcp-tool-gate;' in command
-    assert command.endswith('exec "$c" hook mcp-tool-gate')
+    # Without a usable pre-filter the entry starts the gate itself, and fails closed in a vault when it can't
+    # (test_mcp_tool_gate_fail_closed.py): never `exec`, which would hand Claude Code the engine's exit.
+    assert '"$c" hook mcp-tool-gate && exit 0; s=$?; ' in command and "exec " not in command
+    assert command.endswith("exit 2")
 
 
 def _plugin_root_without_scoutctl(tmp_path: Path) -> Path:
