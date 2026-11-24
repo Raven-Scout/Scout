@@ -1,9 +1,11 @@
 - **The shell stage of the tool hooks moved out of `hooks/hooks.json` into `hooks/prefilter.sh`**, with no
   change in which calls reach Python. Each hook's pre-filter (the part that decides, in the shell, whether
   `scoutctl hook <name>` starts at all) was a one-line command inside the JSON; the `kb-read-gate` one for
-  `Grep|Glob|Bash` was 4,089 characters. They are now named filters in one POSIX script, and each
-  `hooks.json` entry is a short call: `/bin/sh "${CLAUDE_PLUGIN_ROOT}/hooks/prefilter.sh" <filter>
-  "${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl" hook <name>`.
+  `Grep|Glob|Bash` was 4,105 characters. They are now named filters in one POSIX script. Each
+  `hooks.json` entry is a small wrapper: it runs `/bin/sh "${CLAUDE_PLUGIN_ROOT}/hooks/prefilter.sh"
+  <filter> "${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl" hook <name>`, hands on the script's verdict
+  (below), and otherwise starts `scoutctl hook <name>` itself, or, for a gate in a run whose script
+  was killed, blocks the call.
   - The Bash pattern is built from one commented alternation group per concern (run identity, KB globs,
     recursive reads, detaching, hook-skip forms, writers, protected paths, secrets, the delegate inbox).
     The old pattern held one 1,117-character block twice; the copies were identical runs of whole
