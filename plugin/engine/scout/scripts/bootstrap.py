@@ -209,7 +209,6 @@ _INSTALL_ONLY_TEMPLATES = (
     # Vault-owned files (cat 2): seeded by install, upgrade and migrate-legacy
     # only where the vault has none, so a file added here reaches existing
     # vaults too. Never overwritten.
-    ("dreaming-proposals.md", "templates/dreaming-proposals.md.tmpl"),
     ("knowledge-base/scout-mistake-audit.md", "templates/scout-mistake-audit.md.tmpl"),
     ("knowledge-base/review-queue.md", "templates/review-queue.md.tmpl"),
     ("inbox.md", "templates/inbox.md.tmpl"),

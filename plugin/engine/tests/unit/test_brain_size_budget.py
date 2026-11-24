@@ -66,7 +66,12 @@ PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent
 #   critical-blocks check naming governance files (+~100). RESEARCH +~440: the trailer rule and the dm-sent record.
 #   RESPOND +~100: privacy's dm-sent record only; the trailer rule is its own section, kept out of respond runs, which
 #   never change Scout itself. (Measured against main's phases at 895a11b2: 47,464 / 21,743 / 7,615 / 6,044.)
-PINS = {"SKILL": 48_138, "DREAMING": 23_954, "RESEARCH": 8_057, "RESPOND": 6_147}
+# 2026-11-24 (changes map plan 3, task 14): SKILL and DREAMING re-pinned to their measure, RESEARCH and RESPOND
+# unchanged. The Changes tab replaces proposals: feedback processing's proposals paragraph (the opt-out format and its
+# apply rule) shrinks to one "Earlier proposals" line and a one-sentence "goes in directly too", while the harness
+# fallback and the owner lines gain the Changes tab wording (DREAMING -1, a wash). The critical-blocks check drops its
+# approved-proposal clause and the `scoutctl changes approve|reject` pointer for "waits in the Changes tab" (SKILL -30).
+PINS = {"SKILL": 48_108, "DREAMING": 23_953, "RESEARCH": 8_057, "RESPOND": 6_147}
 GROWTH = 0.05
 SHRINK = 0.10
 

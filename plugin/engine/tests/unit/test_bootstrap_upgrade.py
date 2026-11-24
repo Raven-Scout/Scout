@@ -160,6 +160,22 @@ def test_upgrade_never_overwrites_an_edited_cat2_file(tmp_path):
     assert {rel: (vault / rel).read_text() for rel in edited} == edited
 
 
+def test_upgrade_leaves_an_existing_dreaming_proposals_untouched(tmp_path):
+    """An older vault keeps its dreaming-proposals.md (earlier proposals are still applied from it); upgrade neither
+    rewrites it nor seeds one into a vault that has none."""
+    plugin = Path(__file__).parent.parent.parent.parent
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin_root=plugin))
+    proposals = vault / "dreaming-proposals.md"
+    assert not proposals.exists()
+    upgrade(_config(vault, plugin_root=plugin))
+    assert not proposals.exists()
+    mine = "# mine\n### 2026-11-01 — an old one\n**Status:** Approved\n"
+    proposals.write_text(mine)
+    upgrade(_config(vault, plugin_root=plugin))
+    assert proposals.read_text() == mine
+
+
 def test_upgrade_leaves_a_dangling_cat2_symlink_alone(tmp_path):
     """A symlink at a cat-2 path is the vault's, even when its target is gone:
     Path.exists() follows it and reads False, but seeding must not replace it."""
