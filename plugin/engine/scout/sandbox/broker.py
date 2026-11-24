@@ -283,16 +283,23 @@ LAB_VETOES_NAME = "lab-vetoes.jsonl"
 
 
 def record_veto(env: Mapping[str, str], vault: Path, slug: str, eid: str, at: datetime) -> None:
-    """Append ``slug`` ``eid`` to the owner's veto store, synced to disk (``lab veto``, the owner's verb). Raises
-    :class:`OSError` when it can't be written, as it can't from inside a run's sandbox.
+    """Append ``slug`` ``eid`` to the owner's veto store under each of :func:`scout.kb.hook_paths.homes` (``HOME``'s,
+    then the account's when ``HOME`` is another folder), synced to disk (``lab veto``, the owner's verb): a broker
+    with either HOME finds it, a scheduled run's (the account's) included. Raises :class:`OSError` when any store
+    can't be written, as none can from inside a run's sandbox; the stores written before it keep the row, which
+    only ever adds a veto (:func:`owner_veto` is additive).
 
-    Under an exclusive ``flock`` on the store, so two vetoes never interleave. A store whose last line has no
+    Under an exclusive ``flock`` on each store, so two vetoes never interleave. A store whose last line has no
     newline (a write cut short, or a hand edit that dropped it) gets one first, so the new row starts a line of
     its own instead of joining the torn tail."""
-    folder = owner_dir(env)
-    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path = folder / LAB_VETOES_NAME
     row = {"slug": slug, "eid": eid, "at": at.isoformat(), "vault": os.path.realpath(vault)}
+    for path in veto_stores(env):
+        _append_veto(path, row)
+
+
+def _append_veto(path: Path, row: Mapping[str, str]) -> None:
+    """Append ``row`` to the veto store at ``path`` (see :func:`record_veto`)."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with safe_write.open_append(path, mode=0o600) as fh:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         try:

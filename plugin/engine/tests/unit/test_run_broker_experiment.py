@@ -1300,13 +1300,52 @@ def test_no_home_cancels_another_homes_veto(tmp_path: Path, vault: Path, monkeyp
     account, elsewhere = tmp_path / "account", tmp_path / "elsewhere"
     monkeypatch.setattr(hook_paths, "account_home", lambda: account)
     in_account, in_elsewhere = ({**os.environ, "HOME": str(home)} for home in (account, elsewhere))
-    broker.record_veto(in_account, vault, SLUG, "E1", T)
-    broker.record_veto(in_elsewhere, vault, SLUG, "E2", T)
+    broker.record_veto(in_account, vault, SLUG, "E1", T)  # HOME is the account's: its store only
+    home_store, account_store = broker.veto_stores(in_elsewhere)
+    home_store.parent.mkdir(parents=True)
+    home_store.write_text(_row(SLUG, "E2") + "\n", encoding="utf-8")  # a row only HOME's store holds
     # HOME elsewhere: both stores are read, each holding a row the other lacks.
-    assert len(broker.veto_stores(in_elsewhere)) == 2
+    assert "E2" not in account_store.read_text(encoding="utf-8")
     assert broker.owner_veto(in_elsewhere, SLUG, "E1") == T.isoformat()  # only in the account's store
     assert broker.owner_veto(in_elsewhere, SLUG, "E2") == T.isoformat()  # only in HOME's store
     assert broker.owner_veto(in_elsewhere, SLUG, "E3") is None
+
+
+def test_a_veto_from_another_home_reaches_a_broker_with_the_account_home(
+    tmp_path: Path, vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The owner vetoes from a session whose HOME isn't the account's; a scheduled run's broker (the account's
+    HOME) still finds the veto, since it is written to both stores."""
+    from scout.kb import hook_paths
+
+    account, elsewhere = tmp_path / "account", tmp_path / "elsewhere"
+    monkeypatch.setattr(hook_paths, "account_home", lambda: account)
+    in_account, in_elsewhere = ({**os.environ, "HOME": str(home)} for home in (account, elsewhere))
+    broker.record_veto(in_elsewhere, vault, SLUG, EID, T)
+    for store in broker.veto_stores(in_elsewhere):
+        assert EID in store.read_text(encoding="utf-8"), store
+    assert broker.veto_stores(in_account) == [broker.veto_stores(in_elsewhere)[1]]
+    assert broker.owner_veto(in_account, SLUG, EID) == T.isoformat()
+
+
+def test_a_veto_whose_account_store_write_fails_changes_nothing(
+    tmp_path: Path, vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HOME's store takes the row but the account's can't: the veto command fails loudly and no file changes."""
+    from scout.kb import hook_paths
+    from scout.lab import experiments
+
+    account = tmp_path / "account"
+    monkeypatch.setattr(hook_paths, "account_home", lambda: account)
+    _set(vault, "status", "planned")
+    elsewhere = {**os.environ, "HOME": str(tmp_path / "elsewhere")}
+    account_store = broker.veto_stores(elsewhere)[1]
+    account_store.mkdir(parents=True)  # the store's name is a folder: the append fails
+    files = [_note(vault), paths.front_page(vault, SLUG), paths.timeline_path(vault, SLUG)]
+    before = [p.read_bytes() for p in files]
+    with pytest.raises(LabError, match="cannot record the veto of E2 in the owner's veto store"):
+        experiments.veto(vault, SLUG, EID, "alex", now=AFTER_NOTICE, env=elsewhere)
+    assert [p.read_bytes() for p in files] == before
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 file")
