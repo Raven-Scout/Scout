@@ -150,11 +150,8 @@ def _git_dirs(vault: Path) -> list[Path]:
 
 
 def _claude_dirs(env: Mapping[str, str]) -> list[Path]:
-    home = Path(env.get("HOME") or Path.home())
-    dirs = [home / ".claude"]
-    if env.get("CLAUDE_CONFIG_DIR"):
-        dirs.append(Path(env["CLAUDE_CONFIG_DIR"]))
-    return dirs
+    """~/.claude under $HOME and the account's home (:func:`scout.kb.hook_paths.homes`), and ``$CLAUDE_CONFIG_DIR``."""
+    return hook_paths.claude_dirs(env)
 
 
 def secrets_dirs(env: Mapping[str, str]) -> list[Path]:
@@ -190,8 +187,9 @@ def carve_outs(vault: Path | None, env: Mapping[str, str]) -> list[tuple[str, st
     for base in _claude_dirs(env):
         for name in CLAUDE_HOME_CARVE_DIRS:
             out.append(("subpath", str(base / name)))
-    for name in SSH_WRITABLE:
-        out.append(("literal", str(hook_paths.ssh_dir(env) / name)))
+    for ssh in hook_paths.ssh_dirs(env):
+        for name in SSH_WRITABLE:
+            out.append(("literal", str(ssh / name)))
     return out
 
 

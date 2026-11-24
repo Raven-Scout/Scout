@@ -120,12 +120,14 @@ def _hermetic_env(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.
 @pytest.fixture(autouse=True)
 def _owner_store_follows_home(monkeypatch: pytest.MonkeyPatch) -> Callable[[], Path]:
     """The changes map's owner store lives under the account's home from the account database, never ``$HOME``
-    (a run sets its own environment). Tests keep it under the per-test HOME, read when it is used, so a test that
-    re-points HOME moves the store with it. Returns the real lookup for the tests that exercise it."""
-    from scout.changes import store
+    (a run sets its own environment), and the run sandbox protects every per-user path under both
+    (hook_paths.homes). Tests keep the account's home at the per-test HOME, read when it is used, so a test that
+    re-points HOME moves the store with it and no protected list names the real home. Returns the real lookup
+    (hook_paths.account_home) for the tests that exercise it."""
+    from scout.kb import hook_paths
 
-    real = store._account_home
-    monkeypatch.setattr(store, "_account_home", lambda: Path(os.environ["HOME"]))
+    real = hook_paths.account_home
+    monkeypatch.setattr(hook_paths, "account_home", lambda: Path(os.environ["HOME"]))
     return real
 
 
