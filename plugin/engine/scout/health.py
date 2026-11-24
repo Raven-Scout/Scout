@@ -1121,12 +1121,26 @@ def integrity_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) ->
                 summary=(
                     f"{count(len(recent), 'scheduled run')} in the last {INTEGRITY_WINDOW.days} days changed a "
                     "protected file (a runner script, agent settings or Scout's schedule) in git. Scout put it "
-                    "back in a new commit" + ("; a tag or the stash still holds the change." if still else ".")
+                    "back in a new commit"
+                    + (
+                        " where it could, but the change is still there on a branch another session has checked out "
+                        "(Scout leaves that branch alone so it never rewrites it under that session), a tag or the "
+                        "stash."
+                        if still
+                        else "."
+                    )
                 ),
                 fix=(
                     "Read that run's log (the `integrity check:` lines name the files and the restoring commit) and "
                     "its session, to see what made it change them."
-                    + (" Then delete the tag or drop the stash entry it names." if still else "")
+                    + (
+                        " Then, for each `still holds the change` line: for a branch checked out in a worktree, in "
+                        "that worktree run `git log -p -n 5 <branch> -- <file>` to find the commit and `git revert` "
+                        "it if nobody approved it. `git reset --hard` or `git stash` there keeps the bad file, "
+                        "because the change is committed. For a tag, delete it; for the stash, drop the entry."
+                        if still
+                        else ""
+                    )
                 ),
                 source="ledger",
                 log=str(log) if log else None,
