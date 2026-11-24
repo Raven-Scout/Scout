@@ -13,7 +13,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shutil
+import stat
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -26,6 +30,7 @@ PENDING_DIR = "governance-pending"
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}$")
 ID_PREFIX = "gov-"
 _MAX_BYTES = 256 * 1024
+CONTEXT_MAX = 2000
 _FRONTMATTER_RE = re.compile(r"\A---[ \t]*\n(.*?)\n---[ \t]*(?:\n|\Z)(.*)\Z", re.DOTALL)
 _FENCE_RE = re.compile(r"^```[ \t]*diff[ \t]*\n(.*?)^```[ \t]*$", re.DOTALL | re.MULTILINE)
 _GIT_HEADER_RE = re.compile(r"^diff --git a/(\S+) b/(\S+)$")
@@ -46,6 +51,9 @@ class Pending:
     # False for a harness-fallback item: applying it deletes the file instead of moving it to applied/, so the
     # commit is an ordinary, testable change rather than a governance one.
     governance: bool = True
+    # The prose around the diff block (the run's own explanation), at most CONTEXT_MAX characters; "" when there is
+    # none. Not part of what the owner's decision is bound to: it explains the diff, it doesn't change it.
+    context: str = ""
 
     @property
     def hash(self) -> str:
@@ -166,6 +174,9 @@ def _parse_text(text: str, slug: str) -> Pending | None:
     patched = diff_paths(blocks[0]) if len(blocks) == 1 else None
     if patched is None:
         return None
+    context = re.sub(r"\n{3,}", "\n\n", _FENCE_RE.sub("", m.group(2))).strip()
+    if len(context) > CONTEXT_MAX:
+        context = context[: CONTEXT_MAX - 1].rstrip() + "…"
     return Pending(
         id=ID_PREFIX + slug,
         slug=slug,
@@ -176,6 +187,7 @@ def _parse_text(text: str, slug: str) -> Pending | None:
         diff=blocks[0],
         paths=tuple(patched),
         governance=governance,
+        context=context,
     )
 
 
@@ -329,11 +341,13 @@ _MOVED_RE = re.compile(rf"^{PENDING_DIR}/([a-z0-9][a-z0-9-]{{0,60}})\.md$")
 
 
 def approved_application(vault: Path, signals: Sequence[Signal], apply_sha: str) -> bool:
-    """Whether commit ``apply_sha`` applied governance items the owner approved: it moves at least one
-    ``governance-pending/<slug>.md`` to ``governance-pending/applied/<slug>.md`` (what makes a commit governance,
-    scout.changes.scan), and for every such move the owner's decision on the applied file as the commit holds it (its
-    :func:`item_hash`) was ``approved`` as of the commit. The scanner trusts the move alone, so without this a run
-    could make any edit immune to its test and its undo by moving an unapproved pending file itself.
+    """Whether commit ``apply_sha`` applied governance items the owner approved, and nothing else: it moves at least
+    one ``governance-pending/<slug>.md`` to ``governance-pending/applied/<slug>.md`` (what makes a commit governance,
+    scout.changes.scan), for every such move the owner's decision on the applied file as the commit holds it (its
+    :func:`item_hash`) was ``approved`` as of the commit, and the commit holds exactly those items' diffs
+    (:func:`_holds_only`). The scanner trusts the move alone, so without this a run could make any edit immune to its
+    test and its undo by moving an unapproved pending file itself, or by committing an unapproved edit alongside an
+    approved one (a whole-file commit sweeps up whatever else was left uncommitted).
 
     As of the commit means :func:`decision` with the filing (the newest first-parent commit before ``apply_sha`` that
     added the pending file) and with unbound rows counted only up to the commit's time, in whole seconds, and only after
@@ -342,15 +356,101 @@ def approved_application(vault: Path, signals: Sequence[Signal], apply_sha: str)
     item is deleted on apply, never moved). False whenever git can't say."""
     from scout.changes.scan import name_status
 
+    entries = name_status(vault, apply_sha) or []
     slugs = []
-    for status, sides in name_status(vault, apply_sha) or ():
+    for status, sides in entries:
         m = _MOVED_RE.match(sides[0]) if status[:1] == "R" else None
         if m and sides[1] == f"{PENDING_DIR}/applied/{m.group(1)}.md":
             slugs.append(m.group(1))
     applied_at = _commit_time(vault, apply_sha) if slugs else None
     if applied_at is None:
         return False
-    return all(_approved_move(vault, signals, apply_sha, slug, applied_at) for slug in slugs)
+    items = []
+    for slug in slugs:
+        item = _approved_move(vault, signals, apply_sha, slug, applied_at)
+        if item is None:
+            return False
+        items.append(item)
+    return _holds_only(vault, apply_sha, entries, items)
+
+
+def _holds_only(
+    vault: Path, apply_sha: str, entries: Sequence[tuple[str, Sequence[str]]], items: Sequence[Pending]
+) -> bool:
+    """Whether commit ``apply_sha`` changed only what applying ``items`` changes: every path it touched is one an
+    item's diff patches or an item's own pending/applied file, and replaying the items' diffs (in slug order, as
+    ``git apply`` would) on the parent's versions of the patched paths gives exactly the commit's versions, content
+    and executable bit. Fails closed: a symlink or any mode but a plain file, or anything git can't read or replay."""
+    allowed: set[str] = set()
+    for item in items:
+        allowed.update(item.paths, (item.path, f"{PENDING_DIR}/applied/{item.slug}.md"))
+    if not all(side in allowed for _, sides in entries for side in sides):
+        return False
+    patched = sorted({p for item in items for p in item.paths})
+    before = _files_at(vault, f"{apply_sha}^", patched)
+    after = _files_at(vault, apply_sha, patched)
+    if before is None or after is None:
+        return False
+    return _replayed(before, patched, [item.diff for item in items]) == after
+
+
+_Files = dict[str, tuple[bool, bytes]]  # path -> (executable, content); a path that isn't there is left out
+
+
+def _files_at(vault: Path, rev: str, paths: Sequence[str]) -> _Files | None:
+    """``paths`` as commit ``rev`` holds them, or None when git can't read them or one is not a plain file."""
+    from scout.changes.scan import _git_bytes
+
+    raw = _git_bytes(vault, "--literal-pathspecs", "ls-tree", "-r", "-z", rev, "--", *paths)
+    if raw is None:
+        return None
+    out: _Files = {}
+    wanted = set(paths)
+    for entry in os.fsdecode(raw).split("\0"):
+        meta, _, path = entry.partition("\t")
+        if path not in wanted:
+            continue  # the trailing empty field, or a file under a folder an item names
+        mode, _, oid = meta.split(" ")
+        if mode not in ("100644", "100755"):
+            return None
+        data = _git_bytes(vault, "cat-file", "blob", oid)
+        if data is None:
+            return None
+        out[path] = (mode == "100755", data)
+    return out
+
+
+def _replayed(before: _Files, paths: Sequence[str], diffs: Sequence[str]) -> _Files | None:
+    """``paths`` after applying ``diffs`` in order to ``before``, with ``git apply`` in a fresh private folder (never
+    the vault), or None when a diff doesn't apply or leaves something other than a plain file."""
+    from scout.changes.actions import _temp_root  # actions imports this module lazily too
+    from scout.changes.scan import _git_bytes
+
+    folder = tempfile.mkdtemp(prefix="scout-replay-", dir=_temp_root())
+    try:
+        for rel, (executable, data) in before.items():
+            target = os.path.join(folder, rel)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "xb") as f:  # a fresh name in a fresh private folder
+                f.write(data)
+            os.chmod(target, 0o755 if executable else 0o644)
+        for diff in diffs:
+            done = _git_bytes(
+                Path(folder), "apply", "--whitespace=nowarn", stdin=diff.encode("utf-8"), outside_repo=True
+            )
+            if done is None:
+                return None
+        out: _Files = {}
+        for rel in paths:
+            target = os.path.join(folder, rel)
+            if os.path.islink(target):
+                return None
+            if os.path.isfile(target):
+                with open(target, "rb") as f:
+                    out[rel] = (bool(os.stat(target).st_mode & stat.S_IXUSR), f.read())
+        return out
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 def _commit_time(vault: Path, sha: str) -> datetime | None:
@@ -363,7 +463,10 @@ def _commit_time(vault: Path, sha: str) -> datetime | None:
         return None
 
 
-def _approved_move(vault: Path, signals: Sequence[Signal], apply_sha: str, slug: str, applied_at: datetime) -> bool:
+def _approved_move(
+    vault: Path, signals: Sequence[Signal], apply_sha: str, slug: str, applied_at: datetime
+) -> Pending | None:
+    """The applied item, when the owner's decision on it as of ``apply_sha`` was ``approved``; else None."""
     from scout.changes.scan import _FULL_SHA_RE, _git
 
     text = _git(vault, "show", f"{apply_sha}:{PENDING_DIR}/applied/{slug}.md")
@@ -372,7 +475,7 @@ def _approved_move(vault: Path, signals: Sequence[Signal], apply_sha: str, slug:
     except Exception:  # noqa: BLE001 - malformed YAML: not an item the owner could have approved
         item = None
     if item is None or not item.governance:
-        return False
+        return None
     path = f"{PENDING_DIR}/{slug}.md"
     found = _git(
         vault, "log", *_ALONG_FIRST_PARENTS, "-n", "1", "--diff-filter=A", "--format=%H", f"{apply_sha}^", "--", path
@@ -382,7 +485,7 @@ def _approved_move(vault: Path, signals: Sequence[Signal], apply_sha: str, slug:
     rows = [s for s in signals if s.ref not in unbound or s.ts.replace(microsecond=0) <= applied_at]
     filed = filing if _FULL_SHA_RE.match(filing) else None
     spent = spent_at(vault, item, before=apply_sha)
-    return decision(rows, item.id, item.hash, filed=filed, spent=spent) == "approved"
+    return item if decision(rows, item.id, item.hash, filed=filed, spent=spent) == "approved" else None
 
 
 def undo_requested(signals: Sequence[Signal], change_id: str) -> bool:

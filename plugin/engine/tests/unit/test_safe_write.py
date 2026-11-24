@@ -553,6 +553,7 @@ REVIEWED: dict[str, str] = {
     "scout/delegate_inbox_sync.py::_op_result::shutil.copyfile": _TMP,
     "scout/agent_runtimes/gate_probe.py::probe::open": _TMP,
     "scout/changes/actions.py::_merge_in::open": _TMP,
+    "scout/changes/governance.py::_replayed::open": _TMP,
     "scout/kb/paths.py::_packaged_schema_path::write_bytes": _TMP,
     "scout/repo_sync.py::_merge3::write_bytes": _TMP,
     "scout/scripts/three_way_merge.py::three_way_merge::write_text": _TMP,
