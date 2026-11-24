@@ -21,7 +21,7 @@ struct ItemActivityTests {
         let s = { (subject: String) in
             ItemActivity.source(for: self.rev("x", subject, at: 300).commit, runs: [dreaming], now: self.t0)
         }
-        #expect(s("dreaming [22:0x]: wishlist — filed the example item") == .run(dreaming, .dreaming))
+        #expect(s("dreaming [22:0x]: research — filed the example item") == .run(dreaming, .dreaming))
         #expect(s("research [22:0x]: example findings") == .family(.research))   // no research run
         #expect(s("app: mark Example item done") == .app)
         #expect(s("scout: tidy the example folder") == .other)
@@ -59,7 +59,7 @@ struct ItemActivityTests {
 
     @Test func resolvedWithoutACommitIsUncommitted() {
         let entries = ItemActivity.entries(
-            revisions: [rev("c1", "app: add wishlist item Example item", patch: "+status: open")],
+            revisions: [rev("c1", "app: add research topic Example item", patch: "+status: open")],
             runs: [], status: .done, now: t0)
         #expect(entries.allSatisfy { !$0.isResolving })
         #expect(ItemActivity.outcome(entries: entries, status: .done) == .resolvedUncommitted)
@@ -105,7 +105,7 @@ struct ItemActivityTests {
     @Test func reloadKeyChangesWhenACommitCanHaveLanded() {
         // A commit alone never changes the item on disk, so the pane needs
         // other signals: the app finishing a write, or a run finishing.
-        let item = PerFileItem(fileURL: URL(fileURLWithPath: "/tmp/Scout/docs/wishlist/x.md"),
+        let item = PerFileItem(fileURL: URL(fileURLWithPath: "/tmp/Scout/knowledge-base/research-queue/x.md"),
                                date: "2026-04-01", title: "Example item", status: .open,
                                priority: .medium, source: nil, area: nil, bodyMarkdown: "")
         let running = Run.make(type: .dreaming, startedAt: t0, endedAt: nil, status: .running)
@@ -124,7 +124,7 @@ struct ItemActivityTests {
     @Test func repoRelativePathIsNilOutsideTheRepo() {
         let repo = URL(fileURLWithPath: "/tmp/Scout")
         #expect(ItemActivity.repoRelativePath(
-            of: URL(fileURLWithPath: "/tmp/Scout/docs/wishlist/a.md"), repo: repo) == "docs/wishlist/a.md")
+            of: URL(fileURLWithPath: "/tmp/Scout/knowledge-base/research-queue/a.md"), repo: repo) == "knowledge-base/research-queue/a.md")
         #expect(ItemActivity.repoRelativePath(
             of: URL(fileURLWithPath: "/tmp/Elsewhere/a.md"), repo: repo) == nil)
         #expect(ItemActivity.repoRelativePath(

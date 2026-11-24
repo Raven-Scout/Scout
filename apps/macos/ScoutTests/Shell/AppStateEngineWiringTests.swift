@@ -149,7 +149,7 @@ struct AppStateEngineWiringTests {
 
     /// `engineHealth` is a nested `ObservableObject` (spec §5, Ruling 32 item
     /// 4): a change it publishes must also fire `AppState.objectWillChange`
-    /// — the same forwarding `wishlistDoc`/`researchDoc` already get — so the
+    /// — the same forwarding `researchDoc` already gets — so the
     /// window gate and the Settings sidebar badge update without every
     /// observer needing its own subscription to `engineHealth` directly.
     /// Built from `.testing(...)`, never `.production()`/`.live`.

@@ -140,10 +140,10 @@ struct VaultUndoControllerTests {
 
     @Test func feedbackOverlayRendersToastAndProblem() {
         let c = VaultUndoController(), p = Probe()
-        c.register(p.step("Approve"), with: nil) {}
+        c.register(p.step("Mark Done"), with: nil) {}
         c.problem = WriteProblem.from(VaultWriteError.undoStale(file: "p.md"), action: "undo approve")
         ViewHost.render(WriteFeedbackOverlay(controller: c), size: CGSize(width: 600, height: 300))
-        #expect(WriteFeedbackOverlay.doneLine(for: "Approve") == "Proposal approved")
+        #expect(WriteFeedbackOverlay.doneLine(for: "Mark Done") == "Marked done")
     }
 
     @Test func scheduleWritesSaySchedule() {

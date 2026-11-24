@@ -30,9 +30,7 @@ struct SettingsView: View {
     @AppStorage("claudeCLIPath")       private var claudeCLIPath: String = ""
     @AppStorage("cliTerminal")         private var cliTerminal: String = CLITerminal.auto.rawValue
     @AppStorage("customLaunchCommand") private var customLaunchCommand: String = ""
-    @AppStorage("dreamingProposalsPath") private var dreamingProposalsPath: String = ""
-    @AppStorage("wishlistPath")          private var wishlistPath: String = ""
-    @AppStorage("researchQueuePath")     private var researchQueuePath: String = ""
+    @AppStorage("researchQueuePath") private var researchQueuePath: String = ""
     @State private var detectedClaudePath: String?
     /// Settings ▸ Engine's Set up / Repair sheet. It shows `AppState`'s one
     /// onboarding flow, so it closes by itself when that flow finishes.
@@ -273,10 +271,6 @@ struct SettingsView: View {
 
         section(label: "Folders") {
             SettingsCard {
-                folderField("Dreaming proposals folder", path: $dreamingProposalsPath,
-                            defaultRelative: "dreaming-proposals", reads: "Proposals")
-                folderField("Wishlist folder", path: $wishlistPath,
-                            defaultRelative: PerFileTabConfig.wishlist.directoryDefaultRelative, reads: "Wishlist")
                 folderField("Research queue folder", path: $researchQueuePath,
                             defaultRelative: PerFileTabConfig.research.directoryDefaultRelative, reads: "Research")
             }

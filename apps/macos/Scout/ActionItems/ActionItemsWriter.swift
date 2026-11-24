@@ -375,7 +375,7 @@ actor ActionItemsWriter {
 
     /// Repo-relative path of `fileURL` under `repo`, falling back to the last
     /// path component if it isn't inside the repo. Mirrors the same helper in
-    /// PerFileItemWriter/ProposalsWriter so every writer commits scoped to the
+    /// PerFileItemWriter so every writer commits scoped to the
     /// single file it touched rather than `git add -A` (issue #44).
     private static func relativePathInRepo(fileURL: URL, repo: URL) -> String {
         let full = fileURL.standardizedFileURL.path

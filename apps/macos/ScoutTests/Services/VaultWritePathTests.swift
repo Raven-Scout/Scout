@@ -335,101 +335,38 @@ struct BoardWritePathTests {
     }
 }
 
-// MARK: - Proposals (frontmatter field)
+// MARK: - Research (frontmatter field)
 
-private let proposal = """
----
-title: Add a re-check step
-status: Proposed (awaiting Alex approval)
----
-
-# Add a re-check step
-"""
-
-@Suite("C10 write path: proposals")
-struct ProposalsWritePathTests {
-    private func writer(_ vault: TempVault) -> ProposalsWriter {
-        ProposalsWriter(scoutDirectory: vault.root, gitService: nil,
-                        now: { Date(timeIntervalSince1970: 1_780_000_000) })
-    }
-
-    @Test func approveIsUndoable() async throws {
-        let vault = try TempVault()
-        let url = try vault.write("dreaming-proposals/p.md", proposal)
-        let w = writer(vault)
-        let change = try #require(try await w.decide(.approve, fileURL: url, label: "p"))
-        #expect(change.actionName == "Approve")
-        #expect(vault.read("dreaming-proposals/p.md")?.contains("status: Approved") == true)
-
-        try await w.restore(change, .undo)
-        #expect(vault.read("dreaming-proposals/p.md") == proposal)
-    }
-
-    @Test func undoIsRefusedOnceADreamingRunActedOnIt() async throws {
-        let vault = try TempVault()
-        let url = try vault.write("dreaming-proposals/p.md", proposal)
-        let w = writer(vault)
-        let change = try #require(try await w.decide(.approve, fileURL: url, label: "p"))
-        let applied = proposal.replacingOccurrences(of: "Proposed (awaiting Alex approval)", with: "Applied (2026-06-15)")
-        try vault.write("dreaming-proposals/p.md", applied)
-
-        await #expect(throws: VaultWriteError.undoStale(file: "p.md")) { try await w.restore(change, .undo) }
-        #expect(vault.read("dreaming-proposals/p.md") == applied)
-    }
-
-    @Test func aFileWithoutStatusFailsAndIsLeftAlone() async throws {
-        let vault = try TempVault()
-        let url = try vault.write("dreaming-proposals/p.md", "# no frontmatter\n")
-        await #expect(throws: ProposalsWriterError.frontmatterNotFound(file: "p.md")) {
-            try await writer(vault).decide(.decline, fileURL: url, label: "p")
-        }
-        #expect(vault.read("dreaming-proposals/p.md") == "# no frontmatter\n")
-    }
-
-    @Test func aStaleFileIsReappliedNotClobbered() async throws {
-        // A field write is targeted: it lands on whatever the file holds now,
-        // keeping the other writer's change.
-        let vault = try TempVault()
-        let url = try vault.write("dreaming-proposals/p.md", proposal + "\nA run appended this.\n")
-        _ = try await writer(vault).decide(.approve, fileURL: url, label: "p")
-        let text = try #require(vault.read("dreaming-proposals/p.md"))
-        #expect(text.contains("A run appended this."))
-        #expect(text.contains("status: Approved"))
-    }
-}
-
-// MARK: - Wishlist / Research (frontmatter field)
-
-@Suite("C10 write path: wishlist and research")
+@Suite("C10 write path: research")
 struct PerFileWritePathTests {
     private let item = "---\ntitle: Try the tracing job\nstatus: open\npriority: high\n---\n\n# Try the tracing job\n"
 
     @Test func markDoneIsUndoable() async throws {
         let vault = try TempVault()
-        let url = try vault.write("wishlist/t.md", item)
+        let url = try vault.write("research-queue/t.md", item)
         let w = PerFileItemWriter(scoutDirectory: vault.root, gitService: nil)
         let change = try #require(try await w.resolve(.done, fileURL: url, label: "t"))
         #expect(change.actionName == "Mark Done")
         try await w.restore(change, .undo)
-        #expect(vault.read("wishlist/t.md") == item)
+        #expect(vault.read("research-queue/t.md") == item)
     }
 
     @Test func undoIsRefusedAfterAnotherEdit() async throws {
         let vault = try TempVault()
-        let url = try vault.write("wishlist/t.md", item)
+        let url = try vault.write("research-queue/t.md", item)
         let w = PerFileItemWriter(scoutDirectory: vault.root, gitService: nil)
         let change = try #require(try await w.setPriority(.low, fileURL: url, label: "t"))
-        try vault.write("wishlist/t.md", item + "\nProgress: a dreaming run logged this.\n")
+        try vault.write("research-queue/t.md", item + "\nProgress: a dreaming run logged this.\n")
         await #expect(throws: VaultWriteError.undoStale(file: "t.md")) { try await w.restore(change, .undo) }
     }
 
     @Test func aFileWithoutFrontmatterFails() async throws {
         let vault = try TempVault()
-        let url = try vault.write("wishlist/t.md", "just text\n")
+        let url = try vault.write("research-queue/t.md", "just text\n")
         await #expect(throws: PerFileItemWriterError.frontmatterNotFound(file: "t.md")) {
             try await PerFileItemWriter(scoutDirectory: vault.root, gitService: nil).setStatus(.done, fileURL: url, label: "t")
         }
-        #expect(vault.read("wishlist/t.md") == "just text\n")
+        #expect(vault.read("research-queue/t.md") == "just text\n")
     }
 }
 

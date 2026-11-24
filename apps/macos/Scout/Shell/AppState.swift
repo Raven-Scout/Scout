@@ -16,7 +16,7 @@ final class AppState: ObservableObject {
     /// cleared on the next successful fire (issue #45 — previously swallowed).
     @Published var fireNowError: String? = nil
 
-    /// A run another tab asked to open (the Wishlist/Research history pane).
+    /// A run another tab asked to open (the Research history pane).
     /// ControlCenterView opens its detail and clears this. (#43)
     @Published var pendingRunToOpen: Run.ID? = nil
 
@@ -136,12 +136,7 @@ final class AppState: ObservableObject {
     /// the same store the rest of the app does, and tests can substitute one.
     private let defaults: UserDefaults
 
-    // Proposals (dreaming-proposals.md review)
-    let proposalsDocumentService: ProposalsDocumentService
-    let proposalsWriterBox: ProposalsWriterBox
-
-    // Per-file Wishlist + Research tabs
-    let wishlistDocumentService: PerFileDocumentService
+    // Per-file Research tab
     let researchDocumentService: PerFileDocumentService
     let perFileWriterBox: PerFileItemWriterBox
 
@@ -319,27 +314,8 @@ final class AppState: ObservableObject {
         let writerBox = ActionItemsWriterBox(writer: writerActor, boardWriter: boardWriter)
         let envState = ActionItemsEnvironmentState()
 
-        // Per-file proposals live in `dreaming-proposals/` (the sibling
-        // `dreaming-proposals.md` is just an index). The folder is overridable
-        // via the `dreamingProposalsPath` setting; takes effect on next launch.
-        let proposalsDirURL: URL = {
-            let override = defaults
-                .string(forKey: "dreamingProposalsPath")?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if let override, !override.isEmpty {
-                return URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
-            }
-            return scoutDir.appendingPathComponent("dreaming-proposals")
-        }()
-        let proposalsDoc = ProposalsDocumentService(directoryURL: proposalsDirURL, fileEvents: events)
-        let proposalsWriter = ProposalsWriter(
-            scoutDirectory: scoutDir,
-            gitService: git
-        )
-        let proposalsWriterBox = ProposalsWriterBox(writer: proposalsWriter)
-
-        // Per-file Wishlist + Research: resolve directory (override key or default
-        // relative path under scoutDir), matching the dreamingProposalsPath pattern.
+        // Per-file Research: resolve directory (override key or default
+        // relative path under scoutDir).
         func perFileDir(_ config: PerFileTabConfig) -> URL {
             let override = defaults
                 .string(forKey: config.pathOverrideKey)?
@@ -349,7 +325,6 @@ final class AppState: ObservableObject {
             }
             return scoutDir.appendingPathComponent(config.directoryDefaultRelative)
         }
-        let wishlistDoc = PerFileDocumentService(directoryURL: perFileDir(.wishlist), fileEvents: events)
         let researchDoc = PerFileDocumentService(directoryURL: perFileDir(.research), fileEvents: events)
         let perFileWriter = PerFileItemWriter(scoutDirectory: scoutDir, gitService: git)
         let perFileWriterBox = PerFileItemWriterBox(writer: perFileWriter)
@@ -384,9 +359,6 @@ final class AppState: ObservableObject {
         self.actionItemsDocumentService = docService
         self.actionItemsWriterBox = writerBox
         self.actionItemsEnvState = envState
-        self.proposalsDocumentService = proposalsDoc
-        self.proposalsWriterBox = proposalsWriterBox
-        self.wishlistDocumentService = wishlistDoc
         self.researchDocumentService = researchDoc
         self.perFileWriterBox = perFileWriterBox
         self.knowledgeBaseService = kbService
@@ -436,13 +408,9 @@ final class AppState: ObservableObject {
         self.fileDownloader = configuration.fileDownloader
 
         // Forward child-service changes so AppState.objectWillChange fires when
-        // wishlist/research item counts update (drives sidebar badge reactivity).
+        // research item counts update (drives sidebar badge reactivity).
         // DispatchQueue.main avoids badge lag that can occur with RunLoop.main
         // during modal run-loop tracking.
-        wishlistDoc.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.objectWillChange.send() }
-            .store(in: &cancellables)
         researchDoc.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -606,11 +574,7 @@ final class AppState: ObservableObject {
                 self?.runNotificationsArmed = true
                 sched.start()
                 power.start()
-                // Load proposals at launch so the sidebar badge is populated
-                // before the user opens the Proposals section.
-                proposalsDoc.load()
-                // Load wishlist + research so their badges are ready on launch.
-                wishlistDoc.load()
+                // Load research so its badge is ready on launch.
                 researchDoc.load()
             }
             await self?.recomputeStatus()

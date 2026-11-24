@@ -1,7 +1,7 @@
 // Scout/PerFileItems/Views/AddItemSheet.swift
 import SwiftUI
 
-/// Modal sheet for adding a new per-file item (wishlist entry or research topic).
+/// Modal sheet for adding a new per-file item (a research topic).
 /// Form fields: Title (required — Add button disabled when blank), Priority picker
 /// (from `config.priorities`, defaulting to `config.defaultPriority`), an optional
 /// Source/Area field when `config.optionalField.label != nil`, and a multiline Notes

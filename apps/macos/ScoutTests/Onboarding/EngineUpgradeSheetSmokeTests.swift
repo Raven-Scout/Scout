@@ -103,7 +103,6 @@ struct EngineUpgradeSheetSmokeTests {
         ViewHost.render(
             MainWindowView()
                 .environmentObject(state)
-                .environmentObject(state.proposalsDocumentService)
                 .environmentObject(SmokeVault.inertUpdates()),
             size: CGSize(width: 1100, height: 720))
     }

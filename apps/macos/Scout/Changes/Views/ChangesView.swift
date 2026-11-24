@@ -5,8 +5,7 @@ struct ChangeSelection: Identifiable, Equatable {
     let id: String
 }
 
-/// The Changes tab: what Scout changed about itself and whether it helped. It replaces the
-/// Proposals and Wishlist tabs.
+/// The Changes tab: what Scout changed about itself and whether it helped.
 ///
 /// Top to bottom: the banners, the digest card, then the slots the next tasks fill (the "needs
 /// your OK" strip, the engagement trend and the change list). Everything is read through
@@ -32,7 +31,7 @@ struct ChangesView: View {
 
     var body: some View {
         ScrollView {
-            // A VStack, not a LazyVStack: see ProposalsView (#83), the same height-estimation loop.
+            // A VStack, not a LazyVStack: the same height-estimation loop as #83.
             VStack(alignment: .leading, spacing: 16) {
                 header
                 content

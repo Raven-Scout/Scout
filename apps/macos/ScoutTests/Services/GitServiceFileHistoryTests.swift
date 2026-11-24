@@ -5,7 +5,7 @@ import Foundation
 @Suite("GitService file history")
 struct GitServiceFileHistoryTests {
 
-    private let rel = "docs/wishlist/2026-04-01-example-item.md"
+    private let rel = "knowledge-base/research-queue/2026-04-01-example-item.md"
     private let RS = "\u{1E}", US = "\u{1F}"
 
     private func git(_ results: [ProcessResult]) -> (GitService, ScriptedRunner) {
@@ -27,7 +27,7 @@ struct GitServiceFileHistoryTests {
         -status: open
         +status: done
         \(RS)mmm333\(US)mmm\(US)1775990000\(US)Merge branch 'side'
-        \(RS)aaa111\(US)aaa\(US)1775900000\(US)dreaming [22:1x]: wishlist — filed the example item
+        \(RS)aaa111\(US)aaa\(US)1775900000\(US)dreaming [22:1x]: research — filed the example item
 
         diff --git a/\(rel) b/\(rel)
         new file mode 100644
@@ -72,12 +72,12 @@ struct GitServiceFileHistoryTests {
     }
 
     @Test func filesChangedListsNamesOnly() async throws {
-        let out = "docs/wishlist/2026-04-01-example-item.md\nknowledge-base/example-topic.md\n\n"
+        let out = "knowledge-base/research-queue/2026-04-01-example-item.md\nknowledge-base/example-topic.md\n\n"
         let (g, runner) = git([ProcessResult(exitCode: 0, stdout: Data(out.utf8), stderr: Data())])
 
         let files = try await g.filesChanged(inCommit: "aaa111")
 
-        #expect(files == ["docs/wishlist/2026-04-01-example-item.md", "knowledge-base/example-topic.md"])
+        #expect(files == ["knowledge-base/research-queue/2026-04-01-example-item.md", "knowledge-base/example-topic.md"])
         let args = try #require(runner.calls.first?.arguments)
         #expect(args.contains("show") && args.contains("--name-only") && args.contains("--format="))
         #expect(args.last == "aaa111")

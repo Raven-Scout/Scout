@@ -17,9 +17,9 @@ nonisolated enum AppShortcut {
     static let findPrevious = KeyboardShortcut("g", modifiers: [.command, .shift])
     /// Knowledge Base: search every note, from anywhere on the page.
     /// ⇧⌘F, the same keys as `expandDetail`: the two are bound on different
-    /// pages (KB; Control Center, Wishlist, Research), never on one screen.
+    /// pages (KB; Control Center, Research), never on one screen.
     static let searchNotes = KeyboardShortcut("f", modifiers: [.command, .shift])
-    /// Run details (Control Center, Wishlist, Research).
+    /// Run details (Control Center, Research).
     static let closeDetail = KeyboardShortcut(".", modifiers: .command)
     /// ⇧⌘F, shared with `searchNotes` (see there).
     static let expandDetail = KeyboardShortcut("f", modifiers: [.command, .shift])

@@ -101,7 +101,7 @@ struct AccessibilityFoundationTests {
         }
         // Settings isn't a page: it is the ⌘, window only (UI audit #10).
         #expect(!SidebarItem.allCases.map(\.title).contains("Settings"))
-        // Eight pages, keys 1…8; Changes took Proposals' ⌘6 and Wishlist is gone.
+        // Eight pages, keys 1…8; Changes sits at ⌘6.
         #expect(SidebarItem.allCases.count == 8)
         #expect(SidebarItem.changes.goShortcutKey == "6")
         #expect(SidebarItem.research.goShortcutKey == "7")

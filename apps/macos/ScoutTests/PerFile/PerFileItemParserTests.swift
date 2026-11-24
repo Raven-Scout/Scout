@@ -7,7 +7,7 @@ import Testing
 struct PerFileItemParserTests {
     private func url(_ name: String) -> URL { URL(fileURLWithPath: "/tmp/\(name)") }
 
-    @Test func parsesFullFrontmatterWishlist() throws {
+    @Test func parsesFullFrontmatterWithSource() throws {
         let text = """
         ---
         title: "Upgrade the graph system"

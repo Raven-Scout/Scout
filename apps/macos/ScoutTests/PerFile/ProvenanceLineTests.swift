@@ -3,7 +3,7 @@ import Foundation
 import Testing
 @testable import Scout
 
-/// The "Source: …" line on a Wishlist or Research card (UI audit R5).
+/// The "Source: …" line on a Research card (UI audit R5).
 @Suite("Card provenance line")
 @MainActor
 struct ProvenanceLineTests {

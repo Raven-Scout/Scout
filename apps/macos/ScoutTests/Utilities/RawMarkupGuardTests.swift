@@ -35,9 +35,6 @@ struct RawMarkupGuardTests {
          "Self.fallbackPreview(of:)"),
         ("PerFileItems/Views/PerFileItemCardView.swift", #"Text\(item\.title\)"#, "Text(item.displayTitle)"),
         ("PerFileItems/Views/PerFileListView.swift", #"Text\(item\.title\)|label: item\.title"#, "item.displayTitle"),
-        ("Proposals/Views/ProposalCardView.swift", #"Text\(proposal\.title\)|\\\(proposal\.title\)"#,
-         "proposal.displayTitle"),
-        ("Proposals/Views/ProposalsView.swift", #"label: proposal\.title"#, "proposal.displayTitle"),
         ("KnowledgeBase/Views/KnowledgeBaseView.swift", #"InlineMarkdownText\(hit\.snippet\)|Text\(hit\.snippet\)"#,
          "Text(PlainText.strippingMarkdown(hit.snippet))"),
     ]

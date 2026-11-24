@@ -134,14 +134,6 @@ enum SmokeFixtures {
             bodyMarkdown: "Group digest lines by source.\n\n```\nscoutctl digest --batch\n```")
     }
 
-    static func proposal(status: ProposalStatus = .proposed) -> Proposal {
-        Proposal(
-            fileURL: URL(fileURLWithPath: "/tmp/2026-06-15-tighten-cadence.md"),
-            date: "2026-06-15", title: "Tighten the consolidation cadence",
-            status: status,
-            bodyMarkdown: "**Trigger:** the demo kept timing out.\n\n```\ncooldown_minutes: 30\n```")
-    }
-
     static func kbNode(name: String = "alex.md") -> KBNode {
         KBNode(kind: .file,
                url: URL(fileURLWithPath: "/tmp/knowledge-base/people/\(name)"),
@@ -412,21 +404,7 @@ struct ComponentSmokeTests {
         }
     }
 
-    // MARK: - Proposals & per-file cards
-
-    @Test("a proposal card renders for every status")
-    func proposalCardRendersEveryStatus() {
-        let statuses: [ProposalStatus] = [
-            .proposed, .pending(autoApplyDate: "2026-06-20"), .approved,
-            .rejected, .applied(date: "2026-06-16"), .closed("Superseded"), .unknown("Weird"),
-        ]
-        for status in statuses {
-            ViewHost.render(
-                ProposalCardView(proposal: SmokeFixtures.proposal(status: status),
-                                 onDecide: { _ in }),
-                size: cardSize)
-        }
-    }
+    // MARK: - Per-file cards
 
     @Test("a per-file card renders across statuses and priorities")
     func perFileCardRenders() {
@@ -443,9 +421,9 @@ struct ComponentSmokeTests {
         }
     }
 
-    @Test("the add-item sheet renders for both tabs")
+    @Test("the add-item sheet renders for the research tab")
     func addItemSheetRenders() {
-        for config in [PerFileTabConfig.wishlist, .research] {
+        for config in [PerFileTabConfig.research] {
             ViewHost.render(
                 AddItemSheet(config: config, onSubmit: { _, _, _, _ in }, onCancel: {}),
                 size: CGSize(width: 560, height: 620))

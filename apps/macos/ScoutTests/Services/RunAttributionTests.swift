@@ -19,7 +19,7 @@ struct RunAttributionTests {
         #expect(CommitFamily.of(subject: "weekend briefing [2026-04-18]: nothing new on the example board") == .weekendBriefing)
         #expect(CommitFamily.of(subject: "briefing [2026-04-20]: the day ahead") == .briefing)
         #expect(CommitFamily.of(subject: "consolidation [13:1x]: example sweep") == .consolidation)
-        #expect(CommitFamily.of(subject: "dreaming [22:1x]: wishlist — filed the example item") == .dreaming)
+        #expect(CommitFamily.of(subject: "dreaming [22:1x]: research — filed the example item") == .dreaming)
         #expect(CommitFamily.of(subject: "research: example findings") == .research)
     }
 
@@ -73,7 +73,7 @@ struct RunAttributionTests {
         #expect(run.claims(commit("briefing [2026-04-20]: the day ahead", at: 0)))
         #expect(run.claims(commit("weekend briefing [2026-04-18]: nothing new on the example board", at: 0)))
         #expect(run.claims(commit("consolidation [13:1x]: example sweep", at: 0)))
-        #expect(!run.claims(commit("dreaming [22:1x]: wishlist — x", at: 0)))
+        #expect(!run.claims(commit("dreaming [22:1x]: research — x", at: 0)))
         #expect(!run.claims(commit("app: mark Example item done", at: 0)))
     }
 
@@ -81,7 +81,7 @@ struct RunAttributionTests {
 
     @Test func linksAClaimedCommitInsideTheWindow() {
         let run = Run.make(type: .dreaming, startedAt: t0, endedAt: t0.addingTimeInterval(600))
-        let c = commit("dreaming [22:0x]: wishlist — filed the example item", at: 300)
+        let c = commit("dreaming [22:0x]: research — filed the example item", at: 300)
         #expect(CommitRunLinker.run(for: c, in: [run], now: t0)?.id == run.id)
     }
 

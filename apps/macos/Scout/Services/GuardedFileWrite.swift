@@ -3,8 +3,7 @@ import Foundation
 /// Read-modify-write a file with a guard against a concurrent writer clobbering
 /// it in the read→write window.
 ///
-/// The app's per-file writers (wishlist/research via `PerFileItemWriter`,
-/// proposals via `ProposalsWriter`) read a markdown file, rewrite one
+/// The app's per-file writers (research via `PerFileItemWriter`) read a markdown file, rewrite one
 /// frontmatter field, and write it back. A scout-plugin session writing the
 /// same file between our read and our atomic write would be silently
 /// overwritten (issue #48). This guards that window: it captures the file's

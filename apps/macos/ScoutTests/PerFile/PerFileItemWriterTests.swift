@@ -129,7 +129,7 @@ struct PerFileItemWriterE2ETests {
     }
     private func makeVault() throws -> URL {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("perfile-test-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir.appendingPathComponent("docs/wishlist"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("knowledge-base/research-queue"), withIntermediateDirectories: true)
         return dir
     }
     private func okRunner() -> ScriptedRunner {  // rev-parse(0) add(0) diff(1=dirty) commit(0)
@@ -143,44 +143,44 @@ struct PerFileItemWriterE2ETests {
 
     @Test func addItemWritesFileAndCommitsScoped() async throws {
         let vault = try makeVault(); defer { try? FileManager.default.removeItem(at: vault) }
-        let dir = vault.appendingPathComponent("docs/wishlist")
+        let dir = vault.appendingPathComponent("knowledge-base/research-queue")
         let runner = okRunner()
         let writer = PerFileItemWriter(scoutDirectory: vault, gitService: GitService(repoURL: vault, runner: runner), now: { Self.fixedDate() })
         let url = try await writer.addItem(title: "Alpha thing", priority: .high, body: "do alpha",
-                                           source: "Alex DM", area: nil, in: dir, noun: "wishlist item")
+                                           source: "Alex DM", area: nil, in: dir, noun: "research topic")
         #expect(url.lastPathComponent == "2026-06-19-alpha-thing.md")
         let written = try String(contentsOf: url, encoding: .utf8)
         #expect(written.contains("status: open") && written.contains("priority: high") && written.contains("source: \"Alex DM\""))
         let commit = try #require(runner.calls.last)
         #expect(commit.arguments.contains("commit"))
-        #expect(commit.arguments.contains("app: add wishlist item Alpha thing"))
-        #expect(commit.arguments.contains("docs/wishlist/2026-06-19-alpha-thing.md"))
+        #expect(commit.arguments.contains("app: add research topic Alpha thing"))
+        #expect(commit.arguments.contains("knowledge-base/research-queue/2026-06-19-alpha-thing.md"))
     }
 
     @Test func addItemDisambiguatesFilenameCollision() async throws {
         let vault = try makeVault(); defer { try? FileManager.default.removeItem(at: vault) }
-        let dir = vault.appendingPathComponent("docs/wishlist")
+        let dir = vault.appendingPathComponent("knowledge-base/research-queue")
         let writer = PerFileItemWriter(scoutDirectory: vault, gitService: nil, now: { Self.fixedDate() })
-        let u1 = try await writer.addItem(title: "Same", priority: .medium, body: "a", source: nil, area: nil, in: dir, noun: "wishlist item")
-        let u2 = try await writer.addItem(title: "Same", priority: .medium, body: "b", source: nil, area: nil, in: dir, noun: "wishlist item")
+        let u1 = try await writer.addItem(title: "Same", priority: .medium, body: "a", source: nil, area: nil, in: dir, noun: "research topic")
+        let u2 = try await writer.addItem(title: "Same", priority: .medium, body: "b", source: nil, area: nil, in: dir, noun: "research topic")
         #expect(u1.lastPathComponent == "2026-06-19-same.md")
         #expect(u2.lastPathComponent == "2026-06-19-same-2.md")
     }
 
     @Test func emptyTitleThrowsAndDoesNotCommit() async throws {
         let vault = try makeVault(); defer { try? FileManager.default.removeItem(at: vault) }
-        let dir = vault.appendingPathComponent("docs/wishlist")
+        let dir = vault.appendingPathComponent("knowledge-base/research-queue")
         let runner = okRunner()
         let writer = PerFileItemWriter(scoutDirectory: vault, gitService: GitService(repoURL: vault, runner: runner), now: { Self.fixedDate() })
         await #expect(throws: PerFileItemWriterError.emptyTitle) {
-            _ = try await writer.addItem(title: "   ", priority: .medium, body: "x", source: nil, area: nil, in: dir, noun: "wishlist item")
+            _ = try await writer.addItem(title: "   ", priority: .medium, body: "x", source: nil, area: nil, in: dir, noun: "research topic")
         }
         #expect(runner.calls.isEmpty)
     }
 
     @Test func resolveFlipsStatusAndCommits() async throws {
         let vault = try makeVault(); defer { try? FileManager.default.removeItem(at: vault) }
-        let dir = vault.appendingPathComponent("docs/wishlist")
+        let dir = vault.appendingPathComponent("knowledge-base/research-queue")
         let fileURL = dir.appendingPathComponent("2026-06-10-x.md")
         try "---\ntitle: X\nstatus: open\npriority: high\ndate: 2026-06-10\n---\n\n# X\nbody".write(to: fileURL, atomically: true, encoding: .utf8)
         let runner = okRunner()
@@ -190,12 +190,12 @@ struct PerFileItemWriterE2ETests {
         #expect(written.contains("status: done"))
         let commit = try #require(runner.calls.last)
         #expect(commit.arguments.contains("app: mark X done"))
-        #expect(commit.arguments.contains("docs/wishlist/2026-06-10-x.md"))
+        #expect(commit.arguments.contains("knowledge-base/research-queue/2026-06-10-x.md"))
     }
 
     @Test func setPriorityRewritesFieldAndCommitsScoped() async throws {
         let vault = try makeVault(); defer { try? FileManager.default.removeItem(at: vault) }
-        let dir = vault.appendingPathComponent("docs/wishlist")
+        let dir = vault.appendingPathComponent("knowledge-base/research-queue")
         let fileURL = dir.appendingPathComponent("2026-06-10-x.md")
         try "---\ntitle: X\nstatus: open\npriority: medium\ndate: 2026-06-10\n---\n\n# X\nbody"
             .write(to: fileURL, atomically: true, encoding: .utf8)
@@ -208,12 +208,12 @@ struct PerFileItemWriterE2ETests {
         let commit = try #require(runner.calls.last)
         #expect(commit.arguments.contains("commit"))
         #expect(commit.arguments.contains("app: set X priority to urgent"))
-        #expect(commit.arguments.contains("docs/wishlist/2026-06-10-x.md"))
+        #expect(commit.arguments.contains("knowledge-base/research-queue/2026-06-10-x.md"))
     }
 
     @Test func setStatusStartFlipsOpenToInProgress() async throws {
         let vault = try makeVault(); defer { try? FileManager.default.removeItem(at: vault) }
-        let fileURL = vault.appendingPathComponent("docs/wishlist/2026-06-10-x.md")
+        let fileURL = vault.appendingPathComponent("knowledge-base/research-queue/2026-06-10-x.md")
         try "---\ntitle: X\nstatus: open\npriority: high\ndate: 2026-06-10\n---\n\n# X\nbody"
             .write(to: fileURL, atomically: true, encoding: .utf8)
         let runner = okRunner()
@@ -225,7 +225,7 @@ struct PerFileItemWriterE2ETests {
 
     @Test func setStatusReopenFlipsDroppedToOpen() async throws {
         let vault = try makeVault(); defer { try? FileManager.default.removeItem(at: vault) }
-        let fileURL = vault.appendingPathComponent("docs/wishlist/2026-06-10-x.md")
+        let fileURL = vault.appendingPathComponent("knowledge-base/research-queue/2026-06-10-x.md")
         try "---\ntitle: X\nstatus: dropped\npriority: high\ndate: 2026-06-10\n---\n\n# X\nbody"
             .write(to: fileURL, atomically: true, encoding: .utf8)
         let runner = okRunner()
@@ -237,7 +237,7 @@ struct PerFileItemWriterE2ETests {
 
     @Test func setStatusKeepsInlineComment() async throws {
         let vault = try makeVault(); defer { try? FileManager.default.removeItem(at: vault) }
-        let fileURL = vault.appendingPathComponent("docs/wishlist/2026-06-10-x.md")
+        let fileURL = vault.appendingPathComponent("knowledge-base/research-queue/2026-06-10-x.md")
         try "---\ntitle: X\nstatus: done   # retired 2026-06-12 — expires reached\npriority: high\ndate: 2026-06-10\n---\n\n# X\nbody"
             .write(to: fileURL, atomically: true, encoding: .utf8)
         let writer = PerFileItemWriter(scoutDirectory: vault, gitService: GitService(repoURL: vault, runner: okRunner()), now: { Self.fixedDate() })
@@ -248,7 +248,7 @@ struct PerFileItemWriterE2ETests {
 
     @Test func setPriorityKeepsCommentAfterQuotedValue() async throws {
         let vault = try makeVault(); defer { try? FileManager.default.removeItem(at: vault) }
-        let fileURL = vault.appendingPathComponent("docs/wishlist/2026-06-10-x.md")
+        let fileURL = vault.appendingPathComponent("knowledge-base/research-queue/2026-06-10-x.md")
         try "---\ntitle: X\nstatus: open\npriority: \"medium\"  # lowered after review\ndate: 2026-06-10\n---\n\n# X\nbody"
             .write(to: fileURL, atomically: true, encoding: .utf8)
         let writer = PerFileItemWriter(scoutDirectory: vault, gitService: GitService(repoURL: vault, runner: okRunner()), now: { Self.fixedDate() })
@@ -259,7 +259,7 @@ struct PerFileItemWriterE2ETests {
 
     @Test func resolveWithoutCommentWritesBareValue() async throws {
         let vault = try makeVault(); defer { try? FileManager.default.removeItem(at: vault) }
-        let fileURL = vault.appendingPathComponent("docs/wishlist/2026-06-10-x.md")
+        let fileURL = vault.appendingPathComponent("knowledge-base/research-queue/2026-06-10-x.md")
         try "---\ntitle: X\nstatus: open\npriority: high\ndate: 2026-06-10\n---\n\n# X\nbody"
             .write(to: fileURL, atomically: true, encoding: .utf8)
         let writer = PerFileItemWriter(scoutDirectory: vault, gitService: GitService(repoURL: vault, runner: okRunner()), now: { Self.fixedDate() })

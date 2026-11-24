@@ -302,7 +302,7 @@ struct ActionItemsWriterTests {
         // #44: the writer must commit only the daily action-items file it just
         // wrote (`git add -- <path>` / `git commit … -- <path>`), never a repo
         // wide `git add -A` that sweeps in a concurrent plugin session's
-        // uncommitted work. Mirrors PerFileItemWriter/ProposalsWriter.
+        // uncommitted work. Mirrors PerFileItemWriter.
         let vault = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("Scout-\(UUID().uuidString)")
         let ai = vault.appendingPathComponent("action-items")

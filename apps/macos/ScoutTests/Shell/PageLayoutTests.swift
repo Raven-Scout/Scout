@@ -55,7 +55,6 @@ struct PageLayoutTests {
         }
         return AnyView(view
             .environmentObject(state)
-            .environmentObject(state.proposalsDocumentService)
             .environmentObject(state.vaultUndo)
             .environmentObject(vault.updates))
     }
@@ -73,9 +72,7 @@ struct PageLayoutTests {
         #expect(doc.sections.flatMap(\.tasks).count >= 100)
         #expect(!state.knowledgeBaseService.tree.isEmpty)
         #expect((state.sessionIndexService.index?.sessions.count ?? 0) >= 100)
-        #expect(state.wishlistDocumentService.activeCount > 0)
         #expect(!state.researchDocumentService.items.isEmpty)
-        #expect(state.proposalsDocumentService.pendingCount > 0)
         #expect(!state.scheduleEditService.slots.isEmpty)
         #expect(!state.sessionLogService.runs.isEmpty)
         return vault
@@ -84,7 +81,6 @@ struct PageLayoutTests {
     static func window(_ item: SidebarItem, in vault: BigVault) -> some View {
         MainWindowView(initialSelection: item)
             .environmentObject(vault.state)
-            .environmentObject(vault.state.proposalsDocumentService)
             .environmentObject(vault.updates)
     }
 

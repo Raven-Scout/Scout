@@ -85,8 +85,6 @@ struct WriteFeedbackOverlay: View {
         case "Edit Comment":    return "Comment edited"
         case "Dismiss Entry":   return "Entry dismissed"
         case "Rename Topic":    return "Topic renamed"
-        case "Approve":         return "Proposal approved"
-        case "Decline":         return "Proposal declined"
         case "Drop":            return "Dropped"
         case "Start":           return "Started"
         case "Change Priority": return "Priority changed"

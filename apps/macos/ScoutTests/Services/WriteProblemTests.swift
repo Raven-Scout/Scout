@@ -59,7 +59,7 @@ struct WriteProblemTests {
 
     @Test func fieldWriteErrors() {
         #expect(WriteProblem.from(GuardedFileWrite.Failure.conflictPersisted, action: "approve").retryable)
-        #expect(WriteProblem.from(ProposalsWriterError.statusFieldNotFound(file: "p.md"), action: "approve").message.contains("p.md"))
+        #expect(WriteProblem.from(PerFileItemWriterError.fieldNotFound(field: "status", file: "p.md"), action: "approve").message.contains("p.md"))
         #expect(WriteProblem.from(PerFileItemWriterError.emptyTitle, action: "add").message == "Give the item a title first.")
     }
 
