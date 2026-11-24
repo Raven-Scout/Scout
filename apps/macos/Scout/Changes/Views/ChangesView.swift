@@ -9,6 +9,8 @@ import SwiftUI
 struct ChangesView: View {
     @EnvironmentObject var service: ChangesService
     @EnvironmentObject var decisions: ChangesDecisions
+    /// Where the vault is: the review sheet reads a pending governance file from under it (read-only).
+    var vaultDirectory: URL? = nil
 
     static let unsupportedMessage = "Update Scout's engine to see this page."
     static let unverifiedBanner = "Scout couldn't check these changes against git just now, so they're shown unconfirmed and Undo is off."
@@ -86,8 +88,10 @@ struct ChangesView: View {
             DSBanner(tone: title == Self.unverifiedBanner ? .warning : .info, title: title)
         }
         DigestCard(digest: snapshot.digest)
+        NeedsOKStrip(items: snapshot.changes.needsOK, vaultDirectory: vaultDirectory,
+                     decisions: decisions, service: service)
         // Slots for the tasks that follow, top to bottom:
-        //   the needs-your-OK strip, the engagement trend, the change list.
+        //   the engagement trend, the change list.
     }
 
     // MARK: - Pure rules

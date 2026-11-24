@@ -137,7 +137,7 @@ struct MainWindowView: View {
                 .environmentObject(appState.scheduleEditService)
                 .environmentObject(appState.modelSettingsService)
         case .changes:
-            ChangesView()
+            ChangesView(vaultDirectory: appState.scoutDirectory)
                 .environmentObject(appState.changesService)
                 .environmentObject(appState.changesDecisions)
         case .research:
