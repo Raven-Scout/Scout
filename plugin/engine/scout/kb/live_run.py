@@ -332,13 +332,19 @@ def _backgrounds(text: str) -> bool:
     the "&" after `x\\<` or `x\\>` does background.
     """
     for match in _AMPERSAND.finditer(text):
+        if _backslashes(text, match.start()) % 2:
+            continue  # an escaped "&" is a letter
         before = match.start() - 1
         if before < 0 or text[before] not in "&><|":
             return True
-        backslashes = before - len(text[:before].rstrip("\\"))
-        if backslashes % 2:
+        if _backslashes(text, before) % 2:
             return True
     return False
+
+
+def _backslashes(text: str, at: int) -> int:
+    """How many backslashes come directly before ``text[at]``."""
+    return at - len(text[:at].rstrip("\\"))
 
 
 def _alive(pid: int) -> bool:

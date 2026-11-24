@@ -51,7 +51,9 @@ def test_staged_paths_lists_a_type_change_as_a_modification(kb_repo) -> None:
     (kb_repo.root / "knowledge-base/a.md").unlink()
     (kb_repo.root / "knowledge-base/a.md").symlink_to("b.md")
     kb_repo.git("add", "--", "knowledge-base/a.md")
-    assert staged_paths(kb_repo.root) == [StagedPath("knowledge-base/a.md", "knowledge-base/a.md", symlink=True)]
+    assert staged_paths(kb_repo.root) == [
+        StagedPath("knowledge-base/a.md", "knowledge-base/a.md", symlink=True, type_change=True)
+    ]
     assert added_lines(kb_repo.root, "knowledge-base/a.md", "knowledge-base/a.md") == [(1, "b.md")]
 
 

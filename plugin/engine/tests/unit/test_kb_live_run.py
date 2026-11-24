@@ -983,6 +983,7 @@ def test_other_options_prefixes_and_broken_quotes_are_not_flagged(command: str) 
         "git commit -m x\\>&",
         "git commit -m x\\|&",
         "git commit -m x\\&&",
+        "git commit -m x\\\\&",  # two backslashes are one literal backslash: the "&" is real
         "git commit -m x <&- &",
         "a<&b&",
     ],
@@ -1043,6 +1044,8 @@ SCOUT_WRAP"""
         "exec 3<&0; cat <&3; exec 3<&-",
         'read -r line <&3 && echo "$line"',
         "cat \\\\<&3",  # an escaped backslash, then a real "<&"
+        "echo a\\&b",  # an escaped "&" is a letter
+        "echo a \\&\\& true",
     ],
 )
 def test_ordinary_commands_and_reads_are_not_flagged(command: str) -> None:

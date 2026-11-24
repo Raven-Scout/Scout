@@ -1379,6 +1379,93 @@ def test_a_symlink_to_a_path_repo_sync_keeps_home_is_reported(vault: Path, targe
     assert checks(vault, RUN) == [("notes/there", "privacy-widening", True, None)]
 
 
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param("../../people/sam.md/../../topics/misc/plain.md", id="through a private note"),
+        pytest.param(
+            "../../../trading/positions.md/../../knowledge-base/topics/misc/plain.md", id="through a local-only path"
+        ),
+        pytest.param("sub/../plain.md", id="through a folder that isn't there"),
+        pytest.param("./sub/../plain.md", id="the same, after a dot"),
+    ],
+)
+def test_a_symlink_whose_target_backs_out_of_a_name_is_reported(vault: Path, target: str) -> None:
+    """The link's text is what uploads: it may not spell a path it then backs out of with ``..``."""
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    stage_link(vault, LINK, target)
+    assert checks(vault) == [(LINK, _LINK, False, None)]
+    assert checks(vault, RUN) == [(LINK, "privacy-widening", True, None)]
+
+
+def test_two_names_one_disk_opens_as_the_same_file_are_not_guessed_between(vault: Path) -> None:
+    """``plain.md`` is open and ``PLAIN.md`` private: which one the link opens depends on the disk."""
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    private = _blob(vault, "---\nvisibility: private\n---\n# A stand-in private note\n")
+    git(vault, "update-index", "--add", "--cacheinfo", "100644", private, MISC + "PLAIN.md")
+    stage_link(vault, LINK, "plain.md")
+    assert (LINK, _LINK, False, None) in checks(vault)
+    assert (LINK, "privacy-widening", True, None) in checks(vault, RUN)
+
+
+_CONFIG = "scout-config.yaml"
+_WIDER = "vault_name: demo\nprivacy:\n  local_only_add: []\n"
+
+
+@pytest.mark.parametrize(
+    ("at_head", "name"),
+    [
+        pytest.param("vault_name: demo\n", "vault_name: demo", id="HEAD has no privacy block"),
+        pytest.param(
+            "privacy: {shared_edits: refuse}\n", "privacy: {shared_edits: refuse}", id="the name spells HEAD's block"
+        ),
+    ],
+)
+def test_a_run_may_not_turn_the_config_into_a_symlink(vault: Path, at_head: str, name: str) -> None:
+    """Git stores the link as its target's name, and the engine reads the file behind it.
+
+    A name that parses as the YAML at HEAD made the commit's ``privacy:`` block
+    look unchanged, while the policy on disk was whatever the target held.
+    """
+    stage(vault, _CONFIG, at_head)
+    commit(vault, "the owner's config")
+    stage(vault, name, _WIDER)
+    stage_link(vault, _CONFIG, name)
+    assert (_CONFIG, "privacy-widening", True, None) in checks(vault, RUN)
+    assert hook(vault, RUN)[0] != 0
+    assert (_CONFIG, _LINK, False, None) in checks(vault)  # the owner is told
+
+
+def _index_link(vault: Path, rel: str, target: str) -> None:
+    """Stage a symlink without writing it (the path may be one git ignores)."""
+    git(vault, "update-index", "--add", "--cacheinfo", "120000", _blob(vault, target), rel)
+
+
+@pytest.mark.parametrize(
+    "rel", ["connectors.custom.yaml", ".scout-state/triggers.yaml", ".scout-state/schedule.yaml", ".mcp.json"]
+)
+def test_a_run_may_not_make_a_file_the_engine_reads_a_symlink(vault: Path, rel: str) -> None:
+    stage(vault, "notes/stand-in.yaml", "a: 1\n")
+    commit(vault, "a stand-in")
+    _index_link(vault, rel, "notes/stand-in.yaml" if "/" not in rel else "../notes/stand-in.yaml")
+    assert (rel, "privacy-widening", True, None) in checks(vault, RUN)
+    assert all(f[0] != rel or not f[2] for f in checks(vault))  # the owner may
+
+
+def test_a_run_may_not_turn_a_linked_engine_file_back_into_a_file(vault: Path) -> None:
+    """The other type change: the commit's "old" text would be the link's target name."""
+    rel = "connectors.custom.yaml"
+    stage(vault, "notes/stand-in.yaml", "a: 1\n")
+    stage_link(vault, rel, "notes/stand-in.yaml")
+    commit(vault, "the owner's link")
+    (vault / rel).unlink()
+    stage(vault, rel, "a: 2\n")
+    assert (rel, "privacy-widening", True, None) in checks(vault, RUN)
+    assert checks(vault) == []
+
+
 # ----- a run changing a non-note file in a share (#594) ---------------------------
 
 SHARED = "knowledge-base/topics/misc/"

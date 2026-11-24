@@ -52,11 +52,13 @@ SYMLINK_MODE = "120000"
 @dataclass(frozen=True)
 class StagedPath:
     """One staged path: ``head_rel`` is where its content was at HEAD (None for a new file or a copy),
-    ``symlink`` whether the staged entry is a symbolic link (its blob is then the target path)."""
+    ``symlink`` whether the staged entry is a symbolic link (its blob is then the target path),
+    ``type_change`` whether it was the other kind at HEAD (a file made a link, or a link made a file)."""
 
     rel: str
     head_rel: str | None
     symlink: bool = False
+    type_change: bool = False
 
 
 def _has_head(repo: Path) -> bool:
@@ -80,7 +82,7 @@ def staged_paths(repo: Path) -> list[StagedPath]:
             i += 3
         else:
             rel = parts[i + 1]
-            result.append(StagedPath(rel, rel if status[0] in "MT" else None, symlink))
+            result.append(StagedPath(rel, rel if status[0] in "MT" else None, symlink, status[0] == "T"))
             i += 2
     return result
 

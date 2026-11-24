@@ -187,11 +187,17 @@ _MESSAGES = {
     "repo sync after this commit: leave it to the owner. Owner: run scoutctl repo sync yourself; it refuses to "
     "push a move out of a path Agnes keeps local-only, and says how to allow one",
     "link-leaves-scope": "this symlink points outside what its own path shares or uploads: at a private, "
-    "local-only or less widely shared file, through too many links, or outside the vault. Git stores a link as "
+    "local-only or less widely shared file, through too many links, by a path that backs out of a name with two dots, "
+    "at a name two files share but for its case, or outside the vault. Git stores a link as "
     "its target's path, so whoever gets the link reads that name; point it inside the same share, or remove it",
     "link-widening": "a scheduled run may not add or retarget a symlink that points outside what its own path "
     "shares or uploads (a private, local-only or less widely shared file, or a path outside the vault), or at "
     "a name that isn't in the commit — leave that to the owner",
+    "engine-file-link": "a scheduled run may not make a settings file a symlink, or a linked one a file "
+    "(scout-config.yaml, any file at the top of the vault or in a dot-folder, any .yaml, .yml, .json or .toml): "
+    "git stores a link as its target's name, and Scout reads the file behind it — leave that to the owner",
+    "config-link": "scout-config.yaml is a symlink: this commit is checked as if the file held the link's target "
+    "name, while Scout reads the file behind it. Commit the settings as a regular file",
     "privacy-overlay-unreadable": "scout-config.yaml doesn't parse, so the engine's default privacy policy applies, "
     "plus the stricter settings in its privacy: block if that part reads cleanly; "
     "a scheduled run's commit is refused until it does",
@@ -242,7 +248,7 @@ class _Ctx:
     _terms: PrivateTerms | None = None
     _notes: list[PrivateNote] | None = None
     _checked_terms: dict[Any, PrivateTerms] = field(default_factory=dict)
-    _index: tuple[dict[str, tuple[str, str]], dict[str, str]] | None = None
+    _index: tuple[dict[str, tuple[str, str]], dict[str, str], frozenset[str]] | None = None
     _sync: tuple[Any, tuple[str, ...], bool] | None = None
     _home: LocalOnlyRules | None = None
 
@@ -260,23 +266,34 @@ class _Ctx:
     def is_shared(self, rel: str, label: Label) -> bool:
         return label.shared_file or any(glob_match(g, rel) for g in self.shared_globs)
 
-    def index(self) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
-        """The commit's files and folders, each keyed by :func:`scout.repo_sync.fold` of its path.
+    def index(self) -> tuple[dict[str, tuple[str, str]], dict[str, str], frozenset[str]]:
+        """The commit's files and folders, each keyed by :func:`scout.repo_sync.fold` of its path,
+        and the keys more than one of them has.
 
         A file maps to its path as written and its mode, a folder to its path
         as written. Folded, because a case-insensitive disk opens ``DRAFT.md``
         as ``draft.md``, and one that normalises Unicode opens either form.
+        Two names with one key (``plain.md`` and ``PLAIN.md``, or a file and a
+        folder) are one name on such a disk and two on another, so which one a
+        link opens isn't known: the third value lists those keys.
         """
         if self._index is None:
             files: dict[str, tuple[str, str]] = {}
             folders: dict[str, str] = {}
+            clashes: set[str] = set()
             for path, mode in index_modes(self.repo).items():
-                files[fold(path)] = (path, mode)
+                key = fold(path)
+                if key in files:
+                    clashes.add(key)
+                files[key] = (path, mode)
                 parent = posixpath.dirname(path)
-                while parent and fold(parent) not in folders:
-                    folders[fold(parent)] = parent
+                while parent:
+                    key = fold(parent)
+                    if folders.setdefault(key, parent) != parent:
+                        clashes.add(key)
                     parent = posixpath.dirname(parent)
-            self._index = (files, folders)
+            clashes.update(files.keys() & folders.keys())
+            self._index = (files, folders, frozenset(clashes))
         return self._index
 
     def sync_inputs(self) -> tuple[Any, tuple[str, ...], bool]:
@@ -436,6 +453,12 @@ def privacy_staged(repo: Path, *, env: Mapping[str, str]) -> list[Finding]:
         out += _local_only_moves(ctx, paths)
     for sp in paths:
         rel = sp.rel
+        if (sp.symlink or sp.type_change) and _engine_file(rel):
+            if ctx.scheduled:
+                out.append(Finding(rel, "privacy-widening", True, _MESSAGES["engine-file-link"]))
+                continue
+            if rel == CONFIG_FILE and sp.symlink:
+                out.append(Finding(rel, "link-leaves-scope", False, _MESSAGES["config-link"]))
         if rel == CONFIG_FILE:
             out += _config_findings(ctx, sp)
             continue
@@ -455,6 +478,17 @@ def privacy_staged(repo: Path, *, env: Mapping[str, str]) -> list[Finding]:
         # Deleting the config drops its privacy: block (staged_paths lists no deletions).
         out.append(Finding(CONFIG_FILE, "privacy-widening", True, _MESSAGES["config-widening"]))
     return out
+
+
+_SETTINGS_SUFFIXES = (".yaml", ".yml", ".json", ".toml")
+
+
+def _engine_file(rel: str) -> bool:
+    """Whether ``rel`` is where Scout or its host keeps settings: ``scout-config.yaml`` and the
+    other files at the top of the vault, anything in a dot-folder (``.scout-state/``, ``.claude/``),
+    a dot-file, or a settings format anywhere. Wider than the files the engine reads today, on purpose."""
+    parts = rel.split("/")
+    return len(parts) == 1 or any(p.startswith(".") for p in parts) or rel.lower().endswith(_SETTINGS_SUFFIXES)
 
 
 _LINK_HOPS = 8  # how many links a link may lead through; more reads as a loop
@@ -499,15 +533,20 @@ def _link_findings(ctx: _Ctx, sp: StagedPath) -> list[Finding]:
 def _link_end(ctx: _Ctx, rel: str) -> tuple[str, str] | None:
     """Where the staged symlink ``rel`` leads in the commit: a path and ``file``, ``folder`` or ``missing``.
 
-    None when it leaves the vault, a target isn't text, or it leads through
-    more than :data:`_LINK_HOPS` links (a loop). Names are matched the way a
-    case-insensitive disk matches them (:meth:`_Ctx.index`), and a link on the
-    way, to a file or as a folder of the path, is followed.
+    None when it leaves the vault, a target isn't text or backs out of a name
+    it spelled (:func:`_link_target`), it leads through more than
+    :data:`_LINK_HOPS` links (a loop), or a name on the way is one of two the
+    disk may take for each other. Names are matched the way a case-insensitive
+    disk matches them (:meth:`_Ctx.index`), and a link on the way, to a file
+    or as a folder of the path, is followed.
     """
-    files, folders = ctx.index()
+    files, folders, clashes = ctx.index()
     path = _link_target(ctx, rel)
     for _ in range(_LINK_HOPS):
         if path is None:
+            return None
+        parts = path.split("/")
+        if any(fold("/".join(parts[:i])) in clashes for i in range(1, len(parts) + 1)):
             return None
         key = fold(path)
         entry = files.get(key)
@@ -518,7 +557,6 @@ def _link_end(ctx: _Ctx, rel: str) -> tuple[str, str] | None:
             continue
         if key in folders:
             return folders[key], "folder"
-        parts = path.split("/")
         for i in range(1, len(parts)):
             on_the_way = files.get(fold("/".join(parts[:i])))
             if on_the_way is not None and on_the_way[1] == SYMLINK_MODE:
@@ -530,10 +568,21 @@ def _link_end(ctx: _Ctx, rel: str) -> tuple[str, str] | None:
 
 
 def _link_target(ctx: _Ctx, link: str, rest: str = "") -> str | None:
-    """The vault path the symlink at ``link`` names (``rest`` appended), or None outside the vault or not text."""
+    """The vault path the symlink at ``link`` names (``rest`` appended), or None outside the vault or not text.
+
+    None too when the target has a ``..`` after a name (``a/../b``). The text
+    is what uploads, so it may not spell a private path and then back out of
+    it; and where ``a`` is a link, the disk would back out of ``a``'s target,
+    not of ``a``. Leading ``..`` (``../b``) is the ordinary way up.
+    """
     target = _as_text(staged_blob(ctx.repo, link))
     if target is None or target.startswith("/"):
         return None
+    named = False
+    for part in target.split("/"):
+        if part == ".." and named:
+            return None
+        named = named or part not in ("", ".", "..")
     resolved = posixpath.normpath(posixpath.join(posixpath.dirname(link), target, rest))
     return None if resolved in (".", "..") or resolved.startswith("../") else resolved
 
