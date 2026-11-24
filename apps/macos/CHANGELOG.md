@@ -8,6 +8,11 @@ entries from PRs opened before fragments existed; prepare moves them too.
 
 ## [Unreleased]
 
+## [0.18.23] - 2026-11-23
+
+### Fixed
+- Edit and delete no longer show on task comments `scoutctl` can't address: inline `//==<< … >>==//` notes, quote-line comments, a comment after a blank line, and comments under a child task. They used to fail, edit a different comment of the same task when one of these sat above it, or, in a list indented by one space, reach the next task's line. Each comment now carries the index the engine gives it. (#556)
+
 ## [0.18.22] - 2026-11-22
 
 ### Fixed

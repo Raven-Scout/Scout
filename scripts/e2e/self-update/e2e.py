@@ -14,6 +14,7 @@ library only: it runs on the image's system Python, never the engine's.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import importlib.util
 import json
@@ -37,6 +38,7 @@ BUILD = WORK / "build"
 EVAL_VAULT = REPO / "plugin" / "engine" / "tests" / "eval" / "vault"
 PLUGIN_ID = "scout@scout-plugin"
 SCENARIOS = ("happy", "rollback", "sidecars")
+BRAIN_KINDS_PROBE = "from scout.scripts.brain_merge import BRAIN_KINDS; print(*BRAIN_KINDS)"
 
 # Issues this harness is expected to surface on Linux. A check tied to one reports KNOWN,
 # not FAIL, so the run stays green until the fix lands (and then reports PASS).
@@ -103,20 +105,57 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else ""
 
 
-def zone_where(lo: tuple[int, int], hi: tuple[int, int]) -> str:
-    """An IANA zone whose local time of day is inside [lo, hi] right now.
+# (lo, hi) local times of day, both inclusive. Whole-hour zones exist for every hour of the
+# day, so a set of windows always has a matching zone when, between them, they hold every
+# minute of the hour (Raven-Scout/Scout#530). tests/unit/test_e2e_self_update_zones.py sweeps it.
+Window = tuple[tuple[int, int], tuple[int, int]]
+# Off-peak (23:00-06:00 by default) and hours from any default slot.
+QUIET_WINDOWS: tuple[Window, ...] = (((2, 30), (4, 30)),)
+# 3 to 42 min before a default slot that fires every day of the week: the 22:00 and the 18:30
+# dreaming slots. One window alone leaves part of every hour with no zone; the two together
+# leave none. Both are outside off-peak. The 3 min at each end keep the 45 min lookahead true
+# while the updater starts.
+SLOT_DUE_WINDOWS: tuple[Window, ...] = (((21, 18), (21, 57)), ((17, 48), (18, 27)))
+
+
+@functools.cache
+def _candidate_zones() -> tuple[str, ...]:
+    # Whole-hour Etc/ zones first (readable in logs), then the rest for :30/:45 offsets.
+    zones = sorted(n for n in available_timezones() if "/" in n and not n.startswith(("posix/", "right/")))
+    return (*(n for n in zones if n.startswith("Etc/GMT")), *zones)
+
+
+@functools.cache
+def _zone(name: str) -> ZoneInfo:
+    # ZoneInfo keeps only its last few zones alive; hold them so a sweep does not re-read each file.
+    return ZoneInfo(name)
+
+
+def zone_where(*windows: Window, now: datetime | None = None) -> str:
+    """An IANA zone whose local time of day is inside one of ``windows`` at ``now`` (default: right now).
 
     The updater reads the host's zone (``TZ``) for its off-peak window and the slot lookahead,
     so picking the zone pins those gates without faking the clock.
     """
-    now = datetime.now(UTC)
-    # Whole-hour Etc/ zones first (readable in logs), then the rest for :30/:45 offsets.
-    zones = sorted(n for n in available_timezones() if "/" in n and not n.startswith(("posix/", "right/")))
-    for name in [n for n in zones if n.startswith("Etc/GMT")] + zones:
-        local = now.astimezone(ZoneInfo(name))
-        if lo <= (local.hour, local.minute) <= hi:
+    now = now or datetime.now(UTC)
+    for name in _candidate_zones():
+        local = now.astimezone(_zone(name))
+        if any(lo <= (local.hour, local.minute) <= hi for lo, hi in windows):
             return name
-    raise SystemExit(f"no zone has a local time between {lo} and {hi}")
+    raise SystemExit(f"no zone has a local time inside any of {windows}")
+
+
+def quiet_zone(now: datetime | None = None) -> str:
+    """A zone where the updater's time gates are open: off-peak, no slot due."""
+    return zone_where(*QUIET_WINDOWS, now=now)
+
+
+def slot_due_zone(now: datetime | None = None) -> str:
+    """A zone where a default slot is due within the updater's 45 min lookahead, outside off-peak.
+
+    Call it right before the check that needs it: the answer is only good for a few minutes.
+    """
+    return zone_where(*SLOT_DUE_WINDOWS, now=now)
 
 
 def load_render_dates():
@@ -510,7 +549,7 @@ def finding(health: dict, fid: str) -> dict | None:
     return next((f for f in health.get("findings", []) if f.get("id") == fid), None)
 
 
-def scenario_happy(h: Host, rel: Releases, render_dates, slot_tz: str) -> None:
+def scenario_happy(h: Host, rel: Releases, render_dates) -> None:
     r = h.report
     if not h.install():
         return
@@ -600,7 +639,9 @@ def scenario_happy(h: Host, rel: Releases, render_dates, slot_tz: str) -> None:
     r.check("--dry-run records no row", len(h.outcomes()) == rows)
     r.check("--dry-run runs no claude command", len(h.calls("claude-calls.jsonl")) == fetches)
 
-    # §7.1: not near a run. 21:20–21:55 local is inside 45 min of the 22:00 dreaming slot.
+    # §7.1: not near a run. The zone is picked here, not at start-up: the clock has moved since.
+    slot_tz = slot_due_zone()
+    r.info("slot-due zone", slot_tz)
     a = h.self_update(tz=slot_tz)
     r.check(
         "a slot due within 45 min → deferred",
@@ -681,6 +722,13 @@ def scenario_happy(h: Host, rel: Releases, render_dates, slot_tz: str) -> None:
     )
     changed = [rel_path for rel_path, digest in fixture.items() if sha256(h.vault / rel_path) != digest]
     r.check("fixture vault content untouched by the upgrade", not changed, str(changed))
+    # Every brain file the new engine assembles is live in the vault, including a kind new
+    # since the old release (v0.18.22 recorded RESPOND.md as installed without writing it).
+    kinds = subprocess.run(
+        [str(new_root / ".venv" / "bin" / "python"), "-c", BRAIN_KINDS_PROBE], capture_output=True, text=True
+    ).stdout.split()
+    absent = [f"{k}.md" for k in kinds if not (h.vault / f"{k}.md").is_file()]
+    r.check("every BRAIN_KINDS file is live after the upgrade", bool(kinds) and not absent, str(absent or kinds))
     code, health = h.health()
     last = finding(health, "update.last")
     r.check("health: update.last note names the update", bool(last) and v in last.get("summary", ""), json.dumps(last))
@@ -891,9 +939,8 @@ def main() -> int:
         f"from {rel.from_version} -> target {rel.version}" + (" (stamped onto the target ref)" if rel.stamped else ""),
     )
     render_dates = load_render_dates()
-    quiet_tz = zone_where((2, 30), (4, 30))  # off-peak, and hours from any default slot
-    slot_tz = zone_where((21, 20), (21, 55))  # inside 45 min of the 22:00 dreaming slot
-    report.info("zones", f"quiet={quiet_tz} slot-due={slot_tz}")
+    quiet_tz = quiet_zone()
+    report.info("zones", f"quiet={quiet_tz}; the slot-due zone is picked when the happy scenario needs it")
 
     for name in wanted:
         print(f"\n== {name}", flush=True)
@@ -902,7 +949,7 @@ def main() -> int:
         started = time.monotonic()
         try:
             if name == "happy":
-                scenario_happy(host, rel, render_dates, slot_tz)
+                scenario_happy(host, rel, render_dates)
             elif name == "rollback":
                 scenario_rollback(host, rel, render_dates)
             else:

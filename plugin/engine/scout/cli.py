@@ -282,10 +282,14 @@ def cli_sandbox_snapshot(
     `scoutctl sandbox verify` after claude exits. Exit 12 (and nothing on stdout) when it can't be taken.
     """
     from scout import paths
+    from scout.changes import run_commits
     from scout.sandbox import integrity
 
+    data_dir = paths.data_dir(vault)
     try:
-        snap = integrity.snapshot(paths.data_dir(vault))
+        snap = integrity.snapshot(data_dir)
+        # What the changes map's run-commit ledger needs (scout.changes.run_commits): when, and every ref.
+        snap["changes"] = run_commits.snapshot_extra(data_dir)
     except integrity.IntegrityError as e:
         typer.echo(f"[scout:integrity] couldn't take the start snapshot: {e}", err=True)
         raise typer.Exit(integrity.STATUS_EXIT["error"]) from None
@@ -314,7 +318,42 @@ def cli_sandbox_verify(
     except integrity.IntegrityError as e:
         result = integrity.Result("error", reason=str(e))
     else:
+        from scout.changes import run_commits
+
+        # A brokered run's commits were recorded by its broker, exactly; a broker-less run's are worked out from git
+        # (best effort, not sound: scout.changes.run_commits), before the check makes its restore commits, so those
+        # are never counted as the run's.
+        state = run_commits.broker_state(data_dir, start)
+        if state == "on":
+            recorded: run_commits.Recorded | None = run_commits.Recorded(0, 0, brokered=True)
+        else:
+            why = "broker-gap" if state == "gap" else "no-broker"
+            recorded = run_commits.record(data_dir, start, label=label, why=why)
         result = integrity.verify(data_dir, start, label=label)
+        if recorded is None:
+            # The changes map would judge this run's commits by their subjects, which the run chose. Run health shows
+            # it as a check that couldn't run, unless the integrity check found worse.
+            missed = "this run's commits couldn't be recorded for the changes map"
+            if result.status == "clean":
+                result = integrity.Result("error", reason=f"protected files unchanged, but {missed}")
+            else:
+                typer.echo(f"integrity check: {missed}")
+        elif recorded.brokered:
+            typer.echo("changes map: this run's commits were recorded by its commit broker")
+        else:
+            made = count(recorded.commits, "commit")
+            extra = f", and {count(recorded.windows, 'window')} too big to list" if recorded.windows else ""
+            if state == "gap":
+                cause = (
+                    "the commit broker was on but couldn't name every commit it made (usually an old "
+                    "scripts/git-safe-commit.sh: run /scout-update)"
+                )
+            else:
+                cause = "no commit broker"
+            typer.echo(
+                f"changes map: {cause}, so {made} this run made {agree(recorded.commits, 'was', 'were')} "
+                f"worked out from git (best effort){extra}"
+            )
     for line in result.lines():
         typer.echo(line)
     raise typer.Exit(result.exit_code)
@@ -366,26 +405,44 @@ def cli_broker_serve(
 def cli_broker_profile(
     vault: str = typer.Option(..., "--vault", help="The run's vault."),
     broker_dir: str = typer.Option(..., "--dir", help="The run's broker folder."),
+    unapplied: bool = typer.Option(
+        False, "--unapplied", help="The wrapper's record that the run keeps the 1c profile after all."
+    ),
 ) -> None:
     """Read the run's 1c profile on stdin; print it tightened for a run whose brokers answer (exit 0).
 
     Exit 1 (reason on stderr, `.scout-logs/.run-broker.json` says unavailable) when the broker doesn't answer, the
-    vault's git-safe-commit.sh predates it, or the tightened profile fails its self-test: the run keeps the 1c
-    profile then.
+    vault's git-safe-commit.sh predates it, the tightened profile fails its self-test, or it can't be printed: the
+    run keeps the 1c profile then. The tightened row is written only once the profile is printed, and the wrapper
+    passes ``--unapplied`` whenever it doesn't apply it, so a row that says tightened never sits over a 1c run.
     """
     import sys
 
+    from scout.changes import run_commits
     from scout.sandbox import broker
 
     data_dir = Path(vault)
+    run = Path(broker_dir).name
+    if unapplied:
+        # A later untightened row turns broker_state off for this run: its commits are attributed from git.
+        run_commits.mark_broker_profile(data_dir, run, tightened=False)
+        return
     try:
         text = broker.build_profile(data_dir, Path(broker_dir), sys.stdin.read())
     except broker.BrokerError as e:
+        # Outside the sandbox, before claude starts: the run can't write these (scout.changes.run_commits).
+        run_commits.mark_broker_profile(data_dir, run, tightened=False)
         broker.write_status(data_dir, "unavailable", str(e))
         typer.echo(f"[scout:broker] unavailable: {e}", err=True)
         raise typer.Exit(1) from None
+    try:
+        typer.echo(text, nl=False)  # click flushes: once this returns, the wrapper has the profile
+    except OSError as e:
+        run_commits.mark_broker_profile(data_dir, run, tightened=False)
+        broker.write_status(data_dir, "unavailable", f"the tightened profile couldn't be handed over: {e}")
+        raise typer.Exit(1) from None
     broker.write_status(data_dir, "on", "commits and Telegram go through the run's broker")
-    typer.echo(text, nl=False)
+    run_commits.mark_broker_profile(data_dir, run, tightened=True)
 
 
 @broker_app.command("commit", context_settings={"ignore_unknown_options": True, "allow_interspersed_args": False})
@@ -4725,6 +4782,8 @@ def _register_bootstrap() -> None:
                 f"unfinished merge. Remove them (then `scoutctl bootstrap resolve {held}` if a sidecar was behind it)",
                 err=True,
             )
+        for name in payload.get("installed", []):
+            typer.echo(f"  installed (was missing): {name} — written from this release's assembly", err=True)
         # migrate-legacy prints these on stdout (its pre-E3 quirk), upgrade on stderr.
         to_err = action != "migrate-legacy"
         edits = payload.get("vault_edits") or []

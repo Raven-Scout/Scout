@@ -218,6 +218,9 @@ def _git_env(env: Mapping[str, str]) -> dict[str, str]:
     }
     out["GIT_TERMINAL_PROMPT"] = "0"
     out["GIT_NO_REPLACE_OBJECTS"] = "1"  # read each object as stored
+    # and the whole history: a run without its broker can write grafts or .git/shallow to hide commits.
+    out["GIT_GRAFT_FILE"] = os.devnull
+    out["GIT_SHALLOW_FILE"] = os.devnull
     return out
 
 

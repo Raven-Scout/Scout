@@ -718,13 +718,17 @@ def _narrowing_overlay(overlay: Any) -> Any:
 
 
 def overlay_for_mirror(overlay: Any, keep: Callable[[str], bool]) -> dict[str, Any]:
-    """The ``privacy:`` overlay a delegate mirror's config holds: only keys and fields :func:`policy_from_overlay`
-    reads, each rewritten in its canonical form, so nothing else in the owner's block rides along (#550).
+    """The ``privacy:`` overlay a delegate mirror's config holds: only the keys and fields a delegate's labels
+    read in :func:`policy_from_overlay`, each rewritten in its canonical form, so nothing else in the owner's
+    block rides along (#550).
 
     ``keep(glob)`` says whether a path entry stays (its glob matches a mirrored file). A key with the wrong
-    shape is dropped, as the policy ignores it; an entry the policy keeps fail-closed (a bad visibility, ceiling
-    or scope) is written as the value the policy uses. ``sync_only`` (an upload allowlist no label depends on)
-    and ``delegates`` (the caller writes it) never appear.
+    shape is dropped, as the policy ignores it; an entry the policy keeps fail-closed (a bad visibility) is
+    written as the value the policy uses. Never written: ``sync_only`` (an upload allowlist no label depends
+    on), ``delegates`` (the caller writes it), ``surfaces`` (they class the laptop's outbound checks, which no
+    delegate runs, and name chat ids and addresses) and ``federation``, ``federation_ceilings`` and
+    ``federation_defaults`` (for ``agent:*`` readers: :func:`visible_to` never reads them for a delegate, and
+    their scopes name people by address). The clone's policy takes the engine defaults for those.
     """
     if not isinstance(overlay, Mapping):
         return {}
@@ -739,20 +743,6 @@ def overlay_for_mirror(overlay: Any, keep: Callable[[str], bool]) -> dict[str, A
             for e in entries
             if isinstance(e, dict) and isinstance(e.get("glob"), str) and keep(e["glob"])
         ]
-    surfaces = overlay.get("surfaces")
-    if isinstance(surfaces, dict):
-        owner, shared = _str_list(surfaces.get("owner_only", [])), _str_list(surfaces.get("shared", []))
-        if owner is not None and shared is not None:
-            out["surfaces"] = {"owner_only": list(owner), "shared": list(shared)}
-    fed = overlay.get("federation")
-    if isinstance(fed, Mapping):
-        out["federation"] = {"enabled": fed["enabled"] is True} if "enabled" in fed else {}
-    if isinstance(overlay.get("federation_ceilings"), list):
-        rules = (_ceiling_rule(e)[0] for e in overlay["federation_ceilings"])
-        out["federation_ceilings"] = [r.to_json() for r in rules if r is not None and keep(r.glob)]
-    if isinstance(overlay.get("federation_defaults"), list):
-        defaults = (_scope_default(e)[0] for e in overlay["federation_defaults"])
-        out["federation_defaults"] = [d.to_json() for d in defaults if d is not None and keep(d.glob)]
     return out
 
 

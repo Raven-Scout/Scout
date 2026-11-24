@@ -484,10 +484,13 @@ struct TaskCardView: View {
     private var editCommentHandler: ((Int, String) async -> Bool)? {
         guard Self.canChangeComments(task, writesEnabled: writesEnabled) else { return nil }
         return { index, newText in
-            await runOp(.editComment(
+            // The row hides Edit for a comment without a selector; this is
+            // the backstop, so a guessed index is never sent.
+            guard let selector = task.commentSelector(at: index) else { return false }
+            return await runOp(.editComment(
                 subject: task.matchableSubject,
                 shortPrefix: task.shortPrefix,
-                selector: task.commentSelector(at: index),
+                selector: selector,
                 newText: newText
             ))
         }
@@ -496,10 +499,11 @@ struct TaskCardView: View {
     private var deleteCommentHandler: ((Int) async -> Void)? {
         guard Self.canChangeComments(task, writesEnabled: writesEnabled) else { return nil }
         return { index in
+            guard let selector = task.commentSelector(at: index) else { return }
             await runOp(.deleteComment(
                 subject: task.matchableSubject,
                 shortPrefix: task.shortPrefix,
-                selector: task.commentSelector(at: index)
+                selector: selector
             ))
         }
     }
