@@ -90,8 +90,10 @@ struct ChangesView: View {
         DigestCard(digest: snapshot.digest)
         NeedsOKStrip(items: snapshot.changes.needsOK, vaultDirectory: vaultDirectory,
                      decisions: decisions, service: service)
-        // Slots for the tasks that follow, top to bottom:
-        //   the engagement trend, the change list.
+        // The marker's detail opens in a later task; until then selecting one does nothing.
+        EngagementTrendView(days: snapshot.engagement.days, changes: snapshot.changes.changes,
+                            today: Date(), onSelect: { _ in })
+        // Slot for the task that follows: the change list.
     }
 
     // MARK: - Pure rules

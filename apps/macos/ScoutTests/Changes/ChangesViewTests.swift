@@ -47,6 +47,37 @@ struct ChangesViewTests {
         #expect(all.contains("Needs your OK (1)"), "needs-OK line missing:\n\(all)")
     }
 
+    private static func trendView(days: [EngagementDay], changes: [ChangeRow]) -> some View {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let today = calendar.date(from: DateComponents(year: 2026, month: 11, day: 12, hour: 12))!
+        return EngagementTrendView(days: days, changes: changes, today: today, calendar: calendar, onSelect: { _ in })
+            .frame(width: 700)
+    }
+
+    @Test("with no engagement the trend says so")
+    func emptyTrendSaysSo() async {
+        let nodes = await AccessibilityTree.nodes(of: Self.trendView(days: [], changes: []), size: CGSize(width: 700, height: 400))
+        let shown = nodes.flatMap { [$0.label, $0.value] }
+        #expect(shown.contains("No engagement recorded yet."), "empty state missing:\n\(nodes)")
+    }
+
+    @Test("each trend marker is announced in plain words, never as a bare change id")
+    func trendMarkersSpeakPlainly() async throws {
+        let day = try JSONDecoder().decode(
+            EngagementDay.self, from: Data(#"{"date":"2026-11-10","feedback":2,"reliance":1,"noise":1}"#.utf8))
+        let change = try JSONDecoder().decode(ChangeRow.self, from: Data("""
+        {"id":"chg-00000000000a","kind":"phase","summary":"Say so when a search finds nothing","commit":"abc1234",
+         "ts":"2026-11-10T12:00:00+00:00","why":{"type":"unknown","ref":"","gloss":"","inferred":true},
+         "test":{"state":"done","verdict":"helped"}}
+        """.utf8))
+        let nodes = await AccessibilityTree.nodes(of: Self.trendView(days: [day], changes: [change]),
+                                                  size: CGSize(width: 700, height: 400))
+        let shown = nodes.flatMap { [$0.label, $0.value] }.filter { !$0.isEmpty }
+        for text in shown { #expect(!text.contains("chg-"), "bare id in: \(text)") }
+        #expect(shown.contains("Say so when a search finds nothing, helped"), "marker label missing:\n\(nodes)")
+    }
+
     @Test("engagement reads with its comparison, or says there is none")
     func engagementSentence() {
         #expect(DigestCard.engagementLine(DigestEngagement(feedback: 5, reliance: 3, thisWeek: 8, lastWeek: 0, changePct: nil),
