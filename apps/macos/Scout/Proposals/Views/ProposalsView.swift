@@ -1,4 +1,5 @@
 import SwiftUI
+import PostHog
 
 /// The Proposals section: dreaming-generated SKILL.md change proposals from
 /// `dreaming-proposals.md`, with Approve / Decline actions on the ones still
@@ -193,5 +194,7 @@ struct ProposalsView: View {
             .restoring(change) { change, direction in try await writer.restore(change, direction) },
             with: undoManager
         ) { [docService] in docService.reload() }
+        PostHogSDK.shared.capture("proposal_decided")
+        PostHogSDK.shared.logger?.info("proposal_decided")
     }
 }

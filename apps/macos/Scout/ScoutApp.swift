@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import PostHog
 
 @main
 struct ScoutApp: App {
@@ -11,6 +12,8 @@ struct ScoutApp: App {
     private let launchMinimized = UserDefaults.standard.bool(forKey: "launchMinimized")
 
     init() {
+        configurePostHog()
+
         let state = AppState(configuration: .forCurrentProcess())
         _appState = StateObject(wrappedValue: state)
         // The test host (this process under `xcodebuild test`) must never
@@ -37,6 +40,29 @@ struct ScoutApp: App {
             NSApp.activate()
             updates?.showAppUpdate()
         }
+    }
+
+    private func configurePostHog() {
+        let environment = ProcessInfo.processInfo.environment
+        guard let projectToken = environment["POSTHOG_PROJECT_TOKEN"], !projectToken.isEmpty else {
+            reportMissingPostHogConfiguration("POSTHOG_PROJECT_TOKEN")
+            return
+        }
+        guard let host = environment["POSTHOG_HOST"], !host.isEmpty else {
+            reportMissingPostHogConfiguration("POSTHOG_HOST")
+            return
+        }
+
+        let config = PostHogConfig(projectToken: projectToken, host: host)
+        config.errorTrackingConfig.autoCapture = true
+        config.logs.serviceName = "scout-macos"
+        PostHogSDK.shared.setup(config)
+    }
+
+    private func reportMissingPostHogConfiguration(_ variable: String) {
+#if DEBUG
+        assertionFailure("\(variable) variable required by PostHog is missing or un-configured, this causes events to be silently missed. This error stops appearing once \(variable) is configured")
+#endif
     }
 
     var body: some Scene {

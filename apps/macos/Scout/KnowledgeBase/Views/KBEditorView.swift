@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Combine
+import PostHog
 
 /// The center pane: views and edits a single knowledge-base file. Source editing
 /// for `.md`/`.yaml`, a rendered preview for markdown. Saves go through
@@ -655,6 +656,7 @@ struct KBEditorView: View {
                 await MainActor.run {
                     markSaved(contents)
                     registerUndo(change)
+                    PostHogSDK.shared.capture("knowledge_base_note_saved")
                 }
             } catch KBWriterError.conflict {
                 await MainActor.run { isSaving = false; showConflict = true }

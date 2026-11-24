@@ -1,5 +1,6 @@
 // Scout/PerFileItems/Views/AddItemSheet.swift
 import SwiftUI
+import PostHog
 
 /// Modal sheet for adding a new per-file item (wishlist entry or research topic).
 /// Form fields: Title (required — Add button disabled when blank), Priority picker
@@ -120,6 +121,7 @@ struct AddItemSheet: View {
         Task {
             do {
                 try await onSubmit(title, priority, bodyText, optional.isEmpty ? nil : optional)
+                PostHogSDK.shared.capture("item_added")
             } catch {
                 errorText = error.localizedDescription
                 submitting = false

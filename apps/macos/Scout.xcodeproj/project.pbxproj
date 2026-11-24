@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		5AC0FFEE2F9599AB00000003 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 5AC0FFEE2F9599AB00000002 /* Sparkle */; };
+		A1B2C3D4E5F60708090A0B03 /* PostHog in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F60708090A0B02 /* PostHog */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -44,6 +45,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				5AC0FFEE2F9599AB00000003 /* Sparkle in Frameworks */,
+				A1B2C3D4E5F60708090A0B03 /* PostHog in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -97,6 +99,7 @@
 			name = Scout;
 			packageProductDependencies = (
 				5AC0FFEE2F9599AB00000002 /* Sparkle */,
+				A1B2C3D4E5F60708090A0B02 /* PostHog */,
 			);
 			productName = Scout;
 			productReference = BEEE45542F95613D0078191D /* Scout.app */;
@@ -153,6 +156,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				5AC0FFEE2F9599AB00000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				A1B2C3D4E5F60708090A0B01 /* XCRemoteSwiftPackageReference "PostHog" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = BEEE45552F95613D0078191D /* Products */;
@@ -243,6 +247,14 @@
 				version = 2.10.0;
 			};
 		};
+		A1B2C3D4E5F60708090A0B01 /* XCRemoteSwiftPackageReference "PostHog" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/PostHog/posthog-ios.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.59.3;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -250,6 +262,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 5AC0FFEE2F9599AB00000001 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		A1B2C3D4E5F60708090A0B02 /* PostHog */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4E5F60708090A0B01 /* XCRemoteSwiftPackageReference "PostHog" */;
+			productName = PostHog;
 		};
 /* End XCSwiftPackageProductDependency section */
 

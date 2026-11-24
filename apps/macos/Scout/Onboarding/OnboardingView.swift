@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import PostHog
 
 /// Settings ▸ Engine's "Set up…" / "Repair…" (Ruling 41): the same flow the
 /// window's gate shows, in a sheet with a Close button. Closing only hides
@@ -263,7 +264,11 @@ struct OnboardingView: View {
                 Text(note).font(DS.font(.body, weight: .medium)).foregroundStyle(DS.Status.warn)
             }
             if let d = model.doctor { readySummary(OnboardingViewModel.readySummary(d)) }
-            Button("Run your first briefing now") { Task { await model.runFirstBriefing() } }
+            Button("Run your first briefing now") {
+                PostHogSDK.shared.capture("briefing_started")
+                PostHogSDK.shared.logger?.info("briefing_start_requested")
+                Task { await model.runFirstBriefing() }
+            }
                 .buttonStyle(.dsSecondary).disabled(model.busy)
             if let status = model.briefingStatus { Text(status).font(DS.font(.label)).foregroundStyle(DS.Status.ok) }
             if model.prerequisites?.auth != .signedIn {
@@ -337,7 +342,11 @@ struct OnboardingView: View {
             // Continue installs the engine or creates the Scout folder, it
             // says so and takes a click, so Return in a text field can't.
             if model.step == .ready {
-                Button("Open Scout") { model.finish() }
+                Button("Open Scout") {
+                    PostHogSDK.shared.capture("onboarding_completed")
+                    PostHogSDK.shared.logger?.info("onboarding_completed")
+                    model.finish()
+                }
                     .buttonStyle(.dsPrimary)
                     .keyboardShortcut(.defaultAction)
             } else {
