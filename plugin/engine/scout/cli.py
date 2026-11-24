@@ -11,9 +11,10 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import typer
+from typer.core import TyperGroup
 
 from scout import __version__
 from scout.errors import ConfigError, ScoutError
@@ -31,12 +32,35 @@ if TYPE_CHECKING:
 # crashed in an unexpected way" as its own failure mode.
 INTERNAL_ERROR_EXIT_CODE = 70
 
+
+class _ScoutGroup(TyperGroup):
+    """The root command group. ``lab`` is added the first time it is looked up (a ``scoutctl lab ...`` call, or
+    ``--help`` listing the commands), so every other command starts without importing the Lab
+    (``tests/perf/test_startup.py`` counts the modules ``scoutctl version`` loads)."""
+
+    def _add_lab(self) -> None:
+        if "lab" not in self.commands:
+            from scout.lab.cli import app as lab_app
+
+            self.add_command(typer.main.get_group(lab_app), "lab")
+
+    def list_commands(self, ctx: Any) -> list[str]:
+        self._add_lab()
+        return super().list_commands(ctx)
+
+    def get_command(self, ctx: Any, cmd_name: str) -> Any:
+        if cmd_name == "lab":
+            self._add_lab()
+        return super().get_command(ctx, cmd_name)
+
+
 app = typer.Typer(
     name="scoutctl",
     help="Scout engine control CLI.",
     no_args_is_help=True,
     add_completion=False,
     rich_markup_mode=None,  # avoid importing rich at startup
+    cls=_ScoutGroup,
 )
 
 
@@ -86,15 +110,6 @@ def _register_action_items() -> None:
 
 
 _register_action_items()
-
-
-def _register_lab() -> None:
-    from scout.lab.cli import app as lab_app
-
-    app.add_typer(lab_app, name="lab")
-
-
-_register_lab()
 
 
 def _register_planning() -> None:
@@ -1587,7 +1602,6 @@ def kb_shares(
     args = _kb_args("shares", dict(locals()))
 
     def body(who: str, root: Path) -> object:
-        from typing import Any
 
         from scout.kb import share_stops
         from scout.kb.privacy import FULL_READERS
@@ -2685,7 +2699,6 @@ def _register_connectors() -> None:
         so custom connector probes survive plugin updates (#97).
         """
         import json as _json
-        from typing import Any
 
         from scout.scripts.connector_probes import ProbeKind, resolve_registry
 
