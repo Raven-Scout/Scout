@@ -57,7 +57,7 @@ from scout.sandbox.profile import (
     secrets_dirs,
 )
 
-# Under $HOME: credential stores a script has no reason to read (ruling R19). ~/.ssh comes from hook_paths.ssh_dir.
+# Under each home (hook_paths.homes): credential stores a script has no reason to read (ruling R19), and ~/.ssh.
 CREDENTIAL_DIRS: tuple[str, ...] = (".aws", ".config/gh", ".gnupg", "Library/Keychains")
 CREDENTIAL_FILES: tuple[str, ...] = (".netrc",)
 # The keychain daemons (R19), the general pasteboard (R20) and the background-download daemon (it fetches a URL
@@ -95,13 +95,16 @@ def _carried(path: str) -> str:
 
 
 def homes(env: Mapping[str, str] | None) -> list[str]:
-    """The resolved home folders of this process's environment and of ``env``: the ones whose reads are denied
-    by default. A home that resolves to ``/`` is left out (denying it would deny every read)."""
+    """The resolved home folders whose reads are denied by default: :func:`scout.kb.hook_paths.homes` (``HOME`` and,
+    when it is another folder, the account's) of this process's environment and of ``env``. A script started with a
+    HOME of its own must still find the account's home unreadable. A home that resolves to ``/`` is left out
+    (denying it would deny every read)."""
     out: list[str] = []
     for source in (os.environ, env if env is not None else os.environ):
-        home = _real(Path(source.get("HOME") or Path.home()))
-        if home != "/" and home not in out:
-            out.append(home)
+        for home in hook_paths.homes(source):
+            real = _real(home)
+            if real != "/" and real not in out:
+                out.append(real)
     return out
 
 
@@ -156,10 +159,10 @@ def experiment_profile(
     for source in (os.environ, env if env is not None else os.environ):
         for d in secrets_dirs(source):
             reads.append(Rule("deny", "file-read-data", "subpath", _real(d)))
-        reads.append(Rule("deny", "file-read-data", "subpath", _real(hook_paths.ssh_dir(source))))
-        home = Path(source.get("HOME") or Path.home())
-        reads += [Rule("deny", "file-read-data", "subpath", _real(home / d)) for d in CREDENTIAL_DIRS]
-        reads += [Rule("deny", "file-read-data", "literal", _real(home / f)) for f in CREDENTIAL_FILES]
+        for home in hook_paths.homes(source):
+            reads.append(Rule("deny", "file-read-data", "subpath", _real(home / ".ssh")))
+            reads += [Rule("deny", "file-read-data", "subpath", _real(home / d)) for d in CREDENTIAL_DIRS]
+            reads += [Rule("deny", "file-read-data", "literal", _real(home / f)) for f in CREDENTIAL_FILES]
     # The experiment's own two folders, back after every read deny: their files are private by path (the shipped
     # policy forces the lab's experiment folders private), and a deny of a folder holding them (a private
     # thread's) must not take the script's own inputs and outputs. file-read-data, the operation the denies name

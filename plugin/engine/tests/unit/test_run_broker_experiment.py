@@ -1275,6 +1275,24 @@ def test_a_damaged_store_still_yields_every_complete_row() -> None:
     assert broker.owner_veto(os.environ, "x", "E1") is None  # the torn row itself is not a veto
 
 
+def test_a_veto_under_the_account_home_holds_when_home_is_elsewhere(
+    tmp_path: Path, vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The owner vetoed with the account's HOME; a broker started with another HOME still finds the veto."""
+    from scout.kb import hook_paths
+
+    account = tmp_path / "account"
+    monkeypatch.setattr(hook_paths, "account_home", lambda: account)
+    broker.record_veto({**os.environ, "HOME": str(account)}, vault, SLUG, EID, T)
+    elsewhere = {**os.environ, "HOME": str(tmp_path / "elsewhere")}
+    assert broker.veto_stores(elsewhere) == [
+        tmp_path / "elsewhere" / ".local/state/scout" / hook_paths.RUN_BROKERS_NAME / broker.LAB_VETOES_NAME,
+        account / ".local/state/scout" / hook_paths.RUN_BROKERS_NAME / broker.LAB_VETOES_NAME,
+    ]
+    assert broker.owner_veto(elsewhere, SLUG, EID) == T.isoformat()
+    assert broker.owner_veto(elsewhere, SLUG, "E9") is None
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 file")
 def test_an_unreadable_veto_store_refuses(vault: Path, fake_run: FakeRun) -> None:
     broker.record_veto(os.environ, vault, SLUG, "E1", T)

@@ -332,20 +332,28 @@ def _json_objects(line: str) -> Iterator[dict[str, Any]]:
         at = end
 
 
+def veto_stores(env: Mapping[str, str]) -> list[Path]:
+    """The owner's veto store under each of :func:`scout.kb.hook_paths.homes` (``HOME`` and, when it is another
+    folder, the account's): a veto recorded under either home is in force whatever HOME the broker runs with."""
+    return [owner_dir({**env, "HOME": str(home)}) / LAB_VETOES_NAME for home in hook_paths.homes(env)]
+
+
 def owner_veto(env: Mapping[str, str], slug: str, eid: str) -> str | None:
-    """When the owner's store says ``slug`` ``eid`` was vetoed (the row's ``at``), or None. A missing store has no
-    vetoes; one that exists but can't be read is :class:`Refused`, since a veto can't be ruled out. Damage doesn't
-    hide a row: every complete JSON object in the file is read (:func:`_json_objects`), wherever it sits."""
-    try:
-        data = (owner_dir(env) / LAB_VETOES_NAME).read_bytes()
-    except FileNotFoundError:
-        return None
-    except OSError:
-        raise Refused(EXIT_REFUSED, "the owner's veto store can't be read; a veto can't be ruled out") from None
-    for line in data.decode("utf-8", errors="replace").splitlines():
-        for row in _json_objects(line):
-            if row.get("slug") == slug and row.get("eid") == eid:
-                return str(row.get("at") or "an unrecorded time")
+    """When an owner's store (:func:`veto_stores`) says ``slug`` ``eid`` was vetoed (the row's ``at``), or None. A
+    missing store has no vetoes; one that exists but can't be read is :class:`Refused`, since a veto can't be ruled
+    out. Damage doesn't hide a row: every complete JSON object in the file is read (:func:`_json_objects`), wherever
+    it sits."""
+    for store in veto_stores(env):
+        try:
+            data = store.read_bytes()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            raise Refused(EXIT_REFUSED, "the owner's veto store can't be read; a veto can't be ruled out") from None
+        for line in data.decode("utf-8", errors="replace").splitlines():
+            for row in _json_objects(line):
+                if row.get("slug") == slug and row.get("eid") == eid:
+                    return str(row.get("at") or "an unrecorded time")
     return None
 
 
