@@ -140,6 +140,7 @@ struct MainWindowView: View {
             ChangesView(vaultDirectory: appState.scoutDirectory)
                 .environmentObject(appState.changesService)
                 .environmentObject(appState.changesDecisions)
+                .environment(\.openKBNote, StableAction { [appState] in appState.requestOpenKBNote($0) })
         case .research:
             PerFileListView(config: .research)
                 .environmentObject(appState.researchDocumentService)

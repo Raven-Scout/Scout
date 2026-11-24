@@ -1,5 +1,10 @@
 import SwiftUI
 
+/// Which change's detail is open.
+struct ChangeSelection: Identifiable, Equatable {
+    let id: String
+}
+
 /// The Changes tab: what Scout changed about itself and whether it helped. It replaces the
 /// Proposals and Wishlist tabs.
 ///
@@ -12,6 +17,15 @@ struct ChangesView: View {
     /// Where the vault is: the review sheet reads a pending governance file from under it (read-only).
     var vaultDirectory: URL? = nil
 
+    @StateObject private var detailModel = ChangeDetailModel()
+    /// The change whose detail is open.
+    @State private var opened: ChangeSelection?
+    @State private var shownCount = ChangesView.pageSize
+    /// Opens a Knowledge Base note by vault-relative path; set by the main window.
+    @Environment(\.openKBNote) private var openKBNote
+
+    static let pageSize = 50
+    static let noChangesMessage = "No changes recorded yet."
     static let unsupportedMessage = "Update Scout's engine to see this page."
     static let unverifiedBanner = "Scout couldn't check these changes against git just now, so they're shown unconfirmed and Undo is off."
     static let calibratingBanner = "Calibrating: verdicts are shown, but nothing acts on them yet."
@@ -32,6 +46,14 @@ struct ChangesView: View {
         .scrollIndicators(.visible)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(DS.Paper.base)
+        .sheet(item: $opened) { selection in
+            ChangeDetailView(
+                changeID: selection.id, vaultDirectory: vaultDirectory, model: detailModel,
+                decisions: decisions, service: service,
+                openNote: { openKBNote?($0) },
+                openFile: { NSWorkspace.shared.open($0) },
+                onClose: { opened = nil })
+        }
         .task {
             // AppState reads at launch; this covers a window opened before the engine was ready.
             if case .idle = service.state { await service.refresh() }
@@ -90,10 +112,34 @@ struct ChangesView: View {
         DigestCard(digest: snapshot.digest)
         NeedsOKStrip(items: snapshot.changes.needsOK, vaultDirectory: vaultDirectory,
                      decisions: decisions, service: service)
-        // The marker's detail opens in a later task; until then selecting one does nothing.
         EngagementTrendView(days: snapshot.engagement.days, changes: snapshot.changes.changes,
-                            today: Date(), onSelect: { _ in })
-        // Slot for the task that follows: the change list.
+                            today: Date(), onSelect: { opened = ChangeSelection(id: $0) })
+        changeList(snapshot)
+    }
+
+    // MARK: - The change list
+
+    @ViewBuilder
+    private func changeList(_ snapshot: ChangesSnapshot) -> some View {
+        let rows = ChangeCard.newestFirst(snapshot.changes.changes)
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Every change")
+                .dsFont(.headline, .serif, weight: .medium)
+                .foregroundStyle(DS.Ink.p1)
+            if rows.isEmpty {
+                Text(Self.noChangesMessage)
+                    .font(DS.font(.body))
+                    .foregroundStyle(DS.Ink.p3)
+            } else {
+                ForEach(rows.prefix(shownCount)) { row in
+                    ChangeCard(row: row, days: snapshot.engagement.days) { opened = ChangeSelection(id: row.id) }
+                }
+                if rows.count > shownCount {
+                    Button("Show older changes") { shownCount += Self.pageSize }
+                        .buttonStyle(.ds(.secondary, size: .small))
+                }
+            }
+        }
     }
 
     // MARK: - Pure rules
