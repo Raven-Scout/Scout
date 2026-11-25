@@ -190,6 +190,15 @@ ALLOWED = [
     "cp knowledge-base/a.md knowledge-base/b.md",
     "cd knowledge-base; cp a.md a-copy.md",
     "cd action-items; cp context/x.md context/y.md",
+    # a lister's output read through a substitution or a loop, from a folder that holds no KB note
+    "cat $(find docs -name '*.md')",
+    'find docs | while read f; do cat "$f"; done',
+    'for f in $(rg --files scripts); do wc -l "$f"; done',
+    'git ls-files docs | while IFS= read -r f; do head -1 "$f"; done',
+    'cd action-items; find . | while read f; do echo "$f"; done',
+    'fd . docs | while read f; do cat "$f"; done',
+    "cat $(fd -e py)",
+    "cat $(ag -g . scripts)",
 ]
 
 
@@ -302,3 +311,52 @@ def test_other_reads_finds_what_a_command_reads(
 )
 def test_other_reads_finds_nothing_more_for_these(words: list[str]) -> None:
     assert other_reads(words[0], words[1:]) is None
+
+
+@pytest.mark.parametrize(
+    ("words", "expected"),
+    [
+        # options: `--`, an attached value, a value flag with nothing after it
+        (["cp", "--", "-a", "b"], {"reads": [("-a", FILE)], "dests": ["b"]}),
+        (["cp", "-tdest", "a"], {"reads": [("a", FILE)], "dests": ["dest"]}),
+        (["cp", "a", "b", "-t"], {"reads": [("a", FILE)], "dests": ["b"]}),
+        (["rsync", "-r", "src"], {"reads": [("src", COVERS)], "dests": []}),
+        # archives that read stdin's list, or read an archive
+        (["tar", "cf", "-", "-T", "-"], {"stdin_list": True}),
+        (["pax", "-r", "-f", "in.pax"], {"reads": [("in.pax", FILE)]}),
+        (["cpio", "-i", "-I", "in.cpio"], {"reads": [("in.cpio", FILE)]}),
+        (["cpio", "-p", "dest"], {"stdin_list": True, "dests": ["dest"]}),
+        (["zip", "-@", "out.zip"], {"stdin_list": True, "dests": ["out.zip"]}),
+        # sed: an address alone, text and write commands, labels, `r /dev/stdin`, an empty `e`
+        (["sed", "1p;2", "f"], {"literal": []}),
+        (["sed", "s/a\\/b/c/g;r f1", "f"], {"literal": ["f1"]}),
+        (["sed", "1a text r f1", "f"], {"literal": []}),
+        (["sed", "w out", "f"], {"literal": []}),
+        (["sed", ":a;N;ba;r f1", "f"], {"literal": ["f1"]}),
+        (["sed", "b", "f"], {"literal": []}),
+        (["sed", "r /dev/stdin", "f"], {"literal": []}),
+        (["sed", "1e", "f"], {"programs": []}),
+        (["sed", "1e date", "f"], {"programs": ["date"]}),
+        # awk: a piped command it builds, a program file
+        (["awk", 'BEGIN{c = x "y"; c | getline}'], {"built": True}),
+        (["awk", "-f", "prog.awk", "f"], {"reads": [("prog.awk", FILE)]}),
+        # perl: an escape in a literal, an empty open, a piped open (built or literal), `-`, ARGV, system, qx
+        (["perl", "-e", 'open(F, "<", "a\\"b")'], {"literal": ['a"b']}),
+        (["perl", "-e", "open(F, )"], {"literal": [], "built": False}),
+        (["perl", "-e", 'open(F, "-|", "cat", $x)'], {"built": True}),
+        (["perl", "-e", 'open(F, "cat x |")'], {"programs": ["cat x"]}),
+        (["perl", "-e", 'open(F, "<", "-"); open(G, "<", $ARGV[0])'], {"literal": [], "built": False}),
+        (["perl", "-e", "open(F, shift)"], {"built": False}),
+        (["perl", "-e", 'system("cat $x")'], {"built": True}),
+        (["perl", "-e", "print `date`"], {"programs": ["date"]}),
+        (["perl", "-e", "print qx(date)"], {"built": True}),
+    ],
+)
+def test_other_reads_edges(words: list[str], expected: dict) -> None:
+    found = other_reads(words[0], words[1:])
+    assert found is not None
+    assert {key: getattr(found, key) for key in expected} == expected
+
+
+def test_perl_with_no_inline_program_reads_nothing_more() -> None:
+    assert other_reads("perl", ["-w"]) is None

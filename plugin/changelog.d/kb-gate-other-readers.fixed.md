@@ -14,5 +14,9 @@
   the other text utilities the reader list lacked are readers too. `cat "$(cat <<'EOF'` … `)"` is judged by
   the path its here-document holds (it was refused as naming too many files), and an unquoted
   here-document's `$(…)` sees the variables set before its command (`X=kn; cat <<EOF` with
-  `$(cat ${X}owledge-base/a.md)` was only recorded as unresolved). The shell pre-filter sends `diff -r`,
+  `$(cat ${X}owledge-base/a.md)` was only recorded as unresolved). A lister's output read through a
+  substitution or a loop (`cat $(find .)`, `for f in $(find .)`, `find . | while read f; do cat "$f"`, and
+  the same with `rg --files` or `git ls-files`) is judged by the folders it lists, as an `xargs` lister is:
+  denied from `action-items/`, and allowed from a folder holding no note, with nothing recorded as
+  unresolved any more. The shell pre-filter sends `diff -r`,
   `pax`, `zip`, `cpio`, `ditto`, `scp`, `gzip`, `zstd` and `lz4` calls on to the gate.

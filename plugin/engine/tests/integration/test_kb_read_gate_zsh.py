@@ -154,6 +154,12 @@ READS_A_NOTE = [
     ("cd action-items; shuf con*/x.md", ("shuf",)),
     ("cat \"$(cat <<'EOF'\nknowledge-base/a.md\nEOF\n)\"", ()),
     ("X=kn; cat <<EOF\n$(cat ${X}owledge-base/a.md)\nEOF", ()),
+    ("cd action-items; cat $(find .) 2>/dev/null", ("find",)),
+    ('cd action-items; for f in $(find .); do cat "$f" 2>/dev/null; done', ("find",)),
+    ('cd action-items; find . | while read f; do cat "$f" 2>/dev/null; done', ("find",)),
+    ('cd action-items; find . -type f | while IFS= read -r f; do cat "$f"; done', ("find",)),
+    ('cd action-items; rg --files | while read f; do cat "$f"; done', ("rg",)),
+    ("cd action-items; cat $(rg --files)", ("rg",)),
 ]
 
 READS_NO_NOTE = [
@@ -167,6 +173,7 @@ READS_NO_NOTE = [
     ("perl -ne print docs/a.md", ("perl",)),
     ("cat \"$(cat <<'EOF'\ndocs/a.md\nEOF\n)\"", ()),
     ("X=kn; cat <<'EOF'\n$(cat ${X}owledge-base/a.md)\nEOF", ()),
+    ('find docs | while read f; do cat "$f" 2>/dev/null; done', ("find",)),
 ]
 
 

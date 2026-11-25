@@ -324,7 +324,7 @@ def _sed_line(line: str, out: OtherReads) -> None:
             return
         elif c in "sy" and i + 1 < len(line):
             delim, j, parts = line[i + 1], i + 2, 0
-            while j < len(line) and parts < (2 if c == "s" else 2):
+            while j < len(line) and parts < 2:  # the opening delimiter's two partners
                 if line[j] == "\\":
                     j += 2
                     continue

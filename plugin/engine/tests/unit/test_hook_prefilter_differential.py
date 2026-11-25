@@ -582,6 +582,21 @@ READER_FORMS = (
     "cd action-items; shuf con*/x.md",
     "cat \"$(cat <<'EOF'\nknowledge-base/a.md\nEOF\n)\"",
     "X=kn; cat <<EOF\n$(cat ${X}owledge-base/a.md)\nEOF",
+    # a lister's output, read through a substitution or a loop (the same rule as an xargs lister)
+    "cd action-items; cat $(find .)",
+    'cd action-items; for f in $(find .); do cat "$f"; done',
+    'cd action-items; find . | while read f; do cat "$f"; done',
+    'cd action-items; find . -type f | while IFS= read -r f; do cat "$f"; done',
+    'cd action-items; rg --files | while read f; do cat "$f"; done',
+    "cd action-items; cat $(rg --files)",
+    'cd action-items; git ls-files | while read -r f; do head -3 "$f"; done',
+    'cd action-items; fd . | while read f; do cat "$f"; done',
+    "cd action-items; cat $(fd .)",
+    "cd action-items; cat $(fdfind -t f)",
+    "cd action-items; cat $(ag -g .)",
+    'cd action-items; for f in $(ack -f); do cat "$f"; done',
+    "cd action-items; cat $(ugrep -rl kb)",
+    'cd action-items; ug -rl kb | while read f; do cat "$f"; done',
 )
 
 # Their harmless neighbours, which must stay in the shell.
