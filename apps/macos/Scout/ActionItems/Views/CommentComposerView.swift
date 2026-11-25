@@ -14,6 +14,7 @@ struct CommentComposerView: View {
     @State private var state = CommentDraftState()
     @FocusState private var editorFocused: Bool
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.cardClickFocus) private var clickFocus
     /// Read so the "Set your name" link goes away as soon as one is set.
     @AppStorage(CommentAuthor.defaultsKey) private var authorName: String = ""
 
@@ -24,6 +25,8 @@ struct CommentComposerView: View {
             expandedEditor
         } else {
             EditorialActionButton("Add comment", systemImage: "text.bubble") {
+                // The editor takes the keys, not the list the click is on.
+                clickFocus?.claimKeys()
                 state.expanded = true
                 DispatchQueue.main.async { editorFocused = true }
             }

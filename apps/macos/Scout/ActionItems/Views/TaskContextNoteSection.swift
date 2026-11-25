@@ -30,19 +30,18 @@ struct TaskContextNoteSection: View {
 
     var body: some View {
         if let noteURL {
-            DisclosureGroup(isExpanded: $isExpanded) {
-                VStack(alignment: .leading, spacing: 8) {
-                    if let blocks {
-                        MarkdownBodyView(blocks: blocks)
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                if isExpanded {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let blocks {
+                            MarkdownBodyView(blocks: blocks)
+                        }
+                        Button("Open note") { NSWorkspace.shared.open(noteURL) }
+                            .buttonStyle(.ds(.link, size: .small))
                     }
-                    Button("Open note") { NSWorkspace.shared.open(noteURL) }
-                        .buttonStyle(.ds(.link, size: .small))
+                    .padding(.top, 6)
                 }
-                .padding(.top, 6)
-            } label: {
-                Text("Context note")
-                    .font(DS.font(.label, weight: .medium))
-                    .foregroundStyle(DS.Ink.p2)
             }
             .onChange(of: isExpanded) { _, open in
                 if open && blocks == nil,
@@ -51,5 +50,27 @@ struct TaskContextNoteSection: View {
                 }
             }
         }
+    }
+
+    /// The arrow and the label as one button, so the system focus ring
+    /// encloses both. A `DisclosureGroup` rang its small arrow alone, left of
+    /// the label: across the card's edge and through the word (UI audit T4),
+    /// and its label didn't take clicks.
+    private var header: some View {
+        Button { isExpanded.toggle() } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(DS.font(.caption2, weight: .semibold))
+                    .foregroundStyle(DS.Ink.p4)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                Text("Context note")
+                    .font(DS.font(.label, weight: .medium))
+                    .foregroundStyle(DS.Ink.p2)
+            }
+            .padding(.vertical, 2)
+        }
+        .buttonStyle(.plainHit)
+        .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+        .accessibilityIdentifier("context-note-toggle")
     }
 }
