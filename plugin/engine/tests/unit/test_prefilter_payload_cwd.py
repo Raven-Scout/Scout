@@ -211,6 +211,29 @@ def test_a_cwd_the_shell_cannot_read_for_certain_starts_the_gate(world: World, s
         assert out.returncode == 0 and out.python == f"hook mcp-tool-gate\n{payload.rstrip(chr(10))}", (why, out)
 
 
+def _off_the_fast_path(cwd: str) -> dict[str, str]:
+    """Payloads with a top-level cwd that the builtin fast path (Claude Code's shape) leaves to the grep."""
+    tool = {"tool_name": MCP, "tool_input": {}}
+    return {
+        "cwd first": json.dumps({"cwd": cwd, **tool}),
+        "cwd fourth": json.dumps({"a": "1", "b": "2", "c": "3", "cwd": cwd, **tool}),
+        "a number before it": json.dumps({"session_id": 7, "transcript_path": "/t", "cwd": cwd, **tool}),
+        "an escaped quote before it": json.dumps({"session_id": 'a"b', "transcript_path": "/t", "cwd": cwd, **tool}),
+        "a backslash before it": json.dumps({"session_id": "s", "transcript_path": "C:\\t", "cwd": cwd, **tool}),
+        "a space before the colon": '{"session_id" : "s", "transcript_path" : "/t", "cwd" : ' + json.dumps(cwd) + "}",
+        "a leading space": " " + json.dumps({"session_id": "s", "transcript_path": "/t", "cwd": cwd}),
+    }
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_top_level_cwd_off_the_fast_path_is_read_by_the_grep_the_same_way(world: World, shell: str) -> None:
+    for why, payload in _off_the_fast_path(str(world.vault)).items():
+        out = world.run("mcp-tool-gate", payload, cwd=world.outside, shell=shell)
+        assert _started(out, "mcp-tool-gate", payload), (why, out)
+    for why, payload in _off_the_fast_path(str(world.outside)).items():
+        assert world.run("mcp-tool-gate", payload, cwd=world.vault, shell=shell) == NEVER, why
+
+
 @pytest.mark.parametrize("shell", SHELLS)
 def test_scout_data_dir_names_the_vault_whatever_the_payload_says(world: World, shell: str) -> None:
     payload = _payload("mcp-tool-gate", str(world.outside))

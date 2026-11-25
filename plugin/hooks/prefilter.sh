@@ -247,6 +247,10 @@ walk_up() {
 # is top-level; a cwd that is not a string, is empty or relative (`~` included), holds a JSON escape,
 # is longer than 4096 bytes, or names a directory the shell cannot enter; a grep that fails.
 #
+# Cost: this runs on every MCP call on the machine, nearly all outside any vault, so the common case
+# starts no process beyond read_payload's cat: Claude Code's own payload shape is read by builtins
+# (claude_code_cwd). Anything else goes to the grep below, a fork and an exec more.
+#
 # The shell does not parse JSON, so one grep finds two things. Its first expression matches only from
 # the payload's start: `{`, then top-level keys with scalar values, then "cwd" and its value. That line
 # comes first when it is there (Claude Code puts cwd before tool_input), and proves a top-level cwd.
@@ -258,6 +262,10 @@ each_vault() {
     if [ -n "$SCOUT_DATA_DIR" ]; then
         case "$SCOUT_DATA_DIR" in /*) ;; *) return 0 ;; esac
         "$1" "$SCOUT_DATA_DIR"
+        return
+    fi
+    if claude_code_cwd; then
+        cwd_vault "$1"
         return
     fi
     tool grep
@@ -280,19 +288,51 @@ each_vault() {
         case "$cw" in \"*\") ;; *) return 0 ;; esac
         cw="${cw#\"}"
         cw="${cw%\"}"
-        case "$cw" in /*) ;; *) return 0 ;; esac
-        case "$cw" in *\\*) return 0 ;; esac
-        if walk_up "$cw"; then "$1" "$w" && return 0; fi
-        o=$PWD
-        cd -P -- "$cw" 2>/dev/null || return 0
-        r=$PWD
-        # Back where we were. If that is gone, staying here is harmless: with a top-level cwd in the
-        # payload, no Python hook looks at its own working directory.
-        cd -- "$o" 2>/dev/null || true
-        if walk_up "$r"; then "$1" "$w" && return 0; fi
+        cwd_vault "$1" && return 0
     done <<EOF
 $cws
 EOF
+    return 1
+}
+
+# The fast path of each_vault, all builtins: sets $cw to the payload's top-level cwd when the payload is
+# one line that starts as Claude Code writes it, `{"session_id":"…","transcript_path":"…","cwd":"…"` (any
+# two string-valued keys before cwd, with or without spaces after `:` and `,`), and holds no other
+# "cwd" key. Fails, for the grep above to decide, on anything else. A backslash in a key or value
+# before cwd may hide an escaped quote, so it fails too. `read` from a here-document splits the line on
+# `"`; nothing scans the payload with a pattern removal (quadratic in bash 3.2), and each `case` on it
+# is linear.
+claude_code_cwd() {
+    nl='
+'
+    case "$p" in *"$nl"*) return 1 ;; esac
+    # shellcheck disable=SC2034 # c1 and c5 are the first two key names: any name will do
+    IFS='"' read -r c0 c1 c2 c3 c4 c5 c6 c7 c8 c9 c10 cw c12 <<EOF
+$p
+EOF
+    [ "$c0" = "{" ] && [ "$c9" = cwd ] || return 1
+    for c in "$c2" "$c6" "$c10"; do case "$c" in : | ': ') ;; *) return 1 ;; esac; done
+    for c in "$c4" "$c8"; do case "$c" in , | ', ') ;; *) return 1 ;; esac; done
+    case "$c1$c3$c5$c7" in *\\*) return 1 ;; esac
+    case "$c12" in *'"cwd"'*) return 1 ;; esac # another cwd key: the grep checks them all
+}
+
+# Runs `$1 <vault>` for the vault of cwd $cw, by each_vault's rule (0: start Python). The gate goes by
+# the resolved path, so that is checked first; the path as written is checked too when it differs.
+# The symlinks are resolved by `cd -P` in this shell and back, not in `$(...)`: no fork.
+cwd_vault() {
+    case "$cw" in /*) ;; *) return 0 ;; esac
+    case "$cw" in *\\*) return 0 ;; esac
+    [ "${#cw}" -le 4096 ] || return 0
+    o=$PWD
+    cd -P -- "$cw" 2>/dev/null || return 0
+    r=$PWD
+    # Back where we were. If that is gone, staying here is harmless: with a top-level cwd in the
+    # payload, no Python hook looks at its own working directory.
+    cd -- "$o" 2>/dev/null || true
+    if walk_up "$r"; then "$1" "$w" && return 0; fi
+    [ "$r" = "$cw" ] && return 1
+    if walk_up "$cw"; then "$1" "$w" && return 0; fi
     return 1
 }
 
