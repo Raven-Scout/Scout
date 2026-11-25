@@ -12,5 +12,10 @@
   - A substitution a reader takes as its files is a read of what it lists: `cd action-items && cat $(find .)`.
   - A `cd` inside `( … )` no longer carries past the `)`: `(cd docs); grep -r TODO .` from the vault root.
 - **A search rooted at a substitution's output is placed, or denied.** What `echo`, `printf`, `pwd`, `ls`, `find` or `git ls-files` prints is judged as the paths it is (`grep -r TODO $(echo .)` from the vault root is denied, `$(echo docs)` is not). Any other substitution is a root the gate can't place. A run's grep reads a substitution's folders one level deep: `grep -l TODO $(ls)` from the vault root is denied.
-- **`find -L docs` and `find -s docs` are no longer denied as vault-root searches.** The gate now reads the paths after find's leading flags.
+- **Symlinks count.**
+  - A read that follows the links below its roots, through `find -L`/`-follow`, `grep -R`, `ugrep -S`, `rg -L`, `fd -L`, `ag -f`, `tree -l` or `du -L`, is denied when a link under the root may lead into the KB. If the walk can't finish, it is denied too.
+  - A root, or a `cd` target, is judged with its links resolved: `cd docs/kb5; cat $(find .)` reads the KB when `kb5` links to it.
+  - A `cd` the gate can't place leaves the folder unknown: a flag (`-P`, `-q`, `-`), a `~` form other than `~/…`, `popd`, a CDPATH the command sets, a `cd` function or alias, `eval`/`source`, or a folder that doesn't exist yet.
+- **What a lister hands a reader counts.** `echo`/`printf` words with `~` or a brace list are unknown; their globs stand for what they match (`cat $(echo */*.md)`). `git ls-files` covers the files its pathspecs match: all of them with none, none of the KB for `'*.py'`. A run's grep reads each literal or glob operand one level deep from every folder the shell may be in (`cd nosuchdir; grep TODO *`).
+- **`find -L docs` and `find -s docs` are no longer denied as vault-root searches** when no link below them leads into the KB. The gate now reads the paths after find's leading flags.
 - **`scoutctl bootstrap doctor` reports what Claude Code's newest shell snapshot runs for `grep` and `find`** (`engine/scout/kb/shell_shadows.py`). It warns when the snapshot shadows a name, or uses a program or flags, the gate doesn't model.

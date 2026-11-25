@@ -658,6 +658,31 @@ class _Recursive:
 
     def __init__(self, roots: list[str], content: bool, depth: int | None = None, excluded: tuple[str, ...] = ()):
         self.roots, self.content, self.depth, self.excluded = roots, content, depth, excluded
+        self.follows = False  # it follows symlinks below its roots (`find -L`, `grep -R`, `rg -L`)
+
+
+# The flags that make a recursive read follow symlinks below its roots, per tool (`-H`-style "the roots only"
+# needs none: a root is judged with its links resolved anyway).
+_FOLLOWS = {
+    **dict.fromkeys(("grep", "egrep", "fgrep"), {"-R", "-S", "--dereference-recursive"}),
+    "ugrep": {"-R", "-S", "--dereference-recursive", "--dereference-files"},
+    "rg": {"-L", "--follow"},
+    "fd": {"-L", "--follow"},
+    "ag": {"-f", "--follow"},
+    "ack": {"--follow"},
+    "tree": {"-l"},
+    "du": {"-L"},
+    "ls": {"-L"},
+}
+
+
+def _follows_links(name: str, args: list[str]) -> bool:
+    if name in ("find", "bfs"):
+        return any(a.strip("\"'") in ("-L", "-follow") for a in args)
+    flags = _FOLLOWS.get(name, set())
+    return any(
+        f in flags or (f in ("-d", "--directories") and v == "dereference-recurse") for f, v in _options(name, args)
+    )
 
 
 def _int(value: str | None) -> int | None:
@@ -704,7 +729,14 @@ def _exclusions(args: list[str], name: str = "rg") -> tuple[str, ...]:
 def _recursive(name: str, args: list[str]) -> _Recursive | None:
     """Where a recursive read starts, or None for a command that isn't one, or one whose file
     filter stays out of the KB (``--glob 'action-items/*.md'``, ``--include=*.py``), as for the
-    Grep tool."""
+    Grep tool. ``follows`` says whether it follows the symlinks below its roots."""
+    rec = _recursive_read(name, args)
+    if rec is not None:
+        rec.follows = _follows_links(name, args)
+    return rec
+
+
+def _recursive_read(name: str, args: list[str]) -> _Recursive | None:
     if _not_a_read(name, args):
         return None
     runs = False  # fd -x/-X: it runs a command on each file it finds
@@ -1412,8 +1444,11 @@ def _judged_piece(
         for model, model_args in run_models(words[0], name, args):
             rec = _recursive(model, model_args)
             if rec is None and model == "ugrep" and not stripped.fed:
-                printed = [o for o in read_operands(model, model_args) or [] if _SUBST in o]
-                rec = _Recursive(printed, True, 1) if printed else None
+                # ugrep reads a folder it's given one level deep: each operand, judged from every folder the
+                # shell may be in (`cd nosuchdir; grep TODO *`), a substitution's output and a glob included.
+                # A variable's value is judged file by file where the run's shell fills it in (live_run).
+                operands = [o for o in read_operands(model, model_args) or [] if "$" not in o.replace(_SUBST, "")]
+                rec = _Recursive(operands, True, 1) if operands else None
             if rec is None or (stripped.fed and not rec.roots):
                 continue  # not recursive, or xargs hands it the files to read
             if read:
@@ -1434,11 +1469,12 @@ def _judged_piece(
 
 
 def _listed_by(inner: str) -> list[tuple[str, int | None]] | None:
-    """What a substitution prints when it prints paths the gate can place, each as ``(root, levels)``: the
-    paths are ``root`` itself (``levels`` 0) or up to ``levels`` below it (None: any depth). ``echo``/``printf``
-    print their words, ``pwd`` the folder, ``ls`` its operands' entries (``-d``: the operands; ``-R``: all below),
-    ``find`` and ``git ls-files`` the paths under their roots. None for anything else: what it prints can't be
-    known here."""
+    """What a command prints when it prints paths the gate can place, each as ``(root, levels)``: the paths are
+    ``root`` itself (``levels`` 0) or up to ``levels`` below it (None: any depth); a root may be a glob, which
+    stands for what it matches. ``echo``/``printf`` print their words, ``pwd`` the folder, ``ls`` its operands'
+    entries (``-d``: the operands; ``-R``: all below), ``find`` the paths under its roots, ``git ls-files`` the
+    files under its pathspecs (all of them with none; a glob pathspec that can't match a KB note lists none of
+    it). None for anything else: what it prints can't be known here, so it covers anything."""
     statements, _substitutions = _shell_split(inner)
     if len(statements) != 1 or len(statements[0]) != 1 or _SUBST in inner:
         return None
@@ -1448,12 +1484,28 @@ def _listed_by(inner: str) -> list[tuple[str, int | None]] | None:
     name, args = _command_name(words[0]), words[1:]
     if any("$" in w or "`" in w for w in args):
         return None  # a word the shell fills in (`$(echo $PWD)`): not one the gate can place
-    if name == "echo":
-        while args and re.fullmatch(r"-[neE]+", args[0]):
+    if name in ("echo", "printf"):
+        if name == "echo":
+            while args and re.fullmatch(r"-[neE]+", args[0]):
+                args = args[1:]
+        elif args[:1] == ["--"]:
             args = args[1:]
+        if name == "printf":  # `printf FORMAT ARGS`: the args, when the format only places them as words
+            if not args:
+                return None
+            fmt, rest = args[0], args[1:]
+            if not rest:
+                printed = [fmt] if "%" not in fmt and "\\" not in fmt else None
+            else:
+                printed = rest if re.fullmatch(r"(?:%s|\\n|\\t| )+", fmt) else None
+            if printed is None:
+                return None
+            args = printed
+        # `~+`, `~-`, `~name` and a brace list `{a,b}` are rewritten by the shell: not placed here. A glob stands
+        # for what it matches (`echo */*.md`).
+        if any(w.startswith("~") or ("{" in w and ("," in w or ".." in w)) for w in args):
+            return None
         return [(w, 0) for w in args]
-    if name == "printf":
-        return [(args[0], 0)] if len(args) == 1 and "%" not in args[0] and "\\" not in args[0] else None
     if name == "pwd":
         return [(".", 0)]
     if name == "ls":
@@ -1464,28 +1516,164 @@ def _listed_by(inner: str) -> list[tuple[str, int | None]] | None:
     if name == "find":
         depth = _int(_flag_value(args, {"-maxdepth"}))
         return [(w, depth) for w in _find_roots(args, bfs=True) or ["."]]
-    if name == "git" and args[:1] == ["ls-files"]:  # the tracked files under its paths
-        return [(w, None) for w in _split_args(args[1:])[1] or ["."]]
+    if name == "git":
+        sub, sub_args, chdirs = _git(args)
+        if sub != "ls-files" or chdirs:
+            return None  # `git -C dir ls-files`: paths relative to a folder this model doesn't follow
+        return _git_ls_files(sub_args)
     return None
 
 
+# git ls-files options that take the next word (an exclude pattern or file, a format): not a pathspec.
+_LS_FILES_VALUES = {"-x", "--exclude", "-X", "--exclude-from", "--exclude-per-directory", "--format", "--abbrev"}
+
+
+def _git_ls_files(args: list[str]) -> list[tuple[str, int | None]]:
+    """The roots ``git ls-files args`` lists files under (tracked, untracked with ``-o``: either way the KB may be
+    among them). A pathspec glob matches the whole path (git's ``*`` crosses ``/``): one that can't match a KB
+    note lists none of it; a literal pathspec is a folder or file it lists under."""
+    specs: list[str] = []
+    i = 0
+    ended = False
+    while i < len(args):
+        a = args[i].strip("\"'")
+        i += 1
+        if not ended and a == "--":
+            ended = True
+        elif not ended and a in _LS_FILES_VALUES:
+            i += 1
+        elif ended or not a.startswith("-"):
+            specs.append(a)
+    if not specs:
+        return [(".", None)]
+    out: list[tuple[str, int | None]] = []
+    for spec in specs:
+        if spec.startswith(":"):
+            out.append((".", None))  # a magic pathspec (`:(glob)…`, `:!x`): not read here
+        elif _GLOB_CHARS.search(spec):
+            if _may_match_kb(re.sub(r"\*+", "**", spec)) or _names_kb(spec):
+                out.append((".", None))
+        else:
+            out.append((spec, None))
+    return out
+
+
 def _glob_reaches_kb(path: str, vault: str, rec: _Recursive) -> bool:
-    """A depth-bounded read of a glob root (``ls -d k*`` handed to a one-level read): the glob's components are
-    matched against each KB folder's path, so ``*`` from the vault counts and ``*.yaml`` doesn't."""
+    """A depth-bounded read of a glob root (``ls -d k*`` handed to a one-level read, ``cat $(echo */*.md)``): the
+    glob's components are matched against each KB folder's path, so ``*`` from the vault counts and ``*.yaml``
+    doesn't. A glob that goes on below a KB folder it matches (``*/*.md``) matches inside the KB."""
     parts = posixpath.normpath(path).split("/")
     first = next(i for i, part in enumerate(parts) if _GLOB_CHARS.search(part))
-    prefix, pattern = "/".join(parts[:first]) or "/", parts[first:]
+    prefix, pattern = _real("/".join(parts[:first]) or "/"), parts[first:]
     for kb_dir in KB_DIRS:
         target = posixpath.join(vault, kb_dir)
+        if (prefix + "/").startswith(target + "/"):
+            return True  # the glob is inside a KB folder
         if not (target + "/").startswith(prefix.rstrip("/") + "/"):
             continue
         rel = posixpath.relpath(target, prefix).split("/")
         if not all(fnmatch.fnmatchcase(fold(name), fold(glob)) for name, glob in zip(rel, pattern, strict=False)):
             continue
-        landed = posixpath.join(prefix, *rel[: len(pattern)]) if len(pattern) <= len(rel) else target
-        if _reaches_kb(landed, vault, rec):
+        if len(pattern) > len(rel):
+            return True  # its matches are inside the KB folder
+        if _reaches_kb(posixpath.join(prefix, *rel[: len(pattern)]), vault, rec):
             return True
     return False
+
+
+def _real(path: str) -> str:
+    """``path`` with its symlinks resolved, as far as it exists (a run's `cd docs/kblink` is in the KB)."""
+    try:
+        return os.path.realpath(path)
+    except (OSError, ValueError):
+        return posixpath.normpath(path)
+
+
+LINK_WALK_CAP = 4000  # entries a link-following read's root is searched for symlinks before the gate gives up
+
+
+def _links_reach_kb(root: str, vault: str, cap: int = LINK_WALK_CAP) -> bool:
+    """Whether a read that follows symlinks (``find -L``, ``grep -R``, ``rg -L``) from ``root`` (resolved) may get
+    into the KB through one: a link under it to a KB folder, into one or above one, or to a folder outside that
+    leads on to such a link. True when the walk can't finish (over ``cap`` entries, an error): it fails closed."""
+    kb = [posixpath.join(vault, d) for d in KB_DIRS]
+
+    def into_kb(target: str) -> bool:
+        return any(target == k or target.startswith(k + "/") or k.startswith(target.rstrip("/") + "/") for k in kb)
+
+    seen: set[str] = set()
+    todo = [root]
+    count = 0
+    while todo:
+        top = todo.pop()
+        if top in seen or not os.path.isdir(top):
+            continue
+        seen.add(top)
+        try:
+            for here, dirs, files in os.walk(top, followlinks=False):
+                for name in (*dirs, *files):
+                    count += 1
+                    if count > cap:
+                        return True
+                    path = posixpath.join(here, name)
+                    if not os.path.islink(path):
+                        continue
+                    target = _real(path)
+                    if into_kb(target):
+                        return True
+                    if os.path.isdir(target) and not (target + "/").startswith(root.rstrip("/") + "/"):
+                        todo.append(target)  # a folder outside the root: its links count too
+        except OSError:
+            return True
+    return False
+
+
+_UNPLACED = "\x00unplaced"  # a cd to a folder the gate can't place
+# A function or alias that may move the shell, `cd` redefined, autocd, a global alias (it can rewrite any word).
+_MOVES_UNSEEN = re.compile(
+    r"(?:^|[\s;&|({])(?:function\s+[\w.-]+|[\w.-]+\s*\(\s*\))\s*(?:\{|\()[^}]*?\b(?:cd|pushd|popd|chdir)\b"
+    r"|(?:^|[\s;&|({])(?:function\s+(?:cd|pushd|popd|chdir)\b|(?:cd|pushd|popd|chdir)\s*\(\s*\))"
+    r"|\balias\b[^;&|\n]*(?:-g\b|\b(?:cd|pushd|popd|chdir)=)|\bauto_?cd\b",
+    re.IGNORECASE,
+)
+
+
+def _cd_target(args: list[str], command: str) -> str:
+    """Where ``cd args`` (``pushd``, ``chdir``) goes, as written, or :data:`_UNPLACED` when the gate can't place
+    it: a flag it may take as the target (`-P`, `-q`, `-`, `-1`), a `~` form other than `~` and `~/…` (`~+`,
+    `~-`, `~0`, a named folder), a relative target while the command sets CDPATH."""
+    if args[:1] == ["--"]:
+        args = args[1:]
+    elif args and args[0].startswith("-"):
+        return _UNPLACED
+    target = args[0] if args else "~"  # a bare `cd` goes home
+    if target.startswith("~") and target != "~" and not target.startswith("~/"):
+        return _UNPLACED
+    if "CDPATH" in command and not target.startswith(("/", "~", "./", "../")) and target not in (".", ".."):
+        return _UNPLACED
+    return target
+
+
+def _cd_real(here: str | None, target: str, env: Mapping[str, str], local: Mapping[str, str]) -> str | None:
+    """The folder ``cd target`` from ``here`` lands in, its symlinks resolved; None when it isn't a folder the
+    gate can see (a missing one may be made, or linked, by the command itself)."""
+    folder = _cd(here, target, env, local)
+    if folder is None or not os.path.isdir(folder):
+        return None
+    return _real(folder)
+
+
+def _lister_reaches(
+    piece: str, name: str, where: str | None, reaches: Callable[[_Recursive, str | None], bool]
+) -> bool:
+    """A command whose output is a reader's files (``cat $(…)``): what a printer or lister prints counts as read,
+    and a printer whose output the gate can't place (``echo ~+``) counts as reading anything."""
+    if name not in ("echo", "printf", "ls", "git", "pwd"):
+        return False
+    listed = _listed_by(piece)
+    if listed is None:
+        return name != "git" or " ls-files" in piece
+    return any(reaches(_Recursive([root], True, levels), where) for root, levels in listed)
 
 
 def _judge_recursive(
@@ -1505,9 +1693,13 @@ def _judge_recursive(
     statements, joins, substitutions = _shell_split_joined(command)
     local = _local_values(command)
     loops = _loop_words(command)
-    here = posixpath.normpath(cwd) if cwd else None
+    vault = _real(vault)  # every folder below is judged with its symlinks resolved
+    here = _real(posixpath.normpath(cwd)) if cwd else None
     start = here
     judged: set[int] = set()
+    # Something in the command that can move the shell where the gate can't follow: a function or alias that
+    # cd's, `cd` itself redefined, autocd, a global alias. After each statement the folder may then be any.
+    wobbly = bool(_MOVES_UNSEEN.search(command))
 
     def substituted(piece: str, folder: str | None) -> bool:
         """The substitutions in ``piece``, each judged from the folder the shell is in when it runs it
@@ -1519,9 +1711,19 @@ def _judge_recursive(
             if i >= len(substitutions):
                 continue  # a marker the command spelled itself: no substitution of this split
             judged.add(i)
-            fed = reader and any(f"{_SUBST}{i}{_SUBST}" in w for w in words[1:])
-            if _judge_recursive(substitutions[i], in_kb, folder, vault, env, depth + 1, fed):
+            marker = f"{_SUBST}{i}{_SUBST}"
+            fed_words = [w for w in words[1:] if marker in w] if reader else []
+            if _judge_recursive(substitutions[i], in_kb, folder, vault, env, depth + 1, bool(fed_words)):
                 return True
+            listed = _listed_by(substitutions[i]) if fed_words else None
+            if listed is None:
+                continue
+            for word in fed_words:
+                # Text around it (`cat $(ls -d k*)/*`) makes the reader's paths: what it lists, joined with it.
+                if word != marker and word.count(_SUBST) == 2:
+                    joined = [word.replace(marker, root) for root, _levels in listed]
+                    if any(_names_kb(j) or reaches(_Recursive([j], True, 0), folder) for j in joined):
+                        return True
         return False
 
     def reaches(rec: _Recursive, where: str | None) -> bool:
@@ -1566,6 +1768,9 @@ def _judge_recursive(
                         return True
                     continue
                 folder = posixpath.join(where, folder)
+            folder = _real(folder)
+            if rec.follows and _links_reach_kb(folder, vault):
+                return True  # it follows a symlink below its root into the KB
             if rec.depth is not None and _GLOB_CHARS.search(word):  # a glob a few levels from the KB: match it
                 if _glob_reaches_kb(word if word.startswith("/") else posixpath.join(where or "/", word), vault, rec):
                     return True
@@ -1615,6 +1820,9 @@ def _judge_recursive(
             for here_now in folders:
                 if substituted(piece, here_now):
                     return True
+            raw = (_shell_words(piece) or [""])[0]
+            if raw in ("eval", "source", "."):
+                cd_to = _UNPLACED  # what it runs may cd anywhere (its own reads are judged below)
             stripped = _strip(_shell_words(piece))
             words = stripped.words
             if not words:
@@ -1625,25 +1833,29 @@ def _judge_recursive(
                     return True
                 continue
             name, args = _command_name(words[0]), words[1:]
-            if name in ("cd", "pushd"):
-                cd_to = args[0] if args else "~"  # a bare `cd` goes home
+            if name in ("cd", "pushd", "chdir", "popd"):  # `popd`: a folder the gate can't place
+                cd_to = _cd_target(args, command) if name != "popd" and cd_to != _UNPLACED else _UNPLACED
                 continue
             for here_now in folders:
                 where = here_now if stripped.chdir is None else _cd(here_now, stripped.chdir, env, local)
+                if read and _lister_reaches(piece, name, where, reaches):
+                    return True  # what it prints is handed to a reader as its files (`cat $(echo */*.md)`)
                 if _judged_piece(name, words, args, stripped, where, reaches, read, env, local):
                     return True
         if first in _BLOCK_OPEN:
             block += 1
         tried = folders
         if cd_to is not None and not backgrounded:
-            moved = _union([_cd(f, cd_to, env, local) for f in folders])
-            lands = len(pieces) == 1 and all(m is not None and os.path.isdir(m) for m in moved)
+            moved = _union([None if cd_to == _UNPLACED else _cd_real(f, cd_to, env, local) for f in folders])
+            lands = len(pieces) == 1 and all(m is not None for m in moved)
             chain = moved
             after = moved if certain and lands else _union(after, folders, moved)
             sure, landed = certain, lands
         else:
             chain = folders
             sure, landed = certain, False
+        if wobbly:
+            after, chain = _union(after, [None]), _union(chain, [None])
     # A substitution no piece holds (none should be): judged from where the command starts, as before.
     rest = [s for i, s in enumerate(substitutions) if i not in judged]
     return any(_judge_recursive(s, in_kb, start, vault, env, depth + 1) for s in rest)

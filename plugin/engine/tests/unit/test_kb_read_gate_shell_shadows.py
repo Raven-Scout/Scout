@@ -190,6 +190,28 @@ MUST_DENY = [
     # `GREP` is no shell function (they are found as spelled): BSD grep, whose -r still reads the KB
     ("", "GREP -r TODO ."),
     ("", "GREP -rl x action-items/*"),
+    # a cd the gate can't place leaves the folder unknown (security review, round 2)
+    ("", "cd docs; cd -P ..; grep -r TODO ."),
+    ("", "cd docs; cd -L ..; grep -r TODO ."),
+    ("", "cd docs && cd -q .. && grep -r TODO ."),
+    ("docs", "CDPATH=.. pushd scripts && grep -r TODO .."),
+    ("", "pushd docs; popd; grep -r TODO ."),
+    ("", "cd docs; cd ~-; grep -r TODO ."),
+    ("", "cd docs; cd ~+/..; grep -r TODO ."),
+    ("docs", "cd ~0/..; grep -r TODO ."),
+    ("", "hash -d v=..; cd docs; cd ~v; grep -r TODO ."),
+    ("", "cd docs; chdir ..; grep -r TODO ."),
+    ("", "cd() { :; }; cd docs; grep -r TODO ."),
+    ("", "g() { cd ..; }; cd docs; g; grep -r TODO ."),
+    ("", "cd docs && eval 'cd ..' && grep -r TODO ."),
+    ("", "cd docs && source /dev/stdin <<< 'cd ..'; grep -r TODO ."),
+    ("", "cd nosuchdir; grep TODO *"),
+    # what a printer or lister hands a reader: its words, its globs' matches, what it lists
+    ("", "grep -r TODO $(echo ~+)"),
+    ("", "grep -r TODO $(echo {docs,.})"),
+    ("", "cat $(printf '%s\\n' */*.md)"),
+    ("", "cat $(echo */*.md)"),
+    ("", "cat $(ls -d k*)/*"),
 ]
 
 # Ordinary searches: the gate leaves them alone, and no KB note shows.
@@ -223,7 +245,6 @@ ALLOWED = [
     ("", "cd scripts && cat `find .`"),
     ("", "(cd docs && cat $(find .))"),
     ("", "cd docs && cd .. && cd scripts && cat $(find .)"),
-    ("", "cd nosuchdir && grep -r TODO ."),  # runs only where the cd landed
     ("", "grep -r TODO $(echo docs)"),
     ("", "find $(echo docs) -name '*.md'"),
     ("docs", "grep -l TODO $(ls)"),
@@ -262,6 +283,118 @@ def test_grep_and_find_by_their_path_are_judged_as_bsd(home: Path, where: str, c
     assert _gate(home, command, where) is None
     bare = command.replace("/usr/bin/", "")
     assert _denied(_gate(home, bare, where))  # and as a bare name, as the snapshot's program
+
+
+# Denied though the shell reads no note here: the gate can't tell. Kept on purpose.
+KEPT_OVER_DENIES = [
+    ("", "cd nosuchdir && grep -r TODO ."),  # a missing folder may be made, or linked, by the command
+    ("", "cd docs || cat $(find . -name '*.md')"),  # cat runs from the old folder if the cd fails
+]
+
+
+@pytest.mark.parametrize(("where", "command"), KEPT_OVER_DENIES)
+def test_the_kept_over_denies(home: Path, where: str, command: str) -> None:
+    assert _denied(_gate(home, command, where))
+
+
+@pytest.fixture
+def linked(home: Path) -> Path:
+    """The vault with `docs/kb5` a symlink to the KB folder, as a run's `ln -s ../kn* kb5` makes it."""
+    (home / "Vault" / "docs" / "kb5").symlink_to("../knowledge-base")
+    return home
+
+
+# A read that follows symlinks below its roots, or starts in one, reaches whatever they point to.
+LINKED_MUST_DENY = [
+    ("", "find -L docs -name '*.md'"),
+    ("", "find docs -follow -name '*.md'"),
+    ("", "cat $(find -L docs -name '*.md')"),
+    ("", "grep -R TODO docs"),
+    ("", "cd docs/kb5; cat $(find . -name '*.md')"),
+    ("", "cd docs/kb5 && grep -r TODO ."),
+    ("", "cd docs && cd kb5 && grep -rl TODO ."),
+    ("", "grep -r TODO docs/kb5/"),
+]
+LINKED_ALLOWED = [
+    ("", "find docs -name '*.md'"),  # a link below the root is listed, not followed
+    ("", "find -L scripts -name '*.py'"),
+    ("", "grep -R TODO scripts"),
+]
+# Gate only: the tools aren't the snapshot's, and may not be installed.
+LINKED_GATE_DENIES = ["rg -L TODO docs", "rg --follow TODO docs", "fd -L md docs", "ugrep -rS TODO docs"]
+
+
+def _reads_through_the_link(out: str) -> bool:
+    """A note's text, or its path through the link (`docs/kb5/a.md`) or from inside it (`projects/p/p.md`)."""
+    return _reads_kb(out) or "kb5/" in out or "projects/p/p.md" in out
+
+
+@pytest.mark.parametrize(("where", "command"), LINKED_MUST_DENY)
+def test_a_read_through_a_symlink_into_the_kb_is_denied(linked: Path, where: str, command: str) -> None:
+    out = _run(linked, command, where)
+    assert out is None or _reads_through_the_link(out), out
+    assert _denied(_gate(linked, command, where))
+
+
+@pytest.mark.parametrize(("where", "command"), LINKED_ALLOWED)
+def test_a_link_following_read_with_no_link_into_the_kb_is_allowed(linked: Path, where: str, command: str) -> None:
+    out = _run(linked, command, where)
+    assert out is None or not _reads_through_the_link(out), out
+    assert _gate(linked, command, where) is None
+
+
+@pytest.mark.parametrize("command", LINKED_GATE_DENIES)
+def test_other_tools_that_follow_links_are_denied(linked: Path, command: str) -> None:
+    assert _denied(_gate(linked, command))
+
+
+def test_a_link_walk_that_cannot_finish_fails_closed(linked: Path) -> None:
+    vault = str(linked / "Vault")
+    assert raw_read._links_reach_kb(f"{vault}/scripts", vault) is False
+    assert raw_read._links_reach_kb(f"{vault}/docs", vault) is True
+    assert raw_read._links_reach_kb(f"{vault}/scripts", vault, cap=0) is True
+
+
+@pytest.fixture
+def tracked(home: Path) -> Path:
+    """The vault as a git repository with the KB tracked, as a real vault is, and one untracked note."""
+    v = home / "Vault"
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "init.defaultBranch=main"]
+    env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1"}
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "x"]):
+        subprocess.run([*git, *args], cwd=v, env=env, check=True, capture_output=True)
+    (v / "knowledge-base" / "new.md").write_text(f"TODO {MARK} new\n")
+    return home
+
+
+GIT_MUST_DENY = [
+    ("", "cat $(git ls-files)"),
+    ("", "cat $(git ls-files '*.md')"),
+    ("", "cat $(git ls-files --others)"),
+    ("", "cat $(git ls-files -co)"),
+    ("", "grep -l TODO $(git ls-files)"),
+]
+GIT_ALLOWED = [
+    ("", "grep -l x $(git ls-files '*.py')"),
+    ("", "grep -rl x $(git ls-files '*.py')"),
+    ("", "cat $(git ls-files docs)"),
+    ("", "rg TODO $(git ls-files scripts)"),
+]
+
+
+@pytest.mark.parametrize(("where", "command"), GIT_MUST_DENY)
+def test_what_git_ls_files_hands_a_reader_counts(tracked: Path, where: str, command: str) -> None:
+    out = _run(tracked, command, where)
+    assert out is None or _reads_kb(out), out
+    assert _denied(_gate(tracked, command, where))
+
+
+@pytest.mark.parametrize(("where", "command"), GIT_ALLOWED)
+def test_a_git_ls_files_pathspec_outside_the_kb_is_allowed(tracked: Path, where: str, command: str) -> None:
+    if not command.startswith("rg"):
+        out = _run(tracked, command, where)
+        assert out is None or not _reads_kb(out), out
+    assert _gate(tracked, command, where) is None
 
 
 def test_the_snapshot_bypass_flags_reach_bsd_grep_and_stay_denied(home: Path) -> None:
