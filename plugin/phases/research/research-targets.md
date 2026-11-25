@@ -8,7 +8,7 @@ requires: null
 
 # PHASE 1: THE LAB — CHOOSE THIS RUN'S WORK
 
-The **Lab** is a set of research *threads*, each a folder `knowledge-base/lab/<slug>/` (the slug is its short ID) whose front page holds one Question, numbered questions (`Q1`, `Q2` …: the QIDs), experiments (`E1` …: the EIDs), evidence, owner comments and a timeline. Its status is `proposed`, `active`, `paused`, `closed` or `rejected`, and only the owner changes it. Work goes: owner comments, due experiments, 1–2 threads, proposals.
+The **Lab** is a set of research *threads*, each a folder `knowledge-base/lab/<slug>/` (the slug is its short ID) whose front page holds one Question, numbered questions (`Q1`, `Q2` …: the QIDs), experiments (`E1` …: the EIDs), evidence, owner comments and a timeline. Its status is `proposed`, `active`, `paused`, `closed` or `rejected`; only the owner changes it. Work goes: owner comments, due experiments, 1–2 threads, proposals.
 
 ## Step 1a: Read the lab block
 
@@ -21,7 +21,7 @@ Start from `.scout-cache/session-context.json` → `lab`. It lists each thread y
 
 Fall back to `scripts/scoutctl lab list --json` when the file's `generated_at` isn't today, or `lab` is missing or marked `truncated`.
 
-Read only threads you will work, with `scripts/scoutctl lab show <slug> --json`. Never list or open the files in `knowledge-base/lab/` one by one.
+Read only threads you will work, with `scripts/scoutctl lab show <slug> --json`. Never list or open `knowledge-base/lab/` files one by one.
 
 Every lab write goes through `scripts/scoutctl lab` (below, `lab <verb>` means that command). It locks the thread for that one write, so an owner comment or pause made mid-run is kept; a hand edit could overwrite it.
 

@@ -184,14 +184,20 @@ def test_a_refusal_never_replans_a_veto() -> None:
 
 
 def test_a_held_experiment_runs_only_if_its_comment_doesnt_object() -> None:
-    """A started experiment refused as held stays `running`; the next run's retry must still check the comment."""
+    """The run that reads a held experiment's comment decides; a later retry checks only what it can see."""
     text = _flat(EXPERIMENTS)
     hold = _refused(text).split("`held:`", 1)[1].split("a veto (", 1)[0]
-    assert "Step 1b" in hold
-    assert "it runs only if that comment doesn't object" in hold
-    assert "if it objects, `lab experiment abandon` it with the reason" in hold
+    assert (
+        "answer it per Step 1b now; if the comment objects, `lab experiment abandon` it with the reason now;"
+        " otherwise leave it `running` for the next run." in hold
+    )
+    assert "Next time" not in hold  # a later run can't see the refusal, so it can't make the call
     retry = text.split("retry `running` experiments not marked `detached`", 1)[1].split("3. **Then", 1)[0]
-    assert "only if that comment doesn't object" in retry and "`lab experiment abandon`" in retry
+    assert (
+        "Before retrying a `running` experiment, read the owner comments on its line and on its questions in"
+        " `lab show`; if one objects, abandon it with the reason." in retry
+    )
+    assert "refused `held:`" not in retry  # nothing records an earlier refusal
 
 
 def test_collect_keeps_broker_side_answers_running() -> None:

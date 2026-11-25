@@ -8,7 +8,7 @@ requires: null
 
 # PHASE 2E: EXPERIMENTS
 
-You reach this phase from Step 1c (PHASE 1). An experiment (EID `E1`, `E2` …) is a note plus a folder `knowledge-base/lab/<slug>/experiments/<slug>-<EID>-<short>/` for its scripts and outputs. It goes `planned` → `running` → `done` or `abandoned`, and the owner can veto it. Only the run's **broker** runs scripts: from outside this run's sandbox, in a narrower one; each answer ends in one stderr status line.
+You reach this phase from Step 1c (PHASE 1). An experiment (EID `E1`, `E2` …) is a note plus a folder `knowledge-base/lab/<slug>/experiments/<slug>-<EID>-<short>/` for its scripts and outputs. It goes `planned` → `running` → `done` or `abandoned`; the owner can veto it. Only the run's **broker** runs scripts: from outside this run's sandbox, in a narrower one; each answer ends in one stderr status line.
 
 Commits use `{{SCOUT_DIR}}/scripts/git-safe-commit.sh` with explicit paths (Step 4a).
 
@@ -20,7 +20,7 @@ A run runs at most `lab.experiments_per_run` (default 1) experiments, a detached
    - `experiment ran: exit <n>` → finish it, as below.
    - `experiment running: <elapsed> of <deadline>` → leave it; name it and its elapsed time in the wrap.
    - `experiment not run: <reason>` → when the reason is the experiment's own outcome (no result, past its deadline, stopped by the owner, a refused weights fetch), run `lab experiment abandon <slug> <EID> --reason "<reason>"`. Some reasons are not final: `this run's broker didn't answer`, `collecting a detached experiment needs the run broker` (or other no-broker wording), and `a process the experiment started survived the sweep; check ps`. For those, leave it `running` and name it in the wrap; the next collect retries.
-2. **Then retry `running` experiments not marked `detached`** in `active` threads, left unrun by an earlier run: run them as below, without `start`. If one was refused `held:`, run it only if that comment doesn't object; else `lab experiment abandon` it with the reason.
+2. **Then retry `running` experiments not marked `detached`** in `active` threads (left unrun earlier): run them as below, without `start`. Before retrying a `running` experiment, read the owner comments on its line and on its questions in `lab show`; if one objects, abandon it with the reason.
 3. **Then the `due` experiments,** in `active` threads. Run a `held` one only if its comment, answered in Step 1b, doesn't object; else abandon it with the reason.
 
 For each one:
@@ -37,10 +37,10 @@ For each one:
 - **Read the last stderr line:**
   - `experiment ran: exit <n>` → finish it, whatever `n` is: a non-zero exit is part of the result.
   - `experiment refused: <reason>` → with exit 5 (`this run has run its …`) the allowance is used, which is not a refusal of the experiment: stop running experiments this run and leave that one as it is. Otherwise:
-    - `held:` (an unanswered owner comment): answer it per Step 1b. Next time it runs only if that comment doesn't object; if it objects, `lab experiment abandon` it with the reason.
+    - `held:` (an unanswered owner comment): answer it per Step 1b now; if the comment objects, `lab experiment abandon` it with the reason now; otherwise leave it `running` for the next run.
     - a veto (any reason containing `vetoed` or `a veto can't be ruled out`): leave it, and never re-plan it unless an owner comment invites it (see **Vetoes**).
     - anything else (notice not over, uncommitted changes, a bad command or note, models on an attached run): run `lab experiment abandon <slug> <EID> --reason "<reason>"`, and plan a new EID if the work is still wanted.
-  - `experiment not run: <reason>` → nothing ran, not the experiment's fault: no broker to run it, experiments or detached runs are off in the owner's config, a detached run is already running or not yet collected, or free disk would fall below the floor. Leave it `running` and say so in the wrap; a later run retries it. When experiments are off, still plan experiments.
+  - `experiment not run: <reason>` → nothing ran, not the experiment's fault: no broker to run it, experiments or detached runs are off in the owner's config, a detached run is running or uncollected, or free disk would fall below the floor. Leave it `running` and say so in the wrap; a later run retries it. When experiments are off, still plan them.
 - **Finish:** write the Result and What it means to temp files, then `scripts/scoutctl lab experiment finish <slug> <EID> --result-file <file> --means-file <file> --one-line "…"`.
   - The Result gives numbers, and what was *not* shown.
   - A cap refusal from `lab experiment call` (exit 3) means a partial result.
