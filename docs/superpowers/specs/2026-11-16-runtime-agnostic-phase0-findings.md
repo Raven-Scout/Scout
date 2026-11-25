@@ -641,15 +641,23 @@ runtime_id="antigravity")`. Its only carve-out under `~/.gemini` is `~/.gemini/a
   `SOURCE_METADATA` and `TRAJECTORY_ID` (names only). The new deny matches the shared prefix, so it covers all ten.
 - **The server.**
   - It is agy's own process (the same pid), listening on localhost HTTP and HTTPS ports **[run]**.
-  - It speaks Connect/JSON at `/exa.language_server_pb.LanguageServerService/<Method>`, with 339 method
-    names **[bin]**.
+  - It speaks Connect/JSON at `/exa.language_server_pb.LanguageServerService/<Method>`. A `strings` pass over the
+    binary gave 339 names there, but 29 of them had neighbouring bytes stuck on, answered 404 "page not found"
+    and so name no method. That leaves 310 real methods **[bin, run]**.
   - A call without the token gets 401 **[run]**.
-- **The token a shell child gets is scoped** **[run]**:
+- **The token a shell child gets is scoped** **[run]**. Every call had an empty `{}` body.
   - It authenticates as principal `run_command`.
-  - Of the 339 methods, 142 answer 403 `not allowed for principal "run_command"`. Among them are `ReadFile`,
-    `WriteFile`, `RunCommand`, `CreateTerminal`, `SendTerminalInput`, `SetUserSettings`, `InstallCascadePlugin`,
-    `ToggleMcpServer`, `DeleteFileOrDirectory`, `HandleCascadeUserInteraction` and `DeleteAllUserData`.
-  - So a run's shell can't read or write a file, run a command or change settings through the server.
+  - Of the 310 real methods, 142 answer 403 `not allowed for principal "run_command"`. Among them are `ReadFile`,
+    `WriteFile`, `RunCommand`, `CreateTerminal`, `SendTerminalInput`, `SetUserSettings`,
+    `SetMendelFlagOverrides`, `InstallCascadePlugin`, `ToggleMcpServer`, `DeleteFileOrDirectory`,
+    `HandleCascadeUserInteraction` and `DeleteAllUserData`.
+  - The other 168 get past the principal check. A 400 or 501 there means the call reached its handler, not
+    that it worked. `GetUserSettings` and `GetPermissionSettings` are among them.
+  - **Not probed:**
+    - `UpdatePermissionSettings`: its name was one of the 29 broken ones.
+    - Both `exa.conversation_pb.ConversationService` and `jetski.product.v1.ConversationService`.
+  - So a run's shell can't read or write a file, run a command or change user settings through the server.
+    Whether it can change permission settings is not known.
 - **What the scoped token still reaches** **[run]**. These methods got past the principal check to their
   handler, which answered 200, or 400 for a missing argument:
   - **Starting or steering agent work:** `StartCascade`, `SendUserCascadeMessage`, `SendAgentMessage`,
