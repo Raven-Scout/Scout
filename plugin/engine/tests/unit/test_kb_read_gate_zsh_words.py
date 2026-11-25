@@ -8,7 +8,9 @@ The #820 security review, under real ``zsh -f`` with the run's options, found th
 - A quote or backslash inside the command word (``gr''ep``, ``"gr"ep``, ``g\\rep``, ``fi''nd``). The shell
   pre-filter matched program names only when unquoted, so these never reached Python.
 - A read that decompresses (BSD grep's ``-Z``, ugrep's ``-z``, ``zgrep``, ``zcat``) reads what an archive holds,
-  which no file name shows. It is judged as reading the archive's members: unknown, so denied.
+  which no file name shows. So do the archive tools (``unzip -p``, ``bsdtar -xOf``, ``7z e -so``, ``cpio -i``,
+  ``ditto -x``, ``pax -r``, ``gunzip -c kb.tgz``). An archive in the vault, or one whose path the gate can't place,
+  may hold notes: denied. One outside the vault is allowed.
 
 Each must-deny case goes through the shell pre-filter (it must reach Python in a run), through the gate, and,
 where plain zsh reads a note with it, through real zsh in a synthetic vault: its output carries a line only a KB
@@ -27,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -61,6 +64,18 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (vault / "backup").mkdir()
     (vault / "backup" / "a.md.gz").write_bytes(gzip.compress(f"TODO {MARK}\n".encode()))
     (vault / "app.log.gz").write_bytes(gzip.compress(b"TODO log-line\n"))
+    with zipfile.ZipFile(vault / "kb.zip", "w") as z:
+        z.write(vault / "knowledge-base" / "a.md", "knowledge-base/a.md")
+    if shutil.which("cpio"):  # a cpio archive of the KB, as cpio writes one
+        subprocess.run(
+            ["cpio", "-o", "-F", str(vault / "kb.cpio")], input="knowledge-base/a.md\n", cwd=vault, text=True,
+            capture_output=True, check=False, timeout=10,
+        )  # fmt: skip
+    # Archives outside the vault, holding no note.
+    with zipfile.ZipFile(h / "outside.zip", "w") as z:
+        z.write(vault / "docs" / "a.md", "docs/a.md")
+    with tarfile.open(h / "outside.tgz", "w:gz") as tar:
+        tar.add(vault / "docs", arcname="docs")
     monkeypatch.setenv("SCOUT_DATA_DIR", str(vault))
     return h.resolve()
 
@@ -147,6 +162,38 @@ MUST_DENY: list[tuple[str, str, bool | str]] = [
     ("zgrep -a TODO kb.tgz", "", True),
     ("zgrep TODO knowledge-base/a.md", "", True),
     ("ugrep -rz --include='*.tgz' TODO .", "", False),
+    # archive tools that read an archive in the vault, or one whose path the gate can't place
+    ("unzip -p kb.zip", "", True),
+    ("unzip -c kb.zip", "", True),
+    ("unzip -qp kb.zip", "", True),
+    ("unzip -l kb.zip", "", False),  # names only
+    ("funzip kb.zip", "", True),
+    ("bsdtar -xOf kb.tgz", "", True),
+    ("tar -xOf kb.tgz", "", True),
+    ("tar xOf kb.tgz", "", True),
+    ("tar -xzf kb.tgz -O", "", True),
+    ("tar --extract --to-stdout --file=kb.tgz", "", True),
+    ("tar -tf kb.tgz", "", False),
+    ("bsdtar -cf - @kb.tgz", "", True),  # bsdtar copies the archive's members into its own output
+    ("cat kb.tgz | tar -xzO", "", True),
+    ("tar -xzO < kb.tgz", "", True),
+    ("7z e -so kb.7z", "", False),
+    ("7z x -so kb.zip", "", False),
+    ("ditto -x -k kb.zip /dev/stdout", "", False),
+    ("cpio -i --to-stdout < kb.cpio", "", False),  # GNU cpio's flag; macOS's bsdcpio has none
+    ("cpio -i --to-stdout -F kb.cpio", "", False),
+    ("cpio -it -F kb.cpio", "", False),
+    ("pax -rz -f kb.tgz", "", False),
+    ("pax -z -f kb.tgz", "", False),
+    ("gunzip -c kb.tgz", "", True),
+    ("gzip -dc kb.tgz | tar -xO", "", True),
+    ("cat kb.tgz | gunzip | tar -xO", "", True),
+    ("gzcat < kb.tgz", "", True),
+    ("gzip -c knowledge-base/a.md", "", False),  # compressed bytes of a note: its text all the same
+    ("tar -czf ../out.tgz knowledge-base", "", False),
+    ("unzip -p $HOME/Vault/kb.zip", "", True),
+    ("unzip -p $ARCHIVE", "", False),  # a path the gate can't place
+    ("cd backup && unzip -p ../kb.zip", "", True),
 ]
 
 
@@ -206,6 +253,16 @@ def test_a_ugrep_only_form_is_denied(home: Path, command: str, where: str, plain
         "grep -r --include='*.md.gz' TODO .",  # no decompression: compressed bytes, no note's text
         'git commit -m "don\'t"',
         "echo it''s fine",
+        # archives outside the vault, compressed files that hold no note, archives written
+        "unzip -p ../outside.zip",
+        "unzip -l ../outside.zip",
+        "tar -xOf ../outside.tgz",
+        "bsdtar -xOf ../outside.tgz",
+        "grep -Z TODO ../outside.tgz",
+        "gunzip -c app.log.gz",
+        "gzip -dc < app.log.gz",
+        "tar -czf ../out.tgz docs",
+        "gzip -c docs/a.md > ../a.md.gz",
     ],
 )
 def test_an_ordinary_command_is_still_allowed(home: Path, command: str) -> None:
@@ -242,6 +299,14 @@ def test_a_command_with_no_inner_quote_stays_in_the_shell(command: str) -> None:
         "grep -iZ x a.gz",
         "grep -z x a",
         "egrep --decompress x a.gz",
+        "unzip -p a.zip",
+        "bsdtar -xOf a.tgz",
+        "7z e -so a.7z",
+        "ditto -x -k a.zip out",
+        "cpio -i",
+        "pax -r -f a.tar",
+        "gunzip -c a.gz",
+        "UNZIP -p a.zip",
     ],
 )
 def test_an_inner_quote_or_a_decompressing_read_reaches_python(command: str) -> None:

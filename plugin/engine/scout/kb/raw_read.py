@@ -780,7 +780,7 @@ def _decompresses(word: str, name: str, args: list[str]) -> bool:
     """A reader of what compressed files and archives hold: ``zcat``, ``zgrep`` and their kin; a grep with ``-Z``
     (BSD grep's ``--decompress``; GNU's ``--null``, judged the BSD way), ``-z`` (ugrep's ``--decompress``, which a
     run's bare ``grep`` is; GNU's and BSD's ``--null-data``) or ``--decompress``."""
-    if program_name(posixpath.basename(_unquoted(word))) in _DECOMPRESSING or name in _DECOMPRESSING_READERS:
+    if _bare(word) in _DECOMPRESSING or name in _DECOMPRESSING_READERS:
         return True
     return name in _GREPS and any(f in ("-z", "-Z", "--decompress") for f, _v in _options(name, args))
 
@@ -807,6 +807,173 @@ def _may_match_compressed(glob: str) -> bool:
     exts = [*_ARCHIVE_SUFFIXES, *(f"{k}.{c}" for k in (*KB_FILE_EXTENSIONS, "tar") for c in _COMPRESSED_SUFFIXES)]
     rx = _glob_regex(g)
     return any(rx.fullmatch(f"{stem}.{ext}") for stem in stems for ext in exts)
+
+
+# ----- archive tools: what reads an archive's members ----------------------------------------------
+# Programs that read an archive's members (extract, to stdout or to disk, list or test), and the single-file
+# (de)compressors, which read a file whole. Any of them naming a KB path reads a note; one that reads an archive in
+# the vault, or one whose path the gate can't place, may read notes no file name shows.
+_ARCHIVERS = {"unzip", "funzip", "zipinfo", "tar", "bsdtar", "gtar", "7z", "7za", "7zz", "7zr", "ditto", "cpio",
+              "pax", "bsdcpio"}  # fmt: skip
+_COMPRESSORS = {"gzip", "gunzip", "bzip2", "bunzip2", "xz", "unxz", "lzma", "unlzma", "zstd", "unzstd", "lz4",
+                "unlz4", "brotli", "lzip", "lunzip", "compress", "uncompress", "pigz", "unpigz", "pbzip2",
+                "lbzip2"}  # fmt: skip
+# The ones that always decompress.
+_DECOMPRESSORS = {"gunzip", "bunzip2", "unxz", "unlzma", "unzstd", "unlz4", "lunzip", "uncompress", "unpigz"}
+_STDIN = None  # an archive read from stdin, or from a path the command doesn't show
+# tar's old-style key letters that take the next word, in order (`tar xbf 20 kb.tar`).
+_TAR_KEY_VALUES = "bfCTX"
+_TAR_READS = {"x", "t", "d"}
+_TAR_READ_LONG = {"--extract", "--get", "--list", "--diff", "--compare"}
+_REDIRECT_IN = re.compile(r"(?<![<\d])\d?<(?![<(&])\s*(\S+)")
+
+
+def _plain_args(args: list[str]) -> list[str]:
+    """``args`` unquoted, without redirections and their targets (``< kb.cpio``, ``2>/dev/null``)."""
+    out: list[str] = []
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+        elif _REDIRECT.match(a):
+            skip = _REDIRECT.sub("", a) == ""
+        else:
+            out.append(_unquoted(a))
+    return out
+
+
+def _tar_archives(args: list[str]) -> list[str | None]:
+    """The archives a ``tar``/``bsdtar`` call reads members of: its ``-f`` archive (stdin when none, or ``-``) in
+    extract, list or diff mode, and in any mode an ``@archive`` operand (bsdtar copies its members)."""
+    reads, archive = False, None
+    found = False
+    i = 0
+    if args and not args[0].startswith("-") and re.fullmatch(r"[A-Za-z]+", args[0]):  # old style: `tar xOf kb.tgz`
+        keys, values = args[0], args[1:]
+        reads = any(k in _TAR_READS for k in keys)
+        taken = [k for k in keys if k in _TAR_KEY_VALUES]
+        if "f" in taken and taken.index("f") < len(values):
+            archive, found = values[taken.index("f")], True
+        i = 1 + len(taken)
+    while i < len(args):
+        a = args[i]
+        i += 1
+        if a == "--":
+            break
+        if a.startswith("--"):
+            flag, eq, value = a.partition("=")
+            reads = reads or flag in _TAR_READ_LONG
+            if flag == "--file":
+                if eq:
+                    archive, found = value, True
+                elif i < len(args):
+                    archive, found = args[i], True
+                    i += 1
+        elif a.startswith("-") and len(a) > 1:
+            for j, ch in enumerate(a[1:], 1):
+                reads = reads or ch in _TAR_READS
+                if ch == "f":
+                    if j < len(a) - 1:
+                        archive, found = a[j + 1 :], True
+                    elif i < len(args):
+                        archive, found = args[i], True
+                        i += 1
+                    break
+                if ch in "bCTX" and j == len(a) - 1:
+                    i += 1  # its value is the next word
+                    break
+    out: list[str | None] = [a[1:] for a in args if a.startswith("@") and len(a) > 1]
+    if reads:
+        out.append(archive if found and archive != "-" else _STDIN)
+    return out
+
+
+def _archive_reads(name: str, args: list[str]) -> list[str | None]:
+    """The archives (or compressed files that hold one) whose members this command reads; :data:`_STDIN` for one
+    it reads from stdin or from where it doesn't say. Empty for a call that reads no archive (``tar -czf out docs``,
+    ``7z a``, ``gzip x.log``)."""
+    words = _plain_args(args)
+    flags, plain = _split_args(words)
+    if name in ("unzip", "zipinfo"):
+        archive, skip = None, False
+        for w in words:
+            if skip:
+                skip = False
+            elif w in ("-d", "-P"):
+                skip = True
+            elif w == "-x":
+                break
+            elif not w.startswith("-"):
+                archive = w
+                break
+        return [archive] if archive else []
+    if name == "funzip":
+        return [plain[0] if plain else _STDIN]
+    if name in ("tar", "bsdtar", "gtar"):
+        return _tar_archives(words)
+    if name in ("7z", "7za", "7zz", "7zr"):
+        if not plain or plain[0] not in ("x", "e", "l", "t", "h"):
+            return []
+        archives: list[str | None] = [p for p in plain[1:] if not p.startswith("-")]
+        return archives[:1] or [_STDIN]
+    if name == "ditto":
+        if not any(f in ("-x", "-xk", "-kx") or re.fullmatch(r"-[A-Za-z]*x[A-Za-z]*", f) for f in flags):
+            return []
+        sources: list[str | None] = list(plain[:-1])
+        return sources or [_STDIN]
+    if name in ("cpio", "bsdcpio"):
+        if not any(re.fullmatch(r"-[A-Za-z]*[it][A-Za-z]*", f) or f in ("--extract", "--list") for f in flags):
+            return []
+        archive = _flag_value(words, {"-F", "-I", "--file"})
+        return [archive or _STDIN]
+    if name == "pax":
+        modes = "".join(f[1:] for f in flags if re.fullmatch(r"-[A-Za-z]+", f))
+        if "w" in modes:
+            return []  # -w writes an archive from files, -rw copies them: their names are judged as operands
+        return [_flag_value(words, {"-f"}) or _STDIN]  # -r extracts (`-s` can send members anywhere), none lists
+    if name in _COMPRESSORS:
+        decompresses = name in _DECOMPRESSORS or any(
+            re.fullmatch(r"-[A-Za-z0-9]*[dtl][A-Za-z0-9]*", f) or f in ("--decompress", "--uncompress", "--test",
+                                                                         "--list")
+            for f in flags
+        )  # fmt: skip
+        if not decompresses:
+            return []
+        files: list[str | None] = [p for p in plain if p != "-" and _archive(p)]
+        return (
+            files if any(p != "-" for p in plain) else [_STDIN]
+        )  # `kb.tar.gz` holds an archive; `x.log.gz` holds x.log
+    return []
+
+
+def _archive_in_vault(path: str | None, here: str | None, vault: str | None, env: Mapping[str, str],
+                      local: Mapping[str, str]) -> bool:  # fmt: skip
+    """Whether an archive may hold notes: it is in the vault, or the gate can't place it (stdin, ``$VAR``, a
+    relative path from an unknown folder, no vault known)."""
+    if path is None or vault is None:
+        return True
+    word = _expand(path, env, local)
+    if word == _UNKNOWN:
+        return True
+    folder = _root_folder(word) if _GLOB_CHARS.search(word) else word
+    if not folder.startswith("/"):
+        if here is None:
+            return True
+        folder = posixpath.join(here, folder)
+    folder = posixpath.normpath(folder)
+    vault = posixpath.normpath(vault)
+    return folder == vault or folder.startswith(vault.rstrip("/") + "/") or vault.startswith(folder.rstrip("/") + "/")
+
+
+def _bare(word: str) -> str:
+    """A command word's own program name, folded but not read through an alias (``zgrep`` stays ``zgrep``)."""
+    return program_name(posixpath.basename(_unquoted(word)))
+
+
+def _stdin_source(segment: str) -> str | None:
+    """The file a segment's ``< file`` reads stdin from, unquoted; None when there is none."""
+    m = _REDIRECT_IN.search(segment)
+    return _unquoted(m.group(1)) if m else None
 
 
 def _filtered(rec: _Recursive, filters: list[str], types: list[str] | None = None) -> _Recursive | None:
@@ -1073,10 +1240,28 @@ def _judge(command: str, in_kb: bool, cwd: str | None, vault: str | None, env: M
                         return True
                     if any(_glob_names_kb(a) for a in _operands(name, args)):
                         return True
-                    if _decompresses(words[0], name, args) and any(map(_archive, read_operands(name, args) or [])):
-                        return True  # an archive's members, which the gate can't name (`grep -Z x kb.tgz`)
+                    if _decompresses(words[0], name, args):
+                        # An archive's members, which the gate can't name (`grep -Z x kb.tgz`, `zcat kb.tgz`).
+                        files = [_unquoted(f) for f in read_operands(name, args) or []]
+                        if not files and (name in _DECOMPRESSING_READERS or _bare(words[0]) in _DECOMPRESSING):
+                            files = [_stdin_source(segment) or "\0stdin"]  # `zcat < kb.tgz`, `… | zcat`
+                        for f in files:
+                            if f == "\0stdin" or _archive(f):
+                                if _archive_in_vault(None if f == "\0stdin" else f, here, vault, env, local):
+                                    return True
                     if stripped.fed and upstream_kb:
                         return True
+                elif name in _ARCHIVERS or name in _COMPRESSORS:
+                    if seg_in_kb or _names_kb(rest) or _uses_operand(name, args, tainted):
+                        return True  # `tar -czf /tmp/x.tgz knowledge-base`, `gzip -c knowledge-base/a.md`
+                    if any(_glob_names_kb(a) for a in _operands(name, args)) or (stripped.fed and upstream_kb):
+                        return True
+                    for archive in _archive_reads(name, args):
+                        source = archive if archive is not _STDIN else _stdin_source(segment)
+                        if name in _COMPRESSORS and source is not None and not _archive(source):
+                            continue  # `gunzip -c < x.log.gz` holds x.log, which is no note
+                        if _archive_in_vault(source and source.removeprefix("@"), here, vault, env, local):
+                            return True  # `unzip -p kb.zip`, `tar -xOf kb.tgz`, `7z e -so kb.7z`, `cpio -i < kb.cpio`
                 elif name == "git":
                     sub, sub_args, _chdirs = _git(args)
                     names_kb = _names_kb(rest) or _uses(rest, tainted)

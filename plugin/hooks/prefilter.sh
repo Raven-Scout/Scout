@@ -229,6 +229,9 @@ bash_pattern() {
     #    archive's members are notes it reads that no file name shows.
     alt "$word"'((z|bz|xz|lz|lz4|zstd)[ef]?grep|(z|gz|bz|xz|lz|lz4|zstd)cat|(z|bz|xz)(less|more|diff|cmp))([^A-Za-z0-9_./-]|$)'
     alt "$word"'[ef]?grep[^;&|]* (-[A-Za-z]*[zZ]|--decompress)'
+    # -- A program that reads an archive's members (unzip -p, bsdtar -xO, 7z e -so, cpio -i, ditto -x) or a
+    #    file whole (gzip and kin). tar is the write rule's above.
+    alt "$word"'(unzip|funzip|zipinfo|bsdtar|gtar|7z|7za|7zz|7zr|ditto|cpio|bsdcpio|pax|gzip|gunzip|bzip2|bunzip2|xz|unxz|lzma|unlzma|zstd|unzstd|lz4|unlz4|brotli|lzip|lunzip|compress|uncompress|pigz|unpigz|pbzip2|lbzip2)([^A-Za-z0-9_./-]|$)'
 }
 
 # Sets $re: the rules bash_needs_python also applies ignoring letter case (grep -i). On a case-insensitive
@@ -254,6 +257,7 @@ case_pattern() {
     alt "$word"'git[^;&|]*(commit|am).*([^A-Za-z0-9_-]|\\[nt])-[A-Za-z]*n'
     alt "$word"'((z|bz|xz|lz|lz4|zstd)[ef]?grep|(z|gz|bz|xz|lz|lz4|zstd)cat|(z|bz|xz)(less|more|diff|cmp))([^A-Za-z0-9_./-]|$)'
     alt "$word"'[ef]?grep[^;&|]* (-[A-Za-z]*[zZ]|--decompress)'
+    alt "$word"'(unzip|funzip|zipinfo|bsdtar|gtar|7z|7za|7zz|7zr|ditto|cpio|bsdcpio|pax|gzip|gunzip|bzip2|bunzip2|xz|unxz|lzma|unlzma|zstd|unzstd|lz4|unlz4|brotli|lzip|lunzip|compress|uncompress|pigz|unpigz|pbzip2|lbzip2)([^A-Za-z0-9_./-]|$)'
     # -- Any byte outside printable ASCII, or a JSON \u escape. The disk folds case the Unicode way, and grep
     #    cannot: ﬁnd (the ﬁ ligature), xargſ and ſh (long s) and ßh run find, xargs, sh and ssh. Python folds them.
     alt '[^ -~]'

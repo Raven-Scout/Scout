@@ -9,8 +9,11 @@
     the shell pre-filter matched program names only unquoted, so these never reached Python. Any word with a
     quote or backslash between its letters now goes to Python, which judges it unquoted. A command with an
     apostrophe inside a word (`-m "don't"`) now starts Python too; it is still allowed.
-  - Reads that decompress: BSD grep's `-Z`, ugrep's `-z`, `--decompress`, `zgrep` and its kin, and `zcat` and
-    its kin read what an archive holds, which no file name shows. An archive operand (`grep -Z TODO kb.tgz`,
-    `zcat kb.tgz`) is denied, since its members can't be named, and a file filter that lets compressed files
-    or archives through (`grep -rZ --include='*.gz'`) no longer keeps a vault-root search out of the KB.
-    `zgrep` and the `z*cat` readers are judged as grep and cat otherwise.
+  - Reads of what an archive holds, which no file name shows: BSD grep's `-Z`, ugrep's `-z`, `--decompress`,
+    `zgrep` and `zcat` and their kin, and the archive tools (`unzip -p`/`-c`, `funzip`, `tar`/`bsdtar -xO` and
+    `@archive`, `7z e|x -so`, `ditto -x`, `cpio -i`, `pax -r`, and `gunzip -c` or `gzip -dc` of a `.tar.gz`). An
+    archive in the vault, or one whose path the gate can't place (stdin, `$VAR`), is denied, since its members
+    can't be named; one outside the vault is allowed. A file filter that lets compressed files or archives
+    through (`grep -rZ --include='*.gz'`) no longer keeps a vault-root search out of the KB, and an archive or
+    compression tool naming a KB path (`tar -czf out.tgz knowledge-base`, `gzip -c knowledge-base/a.md`) is a
+    KB read.
