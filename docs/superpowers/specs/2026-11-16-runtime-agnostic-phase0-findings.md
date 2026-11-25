@@ -667,7 +667,10 @@ runtime_id="antigravity")`. Its only carve-out under `~/.gemini` is `~/.gemini/a
   - Test: `tests/unit/test_kb_read_gate_agy_server.py`.
   - **It is a speed bump, not a boundary.** A command that builds the name at run time, or dumps the whole
     environment, isn't matched by its text.
-  - So it stays on (plan decision 5). Lifting it would need the open question above answered no. A real fix
+  - **Decided (Jordan, 2026-11-25): real runs are blocked** until he OKs a design that stops a run's shell
+    commands from reaching agy's API (plan decision 11, the 7.2 gate). No-model work goes on, and the design
+    comes from its own investigation card.
+  - So the deny stays on (plan decision 5). Lifting it would need the open question above answered no. A real fix
     is agy not giving these variables to a run's shell, or the server refusing the scoped principal the
     conversation methods. Both are for 2B and 2C.
 - **The replay** **[run]**:

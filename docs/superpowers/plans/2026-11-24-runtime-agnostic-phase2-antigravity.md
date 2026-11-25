@@ -25,6 +25,7 @@
 - Until 2A proves agy's local server can't start tool calls around the hooks, a run's command naming `ANTIGRAVITY_LS_ADDRESS`, `ANTIGRAVITY_CSRF_TOKEN` or `ANTIGRAVITY_AGENTAPI_EXE` is denied (spec §8.5).
 - Local-only paths are never readable by an agy run: not through the read gate, not through `scoutctl kb` (spec §8.4).
 - No model run, no real-login probe and no eval on Jordan's login without his OK for that run (spec §8.3 rule 4, §11.3). CI never starts agy against a real model.
+- **The 7.2 gate (decision 11): no agy run that calls a real model happens until Jordan has OK'd a design that stops a run's shell commands from reaching agy's local API** (findings §7.2). That covers a scheduled slot, the real-login probe (2E.3), the eval (2H) and acceptance (2K). 2B onward may build and test against the fake endpoint, and nothing in this gate holds them back. The design comes from its own no-model investigation card; the shell-gate deny of `ANTIGRAVITY_*` is not that design.
 - Run limits are on by default for agy: 45 awake minutes (90 for a research slot) and the `auto` daily token ceiling (spec §8.6). agy has no `budget_cap`.
 - Generated files (`~/.gemini/config/hooks.json` block, `plugin/runtimes/antigravity/`, `verified.json`, `connectors.snapshot.json`) are generated, never hand-edited, and drift-tested.
 - Public surfaces (fixtures, PRs, commits, docs) use the stand-ins in `plugin/CLAUDE.md`. No vault content.
@@ -388,6 +389,8 @@ Tests: `test_install_writes_only_its_own_key`, `test_install_is_idempotent`, `te
 
 ## PR 2K: Acceptance and the evidence row (spec §10, §13)
 
+Every box below that runs a real model waits for the 7.2 gate (decision 11), and so do 2E.3 and 2H's runs.
+
 - [ ] The free probe passes at Tier L for a pinned agy version (CI where possible, else Jordan's Mac).
 - [ ] One real-login probe on Jordan's AI Pro login (his OK).
 - [ ] `eval.sh kb-gate --agent-runtime antigravity` passes (his OK).
@@ -409,3 +412,6 @@ Tests: `test_install_writes_only_its_own_key`, `test_install_is_idempotent`, `te
 8. **agy's first start never happens in a run** (Jordan, 2026-11-25). `install` and the per-version probe start agy outside the sandbox. There is no carve-out in `~/.gemini/config`, and a run that meets a first start fails closed (2C.4, 2E.2).
 9. **A run can't write agy's `builtin/` skills and plugins** (Jordan, 2026-11-25). They reach every later agy session, and they are vendor content outside review (2A, `profile.AGENT_DATA_REDENY`).
 10. **`bin/agentapi` is verified and restored around each agy run** (Jordan, 2026-11-25). agy needs to write it. A change is restored and reported; a failed restore skips the run (2C.4).
+11. **Real runs are blocked on the 7.2 isolation design** (Jordan, 2026-11-25). A run's shell child gets a token that still reaches agy's conversation methods and other conversations' transcripts (findings §7.2). It is still open whether a conversation started that way runs its tool calls through the hook. So no agy run that calls a real model happens (2E.3, 2H, 2K, any scheduled slot) until Jordan OKs a design that stops a run's shell commands from reaching agy's API.
+    - Candidates: a per-run `HOME` with no owner conversations; the sandbox denying shell children the language server's port or socket; an agy option that keeps the token out of children's environment.
+    - Building and testing against the fake endpoint goes on. The text-matching deny from 2A stays on either way.
