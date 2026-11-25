@@ -28,7 +28,8 @@ HOOKS = {
     "shared-read-record": "scout.hooks.shared_read_record",
 }
 
-# Hooks with no fallback in hooks.json: an import failure here must deny, not exit 1 (which allows).
+# Hooks whose import failure must deny, not exit 1 (which Claude Code lets through). hooks/prefilter.sh
+# and the hooks.json entry also block when this process exits non-zero; this deny names the cause.
 FAIL_CLOSED = frozenset({"mcp-tool-gate"})
 
 
@@ -48,8 +49,10 @@ def main(argv: list[str]) -> int:
 def _deny_mcp_call(exc: Exception) -> int:
     """The gate's module could not be imported: deny the MCP call, as the gate itself does on an error.
 
-    hooks.json execs this hook with no shell fallback, and Claude Code lets a call through when its
-    hook exits 1, so a traceback here would lift every ``restrict_tools`` restriction. As in
+    Claude Code lets a call through when its hook exits 1, so a traceback here would lift every
+    ``restrict_tools`` restriction. The shell stage blocks such an exit too (``mcp_gate`` in
+    hooks/prefilter.sh, by the same vault rule), for the failures this code never sees (no interpreter,
+    a crash at startup); this deny is the one that can name the exception. As in
     ``mcp_tool_gate.run``, a payload that is not an MCP tool call is left alone, and so is a session
     in no vault: hooks.json is plugin-wide, and a broken engine must not block MCP everywhere.
     """
