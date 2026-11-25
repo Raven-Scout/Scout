@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>297 logged mistakes, classified — Scout</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Scout logged 297 of its own mistakes over seven and a half months of unattended runs. Every entry was classified against a fixed rubric. Who catches the mistakes changed, prevention is unproven, and a third of fixes didn't hold.">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#f3f4f1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1112" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="article">
+<meta property="og:title" content="297 logged mistakes from an unattended Claude Code agent, classified">
+<meta property="og:description" content="Who catches the mistakes changed. Prevention is unproven. A third of fixes didn't hold. The data from seven and a half months of Scout's own mistake log.">
+<meta property="og:url" content="https://raven-scout.github.io/Scout/writing/mistake-log-analysis.html">
+<meta property="og:image" content="https://raven-scout.github.io/Scout/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Scout: your work, as files you own.">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="canonical" href="https://raven-scout.github.io/Scout/writing/mistake-log-analysis.html">
+<link rel="icon" type="image/svg+xml" href="../assets/scout-icon.svg">
+<link rel="preload" href="../assets/fonts/geist.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../fonts.css">
+<link rel="stylesheet" href="../site.css">
+<script>
+  try { var t = localStorage.getItem('scout-theme'); if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t); } catch (e) {}
+</script>
+<script src="../site.js" defer></script>
+<script src="../analytics.js" defer></script>
+<style>
+  /* Page-local styles for the article and its charts. Kept here, not in site.css,
+     so this page doesn't collide with other work on the shared stylesheet.
+     Chart series colours were checked with a CVD validator in both themes:
+     "me" = rust, "the agent" = blue, "unclear" = neutral grey (always labelled). */
+  :root { --s-me: #a3431a; --s-agent: #2563a6; --s-unclear: var(--line-2); --s-one: var(--acc); }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --s-me: #c96f3f; --s-agent: #4f92d6; }
+  }
+  :root[data-theme="dark"] { --s-me: #c96f3f; --s-agent: #4f92d6; }
+
+  .article .doc { max-width: 740px; }
+  .article .kicker { font: 500 12.5px/1.4 var(--mono); letter-spacing: .04em; text-transform: uppercase; color: var(--acc-ink); margin: 0 0 14px; }
+  .article .dek { font-size: 20px; line-height: 1.55; color: var(--ink-2); margin: 16px 0 10px; }
+  .article .byline { font-family: var(--mono); font-size: 13px; color: var(--ink-3); margin: 0 0 34px; }
+  .article h2 { font-size: 24px; margin: 52px 0 14px; letter-spacing: -.01em; }
+  .article h2 .n { font-family: var(--mono); font-size: 14px; font-weight: 500; color: var(--ink-3); margin-right: 10px; }
+  .article .lead ol { margin: 0 0 16px; padding-left: 22px; }
+  .article .lead li { font-size: 17px; color: var(--ink); }
+  .article blockquote { margin: 0 0 16px; padding: 2px 0 2px 18px; border-left: 3px solid var(--line-2); color: var(--ink-2); }
+  .article hr { border: 0; border-top: 1px solid var(--line); margin: 44px 0; }
+  .article .note { font-size: 15px; line-height: 1.6; color: var(--ink-3); }
+  .article code { font-family: var(--mono); font-size: .88em; background: var(--sunk); border-radius: 5px; padding: 1px 5px; }
+
+  /* Tables */
+  .article .tbl-wrap { overflow-x: auto; margin: 0 0 18px; }
+  .article table { width: 100%; border-collapse: collapse; font-size: 15.5px; line-height: 1.45; }
+  .article th, .article td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; color: var(--ink-2); }
+  .article th { font-size: 12.5px; font-family: var(--mono); font-weight: 500; color: var(--ink-3); text-transform: uppercase; letter-spacing: .03em; }
+  .article td.num, .article th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .article td b { color: var(--ink); }
+
+  /* Figures: numbered like the home page's ("fig. 01"). */
+  .fig { margin: 26px 0 30px; padding: 20px 20px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); counter-increment: fig; }
+  .fig h3 { margin: 0 0 4px !important; font-size: 16px !important; }
+  .fig .sub { margin: 0 0 16px; font-size: 14px; line-height: 1.5; color: var(--ink-3); }
+  .fig figcaption { margin-top: 14px; font: 400 12.5px/1.5 var(--mono); color: var(--ink-3); display: flex; gap: 10px; align-items: baseline; }
+  .fig figcaption::before { content: "fig. " counter(fig, decimal-leading-zero); color: var(--ink); font-weight: 500; flex: none; }
+
+  /* Bar rows: label | bar | value. Bars are 14px, 4px rounded data-end, square at the baseline. */
+  .bars { display: grid; gap: 9px; }
+  .bar-row { display: grid; grid-template-columns: minmax(9rem, 13rem) 1fr 5.4rem; gap: 12px; align-items: center; }
+  .bar-row .lab { font-size: 14.5px; color: var(--ink-2); line-height: 1.3; }
+  .bar-row .val { font: 500 13.5px/1 var(--mono); color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .bar-row .val small { display: block; margin-top: 3px; font-size: 11.5px; font-weight: 400; color: var(--ink-3); }
+  .track { height: 14px; border-radius: 0 4px 4px 0; background: var(--surface); display: flex; gap: 2px; overflow: hidden; }
+  .bseg { height: 100%; min-width: 0; }
+  .bseg:last-child { border-radius: 0 4px 4px 0; }
+  .bseg.one { background: var(--s-one); border-radius: 0 4px 4px 0; }
+  .bseg.me { background: var(--s-me); }
+  .bseg.agent { background: var(--s-agent); }
+  .bseg.unclear { background: var(--s-unclear); }
+  .bseg:hover { filter: brightness(1.12); }
+  .track.plain { background: transparent; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 0 14px; font-size: 13.5px; color: var(--ink-2); }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+  .legend i.me { background: var(--s-me); } .legend i.agent { background: var(--s-agent); } .legend i.unclear { background: var(--s-unclear); }
+
+  /* Small-multiple grid for the root-cause mix by period */
+  .mix { display: grid; grid-template-columns: minmax(8rem, 11rem) repeat(4, 1fr); gap: 8px 10px; align-items: end; font-size: 14px; }
+  .mix .h { font: 500 12px/1.3 var(--mono); color: var(--ink-3); text-transform: uppercase; letter-spacing: .03em; }
+  .mix .h small { display: block; text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .mix .lab { color: var(--ink-2); align-self: center; line-height: 1.3; }
+  .mix .cell { display: grid; gap: 4px; }
+  .mix .cell b { font: 500 13px/1 var(--mono); color: var(--ink); font-weight: 500; }
+  .mix .cell .track { height: 10px; background: var(--sunk); }
+
+  .pull { font-size: 19px !important; line-height: 1.55 !important; color: var(--ink) !important; border-left: 3px solid var(--acc); padding-left: 16px; margin: 24px 0 !important; }
+
+  @media (max-width: 600px) {
+    .bar-row { grid-template-columns: 1fr 5.4rem; gap: 4px 10px; }
+    .bar-row .lab { grid-column: 1 / -1; }
+    .fig { padding: 16px 14px 12px; }
+    .mix { grid-template-columns: 6.4rem repeat(4, 1fr); gap: 8px 6px; font-size: 13px; }
+    .article .dek { font-size: 18px; }
+  }
+</style>
+</head>
+<body class="legal article">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+  <div class="wrap">
+    <a class="brand" href="../" aria-label="Scout home"><img src="../assets/scout-icon.svg" alt="" width="28" height="28">Scout</a>
+    <nav class="nav" aria-label="Site">
+      <a href="../">Home</a>
+      <a href="mistake-log-analysis.html" aria-current="page">Mistake log</a>
+      <a href="../privacy.html">Privacy</a>
+    </nav>
+    <a class="icon-btn" href="https://github.com/Raven-Scout/Scout" aria-label="Scout on GitHub">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.04-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.56-.29-5.25-1.28-5.25-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.7 5.39-5.27 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
+    </a>
+    <button class="icon-btn theme-btn" type="button" id="theme-btn" aria-label="Switch to dark theme">
+      <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6"/></svg>
+      <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.6A8.2 8.2 0 0 1 9.4 4a8.2 8.2 0 1 0 10.6 10.6Z"/></svg>
+    </button>
+  </div>
+</header>
+
+<main id="main"><div class="wrap"><article class="doc">
+  <p class="kicker">Field notes · Data through 22 November 2026</p>
+  <h1>297 logged mistakes from an unattended agent, classified</h1>
+  <p class="dek">Scout has run on its own, on my Mac, since April. Every mistake it was caught making got a numbered write-up. I classified all of them. Who catches the mistakes changed a lot. Whether there are fewer of them, I can't tell you. And a third of the fixes didn't hold.</p>
+  <p class="byline">Raven Scout · the developer of Scout · November 2026</p>
+
+  <div class="lead">
+    <h2 style="margin-top:26px">The short version</h2>
+    <ol>
+      <li><b>Making things up was a minority cause.</b> About a fifth of the mistakes (22%) were the model inventing or over-reading something. The biggest cause (36%) was the instructions: a rule that was missing, wrong, or there and not followed.</li>
+      <li><b>Who catches the mistakes is what changed.</b> In April I caught 91% of them myself. By October the agent's own review runs caught 83%.</li>
+      <li><b>That is not the same as making fewer mistakes.</b> I have no clean way to count those, and the share of entries that repeat an earlier one stayed flat at about one in ten.</li>
+      <li><b>A third of fixes didn't hold.</b> 109 entries had a fix shipped; 39 of them (36%) happened again afterwards.</li>
+      <li><b>As the system grew, the failures moved into my own code.</b> In October and November, 44% of entries were bugs in Scout's scripts, not in the model's thinking.</li>
+      <li><b>The worst failures were silent.</b> The most expensive ones were the system reporting success while doing nothing.</li>
+    </ol>
+  </div>
+
+  <h2><span class="n">01</span>What Scout is, and why I'm publishing this</h2>
+  <p><a href="../">Scout</a> is a plugin for <a href="https://claude.com/claude-code">Claude Code</a> that runs unattended on a schedule. On a weekday it starts five sessions between morning and evening. Each one reads my Slack, email, calendar, Linear, GitHub and meeting notes, and updates two things in a git repository on my Mac: a daily action list, and a Markdown knowledge base about my work. In the evening, separate sessions (I call them <i>dreaming</i>) go back over the day's output looking for mistakes. Research sessions, overnight and mid-afternoon, read outward. Nobody watches any of this live. I read the list and the briefing it sends me, and I reply when something is wrong.</p>
+  <p>That makes the mistake log the most honest thing the project has. A demo shows the good days. The log shows every day something went wrong badly enough that someone wrote it down. If you're deciding whether to trust an agent like this with your work, or building one, the log is the thing worth reading, so here it is, with the parts that don't flatter the project kept in.</p>
+
+  <h2><span class="n">02</span>How the log works</h2>
+  <p>When a mistake is caught, the session that catches it writes an entry. Each entry gets a number and records what happened, the root cause as the agent sees it, what was changed to fix it (if anything), and a status. A mistake is caught in one of two ways:</p>
+  <ul>
+    <li><b>I catch it.</b> I reply to a briefing in Slack, leave a comment next to an item in the app, or say so in a working session.</li>
+    <li><b>The agent catches it.</b> A dreaming or consolidation run, a check script, a test, or a session that notices it on its own while doing something else.</li>
+  </ul>
+  <p>Three things about the log matter for reading the numbers.</p>
+  <p><b>An entry is a failure mode, not a single slip.</b> One entry can cover several occurrences of the same thing: the entries that state a count add up to 489 occurrences across 287 entries. When the same failure comes back, it's often recorded as a new instance inside the existing entry; sometimes it gets a new number that names the older one.</p>
+  <p><b>It is not a census.</b> An entry exists when someone thought a failure was worth writing up. Small slips that got fixed in place often didn't get one. How thorough the logging was also changed over time, which comes up again below.</p>
+  <p><b>The agent writes the entries.</b> Including the root-cause diagnosis. That's the biggest single bias in this dataset, and I come back to it in the caveats.</p>
+  <p>The data here covers every entry from the first, on 10 April 2026, to the last one logged before I pulled the data, on 22 November 2026. That's 297 entries: 291 numbered ones (numbers run to 294, with three missing from the sequence) and 6 unnumbered drafts.</p>
+
+  <h2><span class="n">03</span>How I classified it, and how I checked</h2>
+  <p>I wrote a fixed rubric and had Claude read every entry against it, one entry at a time, reading the full write-up rather than the title. The rubric's instruction for every field was the same: when the entry doesn't say, answer <i>unclear</i>, because this would back public claims and a careful "unclear" beats a confident guess. The fields that matter here:</p>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>Field</th><th>What it records</th></tr></thead>
+    <tbody>
+      <tr><td><b>Root cause</b></td><td>One of six layers, taken from where the entry itself says the cause lay or where the fix had to go (defined in the next section).</td></tr>
+      <tr><td><b>Caught by</b></td><td><i>Me</i> (I noticed or complained), <i>the agent</i> (a run, check or test found it), or <i>unclear</i>.</td></tr>
+      <tr><td><b>Reached me</b></td><td>Whether the wrong output actually landed in front of me (in a briefing, the daily list, a draft) before it was caught.</td></tr>
+      <tr><td><b>Propagated</b></td><td>Whether the error was copied into other files or carried forward into later runs.</td></tr>
+      <tr><td><b>Repeat</b></td><td>Whether the entry says it's a recurrence of an earlier, differently numbered entry.</td></tr>
+      <tr><td><b>Fix kind</b></td><td>What was actually shipped: a <i>rule</i> (instruction text the runs load), <i>code</i> (a script, check, test or app change), <i>both</i>, or <i>none</i>.</td></tr>
+      <tr><td><b>Recurred after fix</b></td><td>Whether the entry documents the same failure happening again after its fix had shipped.</td></tr>
+      <tr><td><b>Thin evidence</b></td><td>Whether the entry was too vague to classify without guessing.</td></tr>
+    </tbody>
+  </table></div>
+  <p>The first pass covered the 292 entries logged up to 19 November. I classified the five entries logged after that with the same rubric before writing this, and corrected one older entry whose status had changed (it was reopened as a regression the same morning the first pass ran).</p>
+  <p><b>The check.</b> I drew a random sample of 21 entries (three from each month with more than 20 entries, one from each smaller month, and the one entry the first pass couldn't date) and had a separate session classify them blind: same rubric, same sources, no access to the first pass's answers. Then I compared field by field.</p>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>Field</th><th class="num">Agreed</th><th>Where they differed</th></tr></thead>
+    <tbody>
+      <tr><td>Repeat</td><td class="num">21 / 21</td><td></td></tr>
+      <tr><td>Recurred after fix</td><td class="num">21 / 21</td><td></td></tr>
+      <tr><td>Caught by</td><td class="num">20 / 21</td><td>The entry below.</td></tr>
+      <tr><td>Propagated</td><td class="num">20 / 21</td><td>Judgment call on one entry.</td></tr>
+      <tr><td>Root cause</td><td class="num">19 / 21</td><td>Two judgment calls: a config-file bug read as a tool quirk vs a model slip, and a stale channel list read as accumulation vs instructions.</td></tr>
+      <tr><td>Reached me</td><td class="num">19 / 21</td><td>Both were <i>unclear</i> vs <i>no</i>.</td></tr>
+      <tr><td>Status</td><td class="num">18 / 21</td><td>The entry below, plus two read as fixed or partly fixed by one pass and unclear or open by the other.</td></tr>
+      <tr><td>Fix kind</td><td class="num">17 / 21</td><td>Mostly <i>none</i> vs <i>unclear</i> for a lesson written down but not clearly shipped.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Overall the two passes agreed on 175 of 189 fields (93%). Five of the 14 differences came from one entry whose write-up lives inside another entry's file. The first pass couldn't find it and marked it thin; the blind pass found it. I took the blind pass's answer for that entry. For the other disagreements I kept the first pass, so the numbers below carry roughly that much noise. Root cause agreed 19 times out of 21, which is good enough for the shares below but not for decimals, so treat ±5 points as the honest precision.</p>
+
+  <h2><span class="n">04</span>Making things up was the minority</h2>
+  <figure class="fig" aria-labelledby="f1t">
+    <h3 id="f1t">Root cause of each logged mistake</h3>
+    <p class="sub">All 297 entries, one cause each, as the entry diagnoses it.</p>
+    <div class="bars">
+      <div class="bar-row"><span class="lab">Instructions</span><span class="track plain" aria-hidden="true"><span class="bseg one" style="width:36%" title="Instructions: 107 entries (36%)"></span></span><span class="val">36%<small>107</small></span></div>
+      <div class="bar-row"><span class="lab">My own code</span><span class="track plain" aria-hidden="true"><span class="bseg one" style="width:22%" title="My own code: 65 entries (22%)"></span></span><span class="val">22%<small>65</small></span></div>
+      <div class="bar-row"><span class="lab">Model judgment</span><span class="track plain" aria-hidden="true"><span class="bseg one" style="width:22%" title="Model judgment: 64 entries (22%)"></span></span><span class="val">22%<small>64</small></span></div>
+      <div class="bar-row"><span class="lab">Reasoning from absence</span><span class="track plain" aria-hidden="true"><span class="bseg one" style="width:9%" title="Reasoning from absence: 28 entries (9%)"></span></span><span class="val">9%<small>28</small></span></div>
+      <div class="bar-row"><span class="lab">Tool or API surprises</span><span class="track plain" aria-hidden="true"><span class="bseg one" style="width:5%" title="Tool or API surprises: 16 entries (5%)"></span></span><span class="val">5%<small>16</small></span></div>
+      <div class="bar-row"><span class="lab">Accumulation</span><span class="track plain" aria-hidden="true"><span class="bseg one" style="width:5%" title="Accumulation: 16 entries (5%)"></span></span><span class="val">5%<small>16</small></span></div>
+    </div>
+    <figcaption>One entry fits none of the six and isn't shown. Percentages are of 297 and rounded.</figcaption>
+  </figure>
+  <p>If you'd asked me in April, I'd have said hallucination would dominate. It's a fifth. Four in five mistakes were somewhere else: in the prompt, in my code, or in the agent treating "I didn't find it" as "it isn't there." Here's what each category means, with real examples. All of them are paraphrased and stripped of names.</p>
+
+  <h3>Instructions (107)</h3>
+  <p>The rules the runs follow were missing, wrong, contradictory, stale, or present and not applied. A rule that existed and was ignored counts here, and so does a rule that itself produced the bad output.</p>
+  <ul>
+    <li>The prompt asked for "full context" on every item. So 81% of my open items started with backstory instead of the thing I had to do, and one told me to do something its own travel note said I couldn't. I left four annoyed comments in one sitting.</li>
+    <li>A logging step marked mandatory was skipped by eight runs in a row. Nothing checked it, so the rule only worked on the honor system.</li>
+    <li>A morning item told me to reply to someone and pointed me at a prep doc that held the questions. The fix was a rule: a reply item comes with the drafted reply. It went into the morning session's instructions only, and the evening session made the same mistake the next day.</li>
+  </ul>
+
+  <h3>My own code (65)</h3>
+  <p>Bugs in Scout's scripts, parsers, schedulers, locks, exit codes and app, the plumbing I wrote around the model.</p>
+  <ul>
+    <li>A commit with a misleading title rewrote the run scripts and dropped one environment variable. Logging of every connector call stopped for 17 days.</li>
+    <li>The retry logic had a hand-written list of "this error is temporary" phrases. It didn't include the exact wording of the session-limit message, so about a dozen scheduled runs died instead of retrying.</li>
+    <li>A health report decided a run had "produced nothing" from its exit code, ignoring a field that showed it had committed work. It reported 11 dead runs. Two were.</li>
+  </ul>
+
+  <h3>Model judgment (64)</h3>
+  <p>The model inferred, assumed or asserted something the sources didn't support: invented facts, guessed names or dates, over-confident claims, misread messages, wrong priority calls.</p>
+  <ul>
+    <li>A research run invented a mandatory company town hall on a specific date. The claim spread to two other files before a later run caught it.</li>
+    <li>For 51 days the daily list said I'd bought a piece of hardware. The evidence was a vendor's sales autoresponder, plus a second mail from the same vendor counted as an independent source. Reading the thread once would have killed it.</li>
+    <li>A summary of a text conversation gave my own trip to the other person, then built a second false claim on top of it. It sat in the knowledge base for nine months.</li>
+  </ul>
+
+  <h3>Reasoning from absence (28)</h3>
+  <p>Concluding that something did <i>not</i> happen from an empty or partial read: "no reply," "quiet day," "not done yet."</p>
+  <ul>
+    <li>A briefing told me I'd had zero Slack messages that day and guessed I'd been coding late. I'd spent 90 minutes in Slack on a production incident. The search filter it used excludes the current day.</li>
+    <li>A run checked Linear while another agent was still filing five issues, saw two, and put a red item on my list telling me to file the three that already existed.</li>
+    <li>In one morning I corrected four items that were all wrong the same way: the answer was in a thread reply, or in a correction posted a few minutes later, and the runs only read the channel's top level.</li>
+  </ul>
+
+  <h3>Tool or API surprises (16)</h3>
+  <p>A connector behaved in a way the agent didn't expect: search semantics, pagination, a parameter silently dropped, auth.</p>
+  <ul>
+    <li>Questions that needed my answer were sent as a Slack DM from me to myself, which Slack doesn't notify on. I never saw them.</li>
+    <li>The default Slack read format leaves out reactions. I'd answered a colleague's question with a checkmark, and the list kept the question urgent as "no reply" for five days.</li>
+    <li>Slack search included Scout's own messages by default, so every search term Scout had mentioned in a DM came back as a hit.</li>
+  </ul>
+
+  <h3>Accumulation (16)</h3>
+  <p>Things that grow or go stale without anyone deciding they should: lists that only grow, facts carried forward day after day, rules that outlive their reason.</p>
+  <ul>
+    <li>Every rule about volume pushed items into a "watching" tier with no cap. Open items went from 289 to 738 in 25 days. At one point the "today's focus" section held about 458 entries, and I told a session the file was unusable.</li>
+    <li>A line saying a pet's medication reminder was "muted, not surfaced today" was correct on day one, then copied word for word into four more daily files. The reminder never showed.</li>
+    <li>Two colleagues' notes still described them in roles they'd left weeks earlier. The runs had updated a status field but not the opening paragraph, which is the part I read.</li>
+  </ul>
+
+  <h2><span class="n">05</span>Who catches the mistakes is what changed</h2>
+  <figure class="fig" aria-labelledby="f2t">
+    <h3 id="f2t">Who caught each mistake, by the month it was caught</h3>
+    <p class="sub">Share of that month's entries. The number under each month is how many entries it has.</p>
+    <div class="legend" aria-hidden="true"><span><i class="me"></i>Me</span><span><i class="agent"></i>The agent's own runs</span><span><i class="unclear"></i>Unclear</span></div>
+    <div class="bars">
+      <div class="bar-row"><span class="lab">April <small style="color:var(--ink-3)">· 57</small></span><span class="track" aria-hidden="true"><span class="bseg me" style="width:91%" title="April: me 91%"></span><span class="bseg agent" style="width:2%" title="April: the agent 2%"></span><span class="bseg unclear" style="width:7%" title="April: unclear 7%"></span></span><span class="val">91% me</span></div>
+      <div class="bar-row"><span class="lab">May <small style="color:var(--ink-3)">· 24</small></span><span class="track" aria-hidden="true"><span class="bseg me" style="width:92%" title="May: me 92%"></span><span class="bseg agent" style="width:8%" title="May: the agent 8%"></span></span><span class="val">92% me</span></div>
+      <div class="bar-row"><span class="lab">June <small style="color:var(--ink-3)">· 27</small></span><span class="track" aria-hidden="true"><span class="bseg me" style="width:85%" title="June: me 85%"></span><span class="bseg agent" style="width:11%" title="June: the agent 11%"></span><span class="bseg unclear" style="width:4%" title="June: unclear 4%"></span></span><span class="val">85% me</span></div>
+      <div class="bar-row"><span class="lab">July <small style="color:var(--ink-3)">· 5</small></span><span class="track" aria-hidden="true"><span class="bseg me" style="width:60%" title="July: me 60% (3 of 5)"></span><span class="bseg agent" style="width:40%" title="July: the agent 40% (2 of 5)"></span></span><span class="val">60% me</span></div>
+      <div class="bar-row"><span class="lab">August <small style="color:var(--ink-3)">· 61</small></span><span class="track" aria-hidden="true"><span class="bseg me" style="width:23%" title="August: me 23%"></span><span class="bseg agent" style="width:66%" title="August: the agent 66%"></span><span class="bseg unclear" style="width:11%" title="August: unclear 11%"></span></span><span class="val">66% agent</span></div>
+      <div class="bar-row"><span class="lab">September <small style="color:var(--ink-3)">· 64</small></span><span class="track" aria-hidden="true"><span class="bseg me" style="width:16%" title="September: me 16%"></span><span class="bseg agent" style="width:78%" title="September: the agent 78%"></span><span class="bseg unclear" style="width:6%" title="September: unclear 6%"></span></span><span class="val">78% agent</span></div>
+      <div class="bar-row"><span class="lab">October <small style="color:var(--ink-3)">· 46</small></span><span class="track" aria-hidden="true"><span class="bseg me" style="width:11%" title="October: me 11%"></span><span class="bseg agent" style="width:83%" title="October: the agent 83%"></span><span class="bseg unclear" style="width:7%" title="October: unclear 7%"></span></span><span class="val">83% agent</span></div>
+      <div class="bar-row"><span class="lab">November <small style="color:var(--ink-3)">· 13</small></span><span class="track" aria-hidden="true"><span class="bseg me" style="width:69%" title="November: me 69% (9 of 13)"></span><span class="bseg agent" style="width:31%" title="November: the agent 31% (4 of 13)"></span></span><span class="val">69% me</span></div>
+    </div>
+    <figcaption>November covers the 1st to the 22nd. July is small for a reason explained below.</figcaption>
+  </figure>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th></th><th class="num">Apr</th><th class="num">Jun</th><th class="num">Aug</th><th class="num">Oct</th><th class="num">Nov</th></tr></thead>
+    <tbody>
+      <tr><td>Caught by me</td><td class="num">91%</td><td class="num">85%</td><td class="num">23%</td><td class="num">11%</td><td class="num">69%</td></tr>
+      <tr><td>Caught by the agent's runs</td><td class="num">2%</td><td class="num">11%</td><td class="num">66%</td><td class="num">83%</td><td class="num">31%</td></tr>
+      <tr><td>Reached me before it was caught</td><td class="num">98%</td><td class="num">89%</td><td class="num">70%</td><td class="num">35%</td><td class="num">77%</td></tr>
+    </tbody>
+  </table></div>
+  <p>In April essentially every mistake landed in front of me first, and I was the one who noticed. By October most were caught by the agent's own review runs, and only about a third had reached me by the time they were caught. That's the number I'm proudest of, and it's real. It also needs three qualifications.</p>
+  <p><b>The agent's runs and I don't catch the same kinds of mistakes.</b> The review runs are much better at catching bugs in the plumbing than mistakes in what the list says. Split the entries into code and tool problems on one side and everything else on the other, and the agent's share of catches in October and November is 87% for the first group but 55% for the second. The shift is real for content mistakes too (from 3% in April and May to 55%), but some of the headline comes from the review runs finding a kind of bug I'd never have seen.</p>
+  <p><b>"Caught by the agent" doesn't mean "caught before me."</b> Of the 140 entries the agent caught, 60 had already reached me in a briefing or the list by the time it noticed. Only 40 were clearly caught before they reached me. The other 40 don't say.</p>
+  <p><b>November went the other way.</b> I caught 9 of the 13 entries logged so far this month. Thirteen entries are too few to call a trend. But the direction is wrong, and seven of the nine are the content mistakes the review runs have always been weaker at.</p>
+  <p class="pull">What I can't claim is that it makes fewer mistakes. Better catching, unproven prevention.</p>
+  <p>I don't have a clean denominator: no count of all the items, notes and messages the agent produced, against which to measure an error rate. Logging also got more thorough over time, so the raw count of entries says as much about the logging as about the mistakes. The one prevention signal I do have is flat. The share of entries that say they repeat an earlier entry was 9% in April, 8% in August, 13% in October and 15% in November (10% over the whole log). That's not what "learning from its mistakes" would look like.</p>
+
+  <h2><span class="n">06</span>A third of fixes didn't hold</h2>
+  <p>Of the 297 entries, 109 had a fix actually shipped: a rule, code, or both. For 39 of them (36%) the entry later records the same failure happening again after the fix.</p>
+  <figure class="fig" aria-labelledby="f3t">
+    <h3 id="f3t">Share of shipped fixes the failure came back after</h3>
+    <p class="sub">By what kind of fix was shipped.</p>
+    <div class="bars">
+      <div class="bar-row"><span class="lab">Rule only <small style="color:var(--ink-3)">· 35 fixes</small></span><span class="track plain" aria-hidden="true"><span class="bseg one" style="width:31%" title="Rule only: 11 of 35 recurred (31%)"></span></span><span class="val">31%<small>11 of 35</small></span></div>
+      <div class="bar-row"><span class="lab">Code only <small style="color:var(--ink-3)">· 51 fixes</small></span><span class="track plain" aria-hidden="true"><span class="bseg one" style="width:29%" title="Code only: 15 of 51 recurred (29%)"></span></span><span class="val">29%<small>15 of 51</small></span></div>
+      <div class="bar-row"><span class="lab">Both <small style="color:var(--ink-3)">· 23 fixes</small></span><span class="track plain" aria-hidden="true"><span class="bseg one" style="width:57%" title="Both: 13 of 23 recurred (57%)"></span></span><span class="val">57%<small>13 of 23</small></span></div>
+    </div>
+    <figcaption>"Rule" = instruction text the runs load. "Code" = a script, check, test or app change.</figcaption>
+  </figure>
+  <p>I expected "put it in code, not in the prompt" to be the clear winner. In this data it isn't: rule fixes came back 31% of the time and code fixes 29%. Fixes that needed both came back 57% of the time, probably because those were the stubborn problems to begin with, which is why they got both.</p>
+  <p>The comparison is also skewed, in a way that flatters code. The middle code fix shipped on 10 October; the middle rule fix on 14 June. Code fixes have had four fewer months to fail. You can see how much time matters by grouping fixes by when the mistake was first logged:</p>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>Mistake first logged</th><th class="num">Fixes shipped</th><th class="num">Came back</th><th class="num">Share</th></tr></thead>
+    <tbody>
+      <tr><td>April–May</td><td class="num">16</td><td class="num">10</td><td class="num"><b>62%</b></td></tr>
+      <tr><td>June–July</td><td class="num">14</td><td class="num">4</td><td class="num">29%</td></tr>
+      <tr><td>August–September</td><td class="num">34</td><td class="num">12</td><td class="num">35%</td></tr>
+      <tr><td>October–November</td><td class="num">45</td><td class="num">13</td><td class="num">29%</td></tr>
+    </tbody>
+  </table></div>
+  <p>The spring fixes, the ones with the most time to fail, came back nearly two times in three. So 36% is probably a floor, not a settled rate: the recent fixes haven't had their chance yet. If I compare only fixes shipped before October, rules came back 36% of the time (10 of 28) and code 30% (6 of 20). That's a small edge for code, on small numbers, and still not the clear win I expected.</p>
+
+  <h2><span class="n">07</span>As the system grew, the failures moved into my code</h2>
+  <figure class="fig" aria-labelledby="f4t">
+    <h3 id="f4t">Root-cause mix, by when the mistake was caught</h3>
+    <p class="sub">Each column is one period's entries; each cell is that cause's share of them.</p>
+    <div class="mix">
+      <span class="h"></span><span class="h">Apr–May<small>81</small></span><span class="h">Jun–Jul<small>32</small></span><span class="h">Aug–Sep<small>125</small></span><span class="h">Oct–Nov<small>59</small></span>
+      <span class="lab">Instructions</span>
+      <span class="cell"><b>53%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:53%" title="Instructions, Apr–May: 43 of 81"></span></span></span>
+      <span class="cell"><b>47%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:47%" title="Instructions, Jun–Jul: 15 of 32"></span></span></span>
+      <span class="cell"><b>27%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:27%" title="Instructions, Aug–Sep: 34 of 125"></span></span></span>
+      <span class="cell"><b>25%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:25%" title="Instructions, Oct–Nov: 15 of 59"></span></span></span>
+      <span class="lab">Model judgment</span>
+      <span class="cell"><b>27%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:27%" title="Model judgment, Apr–May: 22 of 81"></span></span></span>
+      <span class="cell"><b>28%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:28%" title="Model judgment, Jun–Jul: 9 of 32"></span></span></span>
+      <span class="cell"><b>23%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:23%" title="Model judgment, Aug–Sep: 29 of 125"></span></span></span>
+      <span class="cell"><b>7%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:7%" title="Model judgment, Oct–Nov: 4 of 59"></span></span></span>
+      <span class="lab">My own code</span>
+      <span class="cell"><b>10%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:10%" title="My own code, Apr–May: 8 of 81"></span></span></span>
+      <span class="cell"><b>12%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:12%" title="My own code, Jun–Jul: 4 of 32"></span></span></span>
+      <span class="cell"><b>22%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:22%" title="My own code, Aug–Sep: 27 of 125"></span></span></span>
+      <span class="cell"><b>44%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:44%" title="My own code, Oct–Nov: 26 of 59"></span></span></span>
+      <span class="lab">Reasoning from absence</span>
+      <span class="cell"><b>4%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:4%" title="Reasoning from absence, Apr–May: 3 of 81"></span></span></span>
+      <span class="cell"><b>9%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:9%" title="Reasoning from absence, Jun–Jul: 3 of 32"></span></span></span>
+      <span class="cell"><b>14%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:14%" title="Reasoning from absence, Aug–Sep: 18 of 125"></span></span></span>
+      <span class="cell"><b>7%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:7%" title="Reasoning from absence, Oct–Nov: 4 of 59"></span></span></span>
+      <span class="lab">Tools + accumulation</span>
+      <span class="cell"><b>6%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:6%" title="Tools and accumulation, Apr–May: 5 of 81"></span></span></span>
+      <span class="cell"><b>3%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:3%" title="Tools and accumulation, Jun–Jul: 1 of 32"></span></span></span>
+      <span class="cell"><b>13%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:13%" title="Tools and accumulation, Aug–Sep: 16 of 125"></span></span></span>
+      <span class="cell"><b>17%</b><span class="track" aria-hidden="true"><span class="bseg one" style="width:17%" title="Tools and accumulation, Oct–Nov: 10 of 59"></span></span></span>
+    </div>
+    <figcaption>Aug–Sep also has one entry that fits no category. Columns may not sum to 100% from rounding.</figcaption>
+  </figure>
+  <p>In the spring the top causes were the instructions and the model's judgment. By October and November, my own code was the biggest category: 26 of 59 entries. The pattern behind it is uncomfortable but simple. From September on, most of the fixes I shipped were code: a script that verifies a claim, a guard that blocks a bad write, a test. 61 of the 74 fixes that included code came in those three months. Every one of those is a new place for a code mistake. Several entries are literally a check that reported "all clear" while missing the thing it was built to catch.</p>
+  <p>The collapse of "model judgment" from 27% to 7% is tempting to read as the model getting better. Some of it may be. But the data can't show it, because who was catching mistakes changed in the same months. Model-judgment mistakes are the ones I used to catch by reading the list, and the review runs are weaker at catching them. A drop in that category in the same months I stopped catching most things myself is at least partly a drop in detection.</p>
+
+  <h2><span class="n">08</span>The worst failures were the silent ones</h2>
+  <p>None of the failures that cost the most were the model saying something false. They were the system reporting success while doing nothing.</p>
+  <ul>
+    <li><b>An expired login failed all 21 scheduled runs over three days.</b> Every run died at the authentication step, nothing alerted me, and the daily list I was reading was a stale copy that kept showing a finished task as overdue.</li>
+    <li><b>The evening self-review lane produced nothing for 64 days.</b> Its "last fired" timestamp kept updating the whole time, even on runs that died within seconds, so it looked alive. The lane that processes my feedback and turns this log into fixes was the one that was dead.</li>
+    <li><b>A leftover git lock blocked every commit for three days.</b> Runs exited cleanly and sent me summaries of work that was never saved.</li>
+    <li><b>Connector logging was off for 17 days</b> because a commit removed one environment variable, and nothing noticed the logs had stopped.</li>
+    <li><b>A comment I typed in the app never reached the repository</b>, and that night's briefing told me there was no new feedback.</li>
+    <li><b>A validator printed its errors and then exited with the "success" code</b>, so the health check showed clean. After it was fixed, a plugin upgrade quietly reverted the fix.</li>
+  </ul>
+  <p>The common thread is that every check asked "did this run exit cleanly?" or "did this tool call work?" None asked "did this capability produce anything this week?" A run can start, read everything, write files, send its summary, exit 0, and still have saved nothing.</p>
+  <p>The most expensive model-judgment mistake is the 51-day hardware purchase above. It's worth putting next to the silent failures, because it failed the same way: nothing checked the claim after the first day, so it was carried forward as true every morning until I asked about it.</p>
+  <p>About a third of all entries (106) were copied into other files or carried into later runs. Mistakes about what <i>didn't</i> happen spread the most (54% of them), then model-judgment mistakes (50%). Bugs in my code spread the least (22%). They break things, but they don't put false claims into the record.</p>
+
+  <h2><span class="n">09</span>What doesn't flatter the project</h2>
+  <p>Collected in one place, because it's easy to bury these in caveats:</p>
+  <ul>
+    <li><b>Prevention is unproven.</b> Catching improved; I have no evidence the agent makes fewer mistakes. The repeat rate is flat at about one in ten.</li>
+    <li><b>A third of fixes didn't hold</b>, and the oldest ones came back nearly two times in three. The overall 36% will likely rise as recent fixes age.</li>
+    <li><b>"Put it in code" isn't clearly better here.</b> Code and rule fixes came back at similar rates, and the comparison is confounded by age and by which problems got which fix.</li>
+    <li><b>Model mistakes mostly got no fix at all.</b> Of the 64 model-judgment entries, 53 shipped nothing: the lesson was written down and that was it. It's the hardest kind to fix with a rule or a script, and the log shows it.</li>
+    <li><b>Most entries are still open.</b> Of 297, 54 are marked fixed with nothing remaining, 67 partly fixed, 154 open, and 22 unclear. Many open entries are lessons written down with nothing shipped.</li>
+    <li><b>The self-catching number is softer than it looks.</b> Many of the agent's catches are bugs I'd never see, and of the mistakes it caught, more had already reached me than were caught before they did.</li>
+    <li><b>The newest month went backwards</b>, on small numbers.</li>
+    <li><b>My own code is now the biggest source of failures.</b> Each guard against a model mistake became a new place for a code mistake.</li>
+  </ul>
+
+  <h2><span class="n">10</span>Caveats</h2>
+  <ul>
+    <li><b>The agent diagnosed itself.</b> The root causes are the agent's own reading of its own mistakes. They lean toward "the rule was missing or not followed," because a rule is the fix it can make itself. Some of the 107 instruction entries are probably model-judgment or code problems seen from inside.</li>
+    <li><b>The classifier is a model too.</b> Claude applied the rubric. The blind re-check agreed on 93% of fields, which is good but not perfect, and I didn't hand-check all 297.</li>
+    <li><b>Some entries are vague.</b> 12 had evidence too thin to classify without guessing. 60 left either who caught it or whether it reached me unclear.</li>
+    <li><b>The log is not a census</b>, and its thoroughness changed over time. Counts across months compare logging as much as mistakes.</li>
+    <li><b>July is nearly empty for a reason.</b> It has five entries. The evening review lane, which does most of the self-review, produced nothing from early July to 4 September (the 64-day outage above). I can't separate "fewer mistakes in July" from "nothing was writing them down."</li>
+    <li><b>One user, one setup.</b> This is one person's work tools, one person's tolerance for error, one person's way of complaining. Your mix will differ.</li>
+  </ul>
+
+  <h2><span class="n">11</span>What I'd do differently from day one</h2>
+  <ul>
+    <li><b>Watch each capability, not each run.</b> Every check I had asked whether a run exited cleanly or a tool call worked. Nothing asked "has the self-review lane produced anything this week?" That question, asked of every lane, would have caught the 64-day outage in a day or two.</li>
+    <li><b>Record who catches each mistake, from the first one.</b> It's the one number that moved, and the one that tells you whether the agent is earning trust. I only have it because the log happened to be detailed enough to reconstruct.</li>
+    <li><b>Decide what counts as an entry, and keep a denominator.</b> Without a count of what the agent produced, I can say who catches mistakes but not how often they happen. A daily count of items written and claims made would have made "fewer mistakes" testable.</li>
+    <li><b>A fix isn't done when it ships.</b> Write down what a recurrence would look like, and check for it on a schedule. A third come back, and the old ones more often.</li>
+    <li><b>Treat every new check as new code that can fail.</b> Give it a test that proves it catches the thing it exists for, and make "I couldn't run" a failure, never an all-clear.</li>
+    <li><b>Never let an empty read stand as a fact.</b> "I found nothing" should be stored as "I looked here and found nothing," with where and how, so the next run can tell a quiet day from a broken search.</li>
+  </ul>
+
+  <hr>
+  <p>Scout is open source (MIT) and runs on your own Claude Code login. The code, the run instructions and the rules each fix added are on <a href="https://github.com/Raven-Scout/Scout">GitHub</a>. If you run long-lived agents and see the same shift from model errors to plumbing errors, or a different one, I'd like to compare notes: <a href="https://github.com/Raven-Scout/Scout/issues">open an issue</a>.</p>
+  <p class="note">Method, briefly: 297 entries, logged 10 April to 22 November 2026, data pulled 24 November 2026. Each entry was classified by Claude against a fixed rubric from its full write-up. A blind re-classification of a random sample of 21 entries agreed on 175 of 189 fields. Percentages are rounded and carry about ±5 points of classification noise. The entries themselves contain names of colleagues and clients, so the log isn't published.</p>
+</article></div></main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <a class="brand" href="../"><img src="../assets/scout-icon.svg" alt="" width="24" height="24">Scout</a>
+    <nav aria-label="Footer">
+      <a href="https://github.com/Raven-Scout/Scout">GitHub</a>
+      <a href="https://github.com/Raven-Scout/Scout/releases">Releases</a>
+      <a href="../privacy.html">Privacy</a>
+      <a href="../terms.html">Terms</a>
+      <a href="https://github.com/Raven-Scout/Scout/blob/main/LICENSE">MIT License</a>
+    </nav>
+    <p class="meta">© 2026 Raven Scout. This site sets no cookies and loads no third-party scripts or fonts. It counts page views anonymously (<a href="../privacy.html#website">see how</a>).</p>
+  </div>
+</footer>
+</body>
+</html>
