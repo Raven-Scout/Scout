@@ -771,12 +771,36 @@ def _shield_quoted(text: str) -> str:
     out: list[str] = []
     at = 0
     for a, b in spans:
-        single = text[a] == "'"
         inner = text[a + 1 : b - 1]
-        marked = "".join(_SHIELD.get(c, _SHIELD_DOLLAR if single and c == "$" else c) for c in inner)
-        out += [text[at : a + 1], marked, text[b - 1]]
+        out += [text[at : a + 1], _shield_single(inner) if text[a] == "'" else _shield_double(inner), text[b - 1]]
         at = b
     return "".join([*out, text[at:]])
+
+
+def _shield_single(inner: str) -> str:
+    """Inside single quotes everything is literal, `$` too."""
+    return "".join(_SHIELD.get(c, _SHIELD_DOLLAR if c == "$" else c) for c in inner)
+
+
+def _shield_double(inner: str) -> str:
+    """Inside double quotes `$NAME`, `${…}` (a pattern in it too: `${X%*/}`), `$(…)` and backticks stay live; glob
+    characters, a brace that doesn't follow `$`, and `~` are literal."""
+    out: list[str] = []
+    i, n = 0, len(inner)
+    while i < n:
+        c = inner[i]
+        if c == "\\" and i + 1 < n:
+            out.append(inner[i : i + 2])
+            i += 2
+        elif c == "$" and inner.startswith("${", i):
+            end = inner.find("}", i)
+            end = n if end < 0 else end + 1
+            out.append(inner[i:end])
+            i = end
+        else:
+            out.append(_SHIELD.get(c, c))
+            i += 1
+    return "".join(out)
 
 
 def _strip_comments(command: str) -> str:

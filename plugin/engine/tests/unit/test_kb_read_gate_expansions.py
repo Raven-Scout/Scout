@@ -135,6 +135,12 @@ def _run(home: Path, command: str, *, cwd: Path | None = None, env: dict | None 
         "cat < (kn*|x)-base/a.md",
         "cd action-items; cat < (con*|x)/x.md",
         "cd kn*-base; cd ..; cat ~-/a.md",
+        # review round 5: `${…}` stays live inside double quotes (only glob characters, other braces and `~` are
+        # literal there)
+        'X=knowledge; cat "${X}-base/projects/a/a.md"',
+        'X=context; cat "action-items/${X}/x.md"',
+        'cd action-items; cat "${PWD}/context/x.md"',
+        'd=knowledge-base/; cat "${d%/}/a.md"',
     ],
 )
 def test_a_read_that_expands_into_the_kb_is_denied(home: Path, command: str) -> None:
@@ -255,6 +261,7 @@ UNRESOLVED = [
     ("cat $(echo kn)owledge-base/a.md", "command_output"),
     ('cat "$(printf knowl%sdge-base/a.md e)"', "command_output"),
     ("cat `echo knowledge-base/a.md`", "command_output"),
+    ('cat "`echo knowledge-base/a.md`"', "command_output"),  # a backtick inside double quotes still runs
     ("cat $UNSET_SOMEWHERE/a.md", "unset_variable"),
     ('while read -r f; do cat "$f"; done < /tmp/list.txt', "command_output"),
     ("ls scripts | xargs cat", "xargs_input"),
@@ -688,6 +695,23 @@ def test_a_secret_named_after_a_pattern_is_still_judged(home: Path) -> None:
         'grep -o "x" "$HOME/.scout-secrets/token"',
     ):
         assert _run(home, command) is not None, command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cat "${SCOUT_SECRETS_DIR}/token"',
+        'cat "${SCOUT_SECRETS_DIR}"/token',
+        'cat "${HOME}/.scout-secrets/token"',
+        'cat "${SCOUT_SECRETS_DIR}/"*',
+        'X=$SCOUT_SECRETS_DIR; cat "${X}/token"',
+    ],
+)
+def test_a_secret_named_through_a_quoted_parameter_is_denied(home: Path, command: str) -> None:
+    secrets = home / ".scout-secrets"
+    secrets.mkdir()
+    (secrets / "token").write_text("t\n")
+    assert _run(home, command, env={"SCOUT_SECRETS_DIR": str(secrets)}) is not None, command
 
 
 def test_an_over_budget_ls_glob_through_a_symlink_is_refused(home: Path, tmp_path: Path) -> None:

@@ -80,6 +80,10 @@ PRINTS_A_NOTE = [
     "cat < (kn*|x)-base/*/*/a.md",
     "cd action-items; cat < (con*|x)/x.md",
     "cd kn*-base; cd ..; cat ~-/*/*/*.md",
+    # round 5: `${…}` inside double quotes expands
+    'X=knowledge; cat "${X}-base/projects/a/a.md"',
+    'X=context; cat "action-items/${X}/x.md"',
+    'cd action-items; cat "${PWD}/context/x.md"',
     # round 1: globs, the command's own variables, braces, ANSI-C, xargs, cd
     "cat k*/projects/a/a.md",
     "cat */a.md",
