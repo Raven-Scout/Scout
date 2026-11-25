@@ -264,6 +264,11 @@ def _owner_state() -> str:
         "pr''intf -v HOM? /p/h; git commit -m m",
         "\\typeset H$v=/p/h; git commit -m m",
         "exec {{HOME}}>/dev/null; echo x >> ~/settings.json",
+        # review 4 of #800: a $'…' escape spells the builtin, or print's option is built at run time
+        "eval $'\\x72ead HOM? <<< h'; git commit -qm m",
+        "eval $'\\162ead HOM? <<< h'; git commit -qm m",
+        "$'\\x72ead' HOM? <<< h; git commit -qm m",
+        "x=v; print -$x HOM? /p/h; git commit -qm m",
     ],
 )
 def test_run_denies_a_command_that_points_home_elsewhere(vault, command):
@@ -602,6 +607,11 @@ def test_a_run_env_change_or_detach_reaches_python_from_the_shell(vault, tmp_pat
         "strftime -s HOM? %s",
         "repeat 1 read HOM? <<< /tmp/x",
         "zparseopts -A HOM? a",
+        # a $'…' escape can spell any word, and print's option may be built at run time (review 4 of #800)
+        "$'\\x72ead' HOM? <<< /tmp/x",
+        "$'\\162ead' HOM? <<< /tmp/x",
+        "x=v; print -$x HOM? /tmp/x",
+        "print -`echo v` HOM? /tmp/x",
         # the shell stage doesn't look for command position, so a builtin's name used as a plain word goes on too;
         # Python allows these (about 1.8% of replayed run calls newly reach it)
         "scripts/scoutctl kb read projects/widgets/widgets.md",

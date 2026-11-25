@@ -65,6 +65,9 @@ INTENDED_DIFFERENCES: dict[str, str] = {}
 # The alternatives appended to the Bash pattern after the move, as prefilter.sh assembles them: any mention of
 # HOME, arithmetic (which assigns), and zsh's `${(P)v::=…}`.
 ADDED_ALTERNATIVES = ("HOME", r"\(\(", r"\$\{\([^)]*P")
+# A `$'…'` string and then a backslash: its escapes can spell any word (`$'\x72ead' HOM?`). prefilter.sh tests it
+# with a `case` beside the pattern, which holds no quote.
+DOLLAR_QUOTE_ESCAPE = re.compile(r"\$'.*\\")
 ADDED_PATTERN = "|".join(ADDED_ALTERNATIVES)
 ADDED_PATTERN_RE = re.compile(ADDED_PATTERN)
 # What the last match finds once quotes and backslashes are removed, beside the KB's own: the names a run may not
@@ -74,7 +77,7 @@ STRIPPED_NAMES = "HOME|SCOUT_(MODE|READER)"
 STRIPPED_NAMERS = re.compile(
     r"(^|[^A-Za-z0-9_.-])(export|declare|typeset|local|readonly|integer|float|unset|read|select|getopts|vared|mapfile"
     r"|readarray|let|for|repeat|zstyle|zformat|strftime|getln|zparseopts|zstat|sysread|sysopen|zselect|zpty"
-    r"|zregexparse)([^A-Za-z0-9_.-]|$)|print(f)?[^;&|]* -[A-Za-z]*v"
+    r"|zregexparse)([^A-Za-z0-9_.-]|$)|print(f)?[^;&|]* -[A-Za-z]*[v$`]"
 )
 # A run's commands that point HOME elsewhere, or change the run env, and that the old pattern let through: each
 # must now reach Python.
@@ -108,6 +111,8 @@ HOME_CHANGES = (
     "r''ead HOM? <<< x",
     "\\export H$v=x",
     'X="a b" read HOM? <<< x',
+    "$'\\x72ead' HOM? <<< x",
+    "x=v; print -$x HOM? x",
     "\\typeset H$v=x",
     "pr''intf -v HOM? x",
     "print -v HOM? x",
@@ -312,7 +317,7 @@ KNOWN_MISSED_FORMS: tuple[tuple[str, bool], ...] = (
     ("time -p ls", False),
     ("exec -a x bash -c ls", True),
     ("unset $v", True),  # a name built at run time (this PR's ADDED_ALTERNATIVES)
-    ("$'SCOUT\\x5fMODE'= git commit -m x", False),
+    ("$'SCOUT\\x5fMODE'= git commit -m x", True),  # a $'…' escape (this PR's DOLLAR_QUOTE_ESCAPE)
     ("git ci -m x", False),
     ("make commit", False),
     ("./commit.sh", False),
@@ -467,6 +472,7 @@ def _widened(case: Case, old: Outcome, new: Outcome) -> bool:
         ADDED_PATTERN_RE.search(value) is not None
         or re.search(STRIPPED_NAMES, stripped) is not None
         or STRIPPED_NAMERS.search(stripped) is not None
+        or DOLLAR_QUOTE_ESCAPE.search(value) is not None
     )
     return added and new.python == f"hook kb-read-gate\n{case.payload}"
 

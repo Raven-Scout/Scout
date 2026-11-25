@@ -1023,6 +1023,22 @@ def test_commands_that_change_the_run_env_are_flagged(command: str) -> None:
         "vared -c HOME",
         "read -q HOM?",
         "HOME=x; export HOME",
+        # a $'…' string's escapes, decoded as zsh does (round 4 of #800's review)
+        "eval $'\\x72ead HOM? <<< h'; git commit -qm m",
+        "eval $'\\162ead HOM? <<< h'; git commit -qm m",
+        "eval $'\\u0072ead HOME <<< /x'",
+        "eval $'read HOM? <<< h'",
+        "eval $'export HO\\x4dE=/x'",
+        "eval $$'; \\x72ead HOME <<< /x'",  # zsh: a `$`, then $'…'
+        "eval x$'\\x3b read HOME'",
+        "$'\\x72ead' HOM? <<< h",
+        "export $'HO\\x4dE'=/x",
+        # print's option built at run time: it may be -v, or -vHOME
+        "x=v; print -$x HOM? /p/h; git commit -qm m",
+        "x=vHOME; print -$x /p/h",
+        "print -r$x HOME h",
+        "printf -`echo v` HOME x",
+        "print -${o} HOM? x",
     ],
 )
 def test_commands_that_point_home_elsewhere_are_named(command: str) -> None:
@@ -1076,10 +1092,51 @@ def test_commands_that_point_home_elsewhere_are_named(command: str) -> None:
         "coproc read HOM?",
         "printf -- -v HOM? x",
         "typeset -a arr; arr=(a b)",
+        "printf $'%s\\n' a b",
+        "echo $'a\\tb'",
+        "eval $'echo hi'",
+        "git commit -m $'line1\\nline2'",
+        "echo '$'\"'\"'\\x72ead'",  # no $'…' here: a quoted `$`, then a quoted quote
+        "echo \"$'\\x72ead'\"",  # inside double quotes, $'…' is plain text
+        "eval $'\\0162ead HOME <<< /x'",  # zsh: \016, then `2ead`
+        "print -n $msg",
+        "print -r -- $x",
     ],
 )
 def test_keeping_or_reading_home_is_not_flagged(command: str) -> None:
     assert run_escape(command) is None
+
+
+@pytest.mark.parametrize(
+    ("command", "form"),
+    [
+        ("eval $'git commit --no-veri\\x66y -m x'", "--no-verify"),
+        ("eval $'unset SCOUT_\\x4dODE'", "env"),
+        ("$'\\x6eohup' sleep 9", "detach"),
+    ],
+)
+def test_a_dollar_quote_is_read_as_the_text_it_spells(command: str, form: str) -> None:
+    assert run_escape(command) == form
+
+
+@pytest.mark.parametrize(
+    ("raw", "text"),
+    [
+        ("$'\\x72ead'", "read"),
+        ("$'\\162\\145ad'", "read"),
+        ("$'\\u0072'", "r"),
+        ("$'a\\tb'", "'a\tb'"),
+        ("$'it\\'s'", "'it'\"'\"'s'"),
+        ("$'\\cA'", "'\x01'"),
+        ("$''", "''"),
+        ("'$'\\''x'", "'$'\\''x'"),
+        ("\"$'x'\"", "\"$'x'\""),
+        ("\\$'x'", "\\$'x'"),
+        ("$$'\\x72'", "$r"),
+    ],
+)
+def test_dollar_quotes_decode_as_zsh_reads_them(raw: str, text: str) -> None:
+    assert live_run._decode_dollar_quotes(raw) == text
 
 
 @pytest.mark.parametrize(

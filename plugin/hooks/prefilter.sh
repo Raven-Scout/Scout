@@ -227,6 +227,9 @@ bash_needs_python() {
     if [ -n "$SCOUT_SECRETS_DIR" ]; then
         case "$p" in *"$SCOUT_SECRETS_DIR"*) return 0 ;; esac
     fi
+    # A $'…' string with an escape can spell any word (`$'\x72ead' HOM?`, `$'\162ead'`), so Python, which
+    # decodes it, reads the command. (Not in $re, which holds no quote.)
+    case "$v" in *"\$'"*\\*) return 0 ;; esac
     tool tr
     # shellcheck disable=SC1003 # the set is ', " and \ (one backslash after the shell's escaping)
     tr=$t
@@ -243,7 +246,8 @@ bash_needs_python() {
     # $v=…`, `read H$v`, `read HOM?` with a file named HOME), so Python reads every one, and denies a
     # target it can't read for certain. zsh's own setters too (`print -v`, `zstyle -s`, `zformat -f`,
     # `strftime -s`, `getln`, the module builtins), and `repeat N`, a keyword the command follows.
-    matches '(^|[^A-Za-z0-9_.-])(export|declare|typeset|local|readonly|integer|float|unset|read|select|getopts|vared|mapfile|readarray|let|for|repeat|zstyle|zformat|strftime|getln|zparseopts|zstat|sysread|sysopen|zselect|zpty|zregexparse)([^A-Za-z0-9_.-]|$)|print(f)?[^;&|]* -[A-Za-z]*v'
+    # print's option may be built too (`print -$x NAME`), so a $ or backtick in it counts as -v.
+    matches '(^|[^A-Za-z0-9_.-])(export|declare|typeset|local|readonly|integer|float|unset|read|select|getopts|vared|mapfile|readarray|let|for|repeat|zstyle|zformat|strftime|getln|zparseopts|zstat|sysread|sysopen|zselect|zpty|zregexparse)([^A-Za-z0-9_.-]|$)|print(f)?[^;&|]* -[A-Za-z]*[v$`]'
     [ "$?" -ne 1 ]
 }
 

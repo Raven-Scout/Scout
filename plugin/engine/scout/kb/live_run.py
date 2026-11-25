@@ -849,10 +849,73 @@ def _redirects(segment: str) -> tuple[str, list[str], list[str], list[str]]:
 
 
 def _tokens(segment: str) -> list[str]:
+    if "$'" in segment:
+        segment = _decode_dollar_quotes(segment)
     try:
         return shlex.split(segment, comments=False, posix=True)
     except ValueError:
         return segment.split()
+
+
+_C_ESCAPES = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v"}
+_C_NUMBER = re.compile(r"[0-7]{1,3}|x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}")
+
+
+def _decode_dollar_quotes(segment: str) -> str:
+    """``segment`` with each ``$'…'`` replaced by the plain single-quoted string the shell reads from it, so
+    ``eval $'\\x72ead HOME'`` reads as ``eval 'read HOME'``. Escapes follow zsh's (``\\x72``, ``\\162``, ``\\u0072``,
+    ``\\cA``, ``\\n``); ``$$'…'`` is a ``$`` and then ``$'…'``, as zsh reads it. Quotes, and a backslash outside them,
+    keep their meaning, so a ``$'`` inside ``'…'`` or ``"…"`` is left alone."""
+    out: list[str] = []
+    i, n = 0, len(segment)
+    while i < n:
+        c = segment[i]
+        if c == "\\":
+            out.append(segment[i : i + 2])
+            i += 2
+        elif c == "'":
+            end = segment.find("'", i + 1)
+            end = n - 1 if end < 0 else end
+            out.append(segment[i : end + 1])
+            i = end + 1
+        elif c == '"':
+            j = i + 1
+            while j < n and segment[j] != '"':
+                j += 2 if segment[j] == "\\" else 1
+            out.append(segment[i : j + 1])
+            i = j + 1
+        elif c == "$" and segment[i + 1 : i + 2] == "'":
+            text, i = _decode_c_string(segment, i + 2)
+            out.append(shlex.quote(text) if text else "''")
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _decode_c_string(segment: str, i: int) -> tuple[str, int]:
+    """The text of the ``$'…'`` whose body starts at ``segment[i]``, and the index just past its closing quote."""
+    text: list[str] = []
+    n = len(segment)
+    while i < n and segment[i] != "'":
+        if segment[i] != "\\" or i + 1 >= n:
+            text.append(segment[i])
+            i += 1
+            continue
+        k = segment[i + 1]
+        m = _C_NUMBER.match(segment, i + 1)
+        if m:
+            digits = m[0]
+            code = int(digits, 8) if digits[0] in "01234567" else int(digits[1:], 16)
+            text.append(chr(code) if code < 0x110000 else "")
+            i = m.end()
+        elif k == "c" and i + 2 < n:
+            text.append(chr(ord(segment[i + 2]) & 0x1F) if segment[i + 2] != "?" else "\x7f")
+            i += 3
+        else:
+            text.append(_C_ESCAPES.get(k, k if k in "\\'\"?" else "\\" + k))
+            i += 2
+    return "".join(text), i + 1
 
 
 def _sets_run_var(token: str) -> bool:
@@ -1582,6 +1645,12 @@ def _name_escape(words: list[str]) -> str | None:
                 if form is not None:
                     return form
         return None
+    if name in ("print", "printf"):
+        for arg in args:
+            if arg == "--" or not arg.startswith("-") or len(arg) == 1:
+                break
+            if "$" in arg or "`" in arg:
+                return HOME_FORM  # `print -$x NAME`: the option may be -v, and `-vHOME` names its target itself
     targets = _targets(name, args)
     options = [a for a in args if a.startswith(("-", "+")) and a not in ("-", "--")]
     for target in targets:
