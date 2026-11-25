@@ -55,6 +55,18 @@ final class CommentDraftMark {
     fileprivate(set) var isDrafted = false
 }
 
+/// One draft's write while it is on its way. It outlives the editor that
+/// sent it: collapse the card mid-Send and open it again, and the rebuilt
+/// editor sees the write still going (no second Send) and, once it lands,
+/// closes as the first one would have.
+@MainActor
+@Observable
+final class CommentSendState {
+    fileprivate(set) var inFlight = false
+    /// Counts the writes that landed, for an editor to close on.
+    fileprivate(set) var landed = 0
+}
+
 /// Unsent Action Items comments, new and edited, kept for the app's lifetime
 /// so that collapsing a card, which tears its composer and comment editors
 /// down, never drops what the owner typed. The editors write their text here
@@ -66,9 +78,17 @@ final class CommentDraftMark {
 /// - it lands (Send or Save, once the write succeeds; a failed write keeps it),
 /// - its task is completed or archived: `reconcile` drops it when the day's
 ///   file next parses with the task done (one that was open when the draft
-///   began), moved into an archive region, or gone, since nothing could send
-///   it then,
+///   began), moved into an archive region (one that was live when the draft
+///   began: an archived card takes comments too), or gone, since nothing
+///   could send it then,
+/// - it is an edit whose comment is gone: `reconcile` follows a comment that
+///   moved (one above it deleted) by its text, and drops the edit when the
+///   text is nowhere, or in more than one place, on its task,
 /// - the editor is emptied, or an edit is put back to the comment's text.
+///
+/// Two untagged tasks with the same subject share one key, so they share a
+/// draft: it shows on both cards. Nothing can land on the wrong one, since
+/// `scoutctl` refuses an ambiguous subject and a failed Send keeps the draft.
 ///
 /// Never written to the vault, or anywhere else: in memory only, so
 /// `AppDelegate` asks before quitting while any remain.
@@ -83,10 +103,17 @@ final class CommentDraftStore {
         /// The task was already done when the draft began (a done task with a
         /// `[#TAG]` takes comments), so finding it done isn't a completion.
         var startedDone: Bool
+        /// The card was in an archive region when the draft began, so
+        /// finding it there isn't an archiving.
+        var startedArchived: Bool
     }
 
     private var entries: [CommentDraftKey: Entry] = [:]
     private var marks: [CommentDraftTaskKey: CommentDraftMark] = [:]
+    private var sends: [CommentDraftKey: CommentSendState] = [:]
+    /// The tasks of the day parsed last that sit only in an archive region,
+    /// by identity: where a draft begun now was typed.
+    private var archivedOnly: (day: String, tasks: Set<String>)?
 
     func text(for key: CommentDraftKey) -> String? { entries[key]?.text }
 
@@ -97,10 +124,43 @@ final class CommentDraftStore {
         if Self.isEmpty(text, for: key.target) {
             entries[key] = nil
         } else {
-            let startedDone = entries[key]?.startedDone ?? task.done
-            entries[key] = Entry(text: text, label: task.plainSubject, startedDone: startedDone)
+            let old = entries[key]
+            entries[key] = Entry(text: text, label: task.plainSubject,
+                                 startedDone: old?.startedDone ?? task.done,
+                                 startedArchived: old?.startedArchived ?? isArchived(key.task))
         }
         syncMark(key.task)
+    }
+
+    private func isArchived(_ task: CommentDraftTaskKey) -> Bool {
+        guard let archivedOnly, archivedOnly.day == task.day else { return false }
+        return archivedOnly.tasks.contains(task.task)
+    }
+
+    /// The write state an editor for `key` shows and waits on.
+    func sendState(for key: CommentDraftKey) -> CommentSendState {
+        if let state = sends[key] { return state }
+        let state = CommentSendState()
+        sends[key] = state
+        return state
+    }
+
+    func isSending(_ key: CommentDraftKey) -> Bool { sends[key]?.inFlight ?? false }
+
+    /// Writes `text` through `write` unless a write for `key` is already on
+    /// its way; drops the kept draft once it lands. Returns whether it landed
+    /// (false, too, when one was already going).
+    func send(_ text: String, for key: CommentDraftKey, through write: (String) async -> Bool) async -> Bool {
+        let state = sendState(for: key)
+        guard !state.inFlight else { return false }
+        state.inFlight = true
+        let landed = await write(text)
+        state.inFlight = false
+        if landed {
+            discard(key)
+            state.landed += 1
+        }
+        return landed
     }
 
     /// Drop the draft: Cancel, or the write landed.
@@ -123,37 +183,90 @@ final class CommentDraftStore {
         return mark
     }
 
-    /// Bring the drafts for `day` in line with its file as just parsed. A
-    /// draft is kept while its task is in one of the live sections, open, or
+    /// What one identity's tasks in a parsed file add up to. Two untagged
+    /// tasks can share a subject, so it can be more than one.
+    private struct Found {
+        /// Every one of them is done; one still open keeps a draft.
+        var allDone = true
+        /// Each one's comment texts, in the order `CommentListView` counts.
+        var comments: [[String]] = []
+
+        mutating func add(_ task: ActionTask) {
+            allDone = allDone && task.done
+            comments.append(task.comments.map(\.text))
+        }
+    }
+
+    /// Bring the drafts for `day` in line with its file as just parsed.
+    ///
+    /// A draft is kept while its task is in one of the live sections (or, for
+    /// a draft begun on an archived card, in an archive region too), open, or
     /// done when the draft began on a done task. One whose task is now done,
-    /// archived (only in a `<details>` region) or gone is dropped. Returns the
-    /// dropped keys.
+    /// archived or gone is dropped. An edit whose comment moved follows it;
+    /// one whose comment can't be found is dropped. Returns the dropped keys.
     @discardableResult
     func reconcile(day: String, sections: [ActionSection]) -> [CommentDraftKey] {
-        let keys = entries.keys.filter { $0.task.day == day }
-        guard !keys.isEmpty else { return [] }
-        var done: [String: Bool] = [:]
+        var live: [String: Found] = [:]
+        var anywhere: [String: Found] = [:]
         for task in sections.flatMap(\.tasks) {
             let identity = CommentDraftTaskKey.identity(of: task)
-            // Two untagged tasks can share a subject; one still open keeps it.
-            done[identity] = (done[identity] ?? true) && task.done
+            live[identity, default: Found()].add(task)
+            anywhere[identity, default: Found()].add(task)
         }
+        for task in sections.flatMap(\.collapsed).flatMap(\.tasks) {
+            anywhere[CommentDraftTaskKey.identity(of: task), default: Found()].add(task)
+        }
+        archivedOnly = (day, Set(anywhere.keys).subtracting(live.keys))
+
         var dropped: [CommentDraftKey] = []
-        for key in keys {
+        var touched: Set<CommentDraftTaskKey> = []
+        for key in entries.keys where key.task.day == day {
             guard let entry = entries[key] else { continue }
-            let keep: Bool
-            switch done[key.task.task] {
+            let found = (entry.startedArchived ? anywhere : live)[key.task.task]
+            var keep: Bool
+            switch found?.allDone {
             case nil: keep = false
             case true?: keep = entry.startedDone
             case false?: keep = true
+            }
+            if keep, let found, case .edit(let index, let original) = key.target {
+                switch Self.place(of: original, at: index, in: found.comments) {
+                case .some(index): break
+                case .some(let moved):
+                    entries[key] = nil
+                    let to = CommentDraftKey(task: key.task, target: .edit(index: moved, original: original))
+                    if entries[to] == nil { entries[to] = entry }
+                case nil: keep = false
+                }
             }
             if !keep {
                 entries[key] = nil
                 dropped.append(key)
             }
+            touched.insert(key.task)
         }
-        Set(dropped.map(\.task)).forEach(syncMark)
+        touched.forEach(syncMark)
+        // Marks and send states are made per card drawn; keep only those a
+        // card of this file, or a kept draft, still needs.
+        marks = marks.filter { task, _ in
+            hasDraft(task) || (task.day == day && anywhere[task.task] != nil)
+        }
+        sends = sends.filter { key, state in state.inFlight || entries[key] != nil }
         return dropped
+    }
+
+    /// Where an edit typed against comment `index` (1-based) with text
+    /// `original` now is: `index` while that comment is still there, else the
+    /// one place on the task holding that text, else nil (gone, or in more
+    /// than one place, where a guess could land on the wrong comment).
+    private static func place(of original: String, at index: Int, in tasks: [[String]]) -> Int? {
+        if tasks.contains(where: { $0.indices.contains(index - 1) && $0[index - 1] == original }) {
+            return index
+        }
+        let places = Set(tasks.flatMap { texts in
+            texts.indices.filter { texts[$0] == original }.map { $0 + 1 }
+        })
+        return places.count == 1 ? places.first : nil
     }
 
     var hasUnsavedDrafts: Bool { !entries.isEmpty }

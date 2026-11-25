@@ -145,8 +145,11 @@ struct CommentDraftWindowTests {
     @Test("leave Action Items for another page and come back: the unsent comment is still there")
     func leavingThePageKeepsTheText() async throws {
         try await KeyWindowGate.run {
+            // The app's own store, so no other test may share the key: a
+            // subject no other test uses. An injected store couldn't show
+            // the drafts live above the page.
             let store = CommentDraftStore.shared
-            let task = SmokeFixtures.task(subject: "Reply to Sam", body: "About the handover.")
+            let task = SmokeFixtures.task(subject: "Reply to Sam \(UUID().uuidString)", body: "About the handover.")
             let key = CommentComposerView.draftKey(task, SmokeFixtures.day)
             store.discard(key)
             defer { store.discard(key) }

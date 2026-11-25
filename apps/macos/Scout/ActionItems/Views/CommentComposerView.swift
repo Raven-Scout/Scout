@@ -15,6 +15,9 @@ struct CommentComposerView: View {
     /// keeps the text so a failed write never eats what the user typed.
     let onSubmit: (String) async -> Bool
     private let drafts: CommentDraftStore
+    /// The kept draft's write, from the store: a composer built again while
+    /// one is on its way doesn't offer Send twice.
+    private let sending: CommentSendState
 
     @State private var state: CommentDraftState
     @FocusState private var editorFocused: Bool
@@ -29,8 +32,9 @@ struct CommentComposerView: View {
         self.displayedDate = displayedDate
         self.drafts = drafts
         self.onSubmit = onSubmit
-        _state = State(initialValue: CommentDraftState.restored(
-            drafts.text(for: Self.draftKey(task, displayedDate))))
+        let key = Self.draftKey(task, displayedDate)
+        sending = drafts.sendState(for: key)
+        _state = State(initialValue: CommentDraftState.restored(drafts.text(for: key)))
     }
 
     static func draftKey(_ task: ActionTask, _ displayedDate: Date) -> CommentDraftKey {
@@ -45,6 +49,9 @@ struct CommentComposerView: View {
         if expanded {
             expandedEditor
                 .onChange(of: state.text) { _, text in drafts.update(text, for: draftKey, task: task) }
+                // A Send begun before the card collapsed landed: close as
+                // its own composer would have.
+                .onChange(of: sending.landed) { state.finishSubmit(succeeded: true) }
         } else {
             EditorialActionButton("Add comment", systemImage: "text.bubble") {
                 // The editor takes the keys, not the list the click is on.
@@ -77,7 +84,7 @@ struct CommentComposerView: View {
                     "Send", style: .primary,
                     keyboardShortcut: editorFocused ? AppShortcut.commit : nil
                 ) { submit() }
-                    .disabled(!state.canSubmit)
+                    .disabled(!state.canSubmit || sending.inFlight)
             }
         }
     }
@@ -87,7 +94,7 @@ struct CommentComposerView: View {
     }
 
     private func submit() {
-        guard let text = state.beginSubmit() else { return }
+        guard !sending.inFlight, let text = state.beginSubmit() else { return }
         // Captured, so a write that lands after the card collapsed still
         // clears the kept draft: this view's state is gone by then.
         let drafts = drafts, key = draftKey, onSubmit = onSubmit
@@ -104,12 +111,11 @@ struct CommentComposerView: View {
     }
 
     /// Send: writes `text` and, once it lands, drops the kept draft. A failed
-    /// write keeps it, to retry or copy.
+    /// write keeps it, to retry or copy. While one is on its way a second is
+    /// refused (`CommentDraftStore.send`).
     static func send(_ text: String, drafts: CommentDraftStore, key: CommentDraftKey,
                      onSubmit: (String) async -> Bool) async -> Bool {
-        let landed = await onSubmit(text)
-        if landed { drafts.discard(key) }
-        return landed
+        await drafts.send(text, for: key, through: onSubmit)
     }
 }
 

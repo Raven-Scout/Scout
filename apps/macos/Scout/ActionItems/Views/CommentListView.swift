@@ -66,6 +66,9 @@ private struct CommentRow: View {
     /// Where an edit's text is kept while the card is collapsed, as for the
     /// composer (`CommentDraftStore`).
     private let keeper: (store: CommentDraftStore, key: CommentDraftKey, task: ActionTask)?
+    /// The kept edit's write, so an editor built again mid-Save doesn't save
+    /// twice, and closes once the first lands.
+    private let sending: CommentSendState?
 
     @State private var hovering = false
     @State private var editing: Bool
@@ -84,9 +87,11 @@ private struct CommentRow: View {
         keeper = keeping.map { store, task, actionTask in
             (store, CommentDraftKey(task: task, target: .edit(index: index, original: comment.text)), actionTask)
         }
-        // An edit kept from before the card collapsed opens again as it was.
-        // Only while editing is allowed: with writes off there's no Save.
-        let kept = onEdit == nil ? nil : keeper.flatMap { $0.store.text(for: $0.key) }
+        sending = keeper.map { $0.store.sendState(for: $0.key) }
+        // An edit kept from before the card collapsed opens again as it was,
+        // with writes off too (Save waits for them): hiding it left a Draft
+        // tag on the card and a quit prompt for text nowhere to be seen.
+        let kept = keeper.flatMap { $0.store.text(for: $0.key) }
         _editing = State(initialValue: kept != nil)
         _draft = State(initialValue: kept ?? "")
     }
@@ -119,6 +124,11 @@ private struct CommentRow: View {
                         .onChange(of: draft) { _, text in
                             guard let keeper else { return }
                             keeper.store.update(text, for: keeper.key, task: keeper.task)
+                        }
+                        // A Save begun before the card collapsed landed.
+                        .onChange(of: sending?.landed) {
+                            editing = false
+                            draft = ""
                         }
                 } else {
                     InlineMarkdownText(comment.text)
@@ -188,7 +198,8 @@ private struct CommentRow: View {
                     keyboardShortcut: editorFocused ? AppShortcut.commit : nil
                 ) { performSave() }
                     .disabled(
-                        submitting ||
+                        onEdit == nil ||
+                        submitting || sending?.inFlight == true ||
                         draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                         draft == comment.text
                     )
@@ -198,15 +209,20 @@ private struct CommentRow: View {
 
     private func performSave() {
         let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !submitting, trimmed != comment.text, let onEdit else { return }
+        guard !trimmed.isEmpty, !submitting, sending?.inFlight != true, trimmed != comment.text,
+              let onEdit else { return }
         submitting = true
-        let keeper = keeper
+        let keeper = keeper, index = index
         Task { @MainActor in
             // A failed write keeps the editor open with the text intact.
-            let landed = await onEdit(index, trimmed)
+            let landed: Bool
+            if let keeper {
+                landed = await keeper.store.send(trimmed, for: keeper.key) { await onEdit(index, $0) }
+            } else {
+                landed = await onEdit(index, trimmed)
+            }
             submitting = false
             guard landed else { return }
-            if let keeper { keeper.store.discard(keeper.key) }
             editing = false
             draft = ""
         }
