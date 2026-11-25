@@ -88,6 +88,11 @@ What it holds the script to, and why each piece is where it is:
   kernel refuses the script's own ``ln`` of a sealed file, checked on macOS 26). Reading it would have to be in
   the committed script, which the owner sees during the notice. A worktree copy swapped for a symlink after the
   profile is rendered also escapes: the kernel matches the link's target, which the profile didn't name.
+- **A detached run uses this runner whole** (spec §6.4, ruling P2-h): its supervisor (:mod:`scout.lab.supervise`)
+  holds the run lock for its whole life (:func:`hold_run_lock`), learns the sweep's probe file and outside folder
+  through ``on_started`` before the gate opens (so a later collect can sweep the script if the supervisor dies), and
+  stops the run through ``should_stop`` (the owner's veto or stop, its wall-clock deadline). The run log then says
+  ``detached: true`` and why it ``stopped``.
 - **The experiment's status is left alone.** The run finishes or abandons it.
 """
 
@@ -110,6 +115,7 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -195,6 +201,7 @@ class RunOutcome:
     over_processes: bool = False  # the sandbox held more than max_processes processes at a poll (W4)
     over_disk_floor: bool = False  # the volume's free bytes fell under the owner's floor at a poll (spec §6.4)
     over_memory: bool = False  # the processes' physical footprints together passed the memory limit at a poll
+    stopped: str | None = None  # why the caller's ``should_stop`` ended the run (a detached run's supervisor, §6.4)
 
 
 class DiskFloorError(LabError):
@@ -586,11 +593,33 @@ def run_lock_path(vault: Path, slug: str, eid: str, env: Mapping[str, str]) -> P
     return _owner_file(vault, slug, eid, env, ".lock")
 
 
+# Run locks a supervisor holds for its whole life (:func:`hold_run_lock`): lock path -> the thread holding it.
+_HELD_FOR_LIFE: dict[str, int] = {}
+
+
+@contextlib.contextmanager
+def hold_run_lock(vault: Path, slug: str, eid: str, env: Mapping[str, str]) -> Iterator[None]:
+    """Hold the experiment's run lock across more than the run itself (a detached run's supervisor, spec §6.4: from
+    before its weights fetch until its outcome is recorded). :func:`run_experiment` called from the same thread
+    inside it runs under this hold rather than refusing itself; any other run is refused ("already running")."""
+    key = str(run_lock_path(vault, slug, eid, env))
+    with _run_lock(vault, slug, eid, env):
+        _HELD_FOR_LIFE[key] = threading.get_ident()
+        try:
+            yield
+        finally:
+            _HELD_FOR_LIFE.pop(key, None)
+
+
 @contextlib.contextmanager
 def _run_lock(vault: Path, slug: str, eid: str, env: Mapping[str, str]) -> Iterator[None]:
     """Hold the experiment's run lock, or raise :class:`LabError` at once when another run of it holds the lock.
-    The lock file is write-only (0200), like the broker's own locks: a run can't open it to hold it."""
+    The lock file is write-only (0200), like the broker's own locks: a run can't open it to hold it. Already held
+    by this thread through :func:`hold_run_lock`, it is used as it is."""
     path = run_lock_path(vault, slug, eid, env)
+    if _HELD_FOR_LIFE.get(str(path)) == threading.get_ident():
+        yield
+        return
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o200)
     except OSError as exc:
@@ -963,14 +992,19 @@ def _log_body(
     nproc: int,
     floor: int,
     mem_limit: int,
+    detached: bool,
+    deadline: _dt.datetime,
 ) -> str:
     return "\n".join(
         [
             f"started: {started.strftime('%Y-%m-%d %H:%M')}",
             f"finished: {finished.strftime('%Y-%m-%d %H:%M')}",
+            f"detached: {'true' if detached else 'false'}",
+            f"deadline: {deadline.strftime('%Y-%m-%d %H:%M')}",
             f"argv: {json.dumps(list(argv), ensure_ascii=False)}",
             f"exit: {outcome.exit}",
             f"timed_out: {'true' if outcome.timed_out else 'false'}",
+            f"stopped: {outcome.stopped or 'no'}",
             f"over_processes: {'true' if outcome.over_processes else 'false'} (limit {max_processes}; "
             f"the kernel refuses forks past {nproc} of the owner's processes)",
             f"over_bytes: {'true' if outcome.over_bytes else 'false'} (cap {max_total_bytes} bytes)",
@@ -1006,6 +1040,8 @@ def run_experiment(
     max_open_files: int = broker.LabLimits.max_open_files,
     disk_free_floor_bytes: int = broker.LabLimits.disk_free_floor_bytes,
     max_memory_bytes: int = 0,
+    on_started: Callable[[str, str], None] | None = None,
+    should_stop: Callable[[], str | None] | None = None,
 ) -> RunOutcome:
     """Run ``argv`` for experiment ``eid`` of thread ``slug`` under the experiment sandbox.
 
@@ -1033,6 +1069,13 @@ def run_experiment(
     (``over_disk_floor``). ``max_memory_bytes`` is the processes' physical footprint together (0 = half of the
     Mac's memory); past it the run is
     killed (``over_memory``).
+
+    Two hooks serve a detached run's supervisor (spec §6.4; :mod:`scout.lab.supervise`), and mark the run log
+    ``detached: true``. ``on_started(probe, outside)`` is called once the gate's kernel checks have passed, before
+    the gate opens: ``probe`` is the sweep's probe file and ``outside`` the folder the sandbox may not write, the two
+    paths :func:`_sweep` needs to find the script's processes if this process dies. When it raises, the gate never
+    opens. ``should_stop()`` is asked at every poll; a reason it returns kills the run through the timeout's kill path
+    and is the outcome's ``stopped``.
     """
     source = os.environ if env is None else env
     if not argv:
@@ -1087,6 +1130,7 @@ def run_experiment(
                 claude_argv,
                 source_tree,
                 totals,
+                (on_started, should_stop),
             )
         finally:
             os.close(exp_fd)
@@ -1190,8 +1234,10 @@ def _run(
     claude_argv: Sequence[str],
     source_tree: tuple[str, str] | None,
     totals: tuple[int, int, int, int, int],
+    hooks: tuple[Callable[[str, str], None] | None, Callable[[], str | None] | None] = (None, None),
 ) -> RunOutcome:
     max_processes, max_total_bytes, max_open_files, floor, mem_limit = totals
+    on_started, should_stop = hooks
     _clear(exp_fd, TMP_NAME)
     os.mkdir(TMP_NAME, 0o700, dir_fd=exp_fd)
     tmp_real = os.path.join(exp_real, TMP_NAME)
@@ -1290,6 +1336,7 @@ def _run(
         out_path, err_path = os.path.join(private_dir, "stdout"), os.path.join(private_dir, "stderr")
         started = config.now(vault)
         timed_out = over_bytes = over_processes = over_disk_floor = over_memory = False
+        stopped: str | None = None
         clean = False
         nproc = _nproc_limit(max_processes)  # counted last thing before the launch
         with _new_file(out_path) as out_f, _new_file(err_path) as err_f:
@@ -1329,6 +1376,8 @@ def _run(
                             "sandbox_check gave the wrong answer about the sandboxed script before it started; "
                             "its processes couldn't be found afterwards, so it was not run"
                         )
+                    if on_started is not None and proc.poll() is None:
+                        on_started(marker, outside)  # the sweep's paths, recorded before the script can run
                     if proc.poll() is None:
                         with contextlib.suppress(BrokenPipeError):  # sandbox-exec failed meanwhile: its exit says so
                             os.write(gate_w, b"go\n")  # the gate opens: the script runs
@@ -1361,6 +1410,9 @@ def _run(
                         if _holders_footprint(holders) > mem_limit:
                             over_memory = True
                             break
+                        if should_stop is not None and (reason := should_stop()):
+                            stopped = reason
+                            break
                         continue
                     # The script exited: its last writes, and the unlinked files of anything it left running.
                     over_bytes = over(_holders(probe, marker, outside))
@@ -1381,6 +1433,7 @@ def _run(
             over_processes=over_processes,
             over_disk_floor=over_disk_floor,
             over_memory=over_memory,
+            stopped=stopped,
         )
         body = _log_body(
             argv,
@@ -1394,6 +1447,8 @@ def _run(
             nproc,
             floor,
             mem_limit,
+            on_started is not None,
+            started + _dt.timedelta(seconds=timeout_s),
         )
         if not clean:
             body += "survivors: a process holding this experiment's sandbox was still alive after the sweep\n"

@@ -1593,3 +1593,235 @@ def test_malformed_ml_fields_are_refused_not_defaulted(vault: Path, fake_run: Fa
 
 def test_no_disk_budget_means_512_mib(vault: Path) -> None:
     assert _plan(vault, broker.LabLimits(max_total_bytes=10 << 30)) == broker.ExperimentPlan(None, (), 512 << 20)
+
+
+# -- detached runs (spec §6.4) -------------------------------------------------------------------------------------
+
+DETACH = {**REQ, "detach": True}
+STATUS = {"v": broker.PROTOCOL, "verb": "experiment-status", "slug": SLUG, "eid": EID}
+
+
+def _detached_on(hours: float = 12, most: int = 1) -> None:
+    _owner_config({"lab": {"detached_max_hours": hours, "max_detached": most}})
+
+
+class FakeStart:
+    """Stands in for :func:`scout.lab.supervise.start`: records each call, or raises."""
+
+    def __init__(self, error: LabError | None = None) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.error = error
+
+    def __call__(self, vault: Path, slug: str, eid: str, argv: Sequence[str], **kw: Any) -> None:
+        self.calls.append({"vault": vault, "slug": slug, "eid": eid, "argv": list(argv), **kw})
+        if self.error is not None:
+            raise self.error
+
+
+@pytest.fixture
+def fake_start(monkeypatch: pytest.MonkeyPatch) -> FakeStart:
+    from scout.lab import supervise
+
+    fake = FakeStart()
+    monkeypatch.setattr(supervise, "start", fake)
+    return fake
+
+
+@pytest.fixture
+def no_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.lab import supervise
+
+    def fail(*_a: Any, **_k: Any) -> None:
+        raise AssertionError("the supervisor was started")
+
+    monkeypatch.setattr(supervise, "start", fail)
+
+
+def _record(vault: Path, eid: str = EID, *, pid: int | None = None, **kw: Any) -> Path:
+    from scout.lab import runs
+
+    path = runs.record_path(vault, SLUG, eid, os.environ)
+    started, deadline = T, T + timedelta(hours=12)
+    runs.write(path, runs.RunRecord(started.isoformat(), deadline.isoformat(), pid or os.getpid(), **kw))
+    return path
+
+
+def _dead_pid() -> int:
+    """The pid of a process this test started and reaped."""
+    proc = subprocess.Popen(["/usr/bin/true"])
+    proc.wait()
+    return proc.pid
+
+
+@pytest.mark.parametrize("config", [{}, {"detached_max_hours": 12, "max_detached": 0}, {"max_detached": 1}])
+def test_detach_refused_when_off(vault: Path, fake_run: FakeRun, no_start: None, config: dict[str, Any]) -> None:
+    _owner_config({"lab": config})
+    b = _broker(vault)
+    reply = b.handle(dict(DETACH))
+    assert reply.exit == broker.EXIT_REFUSED
+    assert reply.stderr == "experiment refused: detached runs are off in the owner's config\n"
+    assert b.experiments_run == 0 and fake_run.calls == []
+
+
+def test_detach_refused_when_one_is_running(vault: Path, fake_run: FakeRun, no_start: None) -> None:
+    _detached_on()
+    _record(vault, "E1")  # another experiment's supervisor, alive: it holds E1's run lock (this test's process)
+    with runner._run_lock(vault, SLUG, "E1", os.environ):
+        b = _broker(vault)
+        reply = b.handle(dict(DETACH))
+    assert reply.exit == broker.EXIT_REFUSED
+    assert reply.stderr == "experiment refused: a detached experiment is already running\n"
+    assert b.experiments_run == 0 and fake_run.calls == []
+
+
+def test_a_record_whose_supervisor_is_gone_doesnt_count_as_running(vault: Path, fake_start: FakeStart) -> None:
+    _detached_on()
+    _record(vault, "E1", pid=_dead_pid())  # no outcome, but nothing holds E1's run lock
+    assert _broker(vault).handle(dict(DETACH)).exit == 0
+    assert len(fake_start.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("fields", "requested", "expected"),
+    [("timeout_hours: 24\n", None, 43200), ("timeout_hours: 2\n", None, 7200), ("", None, 43200), ("", 600, 600)],
+)
+def test_detach_deadline_is_clamped(
+    vault: Path, fake_start: FakeStart, fields: str, requested: int | None, expected: int
+) -> None:
+    _detached_on(hours=12)
+    if fields:
+        _commit_fields(vault, fields)
+    req = dict(DETACH) if requested is None else {**DETACH, "timeout_s": requested}
+    reply = _broker(vault).handle(req)
+    assert reply.exit == 0, reply.stderr
+    assert fake_start.calls[0]["deadline_s"] == expected
+
+
+def test_detached_start_replies_started(
+    vault: Path, fake_run: FakeRun, fake_start: FakeStart, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _detached_on()
+    _commit_fields(vault, "disk_budget_bytes: 1000\n")
+    b = _broker(vault)
+    reply = b.handle(dict(DETACH))
+    assert broker._emit_experiment(reply) == 0
+    assert capsys.readouterr().err.rstrip("\n").splitlines()[-1] == "experiment started: detached"
+    assert b.experiments_run == 1 and fake_run.calls == []  # the run's allowance is used; nothing ran attached
+    [call] = fake_start.calls
+    assert (call["slug"], call["eid"], call["argv"]) == (SLUG, EID, ARGV)
+    assert call["commit"] == _git(vault, "rev-parse", "HEAD").strip() and call["cap_usd"] == 1.0
+    assert call["limits"].max_total_bytes == 1000  # the plan's disk budget
+    again = b.handle(dict(DETACH))
+    assert again.exit == broker.EXIT_LIMIT and len(fake_start.calls) == 1
+
+
+def test_a_supervisor_that_doesnt_start_keeps_the_allowance(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.lab import supervise
+
+    _detached_on()
+    failed = FakeStart(LabError("the experiment's supervisor stopped before it started"))
+    monkeypatch.setattr(supervise, "start", failed)
+    b = _broker(vault)
+    reply = b.handle(dict(DETACH))
+    assert reply.exit == broker.EXIT_REFUSED and reply.stderr.startswith("experiment refused: the experiment's")
+    assert b.experiments_run == 0
+
+
+@pytest.mark.parametrize("value", [1, "yes", None])
+def test_detach_must_be_a_boolean(vault: Path, fake_run: FakeRun, no_start: None, value: object) -> None:
+    _detached_on()
+    reply = _broker(vault).handle({**REQ, "detach": value})
+    assert reply.exit == broker.EXIT_REFUSED and "detach must be true or false" in reply.stderr
+
+
+def test_the_client_sends_detach(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    sent: list[Mapping[str, Any]] = []
+
+    def fake_call(sock: str, req: Mapping[str, Any], *, timeout: float) -> broker.Reply:
+        sent.append(req)
+        return broker.Reply(0, "experiment started: detached\n")
+
+    monkeypatch.setattr(broker, "call", fake_call)
+    env = {**os.environ, broker.ENV_SOCKET: "/tmp/scout-broker.x/b.sock"}
+    assert broker.client_experiment(SLUG, EID, ARGV, env=env, detach=True) == 0
+    assert sent[0]["detach"] is True and sent[0]["verb"] == "experiment"
+    assert capsys.readouterr().err == "experiment started: detached\n"
+
+
+def test_status_reports_running(vault: Path) -> None:
+    _record(vault)
+    with runner._run_lock(vault, SLUG, EID, os.environ):  # the supervisor (this test's process) holds the lock
+        reply = _broker(vault, now=T + timedelta(hours=1, minutes=5)).handle(dict(STATUS))
+    assert reply.exit == 0 and reply.stderr == "experiment running: 1h05m of 12h00m\n"
+    assert not reply.ran
+
+
+def test_status_reports_the_outcome(vault: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    ran = {"status": "ran", "exit": 3, "stdout_tail": "result line\n", "stderr_tail": "progress line\n"}
+    path = _record(vault, outcome=ran)
+    b = _broker(vault)
+    reply = b.handle(dict(STATUS))
+    assert reply.ran and reply.exit == 3 and reply.stdout == "result line\n" and reply.stderr == "progress line\n"
+    assert broker._emit_experiment(reply) == 3
+    assert capsys.readouterr().err.rstrip("\n").splitlines()[-1] == "experiment ran: exit 3"
+    from scout.lab import runs
+
+    runs.write(path, runs.RunRecord(T.isoformat(), T.isoformat(), 1, outcome={"status": "not run", "reason": "x y"}))
+    assert b.handle(dict(STATUS)).stderr == "experiment not run: x y\n"
+    path.unlink()
+    missing = b.handle(dict(STATUS))
+    assert missing.exit == broker.EXIT_NOT_RUN
+    assert missing.stderr == "experiment not run: no detached run of this experiment was started\n"
+    assert b.experiments_run == 0  # a status never counts against the run's allowance
+
+
+def test_status_refuses_a_bad_name(vault: Path) -> None:
+    reply = _broker(vault).handle({**STATUS, "eid": "../E2"})
+    assert reply.exit == broker.EXIT_REFUSED
+
+
+def test_status_sweeps_a_dead_supervisor(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.lab import runs, sandbox
+
+    swept: list[tuple[str, str]] = []
+
+    def fake_sweep(_probe: object, marker: str, outside: str) -> bool:
+        swept.append((marker, outside))
+        return True
+
+    monkeypatch.setattr(runner, "_sweep", fake_sweep)
+    monkeypatch.setattr(sandbox, "SandboxProbe", lambda: object())
+    probe, marker = "/nonexistent/scout-lab-x/probe", str(paths.experiment_dir(_note(vault)).parent)
+    path = _record(vault, pid=_dead_pid(), probe=probe, marker=marker)
+    b = _broker(vault)
+    first = b.handle(dict(STATUS))
+    assert first.exit == broker.EXIT_NOT_RUN
+    assert first.stderr == "experiment not run: the supervisor stopped without a result\n"
+    assert swept == [(probe, marker)]
+    rec = runs.read(path)
+    assert rec is not None and rec.outcome is not None
+    assert rec.outcome["reason"] == "the supervisor stopped without a result" and rec.outcome["swept"] is True
+    assert b.handle(dict(STATUS)).stderr == first.stderr and swept == [(probe, marker)]  # answered, not swept again
+
+
+def test_status_of_a_supervisor_gone_before_its_gate_sweeps_nothing(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(*_a: Any) -> bool:
+        raise AssertionError("swept a run whose script never started")
+
+    monkeypatch.setattr(runner, "_sweep", fail)
+    _record(vault, pid=_dead_pid())  # no probe: the gate never opened
+    reply = _broker(vault).handle(dict(STATUS))
+    assert reply.stderr == "experiment not run: the supervisor stopped without a result\n"
+
+
+def test_record_is_out_of_the_runs_reach(vault: Path) -> None:
+    from scout.lab import runs
+
+    env = dict(os.environ)
+    rules = profile.build_rules(vault, env)
+    for path in (runs.record_path(vault, SLUG, EID, env), runs.inputs_path(runs.record_path(vault, SLUG, EID, env))):
+        assert profile.decide(rules, str(path)) == "deny"
+        assert profile.decide(rules, str(path), "unlink") == "deny"
+    assert runs.lock_path(vault, SLUG, EID, env) == runner.run_lock_path(vault, SLUG, EID, env)

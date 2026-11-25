@@ -101,3 +101,37 @@ def test_checkpoint_bytes_leave_out_what_a_partial_reader_may_not_see(tmp_path: 
     assert partial["threads"][0]["checkpoint_bytes"] == 100
     full = summary.lab_list(vault, None, full=True, now=NOW)
     assert full["threads"][0]["checkpoint_bytes"] == 150
+
+
+CANONICAL_DETACHED = FIXTURES / "contract" / "lab-list-detached.json"
+
+
+def test_contract_running_detached(tmp_path: Path) -> None:
+    """A running experiment carries ``detached``, ``elapsed`` and ``deadline`` in ``running_detail``; the canonical
+    copy with one detached run is ``lab-list-detached.json``."""
+    from datetime import timedelta
+
+    from scout.lab import runs
+
+    vault = _vault(tmp_path / "vault")
+    front = paths.front_page(vault, "summary-drift")
+    text = front.read_text(encoding="utf-8")
+    running = text.replace("· planned · runs after 2026-11-21 13:00", "· running · started 2026-11-21 10:55")
+    assert running != text
+    front.write_text(running, encoding="utf-8")
+    env = {"HOME": str(tmp_path / "home")}
+    started = NOW - timedelta(hours=1, minutes=5)
+    rec = runs.RunRecord(started.isoformat(), (started + timedelta(hours=12)).isoformat(), 1)
+    runs.write(runs.record_path(vault, "summary-drift", "E2", env), rec)
+    labels = {rel: "normal" for rel in SEEN}
+    doc = summary.lab_list(vault, labels, full=False, now=NOW, env=env)
+    [row] = doc["threads"]
+    assert row["experiments"]["running"] == ["E2"]
+    assert row["experiments"]["running_detail"] == [
+        {"eid": "E2", "detached": True, "elapsed": "1h05m", "deadline": "12h00m", "finished": False}
+    ]
+    _check_or_regen(CANONICAL_DETACHED, _text(doc))
+    attached = summary.lab_list(vault, labels, full=False, now=NOW, env={"HOME": str(tmp_path / "other")})
+    assert attached["threads"][0]["experiments"]["running_detail"] == [
+        {"eid": "E2", "detached": False, "elapsed": None, "deadline": None, "finished": None}
+    ]

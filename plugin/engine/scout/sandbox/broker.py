@@ -21,6 +21,11 @@ in the vault's git dir and every read in the secrets dirs (:func:`scout.sandbox.
   with :func:`scout.lab.runner.run_experiment`, from the commit it checked, since ``sandbox-exec`` can't nest
   inside the run's own sandbox. An experiment request is never queued; a refused one doesn't use the run's
   allowance. The verb is off until the owner sets ``"experiments_enabled": true`` in ``config.json``.
+- With ``"detach": true`` (``lab experiment run --detach``, spec §6.4) the same checks pass the run to a supervisor
+  (:func:`start_detached`, :mod:`scout.lab.supervise`) that outlives the run; off until the owner sets
+  ``detached_max_hours`` and ``max_detached``. A later run's ``lab experiment collect`` asks the
+  ``experiment-status`` verb (:func:`experiment_status`), which reads the owner's record and sweeps a supervisor
+  that is gone without a result.
 """
 
 from __future__ import annotations
@@ -41,7 +46,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -55,7 +60,7 @@ ENV_SOCKET = "SCOUT_RUN_BROKER"
 SOCKET_NAME = "b.sock"
 QUEUE_DIR = Path(".scout-state") / "broker-queue"
 FAILED_DIR = "failed"
-VERBS = ("commit", "telegram", "experiment")
+VERBS = ("commit", "telegram", "experiment", "experiment-status")
 # What a client may queue for the drain. An experiment is never queued: it runs live or not at all.
 QUEUE_VERBS = ("commit", "telegram")
 # Where the wrapper and `broker profile` say whether this run's brokers are on, next to .claude-sign-in.json.
@@ -80,6 +85,12 @@ EXIT_LIMIT = 5  # notify telegram: refused by the broker's limits
 EXIT_QUEUED = 6  # git-safe-commit: queued, it lands after the session (no SHA yet)
 EXIT_NOT_RUN = 4  # scoutctl lab experiment run: no broker to run it, or experiments are off
 EXPERIMENTS_OFF = "experiments are off in the owner's config"  # LabLimits.experiments_enabled
+# Detached runs (spec §6.4): the owner's switches, the one-at-a-time rule, and what a collect says about a supervisor
+# that is gone without recording an outcome.
+DETACHED_OFF = "detached runs are off in the owner's config"  # detached_max_hours or max_detached is 0
+DETACHED_BUSY = "a detached experiment is already running"
+SUPERVISOR_GONE = "the supervisor stopped without a result"
+NO_DETACHED_RUN = "no detached run of this experiment was started"
 
 MAX_MESSAGE_CHARS = 10_000
 MAX_PATHS = 500
@@ -1195,7 +1206,18 @@ class Broker:
             return self.telegram(req)
         if verb == "experiment":
             return self.experiment(req)
+        if verb == "experiment-status":
+            return self.experiment_status(req)
         return Reply(EXIT_REFUSED, "broker: unknown verb\n", kind=REFUSED)
+
+    def experiment_status(self, req: Mapping[str, Any]) -> Reply:
+        """Where a detached run stands (:func:`experiment_status`). Read-only but for the one sweep of a supervisor
+        that is gone and the outcome it then records; it runs nothing and doesn't count against the run's
+        allowance."""
+        slug, eid = req.get("slug"), req.get("eid")
+        if not _experiment_named(slug, eid):
+            return Reply(EXIT_REFUSED, "experiment refused: bad thread slug or experiment ID\n", kind=REFUSED)
+        return experiment_status(self.vault, str(slug), str(eid), self.env, self.clock())
 
     def experiment(self, req: Mapping[str, Any]) -> Reply:
         """Run one experiment for this run, outside its sandbox, under the experiment sandbox (lab Task 10)."""
@@ -1210,6 +1232,7 @@ class Broker:
             return Reply(EXIT_LIMIT, f"experiment refused: this run has run its {ran}\n", kind=RUN_LIMIT)
         try:
             requested = _requested_timeout(req)
+            detach = _requested_detach(req)
             slug, eid, argv, cap, commit, plan = validate_experiment(
                 req, self.vault, self.lab_limits, self.clock(), self.env
             )
@@ -1222,6 +1245,13 @@ class Broker:
         free = runner.free_bytes(self.vault)
         if floor > 0 and (free is None or free - plan.disk_budget_bytes < floor):
             return Reply(EXIT_NOT_RUN, f"experiment not run: {runner.FLOOR_REASON}\n", kind=REFUSED)
+        if detach:
+            # A detached start uses the run's allowance; a refusal, or a supervisor that didn't start, keeps it.
+            checked = (slug, eid, argv, cap, commit, plan)
+            reply = start_detached(self.vault, self.env, self.lab_limits, checked, requested)
+            if not reply.kind:
+                self.experiments_run += 1
+            return reply
         # Counted once the runner is called, whatever it answers: a script that ran and then failed a check
         # (a survivor of the kill sweep) still ran.
         self.experiments_run += 1
@@ -1612,25 +1642,163 @@ def _requested_timeout(req: Mapping[str, Any]) -> int | None:
     return value
 
 
+def _requested_detach(req: Mapping[str, Any]) -> bool:
+    """Whether the run asks for a detached run (``"detach": true``); absent is false, anything else is refused."""
+    value = req.get("detach", False)
+    if not isinstance(value, bool):
+        raise Refused(EXIT_REFUSED, "detach must be true or false")
+    return value
+
+
+def _experiment_named(slug: object, eid: object) -> bool:
+    from scout.lab.model import EID_RE, SLUG_RE
+
+    if not isinstance(slug, str) or not isinstance(eid, str):
+        return False
+    return bool(re.match(SLUG_RE, slug) and re.fullmatch(EID_RE, eid))
+
+
+def detached_deadline_s(plan: ExperimentPlan, limits: LabLimits, requested: int | None = None) -> float:
+    """A detached run's deadline in seconds: the plan's ``timeout_hours`` clamped to the owner's
+    ``detached_max_hours`` (the owner's maximum when the plan names none), lowered further by the run's own
+    ``timeout_s`` when it gave one."""
+    hours = limits.detached_max_hours
+    if plan.timeout_hours is not None:
+        hours = min(plan.timeout_hours, hours)
+    seconds = hours * 3600
+    return float(min(seconds, requested)) if requested is not None else float(seconds)
+
+
+def start_detached(
+    vault: Path,
+    env: Mapping[str, str],
+    limits: LabLimits,
+    checked: tuple[str, str, list[str], float, str | None, ExperimentPlan],
+    requested: int | None,
+) -> Reply:
+    """Start a validated experiment detached (spec §6.4): refused when the owner's config has detached runs off or
+    ``max_detached`` of this vault's are alive; else :func:`scout.lab.supervise.start`. A reply with no ``kind`` is
+    a start (``experiment started: detached``); one with a ``kind`` ran nothing."""
+    from scout.errors import LabError
+    from scout.lab import runs, supervise
+
+    slug, eid, argv, cap, commit, plan = checked
+    if limits.detached_max_hours <= 0 or limits.max_detached <= 0:
+        return Reply(EXIT_REFUSED, f"experiment refused: {DETACHED_OFF}\n", kind=REFUSED)
+    if len(runs.live(vault, env)) >= limits.max_detached:
+        return Reply(EXIT_REFUSED, f"experiment refused: {DETACHED_BUSY}\n", kind=REFUSED)
+    run_limits = replace(limits, max_total_bytes=plan.disk_budget_bytes)
+    try:
+        supervise.start(
+            vault, slug, eid, argv, commit=commit, cap_usd=cap, deadline_s=detached_deadline_s(plan, limits, requested),
+            limits=run_limits, env=env,
+        )  # fmt: skip
+    except LabError as e:
+        return Reply(e.exit_code, f"experiment refused: {_one_line(e)}\n", kind=REFUSED)
+    return Reply(0, "experiment started: detached\n")
+
+
+def _recorded_reply(outcome: Mapping[str, Any]) -> Reply:
+    """A recorded outcome as the run reads it: the script's exit and its output's tails when it ran; else
+    ``experiment not run: <reason>`` (after the tails of a script that was stopped)."""
+    out = str(outcome.get("stdout_tail") or "")
+    err = str(outcome.get("stderr_tail") or "")
+    code = outcome.get("exit")
+    if outcome.get("status") == "ran" and isinstance(code, int) and not isinstance(code, bool):
+        return Reply(code, err, out, ran=True)
+    reason = _one_line(outcome.get("reason") or "the run recorded no reason")
+    lead = err if not err or err.endswith("\n") else err + "\n"
+    return Reply(EXIT_NOT_RUN, f"{lead}experiment not run: {reason}\n", out, kind=REFUSED)
+
+
+def _sweep_record(record: Any) -> bool:
+    """Kill what a gone supervisor's script left (the runner's sweep, by the record's probe file and the folder the
+    script's sandbox may not write), then remove the supervisor's private temp folder. True when the sweep found
+    nothing left; False when it couldn't tell."""
+    from scout.lab import runner, sandbox
+
+    try:
+        probe = sandbox.SandboxProbe()
+    except (OSError, AttributeError):
+        return False
+    clean = runner._sweep(probe, record.probe, record.marker)
+    folder = os.path.dirname(record.probe)
+    ours = os.path.basename(folder).startswith("scout-lab-") and os.path.dirname(folder) in ("/tmp", "/private/tmp")
+    if clean and ours:
+        shutil.rmtree(folder, ignore_errors=True)
+    return clean
+
+
+def experiment_status(vault: Path, slug: str, eid: str, env: Mapping[str, str], now: datetime) -> Reply:
+    """Where the detached run of ``slug`` ``eid`` stands, as one status line (``lab experiment collect``):
+
+    - the recorded outcome: ``experiment ran: exit <n>`` (the reply is the script's) or ``experiment not run: …``;
+    - a live supervisor: ``experiment running: <elapsed> of <deadline>`` (``HhMm``);
+    - a supervisor that is gone with no outcome: first the runner's sweep, when the record has a probe (without
+      one, no script was started), then ``experiment not run: the supervisor stopped without a result``, which is
+      recorded as the outcome, so a second collect gives the same answer without sweeping again.
+
+    The sweep runs under the experiment's run lock, so it can't race a supervisor starting."""
+    from scout.errors import LabError
+    from scout.lab import runner, runs
+
+    path = runs.record_path(vault, slug, eid, env)
+    record = runs.read(path)
+    if record is None:
+        return Reply(EXIT_NOT_RUN, f"experiment not run: {NO_DETACHED_RUN}\n", kind=REFUSED)
+    if record.outcome is not None:
+        return _recorded_reply(record.outcome)
+    if not runs.alive(vault, slug, eid, record, env):
+        outcome: dict[str, Any] | None = None
+        try:
+            with runner._run_lock(vault, slug, eid, env):
+                fresh = runs.read(path) or record
+                outcome = fresh.outcome
+                if outcome is None:  # still none, now that no supervisor can be writing it
+                    swept = _sweep_record(fresh) if fresh.probe and fresh.marker else True
+                    outcome = {"status": "not run", "reason": SUPERVISOR_GONE, "swept": swept}
+                    outcome["finished"] = now.isoformat()
+                    runs.write(path, replace(fresh, outcome=outcome))
+        except LabError:
+            outcome = None  # the lock is held again: a run of the experiment holds it, so it is reported running
+        if outcome is not None:
+            return _recorded_reply(outcome)
+    started, deadline = runs.parse_time(record.started), runs.parse_time(record.deadline)
+    if started is None or deadline is None:
+        return Reply(0, "experiment running: 0h00m of 0h00m\n")
+    elapsed = (now - started).total_seconds()
+    return Reply(0, f"experiment running: {runs.hhmm(elapsed)} of {runs.hhmm((deadline - started).total_seconds())}\n")
+
+
 def _one_line(reason: object) -> str:
     """A reason on one line (a status line is read as the last line of stderr)."""
     return " ".join(str(reason).split())
 
 
+_STATUS_PREFIXES = ("experiment refused: ", "experiment not run: ", "experiment started: ", "experiment running: ")
+
+
 def _emit_experiment(reply: Reply) -> int:
-    """Print an experiment reply, then the one status line a run reads last (``experiment ran|refused|not run``)."""
+    """Print an experiment reply, then the one status line a run reads last (``experiment ran|refused|not run``, and
+    for detached runs ``experiment started|running``)."""
     code = _emit(reply)
     if reply.ran:
         print(f"experiment ran: exit {reply.exit}", file=sys.stderr)
         return code
     last = reply.stderr.rstrip("\n").rsplit("\n", 1)[-1] if reply.stderr.strip() else ""
-    if not last.startswith(("experiment refused: ", "experiment not run: ")):
+    if not last.startswith(_STATUS_PREFIXES):
         print(f"experiment not run: {_one_line(last) or 'the broker answered without running it'}", file=sys.stderr)
     return code
 
 
 def client_experiment(
-    slug: str, eid: str, argv: Sequence[str], env: Mapping[str, str] | None = None, *, timeout_s: int | None = None
+    slug: str,
+    eid: str,
+    argv: Sequence[str],
+    env: Mapping[str, str] | None = None,
+    *,
+    timeout_s: int | None = None,
+    detach: bool = False,
 ) -> int:
     """``scoutctl lab experiment run``: the run's broker runs it, or, in the owner's own session, this process.
 
@@ -1639,7 +1807,8 @@ def client_experiment(
     and run here, under the owner's limits; the owner's ``experiments_enabled`` switch gates only the broker, not
     this. ``timeout_s`` can only lower the owner's timeout. The last line on
     stderr is always one of ``experiment ran: exit <n>``, ``experiment refused: <reason>`` or
-    ``experiment not run: <reason>``.
+    ``experiment not run: <reason>``. With ``detach`` (spec §6.4) the run is handed to a supervisor and the last
+    line is ``experiment started: detached`` (or a refusal); ``timeout_s`` then only lowers its deadline.
     """
     env = os.environ if env is None else env
     limits = load_lab_limits(env)
@@ -1652,6 +1821,8 @@ def client_experiment(
         req: dict[str, Any] = {"v": PROTOCOL, "verb": "experiment", "slug": slug, "eid": eid, "argv": list(argv)}
         if timeout_s is not None:
             req["timeout_s"] = timeout_s
+        if detach:
+            req["detach"] = True
         try:
             return _emit_experiment(call(sock, req, timeout=effective + EXPERIMENT_CLIENT_SLACK_S))
         except Unreachable:
@@ -1671,6 +1842,8 @@ def client_experiment(
     except Refused as r:
         print(f"experiment refused: {_one_line(r.reason)}", file=sys.stderr)
         return r.exit_code
+    if detach:
+        return _emit_experiment(start_detached(vault, env, limits, (slug, eid, args, cap, commit, plan), timeout_s))
     try:
         outcome = runner.run_experiment(
             vault,
@@ -1694,6 +1867,32 @@ def client_experiment(
         print(f"experiment refused: {_one_line(e)}", file=sys.stderr)
         return e.exit_code
     return _emit_experiment(_outcome_reply(outcome))
+
+
+EXPERIMENT_STATUS_TIMEOUT_S = 120.0  # a status may sweep a gone supervisor's processes first
+
+
+def client_collect(slug: str, eid: str, env: Mapping[str, str] | None = None) -> int:
+    """``scoutctl lab experiment collect``: where a detached run stands, from the run's broker (``experiment-status``)
+    or, in the owner's own session (no broker, no scheduled run), from the record directly. The last line on stderr
+    is ``experiment ran: exit <n>``, ``experiment running: <elapsed> of <deadline>`` or ``experiment not run:
+    <reason>``; the exit is the script's, 0 while it runs, 4 not run."""
+    env = os.environ if env is None else env
+    sock = env.get(ENV_SOCKET, "")
+    if sock:
+        req = {"v": PROTOCOL, "verb": "experiment-status", "slug": slug, "eid": eid}
+        try:
+            return _emit_experiment(call(sock, req, timeout=EXPERIMENT_STATUS_TIMEOUT_S))
+        except Unreachable:
+            print("experiment not run: this run's broker didn't answer", file=sys.stderr)
+            return EXIT_NOT_RUN
+    if env.get("SCOUT_MODE"):
+        print("experiment not run: collecting a detached experiment needs the run broker", file=sys.stderr)
+        return EXIT_NOT_RUN
+    if not _experiment_named(slug, eid):
+        print("experiment refused: bad thread slug or experiment ID", file=sys.stderr)
+        return EXIT_REFUSED
+    return _emit_experiment(experiment_status(_vault(env), slug, eid, env, datetime.now(UTC)))
 
 
 # -- the queue -----------------------------------------------------------------------------------------------------

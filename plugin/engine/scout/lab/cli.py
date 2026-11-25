@@ -488,6 +488,9 @@ def cli_experiment_run(
     timeout: int | None = typer.Option(
         None, "--timeout", min=1, help="Seconds; only lowers the owner's timeout, never raises it."
     ),
+    detach: bool = typer.Option(
+        False, "--detach", help="Start it under a supervisor and return; `lab experiment collect` reads the result."
+    ),
 ) -> None:
     """Run a running experiment's script in the experiment sandbox.
 
@@ -497,16 +500,61 @@ def cli_experiment_run(
     until the owner sets `"experiments_enabled": true` in its config.json. Exits with the script's exit;
     2 refused; 4 not run (no broker answered, or experiments are off); 5 this run's experiments are used.
     The last stderr line is `experiment ran: exit <n>`, `experiment refused: <reason>` or
-    `experiment not run: <reason>`.
+    `experiment not run: <reason>`. With --detach (off until the owner sets `detached_max_hours` and
+    `max_detached`) it is `experiment started: detached` once the supervisor is running; the deadline is the
+    plan's `timeout_hours`, at most the owner's `detached_max_hours`.
     """
     import os
 
     from scout.sandbox import broker
 
     env = {**os.environ, "SCOUT_DATA_DIR": str(_vault(ctx))}
-    code = broker.client_experiment(slug, eid, list(command), env=env, timeout_s=timeout)
+    if detach:
+        code = broker.client_experiment(slug, eid, list(command), env=env, timeout_s=timeout, detach=True)
+    else:
+        code = broker.client_experiment(slug, eid, list(command), env=env, timeout_s=timeout)
     if code:
         raise typer.Exit(code)
+
+
+@experiment_app.command("collect")
+def cli_experiment_collect(
+    ctx: typer.Context,
+    slug: str = typer.Argument(...),
+    eid: str = typer.Argument(..., metavar="EID"),
+) -> None:
+    """Where a detached experiment stands.
+
+    In a scheduled run the run's broker answers; in the owner's own session this process reads the owner's
+    record. The last stderr line is `experiment ran: exit <n>` (the script's exit and output tails follow the
+    attached run's), `experiment running: <elapsed> of <deadline>` (exit 0) or `experiment not run: <reason>`
+    (exit 4). A supervisor that is gone without a result (a restart, a kill) has its script's processes swept
+    first and is then `not run`.
+    """
+    import os
+
+    from scout.sandbox import broker
+
+    env = {**os.environ, "SCOUT_DATA_DIR": str(_vault(ctx))}
+    code = broker.client_collect(slug, eid, env=env)
+    if code:
+        raise typer.Exit(code)
+
+
+@experiment_app.command("stop")
+def cli_experiment_stop(
+    ctx: typer.Context,
+    slug: str = typer.Argument(...),
+    eid: str = typer.Argument(..., metavar="EID"),
+    author: str = _AuthorOpt,
+) -> None:
+    """Owner verb: stop a detached experiment without vetoing it; its outcome is `stopped by the owner`."""
+    import os
+
+    from scout.lab import runs
+
+    runs.request_stop(_vault(ctx), slug, eid, os.environ, _handle(author))
+    _ok(slug, f"stop {eid}")
 
 
 @experiment_app.command("call")
