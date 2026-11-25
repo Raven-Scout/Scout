@@ -52,6 +52,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from scout.kb import shell_prefixes
+
 if TYPE_CHECKING:
     from scout.kb.raw_read import _Stripped
 
@@ -424,9 +426,10 @@ _DETACH = {
     "nohup", "setsid", "disown", "launchctl", "osascript", "open", "tmux", "screen", "script", "at", "batch",
     "daemonize", "start-stop-daemon", "systemd-run", "ssh", "mosh",
 }  # fmt: skip
-# `noglob`, `nocorrect` and `-` are zsh's precommand modifiers: the command after them runs as written.
-_PREFIX = {"sudo", "command", "exec", "nice", "time", "xargs", "builtin", "noglob", "nocorrect", "-"}
-_SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
+# The words that run the next one as written (scout.kb.shell_prefixes.MODIFIERS: zsh's `noglob`, `nocorrect`,
+# `-`, `builtin`, and sudo, nice, time, xargs). env, nohup and the shells are judged here on their own.
+_PREFIX = set(shell_prefixes.MODIFIERS)
+_SHELLS = set(shell_prefixes.SHELLS)
 _KEYWORDS = {"{", "!", "if", "then", "elif", "else", "do", "while", "until"}
 # An unquoted redirect and its target. Found in the masked text, so a quoted ">" is never one.
 _REDIRECT = re.compile(r"(?:(?<=\s)\d+|&)?(>>|>\||>&|>|<<<|<<-?|<&|<>|<)\s*([^\s<>|]*)")
@@ -436,7 +439,7 @@ _NO_VERIFY = "--no-verify"
 _NO_V = "--no-v"
 _RUNS_HOOKS = {"commit", "merge", "rebase", "am", "cherry-pick", "revert", "push", "pull"}
 # Commands that run git for you: their own options come before it, so look for git among their words.
-_GIT_WRAPPERS = _PREFIX | {"timeout", "gtimeout", "caffeinate", "stdbuf", "ionice", "flock", "chronic", "find", "watch"}
+_GIT_WRAPPERS = _PREFIX | shell_prefixes.LAUNCHERS | {"ionice", "flock", "chronic", "find", "watch"}
 _GIT_VALUE_OPTIONS = {"-C", "--git-dir", "--work-tree", "--namespace", "--attr-source"}
 # Commits and refs written without `git commit`, so with no hook.
 _WRITES_COMMITS = {"commit-tree", "fast-import", "filter-branch", "filter-repo"}

@@ -22,6 +22,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from scout.kb import shell_prefixes
+
 KB_PATH = re.compile(r"(?:^|[\s'\"=:/<{,])(?:knowledge-base|knowledge_base|action-items/context)(?:/|\b|$)")
 KB_DIRS = ("knowledge-base", "knowledge_base", "action-items/context")
 _READ_COMMANDS = {
@@ -47,13 +49,10 @@ _DECOMPRESSING_READERS = {
     "xzmore", "zdiff", "zcmp", "bzdiff", "bzcmp", "xzdiff", "xzcmp",
 }  # fmt: skip
 _READ_COMMANDS |= _DECOMPRESSING_READERS
-# What runs the word after it: launchers, and zsh's precommand modifiers (`noglob`, `nocorrect`, `-`, `builtin`,
-# `command`, `exec`; `-` is a stray flag to _strip). `noglob grep -r TODO .` is `grep -r TODO .` to the shell.
-_PREFIX_WORDS = {
-    "xargs", "sudo", "command", "builtin", "env", "nice", "time", "exec", "timeout", "gtimeout", "stdbuf",
-    "caffeinate", "unbuffer", "parallel", "sh", "bash", "zsh", "dash", "ksh", "eval", "noglob", "nocorrect",
-    "nohup", "gstdbuf", "xcrun", "arch",
-}  # fmt: skip
+# What runs the word after it (scout.kb.shell_prefixes, the one table both run gates build theirs from):
+# zsh's precommand modifiers, launchers, env, nohup, the shells and eval. `noglob grep -r TODO .` is
+# `grep -r TODO .` to the shell; `-` is a stray flag to _strip.
+_PREFIX_WORDS = set(shell_prefixes.ALL)
 # Prefix flags that take a separate value (`xargs -n 1 wc`, `nice -n 10 cat`): the value is not the command.
 _PREFIX_VALUE_FLAGS = {
     "xargs": {"-n", "-I", "-L", "-P", "-s", "-d", "-E", "-a", "--max-args", "--max-procs", "--delimiter"},
