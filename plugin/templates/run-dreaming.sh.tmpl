@@ -118,6 +118,33 @@ export SCOUT_READER=autonomous
 # owner's, whatever their environment says (#595; engine/scout/kb/live_run.py).
 export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
 
+# git reads its global config from ~/.gitconfig and ~/.config/git/config wherever HOME points, so a session
+# command that pointed HOME elsewhere could hand git a config that turns the commit hook off. GIT_CONFIG_GLOBAL
+# pins this account's own ~/.gitconfig for the whole run, the file git reads anyway, so nothing else changes.
+# Left unpinned, and the reason recorded in the run log and run-outcomes.jsonl (git_config_pin), when
+# GIT_CONFIG_GLOBAL is already set (preset), when the account has an XDG git config too (xdg: git reads both,
+# and one pin can't), when HOME isn't the account's home (home), or when that can't be told (unknown).
+SCOUT_GIT_CONFIG_PIN=pinned
+_scout_user=$(id -un 2>/dev/null || true)
+_scout_account_home=
+case "$_scout_user" in
+    "" | [-+]* | *[!A-Za-z0-9._-]*) ;;
+    *) eval "_scout_account_home=~$_scout_user" ;;
+esac
+if [ -n "${GIT_CONFIG_GLOBAL+set}" ]; then
+    SCOUT_GIT_CONFIG_PIN=preset
+elif [ "${_scout_account_home#/}" = "$_scout_account_home" ]; then
+    SCOUT_GIT_CONFIG_PIN=unknown
+elif [ "${HOME:-}" != "$_scout_account_home" ]; then
+    SCOUT_GIT_CONFIG_PIN=home
+elif [ -e "${XDG_CONFIG_HOME:-$HOME/.config}/git/config" ] || [ -e "$HOME/.config/git/config" ]; then
+    SCOUT_GIT_CONFIG_PIN=xdg
+else
+    export GIT_CONFIG_GLOBAL="$HOME/.gitconfig"
+fi
+export SCOUT_GIT_CONFIG_PIN
+echo "=== git config: $SCOUT_GIT_CONFIG_PIN ===" >> "$LOG_FILE"
+
 # Pre-session hooks — gather data before Claude starts (saves tool calls inside the session).
 # These write to .scout-cache/ for DREAMING.md to consume.
 PRE_FILTER="$SCOUT_DIR/hooks/kb-pre-filter.sh"

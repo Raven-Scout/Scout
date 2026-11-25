@@ -376,7 +376,9 @@ _PLAIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # A parameter expansion that assigns a name that matters, or one built at run time: `${HOME:=…}`, `${HOME=…}` (with a
 # value: an empty one changes nothing), zsh's `${HOME::=…}` (always assigns), `${(P)v::=…}` (zsh's (P) flag: the
 # name is v's value), and bash's `${!v:=…}`.
-_PROTECTED_NAMES = "HOME|XDG_CONFIG_HOME|SCOUT_MODE|SCOUT_READER"
+# git's config variables too (GIT_CONFIG_GLOBAL, which the runner pins, and the -c equivalents), but
+# GIT_CONFIG_NOSYSTEM, which the #607 rule leaves alone.
+_PROTECTED_NAMES = r"HOME|XDG_CONFIG_HOME|SCOUT_MODE|SCOUT_READER|GIT_CONFIG(?!_NOSYSTEM\b)[A-Z0-9_]*"
 _PARAM_ASSIGN = re.compile(rf"\$\{{(?:({_PROTECTED_NAMES})(?:::=|:?=(?!\}}))|\([^)]*P[^)]*\).*?=|!.*?=)")
 # A named file descriptor (`exec {HOME}>/dev/null`): the shell sets the name to the new descriptor's number.
 _NAMED_FD = re.compile(rf"\{{({_PROTECTED_NAMES})\}}\s*(?:[<>]|&>)")
@@ -493,6 +495,7 @@ def _delegate_write(name: str, args: list[str]) -> bool:
 
 
 _GIT_CONFIG_VAR = re.compile(r"^GIT_CONFIG(?!_NOSYSTEM=)[A-Z0-9_]*=")
+_GIT_CONFIG_NAME = re.compile(r"GIT_CONFIG(?!_NOSYSTEM$)[A-Z0-9_]*")
 # git reads `$XDG_CONFIG_HOME/git/config` as its global config, which can set core.hooksPath.
 XDG_CONFIG_FORM = "XDG_CONFIG_HOME"
 _XDG_CONFIG_VAR = re.compile(r"^XDG_CONFIG_HOME=")
@@ -915,7 +918,16 @@ def _reads_something(words: list[str], reads: list[str]) -> bool:
 # character as itself (`cat "k*/a.md"` reads a file named `k*`, not a glob).
 _SHIELD = {"*": "\ue000", "?": "\ue001", "[": "\ue002", "{": "\ue003", "~": "\ue004"}
 _SHIELD_DOLLAR = "\ue005"
-UNSHIELD = {**{v: k for k, v in _SHIELD.items()}, _SHIELD_DOLLAR: "$"}
+_SHIELD_TICK = "\ue006"
+UNSHIELD = {**{v: k for k, v in _SHIELD.items()}, _SHIELD_DOLLAR: "$", _SHIELD_TICK: "`"}
+# A backslash-escaped `$`, backtick or glob character outside single quotes: literal to the shell, but bare once the
+# tokenizer drops the backslash (a command word's check reads these shielded too).
+_ESCAPED = re.compile(r"\\([$`*?\[{~])")
+
+
+def _shield_escaped(text: str) -> str:
+    shields = {**_SHIELD, "$": _SHIELD_DOLLAR, "`": _SHIELD_TICK}
+    return _ESCAPED.sub(lambda m: shields[m[1]], text)
 
 
 def _shield_quoted(text: str) -> str:
@@ -1042,18 +1054,15 @@ def _env_escape(args: list[str]) -> tuple[str | None, list[str]]:
         if a in ("-", "-i", "--ignore-environment") or (a.startswith("-") and not a.startswith("--") and "i" in a[1:]):
             return "env", []
         if a in ("-u", "--unset"):
-            if i + 1 < len(args) and args[i + 1] in RUN_VARS:
-                return "env", []
-            if i + 1 < len(args) and args[i + 1] == "HOME":
-                return HOME_FORM, []
+            form = _name_form(args[i + 1]) if i + 1 < len(args) else None
+            if form is not None:
+                return form, []  # a run variable ("env"), HOME, XDG_CONFIG_HOME or a GIT_CONFIG_* name
             i += 2
             continue
-        if a.startswith("--unset=") and a.split("=", 1)[1] in RUN_VARS:
-            return "env", []
-        if a.startswith("-u") and a[2:] in RUN_VARS:
-            return "env", []
-        if (a.startswith("--unset=") and a.split("=", 1)[1] == "HOME") or a == "-uHOME":
-            return HOME_FORM, []
+        unset = a.split("=", 1)[1] if a.startswith("--unset=") else a[2:] if a.startswith("-u") else None
+        form = _name_form(unset) if unset else None
+        if form is not None:
+            return form, []
         if a == "-S" or a == "--split-string":
             return _env_escape(_tokens(args[i + 1] if i + 1 < len(args) else "") + args[i + 2 :])
         if a.startswith("--split-string="):
@@ -1281,7 +1290,7 @@ MAX_LITERAL_READS = 4096
 MAX_DEPTH = 6
 _STATE: dict[str, Any] = {
     "checked": 0, "secrets": 0, "reads": 0, "literal": 0, "vars": {}, "bodies": [], "unparsed": False, "capped": False,
-    "parsing": False,
+    "parsing": False, "words": {}, "functions": {}, "anonymous": False, "calls": 0, "literals": 0,
 }  # fmt: skip
 _VAR = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 # An interpreter given its program inline or on stdin.
@@ -1537,7 +1546,13 @@ def _program_escape(program: str, cwd: str, depth: int = 0) -> str | None:
     if _RUNS_SHELL.search(joined):
         for pattern in _PATH_LITERALS[:2]:
             for lit in pattern.finditer(joined):
-                found = _run_escape(lit[1], depth + 1) if any(ch.isspace() for ch in lit[1]) else None
+                # A string the program may hand a shell: its command words are a guess, so they are judged as
+                # written (a literal is as likely prose as a command).
+                _STATE["literals"] += 1
+                try:
+                    found = _run_escape(lit[1], depth + 1) if any(ch.isspace() for ch in lit[1]) else None
+                finally:
+                    _STATE["literals"] -= 1
                 if found is not None and found != "detach":
                     return found
     targets = _write_targets(joined)
@@ -2056,7 +2071,10 @@ def _name_form(name: str) -> str | None:
         return "env"
     if name == "HOME":
         return HOME_FORM
-    return XDG_CONFIG_FORM if name == "XDG_CONFIG_HOME" else None
+    if name == "XDG_CONFIG_HOME":
+        return XDG_CONFIG_FORM
+    # GIT_CONFIG_GLOBAL and the rest: unset, unexported or read into, git may read another file's hooksPath.
+    return GIT_CONFIG_FORM if _GIT_CONFIG_NAME.fullmatch(name) else None
 
 
 def _target_form(word: str, *, assigns: bool, value_matters: bool = True) -> str | None:
@@ -2184,6 +2202,357 @@ def _targets(name: str, args: list[str]) -> list[str]:
     return out
 
 
+# ----- a command word the shell builds as the command runs ---------------------------------------------------
+#
+# Every rule above knows a program by the text of its command word, so a word the shell only fills in as the command
+# runs (`c=re; c+=ad; $c HOM? <<< h`, `$(echo daer | rev) HOME`, `rea? HOME` once a file named `read` exists,
+# `${(L)c} …`, `f(){ "$@"; }; f $c …`) escaped all of them. Such a word is now judged by what it becomes:
+#
+# - `NAME=<plain word>` set once earlier in the same command, used as `$NAME`, `"$NAME"` or `${NAME}`, is that word
+#   (a value of `$HOME`, `$PWD` or `~` and plain text too, and a `for` loop over plain words is each of them); a
+#   function's call is its body with the call's arguments put in, whatever the body does with them.
+# - Denied always (COMMAND_WORD_FORM): a glob or brace list, a command substitution or backtick, a zsh flag or
+#   modifier and every other `${…}` form, a variable assigned more than once, with `+=`, by `read`/`typeset -l`/… or
+#   to a glob, and one the command never assigns (the environment's, or `$1` outside a function). None of these was
+#   a scheduled run's command word in 288 runs (2026-08-05 to 11-24) but one `$( … ) $f`.
+# - Behind DENY_UNRESOLVED_COMMAND_WORDS (the gate's switch; allowed and recorded until there is data): a `for` loop
+#   over words that aren't plain (COMMAND_WORD_KINDS: LOOP_WORD), a variable assigned a substitution or other
+#   variables (ASSIGNED_WORD, `scripts/$f` included), and `$@`/`$1` as a function body's command word
+#   (WRAPPER_WORD).
+
+COMMAND_WORD_FORM = "a command word built at run time"
+LOOP_WORD = "loop_variable"
+ASSIGNED_WORD = "assigned_expansion"
+WRAPPER_WORD = "wrapper_function"
+COMMAND_WORD_KINDS = (LOOP_WORD, ASSIGNED_WORD, WRAPPER_WORD)
+# Set by run_escape: what a run's gate makes of a COMMAND_WORD_KINDS word (a form to deny it, or None to let it be).
+_COMMAND_WORD: Callable[[str], str | None] | None = None
+# What a COMMAND_WORD_KINDS word let be is judged as: a reader of every operand (one that names a KB note is a read).
+_UNKNOWN_READER = "cat"
+# What `$HOME` and `$PWD` stand for in a command word: only its last part names the program.
+_PLACES = {"HOME": "/__scout_home__", "PWD": "/__scout_pwd__"}
+# A reference in a word: `${…}` (1), `$NAME` (2), `$` and one more character (3), or a lone `$` at the end.
+_WORD_REF = re.compile(r"\$(?:\{([^{}]*)\}|([A-Za-z_][A-Za-z0-9_]*)|(.)|$)", re.S)
+_GLOB_CHARS = re.compile(r"[*?\[]")
+_BRACE_LIST = re.compile(r"\{[^{}]*(?:,|\.\.)[^{}]*\}")
+# Programs that run the next word as a program, and the options whose value is the next word.
+_RUNS_NEXT = _PREFIX | {"env", "nohup", "timeout", "gtimeout", "caffeinate", "stdbuf", "ionice", "chronic", "setsid"}
+_RUNNER_VALUE_OPTIONS = {
+    "sudo": "ugChpUrtD", "nice": "n", "exec": "a", "xargs": "ILnPsdEJRS", "env": "uCSP", "timeout": "sk",
+    "gtimeout": "sk", "stdbuf": "ioe", "ionice": "cnp",
+}  # fmt: skip
+_RUNNER_LONG_VALUES = {"--unset", "--chdir", "--split-string", "--user", "--group", "--signal", "--kill-after"}
+_FIND_EXEC = {"-exec", "-execdir", "-ok", "-okdir"}
+# A function definition, its name in group 1 (`function f`) or 2 (`f()`), or 3 for zsh's anonymous `() { … }`.
+_FUNCTION_DEF = re.compile(
+    r"(?:^|(?<=[;&|\n(){}]))\s*(?:(?:then|do|else)\s+)*"
+    r"(?:function\s+([^\s(){};&|<>]+)(?:\s*\(\s*\))?|([^\s(){};&|<>$`=]+)\s*\(\s*\)|(\(\s*\)))\s*\{"
+)
+# A positional parameter, quoted or not: `"$@"`, `$1`, `${2}`, `$*`, `$#`.
+_POSITIONAL_REF = re.compile(r'"\$(?:\{([0-9@*#])\}|([0-9@*#]))"|\$(?:\{([0-9@*#])\}|([0-9@*#]))')
+_SHIFTS = re.compile(r"(?<![\w$])(?:shift|set|argv)(?!\w)")
+# How many function calls (each shift of the arguments counts) one command may have judged.
+MAX_CALLS = 32
+
+
+def denied_word(kind: str) -> str:
+    """The form a run's command word of ``kind`` is denied as."""
+    return f"{COMMAND_WORD_FORM} ({kind})"
+
+
+def _command_word_indexes(words: list[str]) -> list[int]:
+    """Where ``words`` has a program to run: its first word past keywords and assignments, and past each program
+    that runs the next one (``sudo -u x``, ``env A=1``, ``timeout 5``, ``nohup``) the word after its options;
+    and for ``find``, the word after each ``-exec``."""
+    out: list[int] = []
+    i, n = 0, len(words)
+    while i < n:
+        while i < n and (words[i] in _KEYWORDS or _ASSIGN_ANY.match(words[i])):
+            i = _past_word(words, i)
+        if i < n and words[i] in ("function", "repeat"):
+            i += 2  # `function f {`: then the body's first word; zsh's `repeat N cmd`
+            continue
+        if i >= n:
+            break
+        out.append(i)
+        name = _basename(words[i])
+        if name == "find":
+            out += [j + 1 for j in range(i + 1, n - 1) if words[j] in _FIND_EXEC]
+            break
+        if name not in _RUNS_NEXT:
+            break
+        takes = _RUNNER_VALUE_OPTIONS.get(name, "")
+        i += 1
+        while i < n and words[i].startswith("-") and len(words[i]) > 1:
+            a = words[i]
+            if a == "--":
+                i += 1
+                break
+            if name == "command" and ("v" in a or "V" in a):
+                return out  # `command -v x` prints where x is; it runs nothing
+            long_value = a.startswith("--") and "=" not in a and a in _RUNNER_LONG_VALUES
+            i += 2 if long_value or (not a.startswith("--") and a[-1] in takes) else 1
+        if name in ("timeout", "gtimeout"):
+            i += 1  # the duration
+    return out
+
+
+def _past_word(words: list[str], i: int) -> int:
+    """The index after ``words[i]``, and after the words an unclosed ``${`` in it runs on into (``n=${n%% *}`` is
+    two words to the tokenizer, one to the shell)."""
+    depth = 0
+    while i < len(words):
+        depth += words[i].count("${") - words[i].count("}")
+        i += 1
+        if depth <= 0:
+            break
+    return i
+
+
+def _word_verdict(word: str, literal: str) -> str | list[list[str]] | None:
+    """What a command word becomes: None when it is as written (or a COMMAND_WORD_KINDS word let be), its words
+    once the shell has filled it in (one list for each value it can take), or the form it is denied as. ``literal``
+    is the same word with what its quotes keep literal shielded (see _SHIELD), so a quoted `?` or `$` is text."""
+    if literal in ("[", "[[") or _BUILT_HEAD.match(word):
+        return None  # a test; `$v=x`, which _name_escape denies as an assignment to a name built at run time
+    if literal.startswith("=") and len(literal) > 1:
+        return [[word[1:]]]  # zsh's `=git` is git's path
+    glob = bool(_GLOB_CHARS.search(literal) or _BRACE_LIST.search(literal))
+    if "$" not in literal and "`" not in literal:
+        return denied_word("glob") if glob else None
+    if "`" in literal or "$__scout_" in literal:
+        return denied_word("substitution")  # what a command prints: `$(…)`, `<(…)`, backticks
+    if glob:
+        return denied_word("glob")
+    texts, at, kinds = [""], 0, []
+    for m in _WORD_REF.finditer(literal):
+        texts = [t + _unshield(literal[at : m.start()]) for t in texts]
+        at = m.end()
+        kind, values = _reference(m, literal)
+        if kind == "literal":
+            texts = [t + v for t in texts for v in values]
+            if len(texts) > MAX_CHECKED_PATHS:
+                return denied_word("too_many")
+        elif kind in COMMAND_WORD_KINDS:
+            kinds.append(kind)
+        else:
+            return denied_word(kind)
+    for kind in dict.fromkeys(kinds):
+        form = _COMMAND_WORD(kind) if _COMMAND_WORD is not None else None
+        if form is not None:
+            return form
+    if kinds:
+        return [[_UNKNOWN_READER]]  # let be: a program that may read every operand it is given
+    return [(t + _unshield(literal[at:])).split() for t in texts]
+
+
+def _reference(m: re.Match[str], word: str) -> tuple[str, list[str]]:
+    """What one ``$…`` in a word is: ("literal", its values), a COMMAND_WORD_KINDS kind, or the kind of word it is
+    denied as ("modifier", "special", "computed", "unassigned")."""
+    if m[0] == "$":
+        return "literal", ["$"]
+    braced, name = m[1], m[2]
+    if braced is not None:
+        if braced in ("@", "*") or braced.isdigit():
+            return _positional()
+        if not _PLAIN_NAME.fullmatch(braced):
+            return "modifier", []  # `${(L)c}`, `${c:l}`, `${c//x/y}`, `${#c}`, `${!c}`, `${c:-x}`
+        name = braced
+    elif name is None:
+        return _positional() if m[3].isdigit() or m[3] in "@*" else ("special", [])  # `$$`, `$?`, `$-`…
+    elif word[m.end() : m.end() + 1] in ("[", ":"):
+        return "modifier", []  # zsh's `$c[1,4]`, `$c:l`
+    if name in _PLACES:
+        return "literal", [_PLACES[name]]
+    kind, values = _STATE["words"].get(name, ("unassigned", []))
+    return kind, values
+
+
+def _positional() -> tuple[str, list[str]]:
+    """`$1`, `$@`: a function's argument (WRAPPER_WORD) where the command defines named functions only, whose calls
+    are judged with their arguments put in; else nothing the command set."""
+    return (WRAPPER_WORD, []) if _STATE["functions"] and not _STATE["anonymous"] else ("unassigned", [])
+
+
+def _value_kind(value: str) -> tuple[str, list[str]]:
+    """What a variable assigned ``value`` is as a command word: ("literal", the values it can take), "expansion"
+    (a substitution, another variable, an argument), or "computed" (a glob, a flag, a modifier)."""
+    if "`" in value or "$__scout_" in value:
+        return ASSIGNED_WORD, []
+    texts, at = [""], 0
+    for m in _WORD_REF.finditer(value):
+        if _GLOB_CHARS.search(value[at : m.start()]):
+            return "computed", []
+        texts = [t + value[at : m.start()] for t in texts]
+        at = m.end()
+        kind, values = _reference(m, value)
+        if kind == "literal":
+            texts = [t + v for t in texts for v in values]
+            if len(texts) > MAX_CHECKED_PATHS:
+                return "computed", []
+        elif kind in ("modifier", "special", "computed"):
+            return "computed", []
+        else:
+            return ASSIGNED_WORD, []  # another variable (one the command doesn't set too), an argument
+    if _GLOB_CHARS.search(value[at:]):
+        return "computed", []
+    return "literal", [t + value[at:] for t in texts]
+
+
+def _note_word(name: str, kind: str, values: list[str]) -> None:
+    """Remember what ``name`` is as a command word; a second, different assignment makes it "computed"."""
+    if name == _SUBST_NAME:
+        return
+    known: dict[str, tuple[str, list[str]]] = _STATE["words"]
+    old = known.get(name)
+    if old is not None and not (old[0] == kind == "literal" and old[1] == values):
+        kind, values = "computed", []
+    known[name] = (kind, values)
+
+
+def _record_command_words(words: list[str], array: bool) -> None:
+    """What this segment assigns, for :func:`_word_verdict`: a plain assignment's value, a declarer's (any option,
+    `typeset -l` included, makes it "computed"), a ``for`` loop's words, and every other builtin's target
+    (``read``, ``mapfile``, ``printf -v``, ``unset``…) as "computed". ``array``: the segment ends ``NAME=`` before a
+    ``(``, an array assignment."""
+    while words and (words[0] in _KEYWORDS or words[0] in _PREFIX):
+        words = words[1:]
+    if not words:
+        return
+    if all(_ASSIGN_ANY.match(w) for w in words):
+        for k, w in enumerate(words):
+            m = _ASSIGN_ANY.match(w)
+            assert m is not None
+            computed = m[2] or m[3] == "+=" or (array and k == len(words) - 1)
+            _note_word(m[1], *(("computed", []) if computed else _value_kind(w[m.end() :])))
+        return
+    head, args = _basename(words[0]), words[1:]
+    if head in _DECLARERS:
+        options = any(a.startswith(("-", "+")) and a not in ("-", "--") for a in args)
+        for a in args:
+            m = _ASSIGN_ANY.match(a)
+            if m is not None:
+                computed = options or m[2] or m[3] == "+="
+                _note_word(m[1], *(("computed", []) if computed else _value_kind(a[m.end() :])))
+            elif options and _PLAIN_NAME.fullmatch(a):
+                _note_word(a, "computed", [])
+        return
+    if head == "for":
+        if len(words) < 2 or not _PLAIN_NAME.fullmatch(words[1]):
+            return
+        if words[2:3] != ["in"]:
+            _note_word(words[1], LOOP_WORD, [])  # over the arguments
+            return
+        found = [_value_kind(w) for w in words[3:]]
+        if any(k == "computed" for k, _ in found):
+            _note_word(words[1], "computed", [])
+        elif all(k == "literal" for k, _ in found):
+            _note_word(words[1], "literal", [v for _, values in found for v in values])
+        else:
+            _note_word(words[1], LOOP_WORD, [])
+        return
+    if head in _NAMERS:
+        for target in _targets(head, args):
+            name = target.split("=", 1)[0].split("[", 1)[0]
+            if _PLAIN_NAME.fullmatch(name):
+                _note_word(name, "computed", [])
+
+
+def _command_word_variants(
+    words: list[str], literal: list[str], depth: int = 0
+) -> str | list[tuple[list[str], list[str]]]:
+    """``words`` (and their ``literal`` twins) once each command word in them is filled in, one pair for each
+    value it can take; or the form the first word that can't be is denied as."""
+    if len(literal) != len(words):
+        literal = words
+    for i in _command_word_indexes(words):
+        verdict = _word_verdict(words[i], literal[i])
+        if verdict is None:
+            continue
+        if isinstance(verdict, str):
+            return verdict
+        if depth > MAX_DEPTH:
+            return denied_word("too_many")
+        out: list[tuple[list[str], list[str]]] = []
+        for replaced in verdict:
+            found = _command_word_variants(
+                [*words[:i], *replaced, *words[i + 1 :]], [*literal[:i], *replaced, *literal[i + 1 :]], depth + 1
+            )
+            if isinstance(found, str):
+                return found
+            out += found
+            if len(out) > MAX_CHECKED_PATHS:
+                return denied_word("too_many")
+        return out
+    return [(words, literal)]
+
+
+def _scan_functions(command: str) -> None:
+    """Remember each function ``command`` defines with its body, for :func:`_call_escape`; an anonymous one, or one
+    whose body doesn't close, leaves a ``$1`` command word nothing a call explains."""
+    masked = _mask_quoted(command)
+    for m in _FUNCTION_DEF.finditer(masked):
+        depth, end = 0, None
+        for k in range(m.end() - 1, len(masked)):
+            if masked[k] == "{":
+                depth += 1
+            elif masked[k] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = k
+                    break
+        name = m[1] or m[2]
+        if name is None or end is None:
+            _STATE["anonymous"] = True
+            continue
+        bodies: list[str] = _STATE["functions"].setdefault(name, [])
+        if command[m.end() : end] not in bodies:
+            bodies.append(command[m.end() : end])
+
+
+def _arg_text(arg: str) -> str:
+    """One argument as shell text that gives the word back: double-quoted if the shell fills it in (so it still
+    does), as is if it globs, else quoted."""
+    if "$" in arg or "`" in arg:
+        return '"' + arg.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    if _GLOB_CHARS.search(arg) and not any(c.isspace() for c in arg):
+        return arg
+    return shlex.quote(arg)
+
+
+def _put_args(body: str, name: str, args: list[str]) -> str:
+    """``body`` with its positional parameters replaced by ``args`` as text (``"$@"`` by every one of them)."""
+
+    def one(m: re.Match[str]) -> str:
+        key = m[1] or m[2] or m[3] or m[4]
+        if key == "#":
+            return str(len(args))
+        if key == "0":
+            return _arg_text(name)
+        if key == "*" and m[0].startswith('"'):
+            return _arg_text(" ".join(args))
+        if key in ("@", "*"):
+            return " ".join(_arg_text(a) for a in args)
+        n = int(key)
+        return _arg_text(args[n - 1]) if n <= len(args) else "''"
+
+    return _POSITIONAL_REF.sub(one, body)
+
+
+def _call_escape(name: str, args: list[str], depth: int) -> str | None:
+    """A call of a function the command defines: each of its bodies with ``args`` put in, and, where the body may
+    shift them (``shift``, ``set``, zsh's ``argv``), with the first few dropped too."""
+    results: list[str | None] = []
+    for body in _STATE["functions"][name]:
+        shifts = range(min(len(args), 4) + 1) if _SHIFTS.search(body) else range(1)
+        for k in shifts:
+            _STATE["calls"] += 1
+            if _STATE["calls"] > MAX_CALLS:
+                return denied_word("too_many")
+            results.append(_run_escape(_put_args(body, name, args[k:]), depth + 1, split=False))
+    return _merge(results)
+
+
 def _words_escape(words: list[str], depth: int) -> str | None:
     form = _name_escape(words)
     while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS):
@@ -2215,7 +2584,13 @@ def _plain_escape(words: list[str], depth: int) -> str | None:
     name, args = _basename(words[0]), words[1:]
     if name == "env":
         verdict, rest = _env_escape(args)
-        return verdict or (_words_escape(rest, depth) if rest else None)
+        if verdict or not rest:
+            return verdict
+        # The program `env -S '…'` splits out of its string is a command word the walk never saw.
+        variants = _command_word_variants(rest, rest)
+        if isinstance(variants, str):
+            return variants
+        return _merge([_words_escape(words, depth) for words, _ in variants])
     if name == "unset":
         return "env" if any(a in RUN_VARS for a in args) else None
     if name in ("export", "declare", "typeset", "local", "readonly"):
@@ -2243,6 +2618,7 @@ def run_escape(
     protect: Callable[[str, bool], str | None] | None = None,
     secret: Callable[[str], str | None] | None = None,
     kb_read: Callable[[str, str], str | None] | None = None,
+    command_word: Callable[[str], str | None] | None = None,
 ) -> str | None:
     """Whether a run's shell command gets around the commit hook's checks: "env" (changes SCOUT_MODE/SCOUT_READER
     or clears the environment), "detach" (backgrounds or hands work to another process), else the name of the form
@@ -2260,15 +2636,18 @@ def run_escape(
     (``python3 -c``, a here-document fed to ``python3 -``) that writes files is judged by the paths and protected
     names it spells. ``secret`` judges each path it names for a read of Scout's secrets. ``kb_read`` judges each
     file a reading command reads (``cat``, ``ls``, ``grep``…, input redirects) by the path the shell hands it,
-    returning :data:`KB_READ` or :data:`UNRESOLVED_READ` (see :func:`_kb_read`).
+    returning :data:`KB_READ` or :data:`UNRESOLVED_READ` (see :func:`_kb_read`). ``command_word`` decides a
+    command word of one of COMMAND_WORD_KINDS (a form to deny it, or None); every command word the gate can't
+    work out otherwise is denied as :func:`denied_word` says.
     """
-    global _PROTECT, _SECRET, _KB_READ
+    global _PROTECT, _SECRET, _KB_READ, _COMMAND_WORD
     outer = depth == 0
     if outer:
-        _PROTECT, _SECRET, _KB_READ = protect, secret, kb_read
+        _PROTECT, _SECRET, _KB_READ, _COMMAND_WORD = protect, secret, kb_read, command_word
         _STATE.update(
             checked=0, secrets=0, reads=0, literal=0, vars={}, bodies=[], unparsed=False, capped=False, parsing=False
         )
+        _STATE.update(words={}, functions={}, anonymous=False, calls=0, literals=0)
     try:
         found = _run_escape(command, depth)
         # Fail closed where the walk had to guess: an unclosed quote or a zsh group it can't rewrite (a run's
@@ -2276,14 +2655,15 @@ def run_escape(
         guessed = (_STATE["unparsed"] and kb_read is not None) or (
             _STATE["capped"] and (kb_read is not None or protect is not None)
         )
-        if outer and found is None and guessed:
+        # A command word judged from a guessed parse is a guess too (a zsh group split at its `|`).
+        if outer and guessed and (found is None or found.startswith(COMMAND_WORD_FORM)):
             from scout.kb.hook_paths import TOO_MANY
 
             return TOO_MANY
         return found
     finally:
         if outer:
-            _PROTECT = _SECRET = _KB_READ = None
+            _PROTECT = _SECRET = _KB_READ = _COMMAND_WORD = None
 
 
 def _known_output(body: str) -> str | None:
@@ -2319,7 +2699,7 @@ def _merge(results: list[str | None], detach: bool = False) -> str | None:
     return form or ("detach" if detach or "detach" in results else None)
 
 
-def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
+def _run_escape(command: str, depth: int, *, split: bool = True, arith: bool = False) -> str | None:
     if depth > MAX_DEPTH:
         from scout.kb.hook_paths import TOO_MANY
 
@@ -2329,6 +2709,7 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
         command, bodies = _split_heredocs(command, start=len(_STATE["bodies"]))
         _STATE["bodies"].extend(bodies)
     command = _strip_comments(_ansi_c(command.replace("\\\n", " ")))
+    _scan_functions(command)
     if _KB_READ is not None:
         command = _zsh_groups(command)
     # Every verdict with where it sits in the command, so the first form in the text names the deny
@@ -2339,22 +2720,22 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
     # Each body is judged when the walk below gets to it, so it sees the variables set before it
     # (`f=docs/a.md && echo "$(wc -c < $f)"`, `for f in a b; do n=$(grep -c x "$f"); done`).
     spans = _substitutions(command)
-    pending: list[tuple[int, str]] = []
+    pending: list[tuple[int, str, bool]] = []
     rebuilt, at, shift = [], 0, 0
     for start, end, a, b in spans:
         # A process substitution becomes the pipe the shell hands over (its own command is judged too).
         body = command[a:b]
         known = (_known_output(body) or _one_name_output(body)) if command[start] not in "<>" else "/dev/fd/63"
         rebuilt += [command[at:start], known or SUBST]
-        pending.append((start - shift, body))
+        pending.append((start - shift, body, command.startswith("$((", start)))  # `$(( … ))` is arithmetic
         shift += (end - start) - len(known or SUBST)
         at = end
     command = "".join([*rebuilt, command[at:]])
 
     def judge_bodies(before: int) -> None:
         while pending and pending[0][0] < before:
-            at_, body_ = pending.pop(0)
-            results.append((at_, _run_escape(body_, depth + 1, split=False)))
+            at_, body_, arith_ = pending.pop(0)
+            results.append((at_, _run_escape(body_, depth + 1, split=False, arith=arith_)))
 
     for text, expands in bodies:  # an unquoted here-document runs its substitutions; quotes there are text
         if expands:
@@ -2366,10 +2747,13 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
     oldpwd: str | None = None  # the folder before the last `cd` (`$OLDPWD`, `~-`): unknown until one
     previous: str | None = None
     position = 0
-    for segment, op in _segments_with_ops(command):
+    segments = _segments_with_ops(command)
+    in_case, patterns, arith_depth, in_test = 0, False, 0, False
+    for k, (segment, op) in enumerate(segments):
         position += len(op)
         here, position = position, position + len(segment)
         fed = previous if op in ("|", "|&") else None  # the segment piped into this one
+        next_op = segments[k + 1][1] if k + 1 < len(segments) else ""
         judge_bodies(position)
         unparsed, _STATE["unparsed"], _STATE["parsing"] = _STATE["unparsed"], False, True
         clean, targets, reads, strings = _redirects(segment)
@@ -2379,25 +2763,50 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
         # runs): it fails closed only where it may hide a read (a reading command or an input redirect).
         _STATE["unparsed"] = unparsed or (_STATE["unparsed"] and _reads_something(words, reads))
         _record_vars(words)
-        found = _words_escape(words, depth) or _hook_write_form(words, targets, cwd)
-        if found is None and _PROTECT is not None:
-            for program in _interpreter_programs(words, segment, strings, fed) or []:
-                found = _program_escape(program, cwd, depth)
-                if found is not None:
-                    break
-        if found is None and _shell_stdin_program(words):
-            found = _shell_stdin_escape(segment, strings, fed, depth)
-        if found is None and (_SECRET is not None or _KB_READ is not None):
-            # The same words, with what their quotes keep literal marked so (see _SHIELD): a quoted regex
-            # (`grep -o "a/(b|c)[^/]*/…"`) is no glob for either check.
-            literal_words, literal_reads = words, reads
-            shielded = _shield_quoted(segment)
-            if shielded != segment:
-                kb_clean, _writes, literal_reads, _strings = _redirects(shielded)
-                literal_words = _tokens(kb_clean)
-            found = _secret_read(literal_words, literal_reads, cwd)
-            if found is None and _KB_READ is not None:
-                found = _kb_read(literal_words, literal_reads, cwd, fed, oldpwd)
+        # The same words, with what their quotes keep literal marked so (see _SHIELD): a quoted regex
+        # (`grep -o "a/(b|c)[^/]*/…"`) is no glob for the read checks, and a quoted `rea?` no glob as a program.
+        literal_words, literal_reads = words, reads
+        shielded = _shield_quoted(segment)
+        if shielded != segment:
+            kb_clean, _writes, literal_reads, _strings = _redirects(shielded)
+            literal_words = _tokens(kb_clean)
+        escaped = _shield_escaped(shielded)
+        word_literals = literal_words if escaped == shielded else _tokens(_redirects(escaped)[0])
+        # Where a word is no program: a `case` pattern list (`*.md|*.txt)`), arithmetic (`(( ($n + 1) * 2 ))`,
+        # `$(( $n + 1 ))`), a `[[ … ]]` test's operands (split at its `||`), and an array's words (`arr=("$@")`).
+        head = next((w for w in words if w not in _KEYWORDS), None)
+        if head == "case":
+            in_case, patterns = in_case + 1, True
+        elif in_case and op == ";" and k > 0 and segments[k - 1] == ("", ";"):
+            patterns = True  # after `;;`
+        pattern = patterns and head != "case"
+        if next_op == ")":
+            patterns = False  # the list ends at its `)`
+        if head == "esac" and in_case:
+            in_case, patterns = in_case - 1, False
+        if arith_depth:
+            arith_depth += (op == "(") - (op == ")")
+        elif op == "(" and k > 0 and segments[k - 1] == ("", "("):
+            arith_depth = 2
+        test = in_test
+        if head == "[[":
+            in_test = "]]" not in words
+        elif in_test and "]]" in words:
+            in_test = False
+        items = op == "(" and k > 0 and segments[k - 1][0].rstrip().endswith("=")
+        skip = pattern or arith or arith_depth > 0 or test or items or _STATE["literals"] > 0
+        variants = [(words, word_literals)] if skip else _command_word_variants(words, word_literals)
+        if not isinstance(variants, str):  # the read checks keep the words as before where none was filled in
+            variants = [(w, literal_words if lit is word_literals else lit) for w, lit in variants]
+        array = bool(words) and next_op == "(" and words[-1].endswith("=")  # `c=(read HOME)`
+        _record_command_words(words, array)
+        found = variants if isinstance(variants, str) else None
+        for words_, literal_ in [] if isinstance(variants, str) else variants:
+            found = _segment_escape(
+                words_, literal_, segment, targets, literal_reads, strings, fed, cwd, oldpwd, depth, next_op
+            )
+            if found is not None:
+                break
         if found == "env":
             return "env"
         results.append((here, found))
@@ -2410,6 +2819,41 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
             cwd = ""  # back where the pushd started, as far as a run's `pushd x && …; popd` goes
     judge_bodies(len(command) + 1)
     return _merge([found for _, found in sorted(results, key=lambda r: r[0])], detach)
+
+
+def _segment_escape(
+    words: list[str],
+    literal_words: list[str],
+    segment: str,
+    targets: list[str],
+    literal_reads: list[str],
+    strings: list[str],
+    fed: str | None,
+    cwd: str,
+    oldpwd: str | None,
+    depth: int,
+    next_op: str,
+) -> str | None:
+    """One segment's verdict, its command words filled in (see :func:`_command_word_variants`)."""
+    found = _words_escape(words, depth) or _hook_write_form(words, targets, cwd)
+    if found is None and next_op != "(":  # `f()` defines f
+        for i in _command_word_indexes(words):
+            if words[i] in _STATE["functions"]:
+                found = _call_escape(words[i], words[i + 1 :], depth)
+                if found is not None:
+                    return found
+    if found is None and _PROTECT is not None:
+        for program in _interpreter_programs(words, segment, strings, fed) or []:
+            found = _program_escape(program, cwd, depth)
+            if found is not None:
+                break
+    if found is None and _shell_stdin_program(words):
+        found = _shell_stdin_escape(segment, strings, fed, depth)
+    if found is None and (_SECRET is not None or _KB_READ is not None):
+        found = _secret_read(literal_words, literal_reads, cwd)
+        if found is None and _KB_READ is not None:
+            found = _kb_read(literal_words, literal_reads, cwd, fed, oldpwd)
+    return found
 
 
 def _shell_stdin_escape(segment: str, strings: list[str], fed: str | None, depth: int) -> str | None:

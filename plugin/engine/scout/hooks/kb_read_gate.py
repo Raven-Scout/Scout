@@ -275,6 +275,24 @@ def _deny_unresolved_read() -> str:
     )
 
 
+# A run's command word the gate can't name as written but can see the shape of (live_run.COMMAND_WORD_KINDS: a `for`
+# loop over words that aren't plain, a variable assigned a substitution or other variables, `$@` or `$1` as a
+# function body's program, whose calls are judged with their arguments put in). True denies it, as every other
+# command word built at run time is. Off for now: in 288 scheduled runs these were the only such command words, in
+# 12 runs, so each is allowed and recorded as a `kb_read_gate.unresolved_command_word` event with its kinds until a
+# replay shows what denying them would cost.
+DENY_UNRESOLVED_COMMAND_WORDS = False
+
+
+def _deny_command_word(form: str) -> str:
+    return (
+        f"{MARK} In a scheduled run, a shell command names its program in plain text: this one's is {form}, a glob, "
+        "a command substitution or backtick, or a variable that isn't set to a plain word once earlier in the same "
+        "command, so Scout's gate can't tell what runs. Write the program out (`git status`, `scripts/scoutctl kb "
+        "…`), or set the variable to it in the same command (`S=scripts/scoutctl; $S kb …`)."
+    )
+
+
 def _deny_inline_write(form: str) -> str:
     return (
         f"{MARK} This command runs {form}: a program that writes files and names a file that decides which of "
@@ -368,6 +386,12 @@ def _record_unresolved_read(vault: Path, categories: list[str], mode: str | None
     _PENDING_AUDIT.append((vault, "kb_read_gate.unresolved_read", {"categories": categories, "mode": mode}))
 
 
+def _record_unresolved_command_word(vault: Path, kinds: list[str], mode: str | None) -> None:
+    """Queue an allowed command word the gate couldn't name: its kinds and the run's mode, never the command (see
+    :data:`DENY_UNRESOLVED_COMMAND_WORDS`)."""
+    _PENDING_AUDIT.append((vault, "kb_read_gate.unresolved_command_word", {"kinds": kinds, "mode": mode}))
+
+
 def flush_audit() -> None:
     """Write the queued rows, best effort: the event writer refuses anything but a regular file (scout.events)."""
     from scout.events import append_event
@@ -419,10 +443,12 @@ def decide(
             raise ValueError("Bash call without a command")
         from scout.kb import hook_paths
         from scout.kb.live_run import (
+            COMMAND_WORD_FORM,
             DELEGATE_FORM,
             HOME_FORM,
             KB_READ,
             UNRESOLVED_READ,
+            denied_word,
             even_dollar_escape,
             expansion_escape,
             run_escape,
@@ -504,6 +530,13 @@ def decide(
 
         memo: dict[str, list[str] | None] = {}
         unresolved: set[str] = set()
+        unresolved_words: set[str] = set()
+
+        def command_word(kind: str) -> str | None:
+            if DENY_UNRESOLVED_COMMAND_WORDS:
+                return denied_word(kind)
+            unresolved_words.add(kind)
+            return None
 
         def globs(target: str) -> list[str] | None:
             if target not in memo:
@@ -512,7 +545,7 @@ def decide(
 
         escape = (
             expansion_escape(command)
-            or run_escape(command, protect=protect, secret=secret, kb_read=kb_read)
+            or run_escape(command, protect=protect, secret=secret, kb_read=kb_read, command_word=command_word)
             or even_dollar_escape(command)
         )
         if escape == "env":
@@ -527,6 +560,9 @@ def decide(
             return _deny_delegate_write()
         if escape == "detach":
             return _deny_detach()
+        if escape is not None and escape.startswith(COMMAND_WORD_FORM):
+            _record_hook_skip(vault, escape, mode)
+            return _deny_command_word(escape)
         if escape is not None:
             _record_hook_skip(vault, escape, mode)
             return _deny_skip_form(escape)
@@ -535,6 +571,8 @@ def decide(
             return _deny_bash()
         if unresolved:
             _record_unresolved_read(vault, sorted(unresolved), mode)
+        if unresolved_words:
+            _record_unresolved_command_word(vault, sorted(unresolved_words), mode)
         return None
     if tool in ("Grep", "Glob"):
         raw = tool_input.get("path")
