@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from scout.hooks import kb_read_gate as gate
+from scout.kb import raw_read
 from scout.kb.raw_read import is_kb_path, raw_kb_read
 from tests.unit.test_hooks_kb_read_gate import RUN, _decision, _denied, _payload, _sh, vault  # noqa: F401
 
@@ -741,3 +742,186 @@ def test_the_shell_sends_other_search_tools_to_python(vault, tmp_path, command: 
 def test_an_ag_search_from_the_vault_root_is_denied_by_the_hook(vault) -> None:  # noqa: F811
     assert _denied(_decision(vault, "Bash", {"command": "ag Priya"}))
     assert _decision(vault, "Bash", {"command": "ag Priya scripts"}) is None
+
+
+# ----- a value flag before the pattern (#788 review) ------------------------------------------
+# Each row: a flag whose value, read as the pattern, used to make the real pattern look like a
+# root outside the KB. From the vault root these all read notes.
+VALUE_FLAG_THEN_PATTERN = {
+    "ack": [
+        "ack -t markdown TODO",
+        "ack -T python TODO",
+        "ack --and foo TODO",
+        "ack --or foo TODO",
+        "ack --not foo TODO",
+        "ack --range-start foo TODO",
+        "ack --range-end foo TODO",
+        "ack --files-from list TODO",
+    ],
+    "ugrep": [
+        "ugrep -r -t markdown TODO",
+        "ugrep -r -t python,markdown TODO",
+        "ugrep -rO md TODO",
+        "ugrep -r -O md TODO",
+        "ugrep -r -M magic TODO",
+        "ugrep -r -N foo TODO",
+        "ugrep -r --and foo TODO",
+        "ugrep -r --andnot foo TODO",
+        "ugrep -r --not foo TODO",
+        "ugrep -3 x .",
+        "ugrep --depth=2 x .",
+        "ugrep -r x -g '*.py,*.md'",
+    ],
+    "fd": [
+        "fd -C . people",
+        "fd --newer 1d people",
+        "fd --older 1d people",
+        "fd --changed-after 1d people",
+        "fd --change-newer-than 1d people",
+        "fd --change-older-than 1d people",
+        "fd --ignore-contain x people",
+        "fd --batch-size 10 people -X cat",
+        "fd x scripts -X cat ';' .",
+        "fd x scripts -x cat '{}' ';' -e md .",
+    ],
+    "ag": [
+        "ag -W 80 TODO",
+        "ag --width 80 TODO",
+        "ag --color-path 31 TODO",
+        "ag --color-match 31 TODO",
+        "ag --color-line-number 31 TODO",
+        "ag -A TODO",
+    ],
+    "aliases": [
+        "ug -r TODO .",
+        "ug+ -r TODO .",
+        "ugrep+ -r TODO .",
+        "fdfind people",
+        "ack-grep TODO",
+    ],
+}
+
+
+@pytest.mark.parametrize("command", [c for rows in VALUE_FLAG_THEN_PATTERN.values() for c in rows])
+def test_a_value_flag_before_the_pattern_does_not_hide_a_vault_root_search(command: str) -> None:
+    assert judged(command)
+    assert judged(command, cwd="/home/alex")
+
+
+def test_fd_base_directory_puts_the_search_in_the_vault() -> None:
+    assert judged("fd -C ~/Scout -e md", cwd="/tmp")
+    assert judged("fd --base-directory ~/Scout people", cwd="/tmp")
+    assert not judged("fd -C ~/Scout/scripts people", cwd="/tmp")
+    assert not judged("fd -C ~/Scout people scripts", cwd="/tmp")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # the same flags, with a root outside the KB or a filter to code
+        "ack -t markdown TODO scripts",
+        "ack -t python TODO",
+        "ack --and foo TODO scripts",
+        "ugrep -r -t markdown TODO scripts",
+        "ugrep -r -t python TODO",
+        "ugrep -rO py TODO",
+        "ugrep -r -O py,sh TODO",
+        "ugrep -r x -g '*.py,*.sh'",
+        "ugrep -3 x scripts",
+        "fd -C scripts people",
+        "fd --newer 1d people scripts",
+        "fd x scripts -X cat ';'",
+        "fd x scripts -x cat '{}' ';' -e py",
+        "ag -W 80 TODO scripts",
+        "ag -A 3 TODO scripts",
+        "ug -r TODO scripts",
+        "fdfind people scripts",
+        "ack-grep TODO scripts",
+        # over-denies the review found: none of these reads a file
+        "ag -V",
+        "fd -V",
+        "fd -h",
+        "ag --list-file-types",
+        "ack --help-types",
+        "fd -epy x",
+        "ag --context 3 x",  # `--context` takes its value only attached: `3` is the pattern, `x` the root
+    ],
+)
+def test_value_flags_kept_out_of_the_kb_are_allowed(command: str) -> None:
+    assert not judged(command)
+
+
+def test_options_reads_getopt_clusters() -> None:
+    assert raw_read._options("ugrep", ["-rO", "md", "x"]) == [("-r", None), ("-O", "md")]
+    assert raw_read._options("fd", ["-epy", "--type=f", "--and", "y"]) == [
+        ("-e", "py"),
+        ("--type", "f"),
+        ("--and", "y"),
+    ]
+    assert raw_read._options("ag", ["-A", "x", "-C", "2", "--context", "3"]) == [
+        ("-A", None),
+        ("-C", "2"),
+        ("--context", None),
+    ]
+    assert raw_read._options("grep", ["-i.bak", "--", "-e"]) == [("-i", None)]
+    assert raw_read._operands("ugrep", ["-rO", "md", "x", "."]) == ["-rO", "x", "."]
+    assert raw_read._split_list("*.{md,txt},!*.py") == ["*.{md,txt}", "!*.py"]
+
+
+@pytest.mark.parametrize("command", ["ug -r x .", "fdfind people", "ack-grep x"])
+def test_the_shell_sends_search_tool_aliases_to_python(vault, tmp_path, command: str) -> None:  # noqa: F811
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 2
+
+
+# ----- #791 review: holes in the new ugrep/ack/fd parsing, and grep clusters -----------------------
+REVIEW_MUST_DENY = {
+    # 1. ugrep: a `!` or `^` entry excludes, so it widens the search; a type is matched by its first letters
+    "ugrep exclusions": [
+        "ugrep -r -g '^*.py' TODO",
+        "ugrep -r -g '!*.py' TODO",
+        "ugrep -r -O '^py' TODO",
+        "ugrep -r -O '!py' TODO",
+        "ugrep -r -t '^python' TODO",
+        "ugrep -r -t mark TODO",
+        "ugrep -r -t py,mark TODO",
+    ],
+    # 2. ack: `no` + a type excludes it
+    "ack no-type": ["ack --type=nopython TODO", "ack -t nopython TODO", "ack --type nopython TODO"],
+    # 3. ugrep value flags
+    "ugrep values": ["ugrep -r -K 1 TODO", "ugrep -r -J 4 TODO", "ugrep --depth 5 TODO", "ugrep -r --range 1 TODO"],
+    # 5. grep's recursion inside a cluster (on main too)
+    "grep clusters": ["grep -rnA3 TODO", "grep -rC2 TODO", "grep -r3 TODO .", "egrep -inr TODO", "grep -nRe TODO"],
+}
+
+
+@pytest.mark.parametrize("command", [c for rows in REVIEW_MUST_DENY.values() for c in rows])
+def test_review_791_holes_are_denied(command: str) -> None:
+    assert judged(command)
+    assert judged(command, cwd="/home/alex")
+
+
+# 4. fd's exec flag in a cluster or attached (clap): from action-items/ the command reads context/
+@pytest.mark.parametrize("command", ["fd -Hx cat", "fd -xcat", "fd -x=cat", "fd -HX cat", "fd . -IHx cat {}"])
+def test_fd_exec_in_a_cluster_is_a_content_read(command: str) -> None:
+    assert judged(command, cwd=f"{VAULT}/action-items")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ugrep -r -t python TODO",  # a type filter to code still bounds the search
+        "ugrep -r -O py,'^sh' TODO",  # an include beside an exclude: the include bounds it
+        "ugrep -r -g '*.py,!*.md' TODO",
+        "ack -t python TODO",
+        "ugrep -r -K 1 TODO scripts",
+        "ugrep --depth 5 TODO scripts",
+        "grep -rnA3 TODO scripts",
+        "grep -ne -r docs/a.md",  # `-e` takes `-r` as the pattern: not recursive
+        "fd -ex people scripts",  # `-e x`, not exec
+    ],
+)
+def test_review_791_neighbours_are_allowed(command: str) -> None:
+    assert not judged(command)
+    assert not judged("fd -Hex cat scripts", cwd=f"{VAULT}/action-items")
