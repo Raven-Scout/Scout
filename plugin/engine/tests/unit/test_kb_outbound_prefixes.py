@@ -260,7 +260,8 @@ def test_fuzzed_text_finds_the_same(monkeypatch: pytest.MonkeyPatch, seed: int) 
 
 
 def test_a_wrong_prefix_would_be_caught(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The differential has teeth: a note promising a prefix its matches don't start with loses hits."""
+    """A note promising a prefix its matches don't start with: the use-time check refuses it, and were that
+    check gone, the differential would see the lost hits (it has teeth)."""
     terms = _terms(monkeypatch)
     broken = dataclasses.replace(
         terms,
@@ -269,6 +270,8 @@ def test_a_wrong_prefix_would_be_caught(monkeypatch: pytest.MonkeyPatch) -> None
         ),
     )
     text = "Call Ann Lee\n"
+    assert outbound._hits(text, terms) == outbound._hits(text, broken)  # refused: the whole text is searched
+    monkeypatch.setattr(outbound, "_keeps_promise", lambda pattern, prefixes: bool(prefixes))
     assert outbound._hits(text, terms) != outbound._hits(text, broken)
 
 
@@ -364,6 +367,10 @@ def _sites() -> list[tuple[str, bool]]:
 def test_prefixes_are_set_only_beside_a_pattern_built_from_the_same_words() -> None:
     """A new place that sets prefixes fails here until it builds them with its pattern, from the same words.
 
+    The guarantee itself is :func:`outbound._keeps_promise`, checked from the pattern's
+    source where it is used (a stale ``replace()``, ``object.__setattr__`` or a
+    hand-written pattern gets the whole-text search); this keeps new sites honest.
+
     ``_term_prefixes(x)`` and ``_term_regex(x)`` both run :func:`outbound._words_of` over
     ``_term_forms(x)`` (``_bare_*`` over ``_bare_forms``), and the pattern is those
     words escaped between zero-width assertions, so each match starts with a first word.
@@ -413,6 +420,70 @@ def test_prefixes_are_found_in_the_same_folded_form_the_pattern_matches() -> Non
     assert hits == outbound._hits(text, _stripped(terms))
     assert {path for path, _, _ in hits} == {n.path for n in terms.notes}  # each spelling is found
     assert outbound.find_mentions(text, terms, allow_markers=False) == [1]
+
+
+# ----- the promise is checked where it is used (review of #815) ---------------------------------------
+
+
+def test_every_note_the_builders_make_keeps_its_promise(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The check passes for what the builders make, so the fast path is really taken (not silently whole-text)."""
+    new, _ = _scanners(_terms(monkeypatch))
+    checked = 0
+    for note in new.terms.notes:
+        for pattern, prefixes in ((note.pattern, note.prefixes), (note.bare_pattern, note.bare_prefixes)):
+            if pattern is not None and prefixes is not None:
+                assert outbound._keeps_promise(pattern, prefixes), note.path
+                checked += 1
+    assert checked > len(PEOPLE)
+
+
+def _spans(pattern: re.Pattern[str], prefixes: tuple[str, ...], form: str) -> list[tuple[int, int]]:
+    return [m.span() for m in _finditer(pattern, prefixes, form)]
+
+
+def test_empty_prefixes_search_the_whole_text() -> None:
+    """``prefixes=()`` beside a live pattern (a generator spent by the pattern's builder) must not find nothing."""
+    pattern = outbound._term_regex(["Sam Lee"])
+    assert pattern is not None
+    assert _spans(pattern, (), "sam lee") == [(0, 7)]
+
+
+def test_a_replaced_pattern_with_stale_prefixes_is_searched_whole(monkeypatch: pytest.MonkeyPatch) -> None:
+    terms = outbound.terms_of([_note("Sam Lee")])
+    swapped = dataclasses.replace(terms.notes[0], pattern=outbound._term_regex(["Zed Roe"]))
+    assert swapped.prefixes == ("sam",)
+    stale = dataclasses.replace(terms, notes=(swapped,), any_term=outbound._term_regex(["Zed Roe", "Sam Lee"]))
+    assert outbound._hits("zed roe\n", stale) == outbound._hits("zed roe\n", _stripped(stale)) != []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        r"(?i:sam)",  # a scoped flag: pattern.flags doesn't show it
+        r"sam?",  # a quantifier on the prefix's last letter
+        r"sa(?:m)",  # a group
+        r"(?:sam|(?:x))",  # nested
+        r"(?:sam|x)",  # an alternative without a prefix
+        r"samx",  # the prefix then a letter, not a separator
+        r"(?=x)sam",  # a lookaround inside
+        r"sam[",  # a class that never closes
+    ],
+)
+def test_a_pattern_not_made_by_the_builders_is_searched_whole(source: str) -> None:
+    pattern = re.compile(outbound._BEFORE + source + outbound._AFTER) if not source.endswith("[") else None
+    if pattern is None:
+        assert outbound._alternatives(source) is None
+        return
+    assert not outbound._keeps_promise(pattern, ("sam",))
+    for form in ("SAM", "sa", "sam", "x", "samx", "sam x"):
+        assert _spans(pattern, ("sam",), form) == [m.span() for m in pattern.finditer(form)], (source, form)
+
+
+def test_escapes_and_classes_never_split_an_alternative() -> None:
+    assert outbound._alternatives(r"a\|b|c[|]d|e[\]|]f") == [r"a\|b", "c[|]d", r"e[\]|]f"]
+    literal = re.compile(outbound._BEFORE + re.escape("a|b (c)") + outbound._AFTER)
+    assert outbound._keeps_promise(literal, ("a|b (c)",))
+    assert not outbound._keeps_promise(re.compile(literal.pattern, re.IGNORECASE), ("a|b (c)",))
 
 
 def test_an_ignorecase_pattern_is_searched_whole() -> None:

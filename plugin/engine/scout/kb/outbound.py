@@ -74,6 +74,7 @@ the note or its path to a caller that would print it.
 from __future__ import annotations
 
 import bisect
+import functools
 import html
 import os
 import re
@@ -618,21 +619,85 @@ def _occurrences(text: str, literal: str) -> list[int]:
     return out
 
 
+def _alternatives(body: str) -> list[str] | None:
+    """The top-level ``|`` alternatives of regex source ``body``; None if it has a group (``(``, ``)``).
+
+    Escapes are kept whole and a ``[...]`` class is skipped, so an escaped ``\\|`` or a
+    ``|`` inside a class never splits. With no group there is no nested alternation,
+    no scoped flag (``(?i:``) and no lookaround but the ones the caller stripped.
+    """
+    out: list[str] = []
+    start = i = 0
+    n = len(body)
+    while i < n:
+        c = body[i]
+        if c == "\\":
+            i += 2
+        elif c == "[":
+            i += 1
+            if i < n and body[i] == "^":
+                i += 1
+            if i < n and body[i] == "]":
+                i += 1
+            while i < n and body[i] != "]":
+                i += 2 if body[i] == "\\" else 1
+            if i >= n:
+                return None
+            i += 1
+        elif c in "()":
+            return None
+        elif c == "|":
+            out.append(body[start:i])
+            i += 1
+            start = i
+        else:
+            i += 1
+    out.append(body[start:])
+    return out
+
+
+@functools.lru_cache(maxsize=4096)
+def _keeps_promise(pattern: re.Pattern[str], prefixes: tuple[str, ...]) -> bool:
+    """Whether every match of ``pattern`` provably starts with one of ``prefixes`` (``PrivateNote.prefixes``).
+
+    Checked from the pattern's own source each time it is used, so a pattern built
+    any other way, a ``replace()`` that kept old prefixes, or ``prefixes=()`` falls
+    back to the whole-text search. True only for the shapes the builders make:
+    ``_BEFORE`` + an alternation (or one literal) + ``_AFTER``, no flag but the
+    default, no group, and each alternative ``re.escape(prefix)`` then nothing or a
+    separator, so no quantifier can apply to the prefix's last character. The
+    prefixes are found with a case-sensitive ``str.find`` in the folded form the
+    pattern matches, so a case-insensitive pattern never qualifies.
+    """
+    if not prefixes or "" in prefixes or pattern.flags != re.UNICODE:
+        return False
+    src = pattern.pattern
+    if not (src.startswith(_BEFORE) and src.endswith(_AFTER)) or len(src) < len(_BEFORE) + len(_AFTER):
+        return False
+    body = src[len(_BEFORE) : len(src) - len(_AFTER)]
+    if body.startswith("(?:") and body.endswith(")"):
+        body = body[3:-1]
+    alts = _alternatives(body)
+    if not alts:
+        return False
+    escaped = [re.escape(p) for p in prefixes]
+    return all(any(alt.startswith(e) and (alt == e or alt[len(e) :].startswith(_SEP)) for e in escaped) for alt in alts)
+
+
 def _matches(
     pattern: re.Pattern[str], prefixes: tuple[str, ...] | None, form: str, seen: dict[str, list[int]]
 ) -> Iterator[re.Match[str]]:
     """``pattern.finditer(form)``, trying the pattern only where one of ``prefixes`` starts.
 
-    ``prefixes`` is ``PrivateNote.prefixes``: every match starts with one. So the
+    ``prefixes`` is ``PrivateNote.prefixes``: every match starts with one
+    (:func:`_keeps_promise` checks that, or this is a plain finditer). So the
     leftmost match at or after any index starts at one of their occurrences, and
     ``pattern.match(form, i)`` there is the match finditer finds (its lookbehind
     still sees ``form`` before ``i``). A match is never empty (it starts with a
     prefix that isn't), so each search resumes at the last match's end, as
     finditer does. ``seen`` keeps each prefix's occurrences across notes.
     """
-    if prefixes is None or "" in prefixes or pattern.flags & re.IGNORECASE:
-        # No promise, or one str.find can't keep: the prefixes are found case-sensitively in the folded form,
-        # which is what the pattern matches against (it is built without IGNORECASE; folding does the rest).
+    if prefixes is None or not _keeps_promise(pattern, prefixes):
         yield from pattern.finditer(form)
         return
     starts: set[int] = set()
