@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-13-runtime-agnostic-design.md` (§8, §10–§13; the Phase 2 row of §12), with `docs/superpowers/specs/2026-11-16-runtime-agnostic-phase0-findings.md` (§1, §3, §4). The parent plan is `docs/superpowers/plans/2026-11-13-runtime-agnostic.md`; this file replaces its Phase 2 card list.
 
-**Starts after:** #652's follow-ups are merged (launch env removal, `RunRequest.timeout_s`, `sandbox_paths`, `gates probe --runtime`, `agent_runtime.fallback`, `declared_capabilities`, `interactive_host`). Every interface below assumes them.
+**Starts after:** #652's follow-ups, merged as #806 (e32f1656): the non-Anthropic env allowlist (`base.NON_ANTHROPIC_ENV_ALLOW`), `Launch.env_unset`/`cwd`, `RunRequest.timeout_s`, `sandbox_paths` with `profile.AGENT_DATA_DIRS`, `gates probe --runtime`, `sandbox profile --runtime`, `agent_runtime.fallback`, `declared_capabilities`, `interactive_host`. Every interface below assumes them.
 
 **Detail level.** PRs 2A–2C are written step by step: they are the critical path, and what they find can change the rest. PRs 2D–2K are written per task, with the interfaces, test names and done-when fixed. Each gets its step-level pass when the PR before it merges. A finding in 2A that contradicts this plan stops the work and goes back to the coordinator, not into a workaround.
 
@@ -28,6 +28,7 @@
 - Run limits are on by default for agy: 45 awake minutes (90 for a research slot) and the `auto` daily token ceiling (spec §8.6). agy has no `budget_cap`.
 - Generated files (`~/.gemini/config/hooks.json` block, `plugin/runtimes/antigravity/`, `verified.json`, `connectors.snapshot.json`) are generated, never hand-edited, and drift-tested.
 - Public surfaces (fixtures, PRs, commits, docs) use the stand-ins in `plugin/CLAUDE.md`. No vault content.
+- Inside another agent CLI's home folder (`~/.gemini`, `~/.codex`, …) a run can write only the folders `profile.AGENT_DATA_DIRS` lists for its runtime id (agy: `~/.gemini/antigravity-cli`), and never a `settings*.json`, `config.toml`, `hooks.json`, `hooks/` or `mcp*.json` there, at any depth (#806). An adapter can't widen this. A new data folder is a change to `AGENT_DATA_DIRS` with a kernel row, and a need to write one of those names is a stop-and-ask, never a widening.
 - Claude Code runs stay byte-identical: golden argv, `hooks.json` and the Claude sandbox profile don't change in any PR here.
 - Every PR adds a changelog fragment (`plugin/changelog.d/<slug>.<section>.md`, and `apps/macos/changelog.d/` for 2J).
 
@@ -53,7 +54,7 @@ The three things findings §6 left open that need no model. The result is code f
 
 **Interfaces:**
 - Consumes: `base.AgentRuntime`, `base.SandboxPaths`, `base.Capability`, `base.Launch`, `base.RunRequest` (Phase 1, #652).
-- Produces: `class Antigravity` with `id = "antigravity"`, `provider = "google"`, `display_name = "Antigravity CLI"`, `interactive_host = False`; `DECLARED_CAPABILITIES: frozenset[Capability] = {HEADLESS_EVENTS, USAGE_TOKENS, CUSTOM_ENDPOINT, SKILLS, CONTEXT_FILE}`; `data_dir(env) -> Path` (`$HOME/.gemini/antigravity-cli`); `config_dir(env) -> Path` (`$HOME/.gemini/config`); `sandbox_paths(env) -> SandboxPaths(protected=(), writable=(data_dir(env),))`. `~/.gemini` is already protected by `hook_paths.AGENT_DIRS`, so no protected entry is needed.
+- Produces: `class Antigravity` with `id = "antigravity"`, `provider = "google"`, `display_name = "Antigravity CLI"`, `interactive_host = False`; `DECLARED_CAPABILITIES: frozenset[Capability] = {HEADLESS_EVENTS, USAGE_TOKENS, CUSTOM_ENDPOINT, SKILLS, CONTEXT_FILE}`; `data_dir(env) -> Path` (`$HOME/.gemini/antigravity-cli`); `config_dir(env) -> Path` (`$HOME/.gemini/config`); `sandbox_paths(env) -> SandboxPaths(protected=(), writable=(data_dir(env),))`. `~/.gemini` is already protected whole by `hook_paths.AGENT_DIRS`, so no protected entry is needed: the carve-out is accepted only because `profile.AGENT_DATA_DIRS["antigravity"]` lists `.gemini/antigravity-cli` and the profile is built with `runtime_id="antigravity"` (#806). `data_dir` must match that entry exactly; a test pins it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -66,10 +67,16 @@ def test_antigravity_declares_no_budget_cap():
 
 def test_its_data_dir_is_writable_and_its_config_dir_isnt(world):
     home, vault, env = world
-    rules = sbx.build_rules(vault, env, runtime_paths=Antigravity().sandbox_paths(env))
+    rules = sbx.build_rules(vault, env, runtime_paths=Antigravity().sandbox_paths(env), runtime_id="antigravity")
     assert sbx.decide(rules, str(home / ".gemini/antigravity-cli/brain/c1/x.jsonl")) == "allow"
     assert sbx.decide(rules, str(home / ".gemini/config/hooks.json")) == "deny"
     assert sbx.decide(rules, str(home / ".gemini/settings.json")) == "deny"
+    assert sbx.decide(rules, str(home / ".gemini/antigravity-cli/settings.json")) == "deny"
+
+def test_its_data_dir_is_the_profiles_listed_one(world):
+    home, _vault, env = world
+    (rel,) = sbx.AGENT_DATA_DIRS["antigravity"]
+    assert Antigravity().data_dir(env) == home / rel
 ```
 
 - [ ] **Step 2: Run them to see them fail**
@@ -92,15 +99,15 @@ Expected: FAIL, `ModuleNotFoundError: scout.agent_runtimes.antigravity`
 - Modify: `docs/superpowers/specs/2026-11-16-runtime-agnostic-phase0-findings.md` (new §7, "Phase 2A results")
 
 **Interfaces:**
-- Consumes: `Antigravity.sandbox_paths`, `scout.sandbox.profile.build_profile(vault, env, runtime_paths=…)`.
+- Consumes: `Antigravity.sandbox_paths`, `scout.sandbox.profile.build_profile(vault, env, runtime_paths=…, runtime_id="antigravity")`.
 
 - [ ] **Step 1: Write the kernel rows** (no agy needed: they test the profile with `/bin/sh` writes)
   - `test_agy_data_dir_is_writable_under_the_run_profile`: a write to `~/.gemini/antigravity-cli/conversations/x.db` succeeds.
   - `test_agy_hooks_config_is_not`: a write to `~/.gemini/config/hooks.json` fails with `Operation not permitted`.
   - `test_agy_cant_replace_itself_in_a_run`: with `~/.local/bin` on `PATH`, `cp /bin/sh ~/.local/bin/agy` fails (the PATH-entry rule, `profile.py` step 5).
 - [ ] **Step 2: Run them** (macOS): `.venv/bin/python -m pytest tests/integration/test_run_sandbox_kernel.py -q -k agy`. Expected: PASS. If the data-dir row fails, fix `sandbox_paths`, not the profile.
-- [ ] **Step 3: The spike (throwaway, not committed).** In a scratch dir with a throwaway `HOME`, run agy 1.5.9+ under `sandbox-exec -p "$(scoutctl sandbox profile --runtime antigravity …)"` against the gemini-provider fake (findings §0.1), one scripted `write_file` and one `run_command`. Record: does agy start, write its data dir, write anything else (log the denials from `log show --predicate 'sender=="Sandbox"'`), and does its updater try `~/.local/bin`?
-- [ ] **Step 4: Write findings §7.1** with each result and its evidence tag (**[run]**). Any write outside `data_dir` that agy needs to function goes into `sandbox_paths.writable` with a kernel row, or into a stop-and-ask if it is under a protected root.
+- [ ] **Step 3: The spike (throwaway, not committed).** In a scratch dir with a throwaway `HOME`, run agy 1.5.9+ under `sandbox-exec -p "$(scoutctl sandbox profile --runtime antigravity …)"` against the gemini-provider fake (findings §0.1), one scripted `write_file` and one `run_command`. Record: does agy start, write its data dir, write anything else (log the denials from `log show --predicate 'sender=="Sandbox"'`), and does its updater try `~/.local/bin`? Also record whether agy reads any of `GEMINI.md`, `.env`, `extensions/` or `commands/` from its data dir (`fs_usage -f filesys` on the agy pid, or `opensnoop`): these stay writable there (#806 re-denies only `settings*.json`, `config.toml`, `hooks.json`, `hooks/` and `mcp*.json`), and all four are already denied at `~/.gemini` itself. And record whether agy tries to write one of the re-denied names inside its data dir.
+- [ ] **Step 4: Write findings §7.1** with each result and its evidence tag (**[run]**). Any write outside `data_dir` that agy needs to function goes into `sandbox_paths.writable` (and `AGENT_DATA_DIRS` when it is under `~/.gemini`) with a kernel row, or into a stop-and-ask if it is under a protected root. Two more stop-and-asks for Jordan via the coordinator: agy reads `.env` or `extensions/` from its data dir (they act as config there, so they need a re-deny, and agy may then not start), or agy needs to write a re-denied name there. A read of `GEMINI.md` or `commands/` is recorded in §7.1 and goes to 2I (skills and commands), which decides where Scout puts them. Note in §7.1 that a case variant of the data dir (`.Gemini/Antigravity-CLI`) is accepted too; that is harmless on a case-insensitive disk (APFS default), and the re-denies match case-insensitively.
 - [ ] **Step 5: Commit** `test(sandbox): agy's data dir, gate config and self-update under the run profile (Phase 2A)`
 
 ### Task 2A.3: The local-server bypass check and the shell-gate deny
@@ -160,10 +167,10 @@ def test_a_run_cant_reach_agys_local_server(run_env, vault, cmd):
 - Test: `plugin/engine/tests/unit/test_agent_runtime_antigravity.py` (golden argv)
 
 **Interfaces:**
-- Produces: `settings_json(req: RunRequest) -> str` (compact JSON, sorted keys); `headless_argv(req) -> Launch` with `argv = (agy, "-p", prompt, "--output-format", "stream-json", "--model", model, "--print-timeout", str(req.timeout_s or 0), "--settings", settings_json(req))`, `env_unset=("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_APPLICATION_CREDENTIALS")` (a run uses the owner's login, never a key or endpoint from the runner's environment), `cwd=req.vault`.
+- Produces: `settings_json(req: RunRequest) -> str` (compact JSON, sorted keys); `headless_argv(req) -> Launch` with `argv = (agy, "-p", prompt, "--output-format", "stream-json", "--model", model, "--print-timeout", str(req.timeout_s or 0), "--settings", settings_json(req))`, `env={}` and `env_unset=()` (the defaults), `cwd=req.vault`. A run uses the owner's login, never a key or endpoint from the runner's environment: `exec.launch_env` already passes agy only `base.NON_ANTHROPIC_ENV_ALLOW`, which holds no `GEMINI_*`, `GOOGLE_*` or `ANTIGRAVITY_*` name (#806). If 2A finds agy needs a variable outside the allowlist, the adapter adds it by name in `Launch.env`, where review sees it.
 - `settings_json` sets `permissions.deny` for `write_file(~/.gemini/config/**)`, `write_file(<vault>/.agents/**)`, `write_file(<vault>/.gemini/**)` and `write_file(<vault>/.git/**)`: the second layer under the hook (findings §1.9). It never sets `modelProvider`.
 
-- [ ] **Step 1: Failing tests:** `test_golden_argv` (exact tuple for a fixed request, `budget_cap` ignored), `test_the_runners_keys_never_reach_agy` (with `GEMINI_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` in the base env, neither is in `exec.launch_env(...)` output), `test_settings_never_choose_a_provider`, `test_print_timeout_is_the_run_timeout`.
+- [ ] **Step 1: Failing tests:** `test_golden_argv` (exact tuple for a fixed request, `budget_cap` ignored), `test_the_runners_keys_never_reach_agy` (with `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_GEMINI_BASE_URL`, `GOOGLE_APPLICATION_CREDENTIALS` and `CLAUDE_CODE_OAUTH_TOKEN` in the base env, none is in `exec.launch_env(...)` output: this pins the allowlist for agy, not an adapter list), `test_settings_never_choose_a_provider`, `test_print_timeout_is_the_run_timeout`.
 - [ ] **Step 2: Run them to see them fail.**
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run them to see them pass.**
@@ -379,7 +386,7 @@ Tests: `test_install_writes_only_its_own_key`, `test_install_is_idempotent`, `te
 1. **Translate into Claude-shaped payloads.** `decide()` keeps judging `{"tool_name": "Bash" | "Read" | …}`. That puts every existing gate test and the 50-run replay behind agy too. The alternative, teaching each gate a `tool_kind`, touches every gate for no gain in Phase 2.
 2. **One PreToolUse entry for agy** (`hook pre-tool`), which runs the gates in `hooks.json`'s order. agy's matcher is a regex over names it may rename, so per-gate matchers would be a second allowlist to keep in step.
 3. **agy can't update itself during a run.** The sandbox's PATH rule already denies it. The next run sees the new version and probes it first.
-4. **The runner's Gemini keys never reach agy** (`env_unset`). A run uses the owner's login only, so a stray `GEMINI_API_KEY` can't send the vault to a different account or a paid key.
+4. **The runner's Gemini keys never reach agy** (the #806 env allowlist, so the adapter lists nothing in `env_unset`). A run uses the owner's login only, so a stray `GEMINI_API_KEY` can't send the vault to a different account or a paid key.
 5. **The local-server deny stays on** even if 2A finds no bypass. Lifting it is its own PR.
 6. **`default_model()`** is fixed in 2B from `agy models`, not guessed here.
 7. **Denied calls are counted, not failed.** agy exits 0 after a deny (findings §1.1), so the run stands and health shows the count.
