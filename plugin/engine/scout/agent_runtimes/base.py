@@ -112,6 +112,10 @@ class RunRequest:
     ``budget_cap`` is the USD cap *as text*, exactly as the runner (or the retry
     wrapper, which rewrites it for a retry, #561) wrote it, so the launched CLI sees
     the same characters it always has. ``None`` means no cap was passed.
+
+    ``timeout_s`` is the run timeout in awake seconds (``scout.agent_runtimes.limits``),
+    worked out by whoever builds the request; ``None`` means no timeout, and ``exec``
+    then replaces itself with the CLI.
     """
 
     vault: Path
@@ -122,15 +126,61 @@ class RunRequest:
     budget_cap: str | None
     reader: str
     binary: Path | None = None  # the CLI the runner names; None: the adapter's locate()
+    timeout_s: int | None = None
+
+
+# Environment variables that carry an Anthropic credential or Claude Code's own settings, such as the
+# CLAUDE_CODE_OAUTH_TOKEN the retry wrapper exports. A runtime that isn't Anthropic's never gets one, not even
+# from its own adapter's ``Launch.env`` (#652 S5). fnmatch patterns, matched case-sensitively.
+ANTHROPIC_ENV: tuple[str, ...] = ("CLAUDE_*", "ANTHROPIC_*")
+# All a runtime that isn't Anthropic's gets of the runner's environment (review of #806): the account and locale,
+# git's per-run settings the retry wrapper adds (GIT_CONFIG_COUNT/KEY_n/VALUE_n), and Scout's own SCOUT_*. Anything
+# else (cloud credentials, GH_TOKEN, SSH_AUTH_SOCK, another vendor's keys) stays behind. An adapter that needs more
+# names it in ``Launch.env``, where a reviewer sees it.
+NON_ANTHROPIC_ENV_ALLOW: tuple[str, ...] = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TMPDIR",
+    "TZ",
+    "LANG",
+    "LC_*",
+    "TERM",
+    "XDG_*",
+    "__CF_USER_TEXT_ENCODING",
+    "GIT_CONFIG_*",
+    "SCOUT_*",
+)
 
 
 @dataclass(frozen=True)
 class Launch:
-    """What to exec: the argv (argv[0] is the binary), environment to add, and stdin text."""
+    """What to exec: the argv (argv[0] is the binary), the environment, the working directory and stdin text.
+
+    The CLI's environment is the runner's, minus every variable matching an ``env_unset`` pattern (fnmatch,
+    case-sensitive), plus ``env``. ``cwd`` ``None`` keeps the runner's working directory (the vault).
+    """
 
     argv: tuple[str, ...]
     env: Mapping[str, str] = field(default_factory=dict)
     stdin: str | None = None
+    env_unset: tuple[str, ...] = ()
+    cwd: Path | None = None
+
+
+@dataclass(frozen=True)
+class SandboxPaths:
+    """What a runtime adds to the scheduled runs' OS write sandbox (``scout.sandbox.profile``).
+
+    ``protected``: trees a run may not write, such as where the CLI reads its hooks and settings.
+    ``writable``: folders under a protected tree that the CLI itself must write, such as its session store.
+    A protected tree under a writable one stays protected.
+    """
+
+    protected: tuple[Path, ...] = ()
+    writable: tuple[Path, ...] = ()
 
 
 class FailureKind(enum.StrEnum):
@@ -184,14 +234,18 @@ class AgentRuntime(Protocol):
     id: str
     display_name: str
     provider: str  # "anthropic", "openai", "google", …
-    # The CLI enforces a spend cap itself (Claude Code's --max-budget-usd). A runtime that doesn't
-    # gets the run timeout and the daily token ceiling by default (spec §8.6, scout.agent_runtimes.limits).
-    caps_own_spend: bool
+    # What the CLI does whatever its hooks do, known without starting it, e.g. Claude Code's
+    # --max-budget-usd (budget_cap). ``capabilities`` returns these plus whatever a probe proves.
+    declared_capabilities: frozenset[Capability]
+    # The skills' preamble runs inside this CLI's own interactive session, whose hooks are its own (G4),
+    # so ``check`` has nothing to add for an interactive check.
+    interactive_host: bool
 
     def locate(self, hint: Path | None) -> Path | None: ...
     def version(self, binary: Path) -> str | None: ...
     def auth_status(self, binary: Path) -> RuntimeAuth: ...
     def capabilities(self, vault: Path, binary: Path, version: str | None) -> frozenset[Capability]: ...
+    def sandbox_paths(self, env: Mapping[str, str]) -> SandboxPaths: ...
 
     def validate_model(self, value: object, *, where: str) -> str: ...
     def default_model(self) -> str: ...
@@ -202,8 +256,16 @@ class AgentRuntime(Protocol):
     def process_markers(self, req: RunRequest | None = None) -> ProcessMarkers: ...
 
 
+def caps_own_spend(runtime: AgentRuntime) -> bool:
+    """The CLI enforces a spend cap itself. A runtime that doesn't gets the run timeout and the daily token
+    ceiling by default (spec §8.6, ``scout.agent_runtimes.limits``). Declared, so it needs no probe."""
+    return Capability.BUDGET_CAP in runtime.declared_capabilities
+
+
 __all__ = [
+    "ANTHROPIC_ENV",
     "HOOK_CAPABILITIES",
+    "NON_ANTHROPIC_ENV_ALLOW",
     "TIER_F_REQUIRES",
     "TIER_L_REQUIRES",
     "AgentRuntime",
@@ -215,7 +277,9 @@ __all__ = [
     "ProcessMarkers",
     "RunRequest",
     "RuntimeAuth",
+    "SandboxPaths",
     "Tier",
     "Usage",
+    "caps_own_spend",
     "tier_for",
 ]

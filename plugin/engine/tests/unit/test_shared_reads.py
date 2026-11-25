@@ -751,7 +751,7 @@ def test_a_run_records_through_the_real_launcher(vault: Path) -> None:
 
 
 def test_a_session_outside_a_vault_exits_in_the_shell(tmp_path: Path) -> None:
-    res = _sh({}, "{}", tmp_path, root=tmp_path / "missing")
+    res = _sh({}, json.dumps({"cwd": str(tmp_path)}), tmp_path, root=tmp_path / "missing")
     assert res.returncode == 0 and res.stdout == ""
 
 

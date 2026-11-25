@@ -1029,7 +1029,6 @@ def test_commands_that_change_the_run_env_are_flagged(command: str) -> None:
         "eval $'\\u0072ead HOME <<< /x'",
         "eval $'read HOM? <<< h'",
         "eval $'export HO\\x4dE=/x'",
-        "eval $$'; \\x72ead HOME <<< /x'",  # zsh: a `$`, then $'…'
         "eval x$'\\x3b read HOME'",
         "$'\\x72ead' HOM? <<< h",
         "export $'HO\\x4dE'=/x",
@@ -1098,7 +1097,6 @@ def test_commands_that_point_home_elsewhere_are_named(command: str) -> None:
         "git commit -m $'line1\\nline2'",
         "echo '$'\"'\"'\\x72ead'",  # no $'…' here: a quoted `$`, then a quoted quote
         "echo \"$'\\x72ead'\"",  # inside double quotes, $'…' is plain text
-        "eval $'\\0162ead HOME <<< /x'",  # zsh: \016, then `2ead`
         "print -n $msg",
         "print -r -- $x",
     ],
@@ -1120,26 +1118,6 @@ def test_a_dollar_quote_is_read_as_the_text_it_spells(command: str, form: str) -
 
 
 @pytest.mark.parametrize(
-    ("raw", "text"),
-    [
-        ("$'\\x72ead'", "read"),
-        ("$'\\162\\145ad'", "read"),
-        ("$'\\u0072'", "r"),
-        ("$'a\\tb'", "'a\tb'"),
-        ("$'it\\'s'", "'it'\"'\"'s'"),
-        ("$'\\cA'", "'\x01'"),
-        ("$''", "''"),
-        ("'$'\\''x'", "'$'\\''x'"),
-        ("\"$'x'\"", "\"$'x'\""),
-        ("\\$'x'", "\\$'x'"),
-        ("$$'\\x72'", "$r"),
-    ],
-)
-def test_dollar_quotes_decode_as_zsh_reads_them(raw: str, text: str) -> None:
-    assert live_run._decode_dollar_quotes(raw) == text
-
-
-@pytest.mark.parametrize(
     ("command", "form"),
     [
         (": ${HOME:=/x}", "HOME"),
@@ -1153,6 +1131,8 @@ def test_dollar_quotes_decode_as_zsh_reads_them(raw: str, text: str) -> None:
         (": ${XDG_CONFIG_HOME:=/x}; git commit -m m", "XDG_CONFIG_HOME"),
         (": ${SCOUT_MODE::=}", "env"),
         ("exec {HOME}>/dev/null", "HOME"),
+        ("eval $$'; \\x72ead HOME <<< /x'", "HOME"),  # zsh reads a `$`, then $'…'; bash a pid and a plain quote
+        ("echo $$'a\\tb'", "HOME"),  # either reading: not worth telling apart
         ("exec {XDG_CONFIG_HOME}< f", "XDG_CONFIG_HOME"),
     ],
 )

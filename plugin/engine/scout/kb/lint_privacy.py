@@ -143,6 +143,7 @@ from scout.kb.privacy import (
     Policy,
     classify,
     decode_head,
+    delegate_flags_on,
     label_file,
     label_from_facts,
     load_policy,
@@ -1060,11 +1061,14 @@ def _privacy_block(data: Any) -> Any:
 
 
 def _config_findings(ctx: _Ctx, sp: StagedPath) -> list[Finding]:
-    staged = _config_data(staged_text_lossy(ctx.repo, sp.rel))
+    staged_text = staged_text_lossy(ctx.repo, sp.rel)
     out: list[Finding] = []
     if ctx.scheduled:
-        head = _config_data(head_text_lossy(ctx.repo, sp.head_rel)) if sp.head_rel else None
-        if _privacy_block(head) != _privacy_block(staged):
+        head_text = ctx.head_config  # HEAD's config, never a rename's source: a twin renamed into place is new
+        # The loaded block, and what the delegate flags act on: `yes` -> `true` loads the same but turns a flag on.
+        if _privacy_block(_config_data(head_text)) != _privacy_block(_config_data(staged_text)) or (
+            delegate_flags_on(head_text) != delegate_flags_on(staged_text)
+        ):
             out.append(
                 Finding(
                     sp.rel,

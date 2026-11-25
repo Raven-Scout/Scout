@@ -28,6 +28,9 @@ Protected (each with the form name a deny and the audit row use):
   cache, its venv, its hooks.json), ``$CLAUDE_PLUGIN_ROOT``, the venv the engine runs in
   (``sys.prefix``), the engine pointer (``~/.local/state/scout/engine.json``), and the
   plugin the vault's pre-commit hook calls;
+- ``the owner's Scout settings``: the owner-only stores in ``~/.local/state/scout/``
+  (:data:`OWNER_STATE_NAMES`: the sandbox switch, provider consent, run limits, the run
+  brokers' folder, the reviewed doctor warnings and the changes map's owner rows);
 - ``Scout's runner scripts``: the vault files bootstrap installs and runs (``run-*.sh``,
   ``scripts/claude-with-retry.sh``, ``scripts/scoutctl`` …; :data:`RUNNER_FILES`);
 - ``startup files``: the shell's login and rc files and ``~/Library/LaunchAgents``;
@@ -75,6 +78,7 @@ GIT_DIR = ".git"
 USER_GIT_CONFIG = "git config"
 AGENT_SETTINGS = "agent settings"
 ENGINE = "Scout's engine"
+OWNER_STATE = "the owner's Scout settings"
 RUNNER_SCRIPTS = "Scout's runner scripts"
 STARTUP = "startup files"
 HARD_LINK = "a hard-linked file"
@@ -469,7 +473,9 @@ def protected_specs(
         for name in AGENT_DIRS:
             add(home / name, AGENT_SETTINGS, tree=True)
     for root in engine_roots(env):
-        add(root, ENGINE, tree=root.is_dir() or root.suffix == "")
+        # The owner's stores sit among the engine's roots but aren't the engine (review of #649, N2).
+        label = OWNER_STATE if root.parent.name == "scout" and root.name in OWNER_STATE_NAMES else ENGINE
+        add(root, label, tree=root.is_dir() or root.suffix == "")
     for home in user_homes:
         for name in SHELL_STARTUP:
             add(home / name, STARTUP, tree=False)

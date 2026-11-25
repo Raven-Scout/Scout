@@ -134,8 +134,9 @@ def test_runner_records_the_outcome_and_rolls_up_connector_health(
     assert (verb, mode, code) == ("record", slot, str(exit_code))
     assert started.isdigit()
     assert Path(log_file).parent == vault / ".scout-logs"
-    # Before the session the runner runs the gate probe (spec 2026-11-13 §3.5), resolves
-    # and checks the run's agent runtime (spec 2026-11-13 §8.2), asks the engine for the
+    # Before the session the runner resolves the run's agent runtime (spec 2026-11-13 §8.2; first,
+    # so the gate probe and the sandbox are that runtime's, #652 S6), runs the gate probe (spec
+    # 2026-11-13 §3.5), checks the runtime, asks the engine for the
     # run's model and takes the integrity check's start state (spec 2026-11-15 §13); the
     # session itself starts through `agent-runtime exec`; after it, the integrity check,
     # the changes-map scan (spec 2026-11-17 §6), the connector-health roll-up and the run's
@@ -147,8 +148,9 @@ def test_runner_records_the_outcome_and_rolls_up_connector_health(
     runner_pid = watchers[0].split()[6] if watchers else "?"
     assert watchers == [f"{vault} progress watch --vault {vault} --runner-pid {runner_pid} --log {log_file}"]
     lines = [line for line in lines if line not in watchers]
-    assert lines[0].startswith(f"{vault} gates probe --cached --vault {vault} --claude-bin ")
-    assert lines[1] == f"{vault} agent-runtime resolve --slot {slot}"
+    assert lines[0] == f"{vault} agent-runtime resolve --slot {slot}"
+    assert lines[1].startswith(f"{vault} gates probe --cached --vault {vault} --claude-bin ")
+    assert "--runtime" not in lines[1]  # claude-code's probe is the call it always was
     assert lines[2].startswith(f"{vault} agent-runtime check --slot {slot} --runtime claude-code --bin ")
     assert lines[3:8] == [
         f"{vault} model resolve --slot {slot}",

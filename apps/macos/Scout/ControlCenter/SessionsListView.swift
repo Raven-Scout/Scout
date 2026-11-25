@@ -20,11 +20,12 @@ struct SessionsListView: View {
     @State private var window = RunWindow()
 
     var filtered: [Run] {
-        let cal = Calendar.current
+        // The filtered day's bounds once, not a calendar call per run per render.
+        let day = dayFilter.flatMap { Calendar.current.dateInterval(of: .day, for: $0) }
         let scheduleTypes = Self.scheduleTypes(
             slots: state.scheduleEditService.slots, upcoming: state.scheduleService.upcoming)
         return state.sessionLogService.runs.filter { run in
-            if let d = dayFilter, !cal.isDate(run.startedAt, inSameDayAs: d) { return false }
+            if let day, !(day.start..<day.end).contains(run.startedAt) { return false }
             if !typeFilter.contains(run.listType(scheduleTypes: scheduleTypes)) { return false }
             if !search.isEmpty {
                 if !Self.matches(run, search) { return false }

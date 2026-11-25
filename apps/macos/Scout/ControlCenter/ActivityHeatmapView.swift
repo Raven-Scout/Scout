@@ -354,8 +354,12 @@ struct ActivityHeatmapView: View {
     ) -> [HeatmapCell] {
         let start = calendar.date(byAdding: .day, value: -(dayCount - 1), to: today)!
         // Single O(runs) pass: tally each run into its start-of-day bucket.
+        // A run before the first shown day can't land in a cell, so it is
+        // dropped with a date compare before any calendar call: the 1-month
+        // default shows a few dozen of a vault's thousands of runs.
+        let firstDay = calendar.startOfDay(for: start)
         var byDay: [Date: (succ: Int, fail: Int, cost: Decimal)] = [:]
-        for run in runs {
+        for run in runs where run.startedAt >= firstDay {
             let key = calendar.startOfDay(for: run.startedAt)
             var bucket = byDay[key] ?? (0, 0, Decimal(0))
             if run.status == .success {

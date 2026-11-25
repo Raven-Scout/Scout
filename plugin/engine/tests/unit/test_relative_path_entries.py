@@ -547,7 +547,7 @@ def test_tool_hooks_never_run_a_planted_program(
 
 
 def test_mcp_tool_gate_walk_still_finds_the_vault_from_a_deep_cwd(tmp_path: Path) -> None:
-    """`${d%/*}` in place of dirname: the walk climbs to the vault, and stops at / outside one."""
+    """`${w%/*}` in place of dirname: the walk climbs from the payload's cwd to the vault, and stops at /."""
     command = dict(_tool_hooks())["PreToolUse mcp__.*"]
     vault = tmp_path / "vault"
     deep = vault / "a" / "b" / "c"
@@ -564,7 +564,7 @@ def test_mcp_tool_gate_walk_still_finds_the_vault_from_a_deep_cwd(tmp_path: Path
         ["/bin/sh", "-c", command],
         env=env,
         cwd=deep,
-        input="{}",
+        input=json.dumps({"cwd": str(deep)}),
         capture_output=True,
         text=True,
         timeout=30,
@@ -578,7 +578,7 @@ def test_mcp_tool_gate_walk_still_finds_the_vault_from_a_deep_cwd(tmp_path: Path
         ["/bin/sh", "-c", command],
         env=env,
         cwd=outside,
-        input="{}",
+        input=json.dumps({"cwd": str(outside)}),
         capture_output=True,
         text=True,
         timeout=30,

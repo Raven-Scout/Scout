@@ -306,6 +306,137 @@ def _uses_operand(name: str, args: list[str], names: set[str]) -> bool:
 
 
 _NOT_A_READ = {"--version", "--help", "-version", "-help", "--type-list"}
+# Readers whose first operand is a pattern or a program, not a file, unless a flag gives it (`grep -e x f`).
+_PROGRAM_FIRST: dict[str, set[str]] = {
+    **dict.fromkeys(("grep", "egrep", "fgrep"), {"-e", "-f", "--regexp", "--file"}),
+    "rg": {"-e", "-f", "--regexp", "--file", "--files"},
+    "sed": {"-e", "-f", "--expression", "--file"},
+    **dict.fromkeys(("awk", "gawk", "mawk"), {"-f", "--file"}),
+    "jq": {"-f", "--from-file"},
+}
+# Readers that read a folder they're given (its names, or the files below it); the rest only open files.
+_FOLDER_READERS = {"tree", "du", "find", "rg", "ag", "ack", "fd", "ugrep", "diff"}  # `diff -N dir empty/` prints it
+
+
+def reads_folders(name: str, args: list[str]) -> bool:
+    """Whether ``name args`` reads a folder among its operands: ``ls`` without ``-d``, ``tree``, ``find``, ``rg``…,
+    ``grep -r``. ``cat dir``, ``head dir``, ``grep x dir`` only print an error."""
+    if name == "ls":
+        return not any(a == "--directory" or re.fullmatch(r"-[A-Za-z]*d[A-Za-z]*", a) for a in args)
+    if name in _FOLDER_READERS:
+        return True
+    if name in ("grep", "egrep", "fgrep"):
+        pairs = zip(args, [*args[1:], ""], strict=True)
+        return any(_RECURSIVE_FLAG.match(a) for a in args) or any(
+            a == "--directories=recurse" or (a in ("-d", "--directories") and b == "recurse") for a, b in pairs
+        )
+    return False
+
+
+def read_operands(name: str, args: list[str]) -> list[str] | None:
+    """The files a reading command (:data:`_READ_COMMANDS`) reads, as written: its positionals without its
+    flags' values, a pattern or program it takes first (``grep x f``, ``sed 1p f``, ``awk '{…}' f``, ``jq . f``),
+    or ``find``'s expression (its roots only). None for a call that reads no file (``--version``, ``du -s``)."""
+    if any(a in _NOT_A_READ for a in args) or (name == "du" and _du_summary(args)):
+        return None
+    if name == "find":
+        roots: list[str] = []
+        for a in args:
+            if a.startswith(("-", "(", "!")):
+                break
+            roots.append(a)
+        return roots
+    if name == "sed":  # BSD `sed -i '' …` / `sed -i .bak …`: the backup suffix is -i's own word
+        args = [a for i, a in enumerate(args) if not (i and args[i - 1] == "-i" and (not a or a.startswith(".")))]
+    _flags, plain = _split_args(_operands(name, args))
+    given = _PROGRAM_FIRST.get(name)
+    if given is not None and plain and not any(a in given or a.split("=", 1)[0] in given for a in args):
+        plain = plain[1:]
+    return [p for p in plain if p and p != "-"]
+
+
+_BRACE_SEQUENCE = re.compile(r"^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.(-?\d+))?$")
+
+
+def brace_expand(word: str, limit: int = 64) -> list[str] | None:
+    """``word`` after the shell's brace expansion: ``a{b,c}d`` is ``abd acd``, nested lists and sequences
+    (``{1..3}``, ``{a..c}``, ``{1..9..4}``) included. ``${…}``, ``{}``, ``{a}`` and an unclosed or
+    backslashed ``{`` stay as written. None when it makes more than ``limit`` words."""
+    start = _brace_open(word)
+    if start is None:
+        return [word]
+    end, commas = _brace_close(word, start)
+    if end is None:
+        return [word]
+    body = word[start + 1 : end]
+    alternatives: list[str] | None
+    if commas:
+        cuts = [start, *commas, end]
+        alternatives = [word[a + 1 : b] for a, b in zip(cuts, cuts[1:], strict=False)]
+    else:
+        alternatives = _sequence(body, limit)
+        if alternatives is None:
+            return None
+        if not alternatives:  # not a list: the brace is a plain character, look past it
+            rest = brace_expand(word[start + 1 :], limit)
+            return None if rest is None else [word[: start + 1] + r for r in rest]
+    out: list[str] = []
+    for alt in alternatives:
+        more = brace_expand(word[:start] + alt + word[end + 1 :], limit)
+        if more is None:
+            return None
+        out += more
+        if len(out) > limit:
+            return None
+    return out
+
+
+def _brace_open(word: str) -> int | None:
+    i = 0
+    while i < len(word):
+        if word[i] == "\\":
+            i += 2
+            continue
+        if word[i] == "{" and not (i and word[i - 1] == "$"):
+            return i
+        i += 1
+    return None
+
+
+def _brace_close(word: str, start: int) -> tuple[int | None, list[int]]:
+    """Where the brace opened at ``start`` closes, and its top-level commas."""
+    commas: list[int] = []
+    depth, i = 0, start
+    while i < len(word):
+        c = word[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return i, commas
+        elif c == "," and depth == 1:
+            commas.append(i)
+        i += 1
+    return None, []
+
+
+def _sequence(body: str, limit: int) -> list[str] | None:
+    """``1..3`` / ``a..c`` / ``1..9..4`` as its words; [] when ``body`` is no sequence; None above ``limit``."""
+    m = _BRACE_SEQUENCE.match(body)
+    if m is None:
+        return []
+    a, b, step = m[1], m[2], abs(int(m[3] or 1)) or 1
+    if a.lstrip("-").isdigit() != b.lstrip("-").isdigit():
+        return []
+    lo, hi = (int(a), int(b)) if a.lstrip("-").isdigit() else (ord(a), ord(b))
+    if abs(hi - lo) // step + 1 > limit:
+        return None
+    values = range(lo, hi + 1, step) if lo <= hi else range(lo, hi - 1, -step)
+    return [str(v) if a.lstrip("-").isdigit() else chr(v) for v in values]
 
 
 class _Recursive:

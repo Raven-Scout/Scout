@@ -227,7 +227,9 @@ def test_a_read_naming_no_kb_path_exits_in_the_shell(vault, tmp_path):
 
 
 def test_owner_outside_a_vault_exits_in_the_shell(tmp_path):
-    payload = json.dumps({"tool_name": "Read", "tool_input": {"file_path": str(tmp_path / "knowledge-base/x.md")}})
+    payload = json.dumps(
+        {"cwd": str(tmp_path), "tool_name": "Read", "tool_input": {"file_path": str(tmp_path / "knowledge-base/x.md")}}
+    )
     res = _sh({}, payload, tmp_path, root=tmp_path / "missing")
     assert res.returncode == 0 and res.stdout == ""
 
