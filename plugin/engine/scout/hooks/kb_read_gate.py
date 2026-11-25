@@ -20,7 +20,9 @@ all of that, and the phase rule saying so lost in 30 of 34 privacy eval runs
     a git call that skips or redirects the commit hooks, which the hook can't
     see because it never runs (``--no-verify``, ``-c core.hooksPath``,
     ``commit-tree``, a write into ``.git/hooks``, #607): that deny names the
-    form and records the event ``kb_read_gate.hook_skip``.
+    form and records the event ``kb_read_gate.hook_skip``. A command that names an
+    ``ANTIGRAVITY_*`` variable (agy's local server, ``hook_paths.AGY_SERVER_ENV``) is denied
+    before any of that, whatever runtime the run is on.
   - **Grep / Glob**: a search inside ``knowledge-base/`` or
     ``action-items/context/``, or over the whole vault (no path, or the vault
     root, with no file filter or one that reaches the KB), is denied.
@@ -153,6 +155,13 @@ def _deny_home() -> str:
         f"{MARK} A scheduled run doesn't set, unset or export HOME, or set a variable whose name it builds at run "
         "time (`export $v=…`, `read $v`): what `~` and `$HOME` name decides which files this gate protects. Use the "
         "paths as they are, and name the variables you set; Scout's commands find their own folders."
+    )
+
+
+def _deny_agy_server() -> str:
+    return (
+        f"{MARK} A scheduled run doesn't use the ANTIGRAVITY_* variables (the agent CLI's local server address, "
+        "token and helpers): that server isn't proven to go through Scout's checks. Use the session's own tools."
     )
 
 
@@ -418,6 +427,9 @@ def decide(
             expansion_escape,
             run_escape,
         )
+
+        if hook_paths.names_agy_server_env(command):
+            return _deny_agy_server()  # before the path checks (runtime-agnostic Phase 2A.3)
 
         def resolve(raw: str) -> str | None:
             """The path a word names, with the environment's variables put in; None when the shell fills in

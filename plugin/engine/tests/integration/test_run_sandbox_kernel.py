@@ -563,3 +563,98 @@ def test_a_runtimes_data_dir_carve_out_keeps_every_clis_hooks_and_config_denied(
         res = world.sh(f'printf x >> "{target}"')
         kernel = "allow" if res.returncode == 0 else "deny"
         assert (kernel, sbx.decide(rules, str(target))) == (verdict, verdict), (target, res.stderr)
+
+
+# -- agy under the run profile (runtime-agnostic Phase 2A.2) ---------------------------------------------------
+
+
+def _agy_profile(world: World, monkeypatch: pytest.MonkeyPatch | None = None) -> list[sbx.Rule]:
+    """Rebuild ``world``'s profile the way a run on the ``antigravity`` runtime gets it, from the adapter's own
+    ``sandbox_paths``. With ``monkeypatch``, the scratch HOME's ``~/.local/bin`` is first put on PATH, where a
+    scheduled run's plist puts the real one, and is judged as a real PATH entry (not a temp dir's)."""
+    from scout.agent_runtimes.antigravity import Antigravity
+
+    if monkeypatch is not None:
+        local_bin = world.home / ".local" / "bin"
+        local_bin.mkdir(parents=True, exist_ok=True)
+        world.env = {**world.env, "PATH": f"{local_bin}:{world.env.get('PATH', '/usr/bin:/bin')}"}
+        monkeypatch.setattr(hook_paths, "_transient", lambda _d: False)
+    paths = Antigravity().sandbox_paths(world.env)
+    result = launch.prepare(world.vault, world.env, runtime_paths=paths, runtime_id="antigravity")
+    assert result.status == "enforced", result.reason
+    world.profile = result.profile
+    return sbx.build_rules(world.vault, world.env, runtime_paths=paths, runtime_id="antigravity")
+
+
+def test_agy_data_dir_is_writable_under_the_run_profile(world: World) -> None:
+    rules = _agy_profile(world)
+    data = world.home / ".gemini" / "antigravity-cli"
+    data.mkdir(parents=True)  # agy's first start makes it, outside the sandbox (plan decision 8)
+    assert world.sh(f'mkdir "{world.home / ".gemini" / "other"}"').returncode != 0  # ~/.gemini itself stays closed
+    for rel in ("conversations/x.db", "brain/c1/.system_generated/logs/transcript_full.jsonl", "cli.log"):
+        target = data / rel
+        res = world.sh(f'mkdir -p "{target.parent}" && printf x >> "{target}"')
+        assert res.returncode == 0, (target, res.stderr)
+        assert target.read_text() == "x" and sbx.decide(rules, str(target)) == "allow"
+
+
+def test_agy_builtin_skills_and_plugins_are_not(world: World) -> None:
+    """Jordan, 2026-11-25 (findings §7.1): agy loads builtin/ into every later session's prompt, so a run's write,
+    rename or removal there is refused, while a warm start's own writes (transcripts, the agentapi shim) go on."""
+    rules = _agy_profile(world)
+    data = world.home / ".gemini" / "antigravity-cli"
+    skill = data / "builtin" / "skills" / "agy-customizations" / "SKILL.md"
+    plugin = data / "builtin" / "plugins" / "swarm" / "plugin.json"
+    for path in (skill, plugin):
+        path.parent.mkdir(parents=True, exist_ok=True)  # outside the sandbox, as agy's first start would
+        path.write_text("vendor\n")
+    new_skill = data / "builtin" / "skills" / "new"
+    for cmd in (
+        f'printf x >> "{skill}"',
+        f'printf x > "{plugin}"',
+        f'mkdir -p "{new_skill}" && printf x > "{new_skill / "SKILL.md"}"',
+        f'rm -f "{skill}"',
+        f'mv "{data / "builtin"}" "{data / "builtin.old"}"',
+        f'printf x > "{data / "Builtin" / "Skills" / "agy-customizations" / "SKILL.md"}"',
+    ):
+        res = world.sh(cmd)
+        assert res.returncode != 0, (cmd, res.stderr)
+    assert skill.read_text() == "vendor\n" and plugin.read_text() == "vendor\n"
+    assert not new_skill.exists() and not (data / "builtin.old").exists()
+    assert sbx.decide(rules, str(skill)) == "deny" and sbx.decide(rules, str(plugin)) == "deny"
+    shim = data / "bin" / "agentapi"
+    res = world.sh(f'mkdir -p "{shim.parent}" && printf "#!/bin/sh\\n" > "{shim}" && printf x >> "{data / "cli.log"}"')
+    assert res.returncode == 0, res.stderr
+    assert sbx.decide(rules, str(shim)) == "allow"
+
+
+def test_agy_hooks_config_is_not(world: World) -> None:
+    rules = _agy_profile(world)
+    gemini = world.home / ".gemini"
+    for target in (gemini / "config" / "hooks.json", world.vault / ".agents" / "hooks.json"):
+        target.parent.mkdir(parents=True, exist_ok=True)  # outside the sandbox: only the write is judged
+        res = world.sh(f'printf x >> "{target}"')
+        assert res.returncode != 0 and "Operation not permitted" in res.stderr, (target, res.stderr)
+        assert not target.exists() and sbx.decide(rules, str(target)) == "deny"
+    moved = world.sh(f'mv "{gemini / "config"}" "{gemini / "config.old"}"')
+    assert moved.returncode != 0 and (gemini / "config").is_dir()
+
+
+def test_agy_cant_replace_itself_in_a_run(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Decision 3 of the Phase 2 plan: agy's updater can't swap ``~/.local/bin/agy`` during a run (the PATH-entry
+    rule, profile step 5), whether it writes the file in place or renames a new one over it."""
+    rules = _agy_profile(world, monkeypatch)
+    agy = world.home / ".local" / "bin" / "agy"
+    agy.write_text("#!/bin/sh\necho 1.5.9\n")
+    agy.chmod(0o755)
+    for cmd in (
+        f'cp /bin/sh "{agy}"',
+        f'printf x >> "{agy}"',
+        f'printf "#!/bin/sh\\n" > "{world.root}/agy.new" && mv "{world.root}/agy.new" "{agy}"',
+        f'rm -f "{agy}"',
+        f'printf x > "{agy.parent}/agy.download"',
+    ):
+        res = world.sh(cmd)
+        assert res.returncode != 0, (cmd, res.stderr)
+    assert agy.read_text() == "#!/bin/sh\necho 1.5.9\n" and not (agy.parent / "agy.download").exists()
+    assert sbx.decide(rules, str(agy)) == "deny"

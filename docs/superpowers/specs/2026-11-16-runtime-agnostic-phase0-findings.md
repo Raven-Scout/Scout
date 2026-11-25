@@ -550,3 +550,161 @@ Proposed:
 - Codex `apply_patch` under a real OpenAI model's tool set.
 
 Each is listed with its owner phase above.
+
+## 7. Phase 2A results (2026-11-25, agy 1.5.16)
+
+PR 2A of the Phase 2 plan (`../plans/2026-11-24-runtime-agnostic-phase2-antigravity.md`), with no model.
+In this section **[run]** means observed in a local run on 2026-11-25, and **[bin]** means a string in the
+agy 1.5.16 binary. Every run here used a throwaway `HOME` (outside any temp dir, so the PATH rule applies
+as it does for a scheduled run), a scratch vault, agy copied into that `HOME`'s `~/.local/bin`, the
+gemini-provider fake (§0.1) and a loopback-only network rule. No real login was used.
+
+agy had updated itself from 1.5.9 to **1.5.16** since Phase 0, between runs and outside Scout **[run]**. That
+is §0.6 in practice.
+
+### 7.1 agy under the real run profile (2A.2)
+
+The profile was `scout.sandbox.profile.build_profile(vault, env, runtime_paths=Antigravity().sandbox_paths(env),
+runtime_id="antigravity")`. Its only carve-out under `~/.gemini` is `~/.gemini/antigravity-cli`.
+
+- **First start in a fresh `HOME`: agy can't start** **[run]**. It exits 1 with `failed to get/create
+  default project: … mkdir ~/.gemini/config/projects: operation not permitted`.
+  - A diagnostic profile (spike only, never a product rule) let agy write all of `~/.gemini`. That showed
+    what a first start writes outside its data dir: `~/.gemini/config/.migrated`, `config.json`,
+    `mcp_config.json` and `projects/default-cli-project.json` **[run]**.
+  - These are in agy's config dir, beside `hooks.json`. This was a **stop-and-ask** (a write under a
+    protected root), sent to Jordan through the coordinator on 2026-11-25.
+  - **Decided (Jordan, 2026-11-25): no carve-out.** `agent-runtime install` (2C) and the per-version probe (2E)
+    start agy once outside the sandbox. A run that still meets a first start fails closed. Plan 2C.4,
+    decision 8.
+- **Second start, `HOME` already set up: agy works under the profile unchanged** **[run]**.
+  - It exits 0. The scripted `write_file` and `run_command` both reached the PreToolUse hook and ran.
+  - Nothing outside the data dir was written, and nothing was tried and denied, apart from the network and
+    one read bait (below).
+  - So the config-dir writes come from a first start, and probably from a version migration (`.migrated`).
+- **What a warm start writes in the data dir** **[run]**:
+  - `conversations/<id>.db`, `brain/<id>/…` (transcripts, per-step output), `cli.log`, `log/`, `cache/`,
+    `presence/<id>.lock`, `conversation_summaries.db`, `jetbox_summaries_proto.pb`;
+  - `bin/agentapi`. This is a two-line shell shim, `exec <agy> agentapi "$@"`, and it is what
+    `ANTIGRAVITY_AGENTAPI_EXE` points at. agy rewrites it before **every** shell call: with `bin/` denied,
+    `run_command` fails (`failed to build host shell injection: failed to write agentapi script`) **[run]**.
+    **Decided (Jordan, 2026-11-25):** `bin/` stays writable, and the runner verifies and restores the shim
+    around each agy run. A change is restored and reported in run health; a failed restore skips the run.
+    Plan 2C.4, decision 10.
+  - No name the profile re-denies (`settings*.json`, `config.toml`, `hooks.json`, `hooks/`, `mcp*.json`) is
+    written in the data dir.
+- **The data dir holds instructions agy loads** **[run]**:
+  - A first start unpacks `builtin/skills/*/SKILL.md` and `builtin/plugins/swarm/` (a `plugin.json` and
+    sidecar `.js`/`.mjs` files) into the data dir.
+  - An edit there survives the next start: the `builtin/.checksum` and `.manifest` didn't restore it. It also
+    **reaches the next session's system prompt**: a changed `SKILL.md` description was in the next model
+    request word for word, under "Available skills".
+  - So a run could leave instructions for every later agy session, the owner's interactive ones included.
+    That is the class of the plan's `.env`/`extensions/` stop-and-ask, and it went to Jordan with the first
+    point.
+  - **Decided (Jordan, 2026-11-25): `builtin/` is denied to runs.** It is vendor content outside review, and
+    Scout's skills reach agy through the vault and the plugin's reviewed path (plan decision 9).
+    - `profile.AGENT_DATA_REDENY` re-denies `~/.gemini/antigravity-cli/builtin` after the data-dir carve-out.
+    - A warm start under that profile ran both scripted calls with no denial in `builtin/` **[run]**.
+    - Pinned by `test_agy_builtin_skills_and_plugins_are_not` (kernel) and
+      `test_a_run_cant_write_agys_builtin_skills_or_plugins` (model).
+- **Reads.**
+  - agy reads `~/.gemini/GEMINI.md` (denied here as bait; it ran on).
+  - It touched none of `.env`, `extensions/`, `commands/` or `GEMINI.md` in its data dir, and none of `.env`,
+    `extensions/` or `commands/` at `~/.gemini` **[run]**. So there is no stop-and-ask for reads. The
+    `GEMINI.md` read goes to 2I.
+- **The updater is denied, and agy carries on** **[run]**.
+  - agy tried to create `~/.local/bin/.update_test<N>`. The PATH-entry rule (profile step 5) denied it.
+  - The binary was unchanged after every run. Plan decision 3 holds.
+- **Network.** agy tried outbound `*:443` at every start (denied by the loopback rule) and still ran on the
+  fake **[run]**.
+- **A case variant of the data dir** (`.Gemini/Antigravity-CLI`) matches the carve-out too, because SBPL
+  matching is case-insensitive here. That is harmless on a case-insensitive APFS volume, and the re-denies match
+  case-insensitively as well.
+- **For 2B** **[run]**:
+  - `--print-timeout` takes a Go duration (`120s`); a bare `120` is rejected with exit 2.
+  - agy checks a tool call's arguments before the hook fires: a call with bad arguments never reaches it.
+  - `write_file` takes `Path` and `Content` (plus `Append`, `Overwrite`, …). `run_command` needs
+    `CommandLine`, `toolSummary` and `WaitMsBeforeAsync`.
+  - The fake's model path was `/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse`.
+  - `init.tools` lists 60 names. The model was offered 15 hook-side names: §1.3's 14 plus `update_steps`,
+    which is new in 1.5.16. It stays unclassed, and so denied in a run, until 2C classes it.
+- **Pinned:** the kernel rows `test_agy_data_dir_is_writable_under_the_run_profile`,
+  `test_agy_hooks_config_is_not` (with `<vault>/.agents/hooks.json`), `test_agy_builtin_skills_and_plugins_are_not`
+  and `test_agy_cant_replace_itself_in_a_run`
+  (`tests/integration/test_run_sandbox_kernel.py`).
+
+### 7.2 agy's local server and the shell gate (2A.3)
+
+- **A shell child gets 10 `ANTIGRAVITY_*` variables, not 3** **[run]**: `AGENT`, `AGENTAPI_EXE`,
+  `APP_DATA_DIR`, `CONVERSATION_ID`, `CSRF_TOKEN`, `LS_ADDRESS`, `LS_VERSION`, `PROJECT_ID`,
+  `SOURCE_METADATA` and `TRAJECTORY_ID` (names only). The new deny matches the shared prefix, so it covers all ten.
+- **The server.**
+  - It is agy's own process (the same pid), listening on localhost HTTP and HTTPS ports **[run]**.
+  - It speaks Connect/JSON at `/exa.language_server_pb.LanguageServerService/<Method>`. A `strings` pass over the
+    binary gave 339 names there, but 29 of them had neighbouring bytes stuck on, answered 404 "page not found"
+    and so name no method. That leaves 310 real methods **[bin, run]**.
+  - A call without the token gets 401 **[run]**.
+- **The token a shell child gets is scoped** **[run]**. Every call had an empty `{}` body.
+  - It authenticates as principal `run_command`.
+  - Of the 310 real methods, 142 answer 403 `not allowed for principal "run_command"`. Among them are `ReadFile`,
+    `WriteFile`, `RunCommand`, `CreateTerminal`, `SendTerminalInput`, `SetUserSettings`,
+    `SetMendelFlagOverrides`, `InstallCascadePlugin`, `ToggleMcpServer`, `DeleteFileOrDirectory`,
+    `HandleCascadeUserInteraction` and `DeleteAllUserData`.
+  - The other 168 get past the principal check. A 400 or 501 there means the call reached its handler, not
+    that it worked. `GetUserSettings` and `GetPermissionSettings` are among them.
+  - **Not probed:**
+    - `UpdatePermissionSettings`: its name was one of the 29 broken ones.
+    - Both `exa.conversation_pb.ConversationService` and `jetski.product.v1.ConversationService`.
+  - So a run's shell can't read or write a file, run a command or change user settings through the server.
+    Whether it can change permission settings is not known.
+- **What the scoped token still reaches** **[run]**. These methods got past the principal check to their
+  handler, which answered 200, or 400 for a missing argument:
+  - **Starting or steering agent work:** `StartCascade`, `SendUserCascadeMessage`, `SendAgentMessage`,
+    `ForkConversation`, `StartBattleMode` and `RefreshMcpServers`.
+  - **Reading other conversations:** `GetAllCascadeTrajectories`, `SearchConversations`,
+    `GetCascadeTrajectory`, `LoadTrajectory` and `ConvertTrajectoryToMarkdown`.
+    - In an owner's real `HOME`, those include the owner's interactive conversations and earlier runs'
+      transcripts. That would be a read around Scout's read gate.
+  - **Open:** whether a conversation started or steered this way runs its tool calls through the PreToolUse
+    hook. The probe that would show it was declined by the session's permission check, and I didn't retry
+    it. A later reviewed spike, or 2E's conformance suite, answers it.
+- **The deny** **[run]**:
+  - `kb_read_gate.decide()` denies a run's Bash command whose text names `ANTIGRAVITY_` in any case. It does so
+    before the path checks, on every runtime (`hook_paths.AGY_SERVER_ENV`, `names_agy_server_env`).
+  - Test: `tests/unit/test_kb_read_gate_agy_server.py`.
+  - **It is a speed bump, not a boundary.** A command that builds the name at run time, or dumps the whole
+    environment, isn't matched by its text.
+  - **The same exposure, without the server.** The run profile leaves agy's data dir writable (§7.1), and
+    nothing gates reads there. So a run can read **and write** `conversations/` and `brain/`. In the owner's
+    real `HOME`, those hold the owner's interactive conversations and earlier runs' transcripts. The
+    isolation design must cover this too; a per-run `HOME` would.
+  - **Loopback is open.** The run profile allows loopback TCP. A command that prints the environment once,
+    and then calls the server with the literal token it saw, gets past the text match. The isolation design
+    has to assume a run can reach the server's port.
+  - **Decided (Jordan, 2026-11-25): real runs are blocked** until he OKs a design that stops a run's shell
+    commands from reaching agy's API (plan decision 11, the 7.2 gate). No-model work goes on, and the design
+    comes from its own investigation card.
+  - So the deny stays on (plan decision 5). Lifting it would need the open question above answered no. A real fix
+    is agy not giving these variables to a run's shell, or the server refusing the scoped principal the
+    conversation methods. Both are for 2B and 2C.
+- **The replay** **[run]**:
+  - In the last 50 scheduled runs, none of the 1,735 Bash calls names `ANTIGRAVITY_`, so the new rule can't
+    change a decision on any of them.
+  - The full hook replay (main vs this branch, Bash only, `append_event` stubbed) is reported in the PR.
+- Claude Code's `hooks.json` and `prefilter.sh` are unchanged. The prefilter doesn't send such a command to
+  Python on Claude Code, which has none of these variables. agy's own hook entry (2C) starts Python on every
+  call.
+
+### 7.3 agy's login under launchd (2A.4)
+
+- `plugin/scripts/spikes/agy-launchd-login.sh` prints a one-shot LaunchAgent and the `launchctl bootstrap` /
+  `print` / `bootout` lines. With `--write` it writes the plist to `~/scout-reports/`, never into
+  `~/Library/LaunchAgents`. It never loads a job.
+- The job runs `agy --version` and then `agy -p "/usage"` (no model turn, §1.7) with a scheduled run's
+  environment: `HOME`, a fixed PATH, `SCOUT_MODE` and no Gemini key. It writes the output and exit code to
+  `~/scout-reports/agy-launchd-login.txt`.
+- **[pending]**: Jordan runs the printed lines himself, on his real login. Then this section records:
+  - whether agy was signed in;
+  - any Keychain prompt;
+  - the exact `/usage` text, scrubbed, which becomes 2B's `classify_failure` fixture.
