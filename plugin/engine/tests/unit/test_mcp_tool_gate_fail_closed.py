@@ -29,13 +29,15 @@ SHELLS = ("sh", "/bin/bash")
 RUN = {"SCOUT_MODE": "research"}
 OWNER: dict[str, str] = {}
 
-# scoutctl stand-ins that cannot run the gate, with the exit each one gives.
-BROKEN_ENGINES = {
-    "a shim naming a missing interpreter": ("#!/nonexistent/python3\n", 126),
-    "no scoutctl at all": (None, 127),
-    "python crashes before the gate": ("#!/bin/sh\ncat >/dev/null\necho Traceback >&2\nexit 1\n", 1),
-    "a usage error": ("#!/bin/sh\necho 'Unknown option: -P' >&2\nexit 2\n", 2),
-    "killed": ("#!/bin/sh\nkill -9 $$\n", 137),
+# scoutctl stand-ins that cannot run the gate, with the exits each one may give. A missing interpreter
+# is 126 on macOS ("bad interpreter") and 127 on Linux (execve says ENOENT, as for a missing file).
+Codes = tuple[int, ...]
+BROKEN_ENGINES: dict[str, tuple[str | None, Codes]] = {
+    "a shim naming a missing interpreter": ("#!/nonexistent/python3\n", (126, 127)),
+    "no scoutctl at all": (None, (127,)),
+    "python crashes before the gate": ("#!/bin/sh\ncat >/dev/null\necho Traceback >&2\nexit 1\n", (1,)),
+    "a usage error": ("#!/bin/sh\necho 'Unknown option: -P' >&2\nexit 2\n", (2,)),
+    "killed": ("#!/bin/sh\nkill -9 $$\n", (137,)),
 }
 # Records its argv and stdin, then answers like the real gate: a deny on stdout, exit 0.
 DENY = '{"hookSpecificOutput": {"permissionDecision": "deny"}}'
@@ -108,11 +110,15 @@ def _payload(cwd: object = "<none>", tool: str = TOOL, tool_input: object = None
     return json.dumps(data)
 
 
-def _denied(outcome: Outcome, exit_code: int, tool: str = TOOL) -> bool:
+def _status_in(stderr: str, codes: Codes) -> bool:
+    return any(f"(status {code})" in stderr for code in codes)
+
+
+def _denied(outcome: Outcome, codes: Codes, tool: str = TOOL) -> bool:
     return (
         outcome.returncode == 2
         and f"so {tool} is blocked" in outcome.stderr
-        and f"(status {exit_code})" in outcome.stderr
+        and _status_in(outcome.stderr, codes)
         and "/scout-update" in outcome.stderr
         and "scoutctl bootstrap doctor" in outcome.stderr
     )
@@ -123,7 +129,7 @@ def _not_blocked(outcome: Outcome) -> bool:
 
 
 @pytest.fixture(params=list(BROKEN_ENGINES), ids=list(BROKEN_ENGINES))
-def broken(request: pytest.FixtureRequest, tmp_path: Path) -> tuple[World, int]:
+def broken(request: pytest.FixtureRequest, tmp_path: Path) -> tuple[World, Codes]:
     text, code = BROKEN_ENGINES[request.param]
     return World(tmp_path, text), code
 
@@ -132,7 +138,9 @@ def broken(request: pytest.FixtureRequest, tmp_path: Path) -> tuple[World, int]:
 
 
 @pytest.mark.parametrize("shell", SHELLS)
-def test_an_mcp_call_in_a_vault_is_blocked_when_the_engine_cannot_start(broken: tuple[World, int], shell: str) -> None:
+def test_an_mcp_call_in_a_vault_is_blocked_when_the_engine_cannot_start(
+    broken: tuple[World, Codes], shell: str
+) -> None:
     world, code = broken
     for cwd in (world.vault, world.vault / "projects" / "repo"):
         for env in (OWNER, RUN):
@@ -141,27 +149,27 @@ def test_an_mcp_call_in_a_vault_is_blocked_when_the_engine_cannot_start(broken: 
 
 
 @pytest.mark.parametrize("shell", SHELLS)
-def test_scout_data_dir_blocks_whatever_the_payload_cwd(broken: tuple[World, int], shell: str) -> None:
+def test_scout_data_dir_blocks_whatever_the_payload_cwd(broken: tuple[World, Codes], shell: str) -> None:
     world, code = broken
     env = {"SCOUT_DATA_DIR": str(world.vault)}
     outcome = world.run(_payload(str(world.outside)), cwd=world.outside, shell=shell, env=env)
     assert _denied(outcome, code), outcome
 
 
-def test_a_cwd_reaching_the_vault_through_a_symlink_is_blocked(broken: tuple[World, int]) -> None:
+def test_a_cwd_reaching_the_vault_through_a_symlink_is_blocked(broken: tuple[World, Codes]) -> None:
     world, code = broken
     outcome = world.run(_payload(str(world.outside / "into-vault" / "repo")), cwd=world.vault)
     assert _denied(outcome, code), outcome
 
 
-def test_any_cwd_in_the_payload_that_is_in_a_vault_blocks(broken: tuple[World, int]) -> None:
+def test_any_cwd_in_the_payload_that_is_in_a_vault_blocks(broken: tuple[World, Codes]) -> None:
     # Only the top-level cwd is the session's, but the shell does not parse JSON: it checks them all.
     world, code = broken
     payload = _payload(str(world.outside), tool_input={"cwd": str(world.vault)})
     assert _denied(world.run(payload, cwd=world.vault), code)
 
 
-def test_a_compact_payload_is_read_the_same(broken: tuple[World, int]) -> None:
+def test_a_compact_payload_is_read_the_same(broken: tuple[World, Codes]) -> None:
     world, code = broken
     compact = json.dumps({"cwd": str(world.vault), "tool_name": TOOL}, separators=(",", ":"))
     assert _denied(world.run(compact, cwd=world.vault), code)
@@ -184,7 +192,7 @@ UNKNOWN_CWDS = {
 
 @pytest.mark.parametrize("shell", SHELLS)
 @pytest.mark.parametrize("cwd", list(UNKNOWN_CWDS.values()), ids=list(UNKNOWN_CWDS))
-def test_an_unknown_cwd_is_blocked(broken: tuple[World, int], cwd: object, shell: str) -> None:
+def test_an_unknown_cwd_is_blocked(broken: tuple[World, Codes], cwd: object, shell: str) -> None:
     world, code = broken
     assert _denied(world.run(_payload(cwd), cwd=world.vault, shell=shell), code)
 
@@ -193,7 +201,7 @@ def test_an_unknown_cwd_is_blocked(broken: tuple[World, int], cwd: object, shell
 
 
 @pytest.mark.parametrize("shell", SHELLS)
-def test_a_payload_cwd_outside_any_vault_is_not_blocked(broken: tuple[World, int], shell: str) -> None:
+def test_a_payload_cwd_outside_any_vault_is_not_blocked(broken: tuple[World, Codes], shell: str) -> None:
     # The hook's own cwd is in the vault (so the filter starts the engine); the session's is not.
     world, _ = broken
     for env in (OWNER, RUN):
@@ -201,7 +209,7 @@ def test_a_payload_cwd_outside_any_vault_is_not_blocked(broken: tuple[World, int
 
 
 @pytest.mark.parametrize("shell", SHELLS)
-def test_a_session_outside_any_vault_never_starts_the_engine(broken: tuple[World, int], shell: str) -> None:
+def test_a_session_outside_any_vault_never_starts_the_engine(broken: tuple[World, Codes], shell: str) -> None:
     world, _ = broken
     assert world.run(_payload(str(world.outside)), cwd=world.outside, shell=shell) == Outcome(0, "", "")
 
@@ -211,7 +219,7 @@ def test_a_session_outside_any_vault_never_starts_the_engine(broken: tuple[World
     [_payload("/", tool="Bash"), json.dumps({"tool_name": "Read"}), "{}", "", "not json\n"],
     ids=["bash", "read", "empty-object", "empty", "not-json"],
 )
-def test_what_is_not_an_mcp_call_is_not_blocked(broken: tuple[World, int], payload: str) -> None:
+def test_what_is_not_an_mcp_call_is_not_blocked(broken: tuple[World, Codes], payload: str) -> None:
     world, _ = broken
     assert _not_blocked(world.run(payload, cwd=world.vault)), payload
 
@@ -242,7 +250,7 @@ def test_without_the_prefilter_a_vault_session_is_blocked_and_others_are_not(
     world = World(tmp_path, text, prefilter=False)
     for env in (OWNER, RUN):
         blocked = world.run(_payload(str(world.vault)), cwd=world.vault / "projects", shell=shell, env=env)
-        assert blocked.returncode == 2 and f"(status {code})" in blocked.stderr, (env, blocked)
+        assert blocked.returncode == 2 and _status_in(blocked.stderr, code), (env, blocked)
         assert "/scout-update" in blocked.stderr and "scoutctl bootstrap doctor" in blocked.stderr
     data_dir = world.run(_payload(), cwd=world.outside, shell=shell, env={"SCOUT_DATA_DIR": str(world.vault)})
     assert data_dir.returncode == 2, data_dir
