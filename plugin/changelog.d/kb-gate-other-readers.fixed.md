@@ -21,8 +21,12 @@
   `ARGV[…] =`, `-f`): an argument that isn't literals (a `sprintf`, `join`, a function, `sub()` on the
   variable, an escape the gate doesn't decode) is recorded, never silent. Each language's escapes are decoded
   as it decodes them (awk's `\ooo` and `\xHH`; perl's `\x{…}`, `\N{U+…}`, `\o{…}`, `\c`), and perl's `.`
-  joins literals, so `"kn\x6fwledge-base/a.md"` is denied. `printf`/`echo` words read by a `while read` loop
-  are judged as the paths they name. `join`, `expand`, `look`, `shuf` and
+  joins literals, so `"kn\x6fwledge-base/a.md"` is denied. What moves where perl looks for a relative file
+  counts too: a folder put in `@INC` (`-I`, `-Mlib=`, `use lib`, `push`/`unshift @INC`, `@INC = …`,
+  `PERL5LIB`/`PERLLIB`) is read, and a relative `do`/`require` file is looked for in each; `chdir DIR` puts
+  every later relative path under it. A perl program from a file or stdin (`perl x.pl`, `-x`) is recorded as
+  `program_path`, as `awk -f` is. `printf`/`echo` words read by a `while read` loop are judged as the paths
+  they name. `join`, `expand`, `look`, `shuf` and
   the other text utilities the reader list lacked are readers too. `cat "$(cat <<'EOF'` … `)"` is judged by
   the path its here-document holds (it was refused as naming too many files), and an unquoted
   here-document's `$(…)` sees the variables set before its command (`X=kn; cat <<EOF` with

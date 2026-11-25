@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from scout.hooks import kb_read_gate as gate
-from scout.kb.other_reads import COVERS, FILE, other_reads
+from scout.kb.other_reads import COVERS, FILE, OtherReads, other_reads
 from scout.kb.raw_read import raw_kb_read
 from tests.unit.test_hook_prefilter_differential import READER_FORMS
 from tests.unit.test_hooks_kb_read_gate import RUN, _denied, _payload
@@ -361,7 +361,7 @@ def test_other_reads_finds_what_a_command_reads(
 
 @pytest.mark.parametrize(
     "words",
-    [["diff", "a", "b"], ["dd", "of=x"], ["cat", "x"], ["perl", "script.pl", "x"], ["cp", "--help"], ["source"]],
+    [["diff", "a", "b"], ["dd", "of=x"], ["cat", "x"], ["perl", "-v"], ["cp", "--help"], ["source"]],
 )
 def test_other_reads_finds_nothing_more_for_these(words: list[str]) -> None:
     assert other_reads(words[0], words[1:]) is None
@@ -440,8 +440,9 @@ def test_other_reads_edges(words: list[str], expected: dict) -> None:
     assert {key: getattr(found, key) for key in expected} == expected
 
 
-def test_perl_with_no_inline_program_reads_nothing_more() -> None:
-    assert other_reads("perl", ["-w"]) is None
+def test_perl_with_its_program_in_a_file_or_on_stdin_is_built() -> None:
+    assert other_reads("perl", ["-w"]) == OtherReads(built=True)
+    assert other_reads("perl", ["-w", "x.pl", "a"]) == OtherReads(reads=[("x.pl", FILE)], built=True)
 
 
 # ----- the rule: a construct that opens, lists, reads or runs is never silent over what it can't resolve ----
@@ -560,3 +561,103 @@ def test_an_escaped_or_joined_literal_that_names_the_kb_is_denied(home: Path, co
 def test_a_harmless_program_stays_quiet(home: Path, command: str) -> None:
     assert _run(home, command) is None
     assert _events(home) == []
+
+
+# ----- what moves where perl looks for a relative path: @INC and chdir ----------------------------------------
+
+# Each puts DIR in @INC, as a perl flag, an environment assignment or program text before the program.
+INC_CHANGERS = [
+    ("-IDIR", ""),
+    ("-I DIR", ""),
+    ("-Mlib=DIR", ""),
+    ("", 'use lib "DIR"; '),
+    ("", "use lib qw(DIR); "),
+    ("", 'BEGIN{unshift @INC, "DIR"} '),
+    ("", 'push @INC, "DIR"; '),
+    ("", 'BEGIN{@INC = ("DIR")} '),
+    ("ENV PERL5LIB=DIR", ""),
+    ("ENV PERLLIB=DIR", ""),
+    ("EXPORT PERL5LIB=DIR", ""),
+]
+REQUIRERS = ['do "FILE"; print $@', 'require "FILE"', 'do("FILE")']
+# (folder, the file in it): the KB itself, and a KB folder's parent with a path into it.
+INC_PLACES = [("knowledge-base", "a.md"), ("knowledge-base/projects", "a/a.md"), ("action-items", "context/x.md")]
+
+
+def _perl_with_inc(changer: tuple[str, str], program: str, folder: str) -> str:
+    flag, text = (part.replace("DIR", folder) for part in changer)
+    body = shlex.quote(text + program)
+    if flag.startswith("ENV "):
+        return f"{flag[4:]} perl -e {body}"
+    if flag.startswith("EXPORT "):
+        return f"export {flag[7:]}; perl -e {body}"
+    return f"perl {flag} -e {body}".replace("  ", " ")
+
+
+@pytest.mark.parametrize("changer", INC_CHANGERS)
+@pytest.mark.parametrize("requirer", REQUIRERS)
+@pytest.mark.parametrize(("folder", "file"), INC_PLACES)
+def test_a_do_or_require_through_a_kb_folder_in_inc_is_denied(
+    home: Path, changer: tuple[str, str], requirer: str, folder: str, file: str
+) -> None:
+    command = _perl_with_inc(changer, requirer.replace("FILE", file), folder)
+    assert KB_DENY in _denied(_run(home, command)), command
+
+
+@pytest.mark.parametrize("changer", [c for c in INC_CHANGERS if not c[0].startswith(("ENV", "EXPORT", "-"))])
+@pytest.mark.parametrize("requirer", REQUIRERS)
+def test_a_folder_put_in_inc_by_what_it_cant_resolve_is_never_silent(
+    home: Path, changer: tuple[str, str], requirer: str
+) -> None:
+    text = changer[1].replace('"DIR"', "$d").replace("qw(DIR)", "($d)")
+    _never_silent(home, "perl -e " + shlex.quote(text + requirer.replace("FILE", "a.md")))
+
+
+CHDIRS = ['chdir "DIR"; ', 'chdir("DIR"); ', '$d = "DIR"; chdir $d; ', "chdir q{DIR}; "]
+OPENERS = ['open F, "FILE"; print <F>', 'open(F, "<", "FILE"); print <F>', 'do "FILE"', 'print for glob("FILE")']
+
+
+@pytest.mark.parametrize("change", CHDIRS)
+@pytest.mark.parametrize("opener", OPENERS)
+@pytest.mark.parametrize(("folder", "file"), INC_PLACES)
+def test_an_open_after_a_chdir_into_the_kb_is_denied(
+    home: Path, change: str, opener: str, folder: str, file: str
+) -> None:
+    command = "perl -e " + shlex.quote(change.replace("DIR", folder) + opener.replace("FILE", file))
+    assert KB_DENY in _denied(_run(home, command)), command
+
+
+@pytest.mark.parametrize("change", ["chdir $d; ", "chdir(sprintf('%s', $x)); ", "chdir $ENV{D}; "])
+@pytest.mark.parametrize("opener", OPENERS)
+def test_an_open_after_a_chdir_it_cant_resolve_is_never_silent(home: Path, change: str, opener: str) -> None:
+    _never_silent(home, "perl -e " + shlex.quote(change + opener.replace("FILE", "a.md")))
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["perl x.pl", "perl ./x.pl docs/a.md", "perl -- x.pl", "perl -w x.pl", "perl -x ../doc.txt", "perl < ../prog.pl"],
+)
+def test_a_perl_program_from_a_file_or_stdin_is_recorded(home: Path, command: str) -> None:
+    assert _run(home, command) is None
+    (row,) = [r for r in _events(home) if r["kind"] == "kb_read_gate.unresolved_read"]
+    assert row["payload"]["categories"] == ["program_path"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "perl -v",
+        "perl -V",
+        "perl -Ilib -e 'use Foo; print 1'",
+        "perl -Idocs -e 'do \"a.md\"'",
+        'perl -e \'chdir "docs"; open F, "a.md"; print <F>\'',
+        "PERL5LIB=scripts perl -e 'print 1'",
+    ],
+)
+def test_inc_and_chdir_outside_the_kb_stay_quiet(home: Path, command: str) -> None:
+    assert _run(home, command) is None
+    assert _events(home) == []
+
+
+def test_a_perl_script_that_is_a_kb_note_is_denied(home: Path) -> None:
+    assert KB_DENY in _denied(_run(home, "perl knowledge-base/a.md"))

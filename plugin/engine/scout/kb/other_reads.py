@@ -37,6 +37,7 @@ class OtherReads:
     reads: list[tuple[str, str]] = field(default_factory=list)  # (word as the shell hands it, FILE | COVERS)
     literal: list[str] = field(default_factory=list)  # paths a program opens exactly as written
     folders: list[str] = field(default_factory=list)  # folders a program lists exactly as written (opendir)
+    requires: list[str] = field(default_factory=list)  # relative files `do`/`require` look for in each @INC folder
     dests: list[str] = field(default_factory=list)  # where a copy writes: one in the KB makes ``reads`` none
     built: bool = False  # a program opens a path it builds at run time
     stdin_list: bool = False  # it reads the files named on its stdin (``find . | cpio -o``)
@@ -890,7 +891,9 @@ def _perl(args: list[str]) -> OtherReads | None:
     path or a command built at run time is built. A script file is its own business."""
     programs: list[str] = []
     operands: list[str] = []
-    loops = False
+    inc: list[str] = []  # folders `-I DIR` and `-Mlib=DIR` put in @INC
+    script: str | None = None
+    loops = embedded = False
     i = 0
     while i < len(args):
         a = args[i]
@@ -898,9 +901,22 @@ def _perl(args: list[str]) -> OtherReads | None:
         if programs and (a == "--" or not a.startswith("-")):
             operands += args[i:] if a == "--" else [a, *args[i:]]
             break
-        if a == "--" or not a.startswith("-"):
-            return None  # a script file: what it reads isn't in the command
-        if a.startswith(("-i", "-M", "-m", "-I", "-0", "-l", "-x", "-C", "-d", "-D")) and not re.fullmatch(
+        if a == "--":
+            script = args[i] if i < len(args) else None
+            break
+        if not a.startswith("-"):
+            script = a
+            break
+        if a == "-I" and i < len(args):
+            inc.append(args[i])
+            i += 1
+            continue
+        lib = re.fullmatch(r"-M-?lib=(.*)", a)
+        if a.startswith("-I") or lib is not None:
+            inc += [a[2:]] if lib is None else [d for d in lib[1].split(",") if d]
+            continue
+        embedded = embedded or a.startswith("-x")
+        if a.startswith(("-i", "-M", "-m", "-0", "-l", "-x", "-C", "-d", "-D")) and not re.fullmatch(
             r"-[a-zA-Z]*[eE]", a
         ):
             continue  # attached values: `-i.bak`, `-MJSON`, `-0777`
@@ -910,8 +926,12 @@ def _perl(args: list[str]) -> OtherReads | None:
             programs.append(args[i])
             i += 1
     if not programs:
-        return None
-    out = OtherReads()
+        if script is None and not embedded and any(re.fullmatch(r"-[vVhc]\S*", a) for a in args):
+            return None  # `perl -v`, `perl -V`: no program runs
+        # A program from a file (`perl x.pl`, `-x`) or from stdin: what it reads isn't in the command.
+        reads = [(script, FILE)] if script not in (None, "-") else []
+        return OtherReads(reads=reads, folders=inc, built=True)
+    out = OtherReads(folders=list(inc))
     text = "\n".join(programs)
     if loops or _PERL_READS_ARGV.search(text):
         out.reads += [(o, FILE) for o in operands if o != "-"]
@@ -945,16 +965,19 @@ def _perl(args: list[str]) -> OtherReads | None:
             out.built = True
         else:
             out.programs.append(found[1])
-    _perl_rest(text, any("File::Copy" in a for a in args), out)
+    _perl_rest(text, any("File::Copy" in a for a in args), inc, out)
     return out
 
 
 # Every other construct that opens, lists, reads or runs something: each is judged by its argument, which must be
 # one literal (or a scalar set to one) to be read; anything else is built. So a form the handlers above don't
 # know is recorded, never silent: `open FH => …`, `sysopen`, `opendir`, `glob`, `<*.md>`, `do FILE`,
-# `require FILE`, `readpipe`, File::Copy's `copy`/`move`.
+# `require FILE`, `readpipe`, File::Copy's `copy`/`move`. And what moves where a relative path is looked for:
+# `chdir DIR` (every later relative path is under it), and `use lib`, `push`/`unshift @INC`, `@INC = …` (a
+# relative `do`/`require` file is looked for in each folder there).
 _PERL_TRIGGER = re.compile(
-    r"\b(open|sysopen|opendir|glob|do|require|readpipe|copy|move|syscopy)\b|<(?![\s=<>]|\$?\w+>|>)([^<>\n]+)>"
+    r"\b(open|sysopen|opendir|glob|do|require|readpipe|copy|move|syscopy|chdir)\b|<(?![\s=<>]|\$?\w+>|>)([^<>\n]+)>"
+    r"|\buse\s+(lib)\b\s*|\b(?:unshift|push)\s*\(?\s*(@INC)\s*,\s*|(@INC)\s*=(?!=)\s*"
 )
 
 
@@ -972,13 +995,45 @@ def _perl_string_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
-def _perl_rest(text: str, file_copy: bool, out: OtherReads) -> None:
+def _perl_list(rest: str, text: str) -> list[str] | None:
+    """The literal strings a list argument holds (``qw(a b)``, ``("a", "b")``, ``"a", $b``…); None when one isn't."""
+    qw = re.match(r"\s*qw\s*(?=[^\w\s])", rest)
+    if qw is not None:
+        words = _perl_quoted(rest, qw.end(), False)
+        return None if words is None else words[1].split()
+    values: list[str] = []
+    for arg in _perl_args(rest.lstrip()[1:] if rest.lstrip().startswith("(") else rest):
+        found = _perl_values(arg, text)
+        if found is None:
+            return None
+        values += found
+    return values
+
+
+def _perl_rest(text: str, file_copy: bool, inc: list[str], out: OtherReads) -> None:
     spans = _perl_string_spans(text)
+    chdirs: list[str] = []  # folders `chdir` moves to: every later relative path is under one of them
+    required: list[str] = []  # relative `do`/`require` files: looked for in each @INC folder
+    inc = list(inc)
     for m in _PERL_TRIGGER.finditer(text):
         if any(a < m.start() <= b for a, b in spans):
             continue  # a word inside a string
         word, rest = m[1], text[m.end() :]
         args = _perl_args(rest.lstrip()[1:] if rest.lstrip().startswith("(") else rest)
+        if m[3] or m[4] or m[5]:  # `use lib …`, `push @INC, …`, `@INC = …`: folders a `do`/`require` looks in
+            found = _perl_list(rest, text)
+            if found is None:
+                out.built = True
+            else:
+                inc += found
+            continue
+        if word == "chdir":
+            found = _perl_values(args[0], text) if args else None  # a bare `chdir` goes home
+            if found is None:
+                out.built = True
+            else:
+                chdirs += found
+            continue
         if word is None:  # `<*.md>`, `<$dir/*>`: a glob
             if re.search(r"(?<!\\)[$@]", m[2]):
                 out.built = True
@@ -991,7 +1046,12 @@ def _perl_rest(text: str, file_copy: bool, out: OtherReads) -> None:
             head = rest.lstrip()
             if not head or head[0] in "{;" or re.match(r"[A-Za-z_][\w:]*(?:\s|;|$)|v?\d", head):
                 continue  # a block, a module name or a version: no file
-            _perl_path(args[0] if args else "", text, out)
+            found = _perl_values(args[0], text) if args else None
+            if found is None:
+                out.built = True
+            else:
+                out.literal += found
+                required += [f for f in found if not f.startswith("/")]
         elif word == "glob":
             found = _perl_values(args[0], text) if args else None
             if found is None:
@@ -1010,6 +1070,15 @@ def _perl_rest(text: str, file_copy: bool, out: OtherReads) -> None:
             _perl_command(args[:1], text, out)
         elif file_copy:  # File::Copy's copy, move, syscopy: the source is read
             _perl_path(args[0] if args else "", text, out)
+    # Every folder @INC gains is read for its files; a relative `do`/`require` file is in one of them.
+    out.folders += [d for d in inc if d not in out.folders]
+    out.literal += [posixpath.join(d, f) for d in inc for f in required]
+    out.requires += required  # PERL5LIB's folders, which the caller knows, are looked in too
+    # After a `chdir`, a relative path is under the folder it moved to (one it can't work out made `built`).
+    out.folders += chdirs
+    relative = [p for p in out.literal if not p.startswith("/")]
+    out.literal += [posixpath.join(d, p) for d in chdirs for p in relative]
+    out.reads += [(posixpath.join(d, w), how) for d in chdirs for w, how in list(out.reads) if not w.startswith("/")]
 
 
 # ----- the table -------------------------------------------------------------------------------------------
