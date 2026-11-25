@@ -75,7 +75,7 @@ def test_the_switch_file_and_the_pointer_venv_are_protected_in_both_layers(world
     (state / "engine.json").write_text(json.dumps({"python": str(venv / "bin" / "python")}))
     hook_paths._ROOTS_CACHE.clear()
     switch = state / hook_paths.SANDBOX_SWITCH_NAME
-    assert hook_paths.protected_write(switch, vault, env) == hook_paths.ENGINE
+    assert hook_paths.protected_write(switch, vault, env) == hook_paths.OWNER_STATE
     assert hook_paths.protected_write(venv / "lib" / "x.py", vault, env) == hook_paths.ENGINE
     rules = _rules(vault, env)
     assert sbx.decide(rules, str(switch)) == "deny"
@@ -558,12 +558,12 @@ def test_the_roots_cache_follows_the_account_home(world, account, monkeypatch) -
     _, vault, env = world
     store = hook_paths.CHANGES_OWNER_NAME
     first = account / ".local" / "state" / "scout" / store / "run-commits.jsonl"
-    assert hook_paths.protected_write(first, vault, env) == hook_paths.ENGINE
+    assert hook_paths.protected_write(first, vault, env) == hook_paths.OWNER_STATE
     other = account.parent / "other-account"
     other.mkdir()
     monkeypatch.setattr(hook_paths, "account_home", lambda: other)
     second = other / ".local" / "state" / "scout" / store / "run-commits.jsonl"
-    assert hook_paths.protected_write(second, vault, env) == hook_paths.ENGINE
+    assert hook_paths.protected_write(second, vault, env) == hook_paths.OWNER_STATE
     assert hook_paths.protected_write(first, vault, env) is None  # no longer a home of this process
 
 
@@ -605,7 +605,7 @@ def test_the_changes_owner_store_the_engine_writes_is_the_one_denied(world, acco
     assert not owner.is_relative_to(home)
     rules = _rules(vault, env)
     for rel in ("run-commits.jsonl", "engagement.jsonl", "settings.json"):
-        assert hook_paths.protected_write(owner / rel, vault, env) == hook_paths.ENGINE, rel
+        assert hook_paths.protected_write(owner / rel, vault, env) == hook_paths.OWNER_STATE, rel
         assert sbx.decide(rules, str(owner / rel)) == "deny", rel
 
 
@@ -615,7 +615,7 @@ def test_the_lab_veto_store_is_denied_under_both_homes(world, account) -> None:
     rules = _rules(vault, env)
     for base in (account, home):
         vetoes = base / ".local" / "state" / "scout" / hook_paths.RUN_BROKERS_NAME / "lab-vetoes.jsonl"
-        assert hook_paths.protected_write(vetoes, vault, env) == hook_paths.ENGINE
+        assert hook_paths.protected_write(vetoes, vault, env) == hook_paths.OWNER_STATE
         assert sbx.decide(rules, str(vetoes)) == "deny"
 
 

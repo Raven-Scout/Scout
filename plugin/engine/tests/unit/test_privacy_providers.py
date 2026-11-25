@@ -144,7 +144,7 @@ def test_the_consent_record_is_protected_in_both_layers(tmp_path: Path) -> None:
     hook_paths._ROOTS_CACHE.clear()
     record = consent.record_path(env)
     assert record.name == hook_paths.PROVIDER_CONSENT_NAME
-    assert hook_paths.protected_write(record, v, env) == hook_paths.ENGINE
+    assert hook_paths.protected_write(record, v, env) == hook_paths.OWNER_STATE
     assert sbx.decide(sbx.build_rules(v, env), str(record)) == "deny"
     assert hook_paths.protected_token(f"open('{record}', 'w')") is not None
     hook_paths._ROOTS_CACHE.clear()
@@ -165,7 +165,7 @@ def test_the_owners_run_limits_are_protected_in_both_layers(tmp_path: Path) -> N
     hook_paths._ROOTS_CACHE.clear()
     record = limits.run_limits_path(env)
     assert record.name == hook_paths.RUN_LIMITS_NAME
-    assert hook_paths.protected_write(record, v, env) == hook_paths.ENGINE
+    assert hook_paths.protected_write(record, v, env) == hook_paths.OWNER_STATE
     assert sbx.decide(sbx.build_rules(v, env), str(record)) == "deny"
     assert hook_paths.protected_token(f"open('{record}', 'w')") is not None
     hook_paths._ROOTS_CACHE.clear()

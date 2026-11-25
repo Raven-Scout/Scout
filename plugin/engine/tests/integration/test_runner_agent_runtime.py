@@ -360,8 +360,12 @@ def test_live_run_still_matches_exec_launched_claude(tmp_path: Path, name: str, 
     assert x_argv == d_argv
     assert d_argv[:2] == ["--permission-mode", "auto"]  # bash's "$@": argv[0] is the stub itself
     assert x_cwd == d_cwd == str(scout_dir)
+    # An engine without `agent-runtime` can't resolve one either, so that run records the fallback (#652 S7).
+    assert (x_env["SCOUT_AGENT_RUNTIME_FALLBACK"], d_env["SCOUT_AGENT_RUNTIME_FALLBACK"]) == ("", "resolve_failed")
     for env in (x_env, d_env):
-        for noise in ("_", "SCOUT_RUN_STARTED", "SCOUT_RUN_AWAKE_STARTED", "SCOUT_TEST_OLD_ENGINE"):
+        for noise in (
+            "_", "SCOUT_RUN_STARTED", "SCOUT_RUN_AWAKE_STARTED", "SCOUT_TEST_OLD_ENGINE", "SCOUT_AGENT_RUNTIME_FALLBACK"
+        ):  # fmt: skip
             env.pop(noise, None)
         env.pop("CLAUDE_OUT")
     assert x_env == d_env
