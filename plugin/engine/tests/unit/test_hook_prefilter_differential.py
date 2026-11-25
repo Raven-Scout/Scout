@@ -559,7 +559,11 @@ def test_the_fixture_is_the_inline_hooks_json() -> None:
     assert len(OLD["kb-read-gate"]) == 4105
     assert all("prefilter.sh" not in c for c in OLD.values())
     assert all(c.count("prefilter.sh") >= 1 for c in NEW.values())
-    assert max(len(c) for c in NEW.values()) < 700  # entries are short calls now
+    # Entries are short calls now. mcp-tool-gate's also carries the vault walk that keeps it closed when
+    # neither the script nor the engine can run (test_mcp_tool_gate_fail_closed.py): it can't live in
+    # the script, since it is for when the script is missing.
+    assert max(len(c) for name, c in NEW.items() if name != "mcp-tool-gate") < 700
+    assert len(NEW["mcp-tool-gate"]) < 900
 
 
 # ----- the differential runs ------------------------------------------------------------------
