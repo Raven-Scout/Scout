@@ -803,7 +803,7 @@ def _config_findings(ctx: _Ctx, sp: StagedPath) -> list[Finding]:
     staged_text = staged_text_lossy(ctx.repo, sp.rel)
     out: list[Finding] = []
     if ctx.scheduled:
-        head_text = head_text_lossy(ctx.repo, sp.head_rel) if sp.head_rel else None
+        head_text = ctx.head_config  # HEAD's config, never a rename's source: a twin renamed into place is new
         # The loaded block, and what the delegate flags act on: `yes` -> `true` loads the same but turns a flag on.
         if _privacy_block(_config_data(head_text)) != _privacy_block(_config_data(staged_text)) or (
             delegate_flags_on(head_text) != delegate_flags_on(staged_text)

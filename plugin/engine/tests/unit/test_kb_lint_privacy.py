@@ -529,6 +529,17 @@ def test_a_run_may_not_turn_a_delegate_flag_on(vault: Path, flag: str) -> None:
     assert checks(vault) == []  # the owner may
 
 
+def test_a_run_may_not_rename_a_committed_twin_into_the_config(vault: Path) -> None:
+    """With no config at HEAD, the rename's source is not the baseline: HEAD had no privacy block at all."""
+    text = _read(vault, "scout-config.yaml") + "  delegates:\n    duet:\n      include_private: true\n"
+    git(vault, "rm", "-q", "scout-config.yaml")
+    stage(vault, "notes/twin.yaml", text)
+    commit(vault)
+    git(vault, "mv", "notes/twin.yaml", "scout-config.yaml")
+    assert ("scout-config.yaml", "privacy-widening", True, None) in checks(vault, RUN)
+    assert ("scout-config.yaml", "privacy-widening", True, None) not in checks(vault)
+
+
 @pytest.mark.parametrize("flag", ["include_private", "ignore_sync_only"])
 @pytest.mark.parametrize("spelling", ["yes", "True", "on", "TRUE", "Yes"])
 def test_a_run_may_not_respell_a_delegate_flag_as_a_plain_true(vault: Path, flag: str, spelling: str) -> None:
