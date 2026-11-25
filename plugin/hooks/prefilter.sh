@@ -212,6 +212,12 @@ bash_pattern() {
     # -- Any `(`: zsh reads a group glued to a word as alternation, so `cat kn(o|)wledge-base/a.md` and
     #    `cat (a|b)(c|d)/x.md` name a note with no glob character in them.
     alt '\('
+
+    # -- A recursive copy, archive or compare from a folder that holds the KB, spelling no path that names
+    #    it: `diff -rN . e`, `pax -w .`, `zip -qr - .`, `ditto . x`, `gzip -rc .`. (cp, rsync, tar, find,
+    #    sed, perl and dd are matched above; any other reader needs a KB name, a glob, a `$` or a cd.)
+    alt "$word"'(pax|zip|cpio|ditto|scp|gzip|zstd|lz4)([^A-Za-z0-9_.-]|$)'
+    alt "$word"'g?diff[^;&|]* (-[A-Za-z]*r|--recursive)'
 }
 
 # Sets $t to program $1 by absolute path: /usr/bin or /bin first, else the first in the (filtered,

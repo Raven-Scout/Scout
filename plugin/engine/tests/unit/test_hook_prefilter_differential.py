@@ -79,6 +79,15 @@ EXPANSION_ALTERNATIVES = (
     r"\(",
 )
 EXPANSION_PATTERN = "|".join(EXPANSION_ALTERNATIVES)
+# Then the readers that reach the KB from a folder holding it with no path naming it (scout.kb.other_reads): a
+# recursive copy, archive or compare (`diff -rN . e`, `pax -w .`, `zip -qr - .`). cp, rsync, tar, find, sed,
+# perl and dd were matched already; every other new reader needs a KB name, a glob, a `$` or a cd to get there.
+READER_ALTERNATIVES = (
+    r"(^|[^A-Za-z0-9_.-]|\\[nt])(pax|zip|cpio|ditto|scp|gzip|zstd|lz4)([^A-Za-z0-9_.-]|$)",
+    r"(^|[^A-Za-z0-9_.-]|\\[nt])g?diff[^;&|]* (-[A-Za-z]*r|--recursive)",
+)
+READER_PATTERN = "|".join(READER_ALTERNATIVES)
+ADDED_PATTERN = f"{EXPANSION_PATTERN}|{READER_PATTERN}"
 # Rules prefilter.sh also applies ignoring letter case, to the command value as is and again with its quotes and
 # backslashes gone: a program fed paths by another, a cd into action-items/ (on macOS's case-insensitive disk
 # ACTION-ITEMS is the folder and XARGS runs xargs), and, on the stripped value only, a KB folder's name.
@@ -538,6 +547,52 @@ NOT_EXPANSIONS = (
     "ls action-items",
 )
 
+# Readers the KB read gate judges since the #790 follow-up (scout.kb.other_reads, and raw_read's plain readers):
+# copies and archives, diff -r, program text that names a file, dd, source. Each reads a note in a synthetic vault
+# under zsh (tests/integration/test_kb_read_gate_zsh.py runs them), and in a run every one must reach Python.
+READER_FORMS = (
+    "cd action-items; tar cf - con* | tar xOf -",
+    "cd action-items; cp -r con* ../x; cat ../x/x.md",
+    "cd action-items; zip -qr ../z.zip con*; unzip -p ../z.zip",
+    "cd action-items; rsync -a con* ../x/; cat ../x/context/x.md",
+    "cd action-items; pax -w con*",
+    "cd action-items; ditto con* ../x; cat ../x/x.md",
+    "cd action-items; split -l 1 con*/x.md ../sp; cat ../sp*",
+    "cd action-items; gzip -c con*/x.md | gunzip",
+    "tar cf - . | tar xOf - 2>/dev/null",
+    "pax -w . 2>/dev/null",
+    "zip -qr - . | cat",
+    "ditto . ../x; cat ../x/knowledge-base/a.md",
+    "mkdir -p e; diff -rN action-items e",
+    "mkdir -p e; diff -rN . e",
+    "diff --recursive -N . e",
+    "cd action-items; sed 'r context/x.md' ../docs/a.md",
+    "cd action-items; awk 'BEGIN{while((getline l < \"context/x.md\")>0) print l}'",
+    "cd action-items; awk 'BEGIN{f=\"context/x.md\"; while ((getline l < f) > 0) print l}'",
+    "cd action-items; awk -v f=context/x.md 'BEGIN{while ((getline l < f) > 0) print l}'",
+    "cd action-items; awk 'BEGIN{\"cat context/x.md\" | getline l; print l}'",
+    "cd action-items; perl -ne print con*/x.md",
+    'cd action-items; perl -e \'open(F, "<", "context/x.md"); print <F>\'',
+    "cd action-items; dd if=context/x.md 2>/dev/null",
+    "cd action-items; source context/x.md 2>&1",
+    "cd action-items; . context/x.md 2>&1",
+    "cd action-items; join con*/x.md con*/x.md",
+    "cd action-items; expand con*/x.md",
+    "cd action-items; look kb con*/x.md",
+    "cd action-items; shuf con*/x.md",
+    "cat \"$(cat <<'EOF'\nknowledge-base/a.md\nEOF\n)\"",
+    "X=kn; cat <<EOF\n$(cat ${X}owledge-base/a.md)\nEOF",
+)
+
+# Their harmless neighbours, which must stay in the shell.
+NOT_READERS = (
+    "git diff HEAD~3 --stat",
+    "diff -u notes/a.md notes/b.md",
+    "join notes/a.md notes/b.md",
+    "awk '{print 1}' notes/a.md",
+    "unzip -l notes.zip",
+)
+
 RUN = {"SCOUT_MODE": "briefing"}
 READERS: tuple[dict[str, str], ...] = (
     {},
@@ -667,9 +722,10 @@ def _widened(case: Case, old: Outcome, new: Outcome, expansions: set[str]) -> bo
 
 def _expansion_matches(commands: list[str]) -> set[str]:
     """The commands this change sends to Python, as the hook sees them (the JSON-escaped command value):
-    EXPANSION_PATTERN, LATE_RULES in any letter case, and STRIPPED_RULES once quotes and backslashes are gone."""
+    EXPANSION_PATTERN and READER_PATTERN, LATE_RULES in any letter case, and STRIPPED_RULES once quotes and
+    backslashes are gone."""
     values = ['"command": ' + json.dumps(c) for c in commands]
-    matched = {commands[n - 1] for n in _matching_lines(EXPANSION_PATTERN, values)}
+    matched = {commands[n - 1] for n in _matching_lines(ADDED_PATTERN, values)}
     for command, value in zip(commands, values, strict=True):
         stripped = re.sub(r"[\"'\\]", "", value)
         if re.search(LATE_RULES, value, re.I) or re.search(STRIPPED_RULES, stripped, re.I):
@@ -778,7 +834,8 @@ def test_the_bash_pattern_is_the_old_one_minus_its_repeated_block_plus_the_expan
     assert _balanced(head[:-1]) and _balanced(block) and _balanced(tail[1:])
     # The expansions only add whole alternatives at the end, so they can add matches and never remove one.
     assert all(_balanced(a) for a in EXPANSION_ALTERNATIVES)
-    assert new == f"{_edited(f'{head}{block}{tail}')}|{EXPANSION_PATTERN}"
+    assert all(_balanced(a) for a in READER_ALTERNATIVES)
+    assert new == f"{_edited(f'{head}{block}{tail}')}|{ADDED_PATTERN}"
     assert "'" not in new and "\n" not in new
 
 
@@ -817,7 +874,8 @@ def test_bash_corpus_matches_the_old_pattern_plus_the_expansions_exactly() -> No
     The new pattern matches what the old one did and what the expansions add, nothing else: no old match
     is lost, and nothing beyond the expansions is gained."""
     known = [form for form, _ in KNOWN_MISSED_FORMS]
-    corpus = list(dict.fromkeys([*DESCRIBED_FORMS, *known, *EXPANSION_FORMS, *NOT_EXPANSIONS, *_harvested()]))
+    extra = [*EXPANSION_FORMS, *NOT_EXPANSIONS, *READER_FORMS, *NOT_READERS]
+    corpus = list(dict.fromkeys([*DESCRIBED_FORMS, *known, *extra, *_harvested()]))
     assert len(corpus) > 1000
     values = ['"command": ' + json.dumps(c) for c in corpus]
     assert all("\n" not in v for v in values)
@@ -825,7 +883,7 @@ def test_bash_corpus_matches_the_old_pattern_plus_the_expansions_exactly() -> No
     old = _matching_lines(_pattern(OLD["kb-read-gate"]), values)
     edited = _matching_lines(_edited(_pattern(OLD["kb-read-gate"])), values)
     new = _matching_lines(_new_pattern(), values)
-    added = _matching_lines(EXPANSION_PATTERN, values)
+    added = _matching_lines(ADDED_PATTERN, values)
     assert new == edited | added, sorted(corpus[n - 1] for n in new ^ (edited | added))
     assert old < new  # the widening widened
     # The intended edits move a line only towards Python, and only for a command they are about.
@@ -841,7 +899,10 @@ def test_bash_forms_under_every_reader_shell_and_failure(world: World) -> None:
     cases = []
     # This filter asks only "is it a run?"; owner sessions are covered by the entry matrix below.
     readers = ({"SCOUT_READER": "agent:helper"},)
-    forms = (*DESCRIBED_FORMS, *(form for form, _ in KNOWN_MISSED_FORMS), *EXPANSION_FORMS, *NOT_EXPANSIONS)
+    forms = (
+        *DESCRIBED_FORMS, *(form for form, _ in KNOWN_MISSED_FORMS), *EXPANSION_FORMS, *NOT_EXPANSIONS,
+        *READER_FORMS, *NOT_READERS,
+    )  # fmt: skip
     for i, command in enumerate(forms):
         for j, env in enumerate(readers):
             cases.append(
@@ -1002,6 +1063,25 @@ def test_the_old_filter_let_the_reviews_forms_through() -> None:
 
 def test_harmless_neighbours_stay_in_the_shell(world: World) -> None:
     assert [c for c in NOT_EXPANSIONS if _judged(world, c)] == []
+
+
+@pytest.mark.parametrize("shell", ["sh", "/bin/bash"])
+def test_every_reader_form_reaches_python_in_a_run(world: World, shell: str) -> None:
+    assert [c for c in READER_FORMS if not _judged(world, c, shell)] == []
+
+
+def test_the_reader_alternatives_are_what_sends_the_vault_root_forms(world: World) -> None:
+    """Without READER_PATTERN the recursive forms from the vault root would stay in the shell: the alternatives
+    are what this change adds, and no other line of the pattern matches them."""
+    root_forms = ["pax -w .", "mkdir -p e; diff -rN . e", "diff --recursive -N . e", "zip -qr - . | cat", "ditto . x"]
+    values = ['"command": ' + json.dumps(c) for c in root_forms]
+    assert _matching_lines(f"{_pattern(OLD['kb-read-gate'])}|{EXPANSION_PATTERN}", values) == set()
+    assert _matching_lines(READER_PATTERN, values) == set(range(1, len(root_forms) + 1))
+    assert all(_judged(world, c) for c in root_forms)
+
+
+def test_harmless_reader_neighbours_stay_in_the_shell(world: World) -> None:
+    assert [c for c in NOT_READERS if _judged(world, c)] == []
 
 
 def _in_cwd(command: str, cwd: str, *, compact: bool) -> str:
