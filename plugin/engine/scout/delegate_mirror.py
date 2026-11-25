@@ -941,9 +941,11 @@ class Scanner:
                 terms=(t,),
                 link_keys=frozenset(),
                 link_path="",
-                pattern=re.compile(_BEFORE + re.escape(_fold_path(t)) + _AFTER),
+                pattern=re.compile(_BEFORE + re.escape(folded) + _AFTER),
+                prefixes=(folded,),  # the pattern is this one literal between zero-width assertions
             )
             for t in sorted({t for t in (_path_term(p) for p in named if p not in links) if t is not None})
+            for folded in (_fold_path(t),)
         ]
         if path_notes:
             # The pre-check is the union of patterns, not rebuilt from terms: the citing form and the

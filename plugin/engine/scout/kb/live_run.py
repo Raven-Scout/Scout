@@ -360,6 +360,57 @@ def _alive(pid: int) -> bool:
 # ----- the PreToolUse gate's check: a run's command that hides it's a run ------------
 
 RUN_VARS = ("SCOUT_MODE", "SCOUT_READER")
+# What `~` and `$HOME` name, which the gate expands with the run's own HOME: a command that points HOME elsewhere
+# (`HOME=… cmd`, `export HOME=…`, `env HOME=…`, `unset HOME`, `for HOME in …`, `read HOME`) writes where the gate
+# didn't look. Runs don't need it: one `HOME=$HOME` in the last 280 scheduled sessions, which keeps HOME as it is and
+# stays allowed.
+HOME_FORM = "HOME"
+# HOME set to itself: what `~` and `$HOME` name doesn't change.
+_SAME_HOME = ("$HOME", "${HOME}", "~", "$HOME/", "${HOME}/", "~/")
+# An assignment as bash and zsh read it: a name, an optional subscript (`HOME[1,-1]=`), then `=` or `+=`.
+_ASSIGN_ANY = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\[[^\]]*\])?(\+?=)")
+# A name, as a builtin's target or an assignment's left side, that the parser can read for certain: anything else
+# (`$v`, `H$v`, `${v}`, a backtick, a glob such as `HOM?` or `HOM[E]`, which the shell may expand to a file's name)
+# may be HOME once the shell has expanded it.
+_PLAIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# A parameter expansion that assigns a name that matters, or one built at run time: `${HOME:=…}`, `${HOME=…}` (with a
+# value: an empty one changes nothing), zsh's `${HOME::=…}` (always assigns), `${(P)v::=…}` (zsh's (P) flag: the
+# name is v's value), and bash's `${!v:=…}`.
+_PROTECTED_NAMES = "HOME|XDG_CONFIG_HOME|SCOUT_MODE|SCOUT_READER"
+_PARAM_ASSIGN = re.compile(rf"\$\{{(?:({_PROTECTED_NAMES})(?:::=|:?=(?!\}}))|\([^)]*P[^)]*\).*?=|!.*?=)")
+# A named file descriptor (`exec {HOME}>/dev/null`): the shell sets the name to the new descriptor's number.
+_NAMED_FD = re.compile(rf"\{{({_PROTECTED_NAMES})\}}\s*(?:[<>]|&>)")
+# An even run of `$` (not escaped) before a quote that holds a backslash: shells read it two ways (expansion_escape).
+_EVEN_DOLLAR_QUOTE = re.compile(r"(?<![$\\])(?:\$\$)+'[^']*\\")
+# Builtins that set or unset the variables they name, and the options whose value is the next word (not a name).
+_DECLARERS = ("export", "declare", "typeset", "local", "readonly", "integer", "float")
+_NAMER_VALUE_OPTIONS = {
+    "read": "dinNptu",  # bash and zsh; `-a`/`-A` (an array) take the target itself, so they are flags here
+    "mapfile": "dnOsuCc",
+    "readarray": "dnOsuCc",
+    "vared": "Mmprif",
+}
+# zsh builtins that set a variable they're given (zsh/zutil, zsh/datetime): `print -v`, `zstyle -s/-a/-b/-g`,
+# `zformat -f/-a`, `strftime -s`, `getln`.
+_ZSH_SETTERS = {"print", "zstyle", "zformat", "strftime", "getln"}
+# Module builtins that set what they're given in ways not worth modelling (`zparseopts -A name`, `h=name` specs,
+# `zstat -A`, `sysread`, `sysopen -u`, `zselect -a`, `zpty -r`): any argument that spells a name that matters, or
+# could build one, is denied.
+_STRICT_SETTERS = {"zparseopts", "zstat", "sysread", "sysopen", "zselect", "zpty", "zregexparse"}
+_NAMERS = {
+    *_DECLARERS, "unset", "for", "select", "getopts", "printf", "let", *_NAMER_VALUE_OPTIONS, *_ZSH_SETTERS,
+    *_STRICT_SETTERS,
+}  # fmt: skip
+# Declarer options whose value is a number: zsh's `typeset -i 10 x`, `-Z 3`, `-L 5`, `-R 5`, `-E 2`, `-F 2`.
+_NUMBER_OPTIONS = "iZLREF"
+_PROTECTED_WORD = re.compile(rf"(?<![A-Za-z0-9_])(?:{_PROTECTED_NAMES})(?![A-Za-z0-9_])")
+_BUILDS_A_NAME = re.compile(r"[$`?*\[{]")
+# An arithmetic assignment (`let`, `(( … ))`): a left side, then `=`, `+=`, `<<=` and the like (not `==`).
+_ARITH_ASSIGN = re.compile(r"([^\s=+\-*/%&|^<>!(),]+)\s*(?:\*\*|<<|>>|[-+*/%&|^])?=(?!=)")
+# A command word whose left side is a name built at run time from name characters, `$…`, `${…}` or a backtick
+# (`$v=x`, `H${v}=x`): `eval` makes it an assignment. A glob there (`HOM?=x`) never assigns.
+_BUILT_HEAD = re.compile(r"[A-Za-z0-9_]*[$`][A-Za-z0-9_{}$`]*\+?=")
+_ARITH_OPS = {"=", "+=", "-=", "*=", "/=", "%=", "<<=", ">>=", "&=", "|=", "^=", "**="}
 # ">|" is a redirect, not a pipe; an escaped `\;`, `\(`, `\)` or `\|` (`find … -exec x {} \;`) is a word.
 _SEGMENTS = re.compile(r"&&|\|\||(?<!\\)[;\n`]|(?<![>\\])\||\$\(|(?<!\\)\(|(?<!\\)\)")
 # An "&" that isn't the first half of "&&" or "&>". Whether it backgrounds is _backgrounds' call.
@@ -370,7 +421,8 @@ _DETACH = {
     "nohup", "setsid", "disown", "launchctl", "osascript", "open", "tmux", "screen", "script", "at", "batch",
     "daemonize", "start-stop-daemon", "systemd-run", "ssh", "mosh",
 }  # fmt: skip
-_PREFIX = {"sudo", "command", "exec", "nice", "time", "xargs", "builtin"}
+# `noglob`, `nocorrect` and `-` are zsh's precommand modifiers: the command after them runs as written.
+_PREFIX = {"sudo", "command", "exec", "nice", "time", "xargs", "builtin", "noglob", "nocorrect", "-"}
 _SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 _KEYWORDS = {"{", "!", "if", "then", "elif", "else", "do", "while", "until"}
 # An unquoted redirect and its target. Found in the masked text, so a quoted ">" is never one.
@@ -441,6 +493,9 @@ def _delegate_write(name: str, args: list[str]) -> bool:
 
 
 _GIT_CONFIG_VAR = re.compile(r"^GIT_CONFIG(?!_NOSYSTEM=)[A-Z0-9_]*=")
+# git reads `$XDG_CONFIG_HOME/git/config` as its global config, which can set core.hooksPath.
+XDG_CONFIG_FORM = "XDG_CONFIG_HOME"
+_XDG_CONFIG_VAR = re.compile(r"^XDG_CONFIG_HOME=")
 # A short -n means no-verify only on these: (letters that take a value, letters that take an attached one).
 _N_IS_NO_VERIFY = {"commit": ("mFCct", "uS"), "am": ("", "SCp")}
 # Long options whose value is free text, and a merge's short ones: "git commit --author --no-verify" names no flag.
@@ -970,6 +1025,15 @@ def _sets_run_var(token: str) -> bool:
     return m is not None and m[1] in RUN_VARS
 
 
+def _sets_home(token: str) -> bool:
+    """``HOME=…`` with any value but HOME's own (``HOME=$HOME``, ``HOME=~``), ``HOME+=…`` or ``HOME[…]=…``."""
+    m = _ASSIGN_ANY.match(token)
+    if m is None or m[1] != "HOME":
+        return False
+    value = token[m.end() :]
+    return bool(m[2]) or (value != "" if m[3] == "+=" else value not in _SAME_HOME)
+
+
 def _env_escape(args: list[str]) -> tuple[str | None, list[str]]:
     """``env``'s own options and assignments: ("env", _) if they hide the run, else the command after them."""
     i = 0
@@ -980,12 +1044,16 @@ def _env_escape(args: list[str]) -> tuple[str | None, list[str]]:
         if a in ("-u", "--unset"):
             if i + 1 < len(args) and args[i + 1] in RUN_VARS:
                 return "env", []
+            if i + 1 < len(args) and args[i + 1] == "HOME":
+                return HOME_FORM, []
             i += 2
             continue
         if a.startswith("--unset=") and a.split("=", 1)[1] in RUN_VARS:
             return "env", []
         if a.startswith("-u") and a[2:] in RUN_VARS:
             return "env", []
+        if (a.startswith("--unset=") and a.split("=", 1)[1] == "HOME") or a == "-uHOME":
+            return HOME_FORM, []
         if a == "-S" or a == "--split-string":
             return _env_escape(_tokens(args[i + 1] if i + 1 < len(args) else "") + args[i + 2 :])
         if a.startswith("--split-string="):
@@ -999,8 +1067,12 @@ def _env_escape(args: list[str]) -> tuple[str | None, list[str]]:
         if _ASSIGN.match(a):
             if _sets_run_var(a):
                 return "env", []
+            if _sets_home(a):
+                return HOME_FORM, []
             if _GIT_CONFIG_VAR.match(a):
                 return GIT_CONFIG_FORM, []
+            if _XDG_CONFIG_VAR.match(a):
+                return XDG_CONFIG_FORM, []
             i += 1
             continue
         return None, args[i:]
@@ -1967,13 +2039,170 @@ def _hook_write_form(words: list[str], targets: list[str], cwd: str) -> str | No
     return None
 
 
+def expansion_escape(command: str) -> str | None:
+    """The form of a parameter expansion in ``command`` that assigns a name that matters (HOME, XDG_CONFIG_HOME, the
+    run's own variables) or one built at run time: ``${HOME:=…}``, ``${HOME::=…}``, ``${(P)v::=…}``. Read on the
+    whole text, since the parser splits segments at ``(``, and a nested ``sh -c`` or ``eval`` is a substring of it."""
+    fd = _NAMED_FD.search(command)
+    if fd is not None:
+        return _name_form(fd[1])
+    m = _PARAM_ASSIGN.search(command)
+    if m is None:
+        return None
+    return _name_form(m[1]) if m[1] else HOME_FORM
+
+
+def even_dollar_escape(command: str) -> str | None:
+    """HOME_FORM when ``command`` has an even run of ``$`` before a quote that holds a backslash (``eval $$'; \\x72ead
+    HOME'``): bash reads ``$$`` and a plain quote, zsh a ``$`` and then ``$'…'``, and :func:`_ansi_c` keeps bash's
+    reading, so the command zsh runs may set HOME unread. The gate asks it last, after :func:`run_escape`, whose own
+    reasons (a KB read, a background, either reading) say more. No scheduled run in the replay has one."""
+    return HOME_FORM if _EVEN_DOLLAR_QUOTE.search(command) else None
+
+
+def _name_form(name: str) -> str | None:
+    """The form a run's change to the variable ``name`` takes, or None when it may change it."""
+    if name in RUN_VARS:
+        return "env"
+    if name == "HOME":
+        return HOME_FORM
+    return XDG_CONFIG_FORM if name == "XDG_CONFIG_HOME" else None
+
+
+def _target_form(word: str, *, assigns: bool, value_matters: bool = True) -> str | None:
+    """The form of setting the target ``word`` (``NAME``, ``NAME=value``, ``NAME+=value``, ``NAME[sub]=value``):
+    HOME_FORM for a name the parser can't read for certain, the name's own form for one that matters, else None.
+    ``assigns``: a bare ``NAME`` sets it too (``read NAME``, ``local NAME``), not only ``NAME=…``."""
+    name, op, _ = re.match(r"([^=+]*(?:\+(?!=)[^=+]*)*)(\+?=)?(.*)", word, re.S).groups()  # type: ignore[union-attr]
+    if not _PLAIN_NAME.fullmatch(name):
+        return HOME_FORM
+    form = _name_form(name)
+    if form is None or (op is None and not assigns):
+        return None
+    if form == HOME_FORM and value_matters and op is not None and not _sets_home(word):
+        return None  # `HOME=$HOME`, `HOME=~`, `HOME+=`: HOME stays as it is
+    return form
+
+
+def _name_escape(words: list[str]) -> str | None:
+    """The form of this command's change to a variable that matters, or to one it names at run time (which may be
+    HOME): HOME_FORM, XDG_CONFIG_FORM or "env". It reads the command's own assignments (``HOME=x cmd``, ``HOME+=…``,
+    ``HOME[1]=…``, and ``$v=…`` or ``H$v=…`` as a command word, which ``eval`` makes an assignment), an earlier
+    segment's the parser recorded (``HOME=x; …``), an arithmetic assignment (``(( HOME = 0 ))``, ``let``), and the
+    targets of the builtins that set or unset what they name: ``export``/``typeset``/… (``export HOME`` alone
+    changes nothing), ``unset``, ``read``, ``mapfile``, ``vared``, ``getopts``, ``printf -v``, ``for``/``select``.
+    A target is denied when it isn't a plain name (``$v``, ``H$v``, ``HOM?``): the parser can't rule out HOME.
+    An expansion that assigns is :func:`expansion_escape`'s."""
+    recorded = _STATE["vars"].get("HOME")
+    if recorded is not None and recorded not in ([v] for v in _SAME_HOME):
+        return HOME_FORM
+    i = 0
+    while i < len(words) and (
+        _ASSIGN_ANY.match(words[i]) or words[i] in _KEYWORDS or words[i] in _PREFIX or words[i] == "repeat"
+    ):
+        if words[i] == "repeat":
+            i += 1  # zsh's `repeat N cmd`: skip the count too
+        elif _ASSIGN_ANY.match(words[i]):
+            form = _target_form(re.sub(r"\[[^\]]*\]", "", words[i], count=1), assigns=False)
+            if form is not None:
+                return form
+        i += 1
+    if i == len(words):
+        return None
+    head, args = words[i], words[i + 1 :]
+    if _BUILT_HEAD.match(head):
+        return HOME_FORM  # `$v=…`, `H${v}=…`: `eval` makes it an assignment to a name built at run time
+    if args and args[0] in _ARITH_OPS:
+        return _target_form(f"{head}=x", assigns=False, value_matters=False)  # `(( HOME = 0 ))`
+    name = _basename(head)
+    if name not in _NAMERS:
+        return None
+    if name in _STRICT_SETTERS:
+        for arg in args:
+            if _PROTECTED_WORD.search(arg) or (not arg.startswith("-") and _BUILDS_A_NAME.search(arg)):
+                return HOME_FORM
+        return None
+    if name == "let":
+        for arg in args:
+            for m in _ARITH_ASSIGN.finditer(arg):
+                form = _target_form(f"{m[1]}=x", assigns=False, value_matters=False)
+                if form is not None:
+                    return form
+        return None
+    if name in ("print", "printf"):
+        for arg in args:
+            if arg == "--" or not arg.startswith("-") or len(arg) == 1:
+                break
+            if "$" in arg or "`" in arg:
+                return HOME_FORM  # `print -$x NAME`: the option may be -v, and `-vHOME` names its target itself
+    targets = _targets(name, args)
+    options = [a for a in args if a.startswith(("-", "+")) and a not in ("-", "--")]
+    for target in targets:
+        if name == "export" and not options and _PLAIN_NAME.fullmatch(target):
+            continue  # `export HOME`, `export SCOUT_MODE`: the value stays as it is
+        form = _target_form(target, assigns=True)
+        if form is not None:
+            return form
+        if name in _DECLARERS and "-n" in options and "=" in target:
+            form = _name_form(target.split("=", 1)[1])  # `declare -n ref=HOME`: every later `ref=…` sets HOME
+            if form is not None:
+                return form
+    return None
+
+
+def _targets(name: str, args: list[str]) -> list[str]:
+    """The words ``name``'s builtin sets or unsets, among ``args``: not its options, and not their values."""
+    if name in ("for", "select"):
+        return args[:1]
+    if name == "getopts":
+        return (args[1:] if args[:1] == ["--"] else args)[1:2]
+    if name in ("printf", "print"):
+        for i, a in enumerate(args):
+            if a == "--" or not a.startswith("-") or len(a) == 1:
+                break
+            if "v" in a[1:]:  # `-v NAME`, zsh's `-rv NAME`, `-vNAME`
+                rest = a[a.index("v", 1) + 1 :]
+                return [rest] if rest else args[i + 1 : i + 2]
+        return []
+    if name == "zstyle":
+        if args[:1] in (["-s"], ["-a"], ["-b"]):
+            return args[3:4]
+        return args[1:2] if args[:1] == ["-g"] else []
+    if name == "zformat":
+        return args[1:2] if args[:1] in (["-f"], ["-a"]) else []
+    if name == "strftime":
+        return args[1:2] if args[:1] and args[0].startswith("-") and "s" in args[0] else []
+    takes = _NAMER_VALUE_OPTIONS.get(name, "")
+    out: list[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a.startswith(("-", "+")) and len(a) > 1 and a != "--" and not out:
+            letters = a[1:]
+            first = next((k for k, c in enumerate(letters) if c in takes), None)
+            if first is not None and first == len(letters) - 1:
+                i += 1  # its value is the next word: `-t $T`, `-p "$prompt"`, `-d ''`
+            elif (
+                name in _DECLARERS and letters[-1] in _NUMBER_OPTIONS and args[i + 1 : i + 2] and args[i + 1].isdigit()
+            ):  # noqa: E501
+                i += 1  # `typeset -i 10 x`: a base or width
+            i += 1
+            continue
+        if a != "--":
+            out.append(a)
+        i += 1
+    return out
+
+
 def _words_escape(words: list[str], depth: int) -> str | None:
-    form = None
+    form = _name_escape(words)
     while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS):
         if _sets_run_var(words[0]):
             return "env"
         if _GIT_CONFIG_VAR.match(words[0]):
             form = GIT_CONFIG_FORM
+        if _XDG_CONFIG_VAR.match(words[0]):
+            form = form or XDG_CONFIG_FORM
         words = words[1:]
     found = _command_escape(words, depth) if words else None
     return found if found == "env" else form or found
@@ -1983,6 +2212,8 @@ def _command_escape(words: list[str], depth: int) -> str | None:
     command = words
     while command and _program(command[0]) in _PREFIX:
         command = command[1:]
+    if command is not words and command and _ASSIGN.match(command[0]):
+        return _words_escape(command, depth)  # `sudo HOME=/a ls`: sudo sets the variables it is given
     found = _plain_escape(command, depth) if command else None
     if found is not None:
         return found
@@ -2001,7 +2232,9 @@ def _plain_escape(words: list[str], depth: int) -> str | None:
         unexport = any(a in ("-n", "+x") or (a.startswith("+") and "x" in a) for a in args)
         if any(_sets_run_var(a) or (unexport and a in RUN_VARS) for a in args):
             return "env"
-        return GIT_CONFIG_FORM if any(_GIT_CONFIG_VAR.match(a) for a in args) else None
+        if any(_GIT_CONFIG_VAR.match(a) for a in args):
+            return GIT_CONFIG_FORM
+        return XDG_CONFIG_FORM if any(_XDG_CONFIG_VAR.match(a) for a in args) else None
     if name in _DETACH:
         return "detach"
     if _delegate_write(name, args):
