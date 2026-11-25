@@ -16,13 +16,16 @@ struct SettingsView: View {
     /// A deep link's section, scrolled to once its tab is showing.
     @State private var scrollRequest: ScrollRequest?
     /// Read from `SMAppService` by `loadLaunchAtLogin()` once the window shows,
-    /// never in an initializer: `ScoutApp.body` builds this view on every
-    /// `AppState` change, and `status` is a synchronous XPC round trip to the
-    /// service manager — seen as ~0.4 s of main-thread wait in a 15 s profile
-    /// of the Control Center, with the Settings window closed.
+    /// never in an initializer: the Settings scene builds this view each time
+    /// `ScoutApp.body` runs, window open or not, and `status` is a synchronous
+    /// XPC round trip to the service manager — seen as ~0.4 s of main-thread
+    /// wait in a 15 s profile of the Control Center, with the Settings window closed.
     @State private var launchAtLogin = false
     /// False until `loadLaunchAtLogin()` has the real value; the switch waits.
     @State private var launchAtLoginLoaded = false
+    /// Counts the owner's flips of the switch, so a read that started before
+    /// one doesn't put the switch back to what macOS said before it.
+    @State private var launchAtLoginChanges = 0
     @State private var launchAtLoginError: String?
     /// Set while the switch is put back after macOS refused the change.
     @State private var revertingLaunchAtLogin = false
@@ -321,12 +324,15 @@ struct SettingsView: View {
     }
 
     /// The switch's real state, read off the main thread. Setting it is not a
-    /// change the owner made, so `setLaunchAtLogin` is told to skip it.
+    /// change the owner made, so `setLaunchAtLogin` is told to skip it. The
+    /// read runs again each time the switch reappears; if the owner flipped it
+    /// meanwhile, their change is newer than this answer, which is dropped.
     private func loadLaunchAtLogin() async {
+        let changesBefore = launchAtLoginChanges
         let enabled = await Task.detached(priority: .userInitiated) {
             SMAppService.mainApp.status == .enabled
         }.value
-        if enabled != launchAtLogin {
+        if launchAtLoginChanges == changesBefore, enabled != launchAtLogin {
             revertingLaunchAtLogin = true
             launchAtLogin = enabled
         }
@@ -340,6 +346,7 @@ struct SettingsView: View {
             revertingLaunchAtLogin = false
             return
         }
+        launchAtLoginChanges += 1
         do {
             if on {
                 try SMAppService.mainApp.register()

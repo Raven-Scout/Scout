@@ -44,22 +44,26 @@ final class ScoutUsageService: ObservableObject {
     /// started, as when a tracker row lands) and waits for it. The Today tile
     /// and the usage card each refresh when the Control Center appears.
     /// Values are only assigned when they change, since every publish
-    /// re-renders the whole window through `AppState`.
+    /// redraws every view that observes this service.
     func refresh() async {
         if let inFlight {
             readAgain = true
             await inFlight.value
             return
         }
+        // The task clears `inFlight` itself, in the same main-actor job as its
+        // last `readAgain` check. Clearing it here, after this caller resumes,
+        // left a gap: a call in between found the finished task, asked for a
+        // read nothing would run, and returned with the summary stale.
         let task = Task {
             repeat {
                 self.readAgain = false
                 await self.read()
             } while self.readAgain
+            self.inFlight = nil
         }
         inFlight = task
         await task.value
-        inFlight = nil
     }
 
     private var inFlight: Task<Void, Never>?

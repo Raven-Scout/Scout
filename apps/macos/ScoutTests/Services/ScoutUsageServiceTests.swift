@@ -227,7 +227,28 @@ struct ScoutUsageServiceTests {
         #expect(await runner.calls == 3)
     }
 
-    /// Every publish re-renders the window through `AppState`; an unchanged summary publishes nothing.
+    /// A call that lands after a read's task has finished, but before that read's caller has
+    /// resumed, still gets a read of its own. It used to find the finished task, ask for one
+    /// more read that nothing would run, and return with the card left stale.
+    @Test func aCallRightAfterAReadEndsStillReads() async throws {
+        let runner = GatedUsageRunner(ok(try fixtureData()))
+        await runner.release()
+        await runner.release()
+        let svc = ScoutUsageService(scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"), runner: runner)
+        var late: Task<Void, Never>?
+        // Fires while the read publishes its summary. The main actor runs jobs in order, so this
+        // task runs after the read's task finishes and before the caller below resumes.
+        let sub = svc.objectWillChange.sink { _ in
+            if late == nil { late = Task { @MainActor in await svc.refresh() } }
+        }
+        await svc.refresh()
+        let lateRead = try #require(late)
+        await lateRead.value
+        sub.cancel()
+        #expect(await runner.calls == 2)
+    }
+
+    /// Every publish redraws the views that observe the service; an unchanged summary publishes nothing.
     @Test func anUnchangedSummaryIsNotPublishedAgain() async throws {
         let runner = StubUsageRunner([ok(try fixtureData())])
         let svc = ScoutUsageService(scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"), runner: runner)
