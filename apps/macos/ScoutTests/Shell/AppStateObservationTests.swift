@@ -127,6 +127,37 @@ struct AppStateObservationTests {
 
         #expect(fired == 2)
     }
+
+    /// `DayTick` publishes on a day change, a time-zone change and a clock
+    /// change, so "today" moves at midnight in a window left open overnight.
+    @Test func dayTickFollowsTheCalendar() async throws {
+        let center = NotificationCenter()
+        let tick = DayTick(center: center)
+        var fired = 0
+        let cancellable = tick.objectWillChange.sink { _ in fired += 1 }
+        defer { cancellable.cancel() }
+
+        for name in [Notification.Name.NSCalendarDayChanged, .NSSystemTimeZoneDidChange, .NSSystemClockDidChange] {
+            center.post(name: name, object: nil)
+        }
+        center.post(name: Notification.Name("SomethingElse"), object: nil)
+        // It hops to the main queue: give it the tick.
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(fired == 3)
+    }
+
+    /// `MinuteTick` publishes on its own, every interval, with nothing else changing.
+    @Test func minuteTickPublishesOnItsOwn() async throws {
+        let tick = MinuteTick(every: 0.05)
+        var fired = 0
+        let cancellable = tick.objectWillChange.sink { _ in fired += 1 }
+        defer { cancellable.cancel() }
+
+        try await Task.sleep(for: .milliseconds(400))
+
+        #expect(fired >= 2)
+    }
 }
 
 private final class ObservableObjectPublisherBox: ObservableObject {}

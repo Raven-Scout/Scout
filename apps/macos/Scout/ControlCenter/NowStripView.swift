@@ -6,9 +6,10 @@ struct NowStripView: View {
     @EnvironmentObject var state: AppState
 
     var body: some View {
-        // Follows exactly what the three columns read (AppState re-publishes none of it).
+        // Follows exactly what the three columns read (AppState re-publishes none of it),
+        // plus `MinuteTick` for "started 5 minutes ago" and "next in…", and the day.
         Observing(state.sessionLogService, state.scoutUsageService,
-                  state.budgetSettingsService, state.scheduleService) { strip }
+                  state.budgetSettingsService, state.scheduleService, MinuteTick.shared) { strip }
     }
 
     private var strip: some View {

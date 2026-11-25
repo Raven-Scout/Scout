@@ -21,7 +21,8 @@ struct ActivityHeatmapView: View {
 
     var body: some View {
         // The services this reads; AppState re-publishes none of their changes.
-        Observing(state.sessionLogService) { observedBody }
+        // `DayTick`: "today" moves at midnight, not only when a run lands.
+        Observing(state.sessionLogService, DayTick.shared) { observedBody }
     }
 
     @ViewBuilder private var observedBody: some View {

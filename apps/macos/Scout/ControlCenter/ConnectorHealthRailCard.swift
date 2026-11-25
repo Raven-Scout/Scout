@@ -23,7 +23,8 @@ struct ConnectorHealthRailCard: View {
 
     var body: some View {
         // The services this reads; AppState re-publishes none of their changes.
-        Observing(state.connectorHealthService) { observedBody }
+        // `DayTick`: a column labelled "8 AM" today reads "Tue" tomorrow.
+        Observing(state.connectorHealthService, DayTick.shared) { observedBody }
     }
 
     @ViewBuilder private var observedBody: some View {

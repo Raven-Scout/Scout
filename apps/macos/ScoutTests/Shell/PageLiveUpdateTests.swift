@@ -94,8 +94,10 @@ struct PageLiveUpdateTests {
     func controlCenterRunHealthBanner() async throws {
         let vault = try LiveVault(); defer { vault.tearDown() }
         let tree = await LiveAccessibilityTree(vault.window(.controlCenter)); defer { tree.close() }
+        // By identifier: "Open Health" is also a Signals action and the status bar's fix.
+        let banner = RunHealthBanner.accessibilityIdentifier
         let before = await tree.nodes { $0.element(SidebarItem.controlCenter.accessibilityIdentifier) != nil }
-        #expect(!before.shows("Open Health"))
+        #expect(before.element(banner) == nil)
 
         vault.script.ledger = try LiveVault.fixture("run-ledger")
         await vault.state.runLedgerService.refresh()
@@ -103,8 +105,68 @@ struct PageLiveUpdateTests {
         try #require(RunOutcomeDisplay.bannerProblem(service.health, firstSeen: service.firstSeen, now: Date()) != nil,
                      "the fixture must raise the banner for this test to mean anything")
 
-        let after = await tree.nodes { $0.shows("Open Health") }
-        #expect(after.shows("Open Health"))
+        let after = await tree.nodes { $0.element(banner) != nil }
+        #expect(after.element(banner) != nil)
+    }
+
+    @Test("Control Center's usage card follows the usage summary")
+    func controlCenterUsageCard() async throws {
+        let vault = try LiveVault(); defer { vault.tearDown() }
+        let tree = await LiveAccessibilityTree(vault.window(.controlCenter)); defer { tree.close() }
+
+        vault.script.usage = try LiveVault.fixture("usage-summary")
+        await vault.state.scoutUsageService.refresh()
+        let today = try #require(vault.state.scoutUsageService.summary?.today)
+        // The card's own line ("cost " + the full figure; the status bar shows the short one).
+        let line = "cost " + UsageFormat.cost(today)
+        let tokens = UsageFormat.tokens(today.tokens.inputOutput)
+
+        let after = await tree.nodes { $0.shows(line) && $0.shows(tokens) }
+        #expect(after.shows(line), "no \"\(line)\" on screen")
+        #expect(after.shows(tokens), "no \"\(tokens)\" on screen")
+    }
+
+    @Test("Control Center's Today tile follows the runs and today's usage")
+    func controlCenterTodayTile() async throws {
+        let vault = try LiveVault(); defer { vault.tearDown() }
+        let tree = await LiveAccessibilityTree(vault.window(.controlCenter)); defer { tree.close() }
+        let quiet = NowStripView.todayHeadline([])
+        let noCost = NowStripView.costLine(today: nil, dailyBudgetUSD: nil)
+        let before = await tree.nodes { $0.shows(quiet) }
+        #expect(before.shows(quiet))
+        #expect(before.shows(noCost))
+
+        try vault.writeRunLog(finishedSecondsAgo: 60)
+        _ = try await vault.state.sessionLogService.loadInitial()
+        vault.script.usage = try LiveVault.usageForToday()
+        await vault.state.scoutUsageService.refresh()
+        let summary = try #require(vault.state.scoutUsageService.summary)
+        let period = try #require(summary.today.ifCurrent(at: Date()), "the usage summary must cover today")
+        let headline = NowStripView.todayHeadline(NowStripView.todayRuns(vault.state.sessionLogService.runs, today: period))
+        let cost = NowStripView.costLine(today: period, dailyBudgetUSD: nil)
+        #expect(headline != quiet, "the run log must count as today's run")
+
+        let after = await tree.nodes { $0.shows(headline) && $0.shows(cost) }
+        #expect(after.shows(headline), "no \"\(headline)\" on screen")
+        #expect(after.shows(cost), "no \"\(cost)\" on screen")
+    }
+
+    @Test("Control Center's run list shows a run that lands")
+    func controlCenterRunsList() async throws {
+        let vault = try LiveVault(); defer { vault.tearDown() }
+        let tree = await LiveAccessibilityTree(vault.window(.controlCenter)); defer { tree.close() }
+        let before = await tree.nodes { $0.shows(SessionsListView.emptyText) }
+        #expect(before.shows(SessionsListView.emptyText))
+
+        try vault.writeRunLog(finishedSecondsAgo: 60)
+        let runs = try await vault.state.sessionLogService.loadInitial()
+        let run = try #require(runs.first, "the run log must parse")
+        // The row's own text: the list shows the start in full, the Now strip only relative.
+        let started = run.startedAt.formatted(date: .abbreviated, time: .shortened)
+
+        let after = await tree.nodes { $0.shows(started) }
+        #expect(after.shows(started), "no \"\(started)\" on screen")
+        #expect(!after.shows(SessionsListView.emptyText))
     }
 
     @Test("Health shows the run ledger once it loads")
@@ -144,6 +206,35 @@ struct PageLiveUpdateTests {
 
         let after = await tree.nodes { $0.shows(evening) }
         #expect(after.shows(evening), "no \"\(evening)\" on screen")
+    }
+
+    @Test("Schedules shows a slot's run-health warning, in the table and in cards",
+          arguments: [(width: 2600.0, table: true), (width: 1280.0, table: false)])
+    func schedulesSlotWarning(_ layout: (width: Double, table: Bool)) async throws {
+        let vault = try LiveVault(); defer { vault.tearDown() }
+        let ledger = try LiveVault.ledgerWithSlotFinding("slot.never_fired:weekly-research")
+        let health = try RunLedger.parse(Data(ledger.utf8)).get().health
+        let (key, warnings) = try #require(RunOutcomeDisplay.slotWarnings(health).first,
+                                           "the fixture must carry a slot finding")
+        let warning = try #require(warnings.first).text
+        vault.script.slots = LiveVault.slotList([key])
+        let tree = await LiveAccessibilityTree(vault.window(.schedules),
+                                               size: CGSize(width: layout.width, height: 900))
+        defer { tree.close() }
+        try await vault.state.scheduleEditService.loadAll()
+        let name = try #require(vault.state.scheduleEditService.slots.first).displayName
+        let before = await tree.nodes { $0.shows(name) }
+        #expect(before.shows(name))
+        // Table rows carry an identifier; stacked cards don't.
+        #expect((before.element("schedules-row-\(key)") != nil) == layout.table,
+                "expected the \(layout.table ? "table" : "cards") at \(layout.width) pt")
+        #expect(!before.shows(warning))
+
+        vault.script.ledger = ledger
+        await vault.state.runLedgerService.refresh()
+
+        let after = await tree.nodes { $0.shows(warning) }
+        #expect(after.shows(warning), "no \"\(warning)\" on screen")
     }
 
     @Test("Action Items shows a task added to today's file")
@@ -272,6 +363,55 @@ private struct LiveVault {
     func writeActionItems(tasks: [String]) throws {
         let body = "# Action items\n\n## 🟡 To do\n" + tasks.map { "- [ ] \($0)\n" }.joined()
         try body.write(to: state.actionItemsDocumentService.url(for: Date()), atomically: true, encoding: .utf8)
+    }
+
+    /// A finished run whose log the session-log parser reads, ending
+    /// `finishedSecondsAgo` before now (the same shape as `SmokeVault`'s).
+    func writeRunLog(finishedSecondsAgo: TimeInterval) throws {
+        let finished = Date().addingTimeInterval(-finishedSecondsAgo)
+        let started = max(Calendar.current.startOfDay(for: finished), finished.addingTimeInterval(-60))
+        let stamp = DateFormatter()
+        stamp.locale = Locale(identifier: "en_US_POSIX")
+        stamp.dateFormat = "EEE MMM d HH:mm:ss zzz yyyy"
+        let name = DateFormatter()
+        name.locale = Locale(identifier: "en_US_POSIX")
+        name.dateFormat = "yyyy-MM-dd_HH-mm"
+        let log = """
+        === SCOUT run starting at \(stamp.string(from: started)) ===
+        Reading action items…
+        === SCOUT run finished at \(stamp.string(from: finished)) (exit 0) ===
+
+        """
+        try log.write(to: root.appendingPathComponent(".scout-logs/scout-\(name.string(from: started)).log"),
+                      atomically: true, encoding: .utf8)
+    }
+
+    /// The ledger fixture plus one `slot.*` finding (the contract fixture has
+    /// none): the kind of finding the Schedules page shows under its slot.
+    static func ledgerWithSlotFinding(_ id: String) throws -> String {
+        var json = try #require(JSONSerialization.jsonObject(with: Data(fixture("run-ledger").utf8)) as? [String: Any])
+        var health = try #require(json["health"] as? [String: Any])
+        var findings = try #require(health["findings"] as? [[String: Any]])
+        findings.append(["id": id, "severity": "yellow", "source": "ledger", "summary": "weekly-research hasn't run yet.",
+                         "fix": "Check its schedule in Schedules.",
+                         "detail": NSNull(), "log": NSNull(), "since": NSNull(), "until": NSNull()])
+        health["findings"] = findings
+        json["health"] = health
+        return String(decoding: try JSONSerialization.data(withJSONObject: json), as: UTF8.self)
+    }
+
+    /// The usage fixture with its "today" moved to the host's today, so the
+    /// Now strip counts it as current.
+    static func usageForToday() throws -> String {
+        var json = try #require(JSONSerialization.jsonObject(with: Data(fixture("usage-summary").utf8)) as? [String: Any])
+        var today = try #require(json["today"] as? [String: Any])
+        let iso = ISO8601DateFormatter()
+        iso.timeZone = .current
+        let start = Calendar.current.startOfDay(for: Date())
+        today["start"] = iso.string(from: start)
+        today["end"] = iso.string(from: try #require(Calendar.current.date(byAdding: .day, value: 1, to: start)))
+        json["today"] = today
+        return String(decoding: try JSONSerialization.data(withJSONObject: json), as: UTF8.self)
     }
 
     func writeNote(_ name: String) throws {

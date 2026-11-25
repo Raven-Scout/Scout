@@ -6,7 +6,8 @@ struct UpcomingStripView: View {
 
     var body: some View {
         // The services this reads; AppState re-publishes none of their changes.
-        Observing(state.scheduleService) { observedBody }
+        // `DayTick`: "today" and "tomorrow" move at midnight.
+        Observing(state.scheduleService, DayTick.shared) { observedBody }
     }
 
     @ViewBuilder private var observedBody: some View {
