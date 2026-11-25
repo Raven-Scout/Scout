@@ -234,14 +234,96 @@ def test_a_runtime_carve_out_that_could_reopen_scouts_paths_is_refused(
         sbx.build_rules(v, env, runtime_paths=paths)
 
 
-def test_a_carve_out_in_another_agent_clis_home_folder_is_allowed(world: tuple[Path, Path, dict[str, str]]) -> None:
-    """agy's data dir is under ~/.gemini, which Scout protects as another CLI's hook folder (Phase 2's shape)."""
+def test_a_runtimes_listed_data_dir_in_another_clis_home_folder_is_allowed(
+    world: tuple[Path, Path, dict[str, str]],
+) -> None:
+    """agy's data dir is under ~/.gemini, which Scout protects whole as another CLI's home (Phase 2's shape). The
+    profile's own list (``AGENT_DATA_DIRS``, by registered id) allows it, and nothing the adapter adds widens it."""
     home, v, env = world
     gemini = home / ".gemini"
-    paths = SandboxPaths(protected=(gemini,), writable=(gemini / "antigravity-cli",))
-    rules = sbx.build_rules(v, env, runtime_paths=paths)
-    assert sbx.decide(rules, str(gemini / "antigravity-cli" / "brain" / "c1.jsonl")) == "allow"
+    data = gemini / "antigravity-cli"
+    paths = SandboxPaths(writable=(data,))
+    rules = sbx.build_rules(v, env, runtime_paths=paths, runtime_id="antigravity")
+    assert sbx.decide(rules, str(data / "brain" / "c1.jsonl")) == "allow"
     assert sbx.decide(rules, str(gemini / "config" / "hooks.json")) == "deny"
+    assert sbx.decide(rules, str(gemini / "settings.json")) == "deny"
+    # Each CLI's hook and config names stay denied under the carve-out too, at any depth.
+    for rel in (
+        "settings.json",
+        "x/settings.local.json",
+        "config.toml",
+        "hooks.json",
+        "hooks/pre.sh",
+        "hooks",
+        "mcp_config.json",
+        "a/b/mcp.json",
+    ):
+        assert sbx.decide(rules, str(data / rel)) == "deny", rel
+
+
+def test_another_runtime_cant_have_agys_data_dir(world: tuple[Path, Path, dict[str, str]]) -> None:
+    home, v, env = world
+    paths = SandboxPaths(protected=(home / ".gemini",), writable=(home / ".gemini" / "antigravity-cli",))
+    with pytest.raises(sbx.ProfileError, match="AGENT_DATA_DIRS"):
+        sbx.build_rules(v, env, runtime_paths=paths, runtime_id="dummy")
+
+
+@pytest.mark.parametrize(
+    ("protected", "writable", "make_file"),
+    [
+        # Review of #806 (re-check): another CLI's hook and config files, as a folder or file carve-out.
+        (".codex", ".codex/hooks", False),
+        (".codex", ".codex/config.toml", True),
+        (".gemini", ".gemini/settings.json", True),
+        (".cursor", ".cursor/hooks.json", True),
+        (".gemini", ".gemini/config", False),  # agy's own gate config, beside its data dir
+        ("", ".codex/hooks", False),  # a $HOME protected tree doesn't help
+        ("", ".gemini", False),
+        ("", ".agents/x", False),
+    ],
+)
+def test_a_carve_out_in_another_clis_home_folder_is_refused(
+    world: tuple[Path, Path, dict[str, str]], protected: str, writable: str, make_file: bool
+) -> None:
+    home, v, env = world
+    target = home / writable
+    if make_file:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("{}")
+    paths = SandboxPaths(protected=(home / protected if protected else home,), writable=(target,))
+    for runtime_id in ("antigravity", "dummy", None):
+        with pytest.raises(sbx.ProfileError):
+            sbx.build_rules(v, env, runtime_paths=paths, runtime_id=runtime_id)
+
+
+def test_a_symlinked_data_dir_is_refused(world: tuple[Path, Path, dict[str, str]]) -> None:
+    home, v, env = world
+    (home / ".codex").mkdir()
+    (home / ".gemini").mkdir()
+    (home / ".gemini" / "antigravity-cli").symlink_to(home / ".codex")
+    paths = SandboxPaths(writable=(home / ".gemini" / "antigravity-cli",))
+    with pytest.raises(sbx.ProfileError):
+        sbx.build_rules(v, env, runtime_paths=paths, runtime_id="antigravity")
+
+
+def test_a_file_carve_out_is_refused(world: tuple[Path, Path, dict[str, str]]) -> None:
+    home, v, env = world
+    own = home / ".agentcli"
+    own.mkdir()
+    (own / "state.json").write_text("{}")
+    paths = SandboxPaths(protected=(own,), writable=(own / "state.json",))
+    with pytest.raises(sbx.ProfileError, match="is a file"):
+        sbx.build_rules(v, env, runtime_paths=paths)
+
+
+def test_a_home_protected_tree_carves_only_outside_scouts_paths(world: tuple[Path, Path, dict[str, str]]) -> None:
+    home, v, env = world
+    paths = SandboxPaths(protected=(home,), writable=(home / "agentcli-sessions",))
+    rules = sbx.build_rules(v, env, runtime_paths=paths)
+    assert sbx.decide(rules, str(home / "agentcli-sessions" / "s1.jsonl")) == "allow"
+    assert sbx.decide(rules, str(home / "notes.txt")) == "deny"
+    for rel in (".codex/hooks/x.sh", ".codex/config.toml", ".gemini/settings.json", ".cursor/hooks.json"):
+        assert sbx.decide(rules, str(home / rel)) == "deny", rel
 
 
 def test_a_refused_carve_out_fails_the_sandbox_so_the_run_is_skipped(
@@ -268,15 +350,20 @@ def test_sandbox_profile_cli_refuses_an_unknown_runtime(vault: Path) -> None:
 def test_sandbox_profile_cli_asks_the_runtimes_adapter(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[SandboxPaths | None] = []
 
-    def fake(_vault: Path, *, runtime_paths: SandboxPaths | None = None) -> launch.Prepared:
+    ids: list[str | None] = []
+
+    def fake(
+        _vault: Path, *, runtime_paths: SandboxPaths | None = None, runtime_id: str | None = None
+    ) -> launch.Prepared:
         seen.append(runtime_paths)
+        ids.append(runtime_id)
         return launch.Prepared("unavailable", "test")
 
     monkeypatch.setattr(launch, "prepare", fake)
     paths = SandboxPaths(protected=(Path("/tmp/agentcli"),))
     with registered(DummyRuntime("dummy", sandbox=paths)):
-        code, _ = _cli("sandbox", "profile", "--runtime", "dummy")
-    assert code == 6 and seen == [paths]
+        code, _ = _cli("sandbox", "profile", "--runtime", " Dummy ")
+    assert code == 6 and seen == [paths] and ids == ["dummy"]  # the id asked for, normalised
     code, _ = _cli("sandbox", "profile")
     assert code == 6 and seen[-1] == SandboxPaths()  # claude-code's: nothing extra
     assert registry.BUILTIN_DEFAULT == "claude-code"

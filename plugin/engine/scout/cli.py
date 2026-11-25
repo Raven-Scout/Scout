@@ -234,13 +234,14 @@ def cli_sandbox_profile(
     from scout.agent_runtimes import registry
     from scout.sandbox import launch
 
+    runtime_id = runtime.strip().lower()
     try:
-        adapter = registry.get(runtime.strip().lower())
+        adapter = registry.get(runtime_id)
         runtime_paths = adapter.sandbox_paths(os.environ)
     except Exception as e:  # noqa: BLE001 - no adapter, no profile: the run is skipped, never run unprotected
         typer.echo(f"[scout:sandbox] failed: the {runtime!r} runtime's sandbox paths: {e}", err=True)
         raise typer.Exit(launch.Prepared("failed", "").exit_code) from e
-    result = launch.prepare(paths.data_dir(vault), runtime_paths=runtime_paths)
+    result = launch.prepare(paths.data_dir(vault), runtime_paths=runtime_paths, runtime_id=runtime_id)
     if result.profile:
         typer.echo(result.profile, nl=False)
     typer.echo(f"[scout:sandbox] {result.status}: {result.reason}", err=True)

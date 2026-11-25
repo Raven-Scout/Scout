@@ -125,16 +125,18 @@ def prepare(
     self_test: Callable[[str], str | None] = sbx.self_test,
     platform: str | None = None,
     runtime_paths: SandboxPaths | None = None,
+    runtime_id: str | None = None,
 ) -> Prepared:
     """Decide the run's sandbox status and, when it's ``enforced``, build and self-test the profile.
 
-    ``runtime_paths`` is what the run's agent runtime adds to the profile (its adapter's ``sandbox_paths``)."""
+    ``runtime_paths`` is what the run's agent runtime adds to the profile (its adapter's ``sandbox_paths``), and
+    ``runtime_id`` the registered id it was asked for by (:func:`scout.sandbox.profile.build_rules`)."""
     env = os.environ if env is None else env
     decided = precheck(vault, env, available=available, platform=platform)
     if decided is not None:
         return decided
     try:
-        text = sbx.build_profile(vault, env, runtime_paths=runtime_paths)
+        text = sbx.build_profile(vault, env, runtime_paths=runtime_paths, runtime_id=runtime_id)
     except sbx.ProfileError as e:
         return Prepared("failed", str(e))
     problem = self_test(text)

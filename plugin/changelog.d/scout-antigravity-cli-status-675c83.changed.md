@@ -13,9 +13,12 @@
     gate probe, and pass any runtime other than claude-code to `scoutctl gates probe --runtime` and
     `scoutctl sandbox profile --runtime`. The probe passes only when that runtime's adapter has proven every hook
     capability a run on the vault needs. The sandbox adds the adapter's protected trees and the folders under them
-    that its CLI must write (`sandbox_paths`). A folder it asks to write must lie inside one of its own protected
-    trees and may not hold, or sit inside, any of Scout's protected paths except another agent CLI's home folder
-    (such as `~/.gemini`). Otherwise the profile isn't built and the run is skipped.
+    that its CLI must write (`sandbox_paths`). A folder it asks to write can't be a file, must lie inside one of
+    its own protected trees, and may not hold, or sit inside, any of Scout's protected paths. Inside another agent
+    CLI's home folder (`~/.codex`, `~/.gemini`, …) the only writable folders are the exact data folders the profile
+    lists for that runtime id (`profile.AGENT_DATA_DIRS`, so far agy's `~/.gemini/antigravity-cli`), whatever the
+    adapter says, and every CLI's hook and config files (`settings*.json`, `config.toml`, `hooks.json`, `hooks/`,
+    `mcp*.json`) stay denied under them. Otherwise the profile isn't built and the run is skipped.
   - **An adapter can't declare a hook capability**: only a probe proves those, so registering one that does fails.
     The `claude-code` id can't be taken by another adapter.
   - **Claude-specific code left the shared modules.** `check`'s interactive shortcut is the adapter's
