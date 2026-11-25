@@ -33,4 +33,6 @@
   the command links, moves or copies folders (`ln -s`, `mv`, `cp`, `git worktree add`, `git clone`), or from a
   folder not on disk, is recorded as `git_unresolved`, and denied when the command names the vault or a KB folder
   or copied the vault's repository (`git worktree add`, `git clone .`). `git merge-tree` reads all of a
-  `<rev>:<folder>`, `git merge-file -p` the files it names, and `git request-pull -p` the whole repository.
+  `<rev>:<folder>`, `git merge-file -p` the files it names, and `git request-pull -p` the whole repository. Git's
+  subcommand is compared in any letter case, as a case-insensitive disk runs it (`git ARCHIVE`, with `GIT`/`Git`
+  from the program-name folding).

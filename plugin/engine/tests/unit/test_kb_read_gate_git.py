@@ -262,6 +262,13 @@ MUST_DENY = [
     "git \\\nlog -p -- .",
     "git ar''chive HEAD | tar x",
     '"git" archive HEAD | tar x',
+    # letter case in git's own words (a case-insensitive disk runs git and git-archive for them; #818)
+    "GIT archive HEAD | tar x",
+    "Git grep x",
+    "git ARCHIVE HEAD | tar x",
+    "git -C action-items SHOW HEAD:./context/x.md",
+    "GIT -C action-items Log -p context/",
+    "git REBASE -x 'cat act*/cont*/x.md' HEAD",
     # review round 2: merge-file prints the files it names
     "git merge-file -p action-items/context/x.md docs/a.md docs/a.md",
     "git -C action-items merge-file -p context/x.md ../docs/a.md ../docs/a.md",

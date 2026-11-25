@@ -337,9 +337,10 @@ bash_needs_python() {
     # `export SCOUT_MO\DE=x`).
     matches 'HOME|SCOUT_(MODE|READER)'
     [ "$?" -ne 1 ] && return 0
-    # The git reads above, spelled through quotes, backslashes, a tab or a line break (`git 'log' -p -- .`,
+    # The git reads above, in any letter case (`GIT ARCHIVE` runs git-archive on a case-insensitive disk) and
+    # spelled through quotes, backslashes, a tab or a line break (`git 'log' -p -- .`,
     # `g\it grep x`, `git<TAB>grep x`, `git \<newline>log -p`): Python judges what git reads.
-    matches "$git_reads"
+    matches_i "$git_reads"
     [ "$?" -ne 1 ] && return 0
     # A builtin that sets or unsets the variables it names, anywhere in the command, its own name perhaps
     # quoted or escaped (`"read" HOM?`, `\export`, `r''ead`): its target need not spell HOME (`export

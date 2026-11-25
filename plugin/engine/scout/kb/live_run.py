@@ -1817,7 +1817,7 @@ def _git_programs(words: list[str], cwd: str) -> list[str]:
     if git is None:
         return []
     chdirs, _git_dir, _work_tree, at = git_read.split_global(git)
-    sub, args = (git[at], git[at + 1 :]) if at < len(git) else ("", [])
+    sub, args = (raw_read.fold(git[at]), git[at + 1 :]) if at < len(git) else ("", [])
     programs: list[str] = []
     options = _GIT_RUN_OPTIONS.get(sub, set())
     i = 0
@@ -1866,13 +1866,14 @@ def _changes_folders(words: list[str]) -> str:
     if git is None:
         return ""
     chdirs, git_dir, _work_tree, at = git_read.split_global(git)
-    if at >= len(git) or git[at] not in _GIT_FOLDER_CHANGERS:
+    if at >= len(git) or raw_read.fold(git[at]) not in _GIT_FOLDER_CHANGERS:
         return ""
     here = not chdirs and git_dir is None
     plain = [a for a in git[at + 1 :] if not a.startswith("-")]
-    if here and git[at] == "worktree" and plain[:1] == ["add"]:
+    sub = raw_read.fold(git[at])
+    if here and sub == "worktree" and [raw_read.fold(w) for w in plain[:1]] == ["add"]:
         return "vault-copy"
-    if here and git[at] == "clone" and plain[:1] and plain[0].rstrip("/") in (".", "..", "./.git", ".git"):
+    if here and sub == "clone" and plain[:1] and plain[0].rstrip("/") in (".", "..", "./.git", ".git"):
         return "vault-copy"
     return "changed"
 

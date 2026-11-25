@@ -187,10 +187,13 @@ def _cat_file(sub_args: list[str], read: GitRead) -> GitRead | None:
 def parse(args: list[str]) -> GitRead | None:
     """What the git call with these arguments (the words after ``git``, quotes removed) reads, or None when it
     prints no file's content."""
+    from scout.kb.raw_read import fold
+
     chdirs, git_dir, work_tree, at = split_global(args)
     if at >= len(args):
         return None
-    sub, sub_args = args[at], args[at + 1 :]
+    # On a case-insensitive disk `git ARCHIVE` runs git-archive from git's exec path: compare as the disk does.
+    sub, sub_args = fold(args[at]), args[at + 1 :]
     read = GitRead(sub=sub, chdirs=chdirs, git_dir=git_dir, work_tree=work_tree)
     if sub == "cat-file":
         return _cat_file(sub_args, read)

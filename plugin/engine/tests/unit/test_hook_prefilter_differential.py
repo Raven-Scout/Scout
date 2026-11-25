@@ -835,7 +835,7 @@ def _expansion_matches(commands: list[str]) -> set[str]:
             ADDED_PATTERN_RE.search(value)
             or re.search(STRIPPED_NAMES, home_stripped)
             or STRIPPED_NAMERS.search(home_stripped)
-            or re.search(GIT_READS, home_stripped)  # the git reads, spelled through quotes, \ or a tab
+            or re.search(GIT_READS, home_stripped, re.I)  # the git reads, any case, through quotes, \ or a tab
         ):
             matched.add(command)
     return matched
