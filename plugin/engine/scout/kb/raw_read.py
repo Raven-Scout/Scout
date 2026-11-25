@@ -50,7 +50,9 @@ _KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}"
 _SEGMENTS = re.compile(r"&&|\|\||[;&|\n`]|\$\(|\(|\)")
 _MESSAGE_ARG = re.compile(r"(\s(?:-m|--message|-F|--body|--title))(?:\s+|=)(\"(?:[^\"\\]|\\.)*\"|'[^']*')")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-_GIT_READ = re.compile(r"^(?:-C\s+\S+\s+)?(?:show|diff|grep|blame|annotate|cat-file|log\b.*\s(?:-p|--patch|-u)\b)")
+_GIT_READ = re.compile(
+    r"^(?:-C\s+\S+\s+)?(?:(?i:show|diff|grep|blame|annotate|cat-file)|(?i:log)\b.*\s(?:-p|--patch|-u)\b)"
+)
 # An input redirection from a KB path (`wc -c <knowledge-base/x.md`, `done < knowledge-base/list`,
 # `$(<knowledge-base/x.md)`), not a here-document (`<<`), a here-string (`<<<`) or `<(…)`.
 _KB_REDIRECT = re.compile(
@@ -72,7 +74,7 @@ _READ_VALUE_FLAGS = {
 # (`kb read` prints a note's labelled text: reading that through a pipe or a variable is fine.)
 _KB_SOURCE = re.compile(
     r"(?:knowledge-base|knowledge_base|action-items/context)"
-    r"|\bscoutctl\s+kb\s+(?:files|search|resolve|name-lookup|delta|structure|query|related|traverse|path|stat)\b"
+    r"|\b(?i:scoutctl)\s+kb\s+(?:files|search|resolve|name-lookup|delta|structure|query|related|traverse|path|stat)\b"
 )
 # A recursive read: what it reads under a folder it doesn't name.
 _RECURSIVE_FLAG = re.compile(r"^-(?:[A-Za-z]*[rR][A-Za-z]*|-recursive|-dereference-recursive|d=?recurse)$")
@@ -109,7 +111,7 @@ def _strip(words: list[str]) -> _Stripped:
     while words:
         word = words[0]
         base = _command_name(word)  # `/usr/bin/env`, `/usr/bin/xargs` are prefixes too
-        if base in _PREFIX_WORDS and (word == base or "/" in word):
+        if base in _PREFIX_WORDS and (_unquoted(word).lower() == base or "/" in word):
             if base == "command" and len(words) > 1 and words[1] in ("-v", "-V") and not _names_kb(" ".join(words[2:])):
                 return _Stripped([], fed, chdir)  # a lookup: nothing runs (main denied one naming a KB path)
             word = base
@@ -186,7 +188,7 @@ def _with_kb_paths(command: str) -> str:
     return "".join(out) + command[last:] if out else command
 
 
-_SCOUTCTL_KB = re.compile(r"\bscoutctl\s+kb\b")
+_SCOUTCTL_KB = re.compile(r"\b(?i:scoutctl)\s+kb\b")
 
 
 def _kb_variables(command: str) -> set[str]:
@@ -731,7 +733,8 @@ _GIT_READS = {"show", "diff", "grep", "blame", "annotate", "cat-file", "whatchan
 
 def _git(args: list[str]) -> tuple[str | None, list[str], list[str]]:
     """``(subcommand, its args, -C folders)`` of a ``git`` call, past git's own options
-    (``--no-pager``, ``-P``, ``-c k=v``, ``-C dir``, ``--git-dir=…``)."""
+    (``--no-pager``, ``-P``, ``-c k=v``, ``-C dir``, ``--git-dir=…``). The subcommand is folded to lower case:
+    git itself refuses ``git SHOW``, so a gate that reads it as ``show`` only ever over-denies."""
     chdirs: list[str] = []
     i = 0
     while i < len(args):
@@ -743,7 +746,7 @@ def _git(args: list[str]) -> tuple[str | None, list[str], list[str]]:
         elif a.startswith("-"):
             i += 1
         else:
-            return a, args[i + 1 :], chdirs
+            return a.lower(), args[i + 1 :], chdirs
     return None, [], chdirs
 
 
@@ -839,9 +842,29 @@ def _judge(command: str, in_kb: bool, cwd: str | None, vault: str | None, env: M
 
 
 def _command_name(word: str) -> str:
-    """A command word's program: quotes a shell removes (`bash -c 'cat …'`) and a leading backslash
-    (`\rg`, which only skips an alias) gone, and its folder (`/usr/bin/grep`) dropped."""
-    return word.strip("\"'").lstrip("\\").rsplit("/", 1)[-1]
+    """A command word's program: quotes and backslashes a shell removes (`bash -c 'cat …'`, `\rg`, `NO''HUP`)
+    gone, its folder (`/usr/bin/grep`) dropped, and its letters folded to lower case (:func:`program_name`)."""
+    return program_name(_unquoted(word).rsplit("/", 1)[-1])
+
+
+# Builtins and keywords a shell knows only as spelled. `EXEC rg x` is "command not found", and `CD x` runs
+# /usr/bin/cd in a child shell, which leaves this one where it was: neither is the builtin.
+SHELL_ONLY = frozenset({
+    "cd", "pushd", "popd", "exec", "eval", "builtin", "source", ".", "export", "unset", "local", "declare",
+    "typeset", "readonly", "read", "mapfile", "readarray", "set", "shift", "return", "exit", "trap", "alias",
+    "unalias", "let", "shopt", "setopt", "unsetopt", "disown", "for", "select", "while", "until", "if", "then",
+    "elif", "else", "fi", "do", "done", "case", "esac", "function",
+})  # fmt: skip
+
+
+def program_name(name: str) -> str:
+    """The program a command name runs, in lower case. On a case-insensitive disk (macOS's default) the shell
+    finds a program in any letter case: `FIND`, `Rg`, `NOHUP` and `XARGS` run find, rg, nohup and xargs. So a
+    gate compares program names folded, always (an odd-cased name in a run may be over-denied, never let
+    through). A builtin or keyword in :data:`SHELL_ONLY` keeps its spelling. `command` and `time` are not
+    there: /usr/bin/command and /usr/bin/time run the word after them, as the builtins do."""
+    folded = name.lower()
+    return name if folded in SHELL_ONLY else folded
 
 
 def _du_summary(args: list[str]) -> bool:

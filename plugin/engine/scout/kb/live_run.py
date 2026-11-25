@@ -495,7 +495,7 @@ def _one_name_output(body: str) -> str | None:
     if re.search(r"[;&|<>`\n]|\$\(", body):
         return None
     words = _tokens(body)
-    if not words or _basename(words[0]) not in ("date", "gdate"):
+    if not words or _program(words[0]) not in ("date", "gdate"):
         return None
     formats: list[str] = []
     iso = False
@@ -1016,16 +1016,24 @@ def _basename(word: str) -> str:
     return word.rsplit("/", 1)[-1]
 
 
+def _program(word: str) -> str:
+    """The program a command word runs: its folder dropped and its letters folded, as a case-insensitive disk
+    finds it (``/usr/bin/NOHUP`` is nohup); a builtin keeps its spelling (:func:`scout.kb.raw_read.program_name`)."""
+    from scout.kb.raw_read import _command_name
+
+    return _command_name(word)
+
+
 def _git_words(words: list[str]) -> list[str] | None:
     """The arguments of the git call ``words`` makes, directly or through a wrapper, else None."""
-    name = _basename(words[0])
+    name = _program(words[0])
     if name == "git":
         return words[1:]
     if name.startswith("git-"):  # the dashed form of a subcommand; a script named git-*.sh matches no subcommand
         return [name[4:], *words[1:]]
     if name in _GIT_WRAPPERS:
         for i, word in enumerate(words[1:], 1):
-            if _basename(word) == "git" or _basename(word).startswith("git-"):
+            if _program(word) == "git" or _program(word).startswith("git-"):
                 return _git_words(words[i:])
     return None
 
@@ -1174,7 +1182,7 @@ def _git_escape(args: list[str]) -> str | None:
             return form
     if i >= len(args):
         return None
-    subcommand, rest = args[i], args[i + 1 :]
+    subcommand, rest = args[i].lower(), args[i + 1 :]  # git refuses `git COMMIT`: folding only over-denies
     if _dynamic(subcommand):
         return "git <unknown>"
     if subcommand in _WRITES_COMMITS:
@@ -1504,7 +1512,7 @@ def _check(path: str, removes: bool, cwd: str) -> str | None:
 
 def _secret_read(words: list[str], reads: list[str], cwd: str) -> str | None:
     """Whether a command names one of Scout's secrets (best effort: a path it spells out, or one after a ``cd``)."""
-    if _SECRET is None or (words and _basename(words[0]) in _LISTS_ONLY):
+    if _SECRET is None or (words and _program(words[0]) in _LISTS_ONLY):
         return None
     for word in [*words[1:], *reads]:
         word = word.split("=", 1)[1] if word.startswith("--") and "=" in word else word.lstrip("@<")  # @file
@@ -1596,7 +1604,7 @@ def _unshield(word: str) -> str:
 def _replace_string(words: list[str]) -> str | None:
     """The word ``xargs -I`` (``-J``, ``-i``, ``--replace``) or ``parallel`` swaps each input line in for."""
     for i, word in enumerate(words):
-        base = _basename(word)
+        base = _program(word)
         if base == "parallel":
             return "{}"
         if base != "xargs":
@@ -1678,7 +1686,7 @@ def _fed_sources(fed: str | None) -> tuple[list[str], list[str]]:
         words = words[1:]
     if strings or _HD_MARK.search(fed) or not words:
         return [UNSEEN_INPUT], []
-    name, args = _basename(words[0]), words[1:]
+    name, args = _program(words[0]), words[1:]
     if name == "echo":
         escapes = False
         while args and re.fullmatch(r"-[neE]+", args[0]):
@@ -1848,9 +1856,9 @@ def _destinations(name: str, args: list[str]) -> list[str]:
 
 def _shell_stdin_program(words: list[str]) -> bool:
     """``sh``, ``bash -s``, ``zsh`` with no ``-c`` and no script: it runs its stdin as commands."""
-    while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS or words[0] in _PREFIX):
+    while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS or _program(words[0]) in _PREFIX):
         words = words[1:]
-    if not words or _basename(words[0]) not in _SHELLS:
+    if not words or _program(words[0]) not in _SHELLS:
         return False
     args = words[1:]
     if "-c" in args:
@@ -1860,11 +1868,11 @@ def _shell_stdin_program(words: list[str]) -> bool:
 
 def _interpreter_programs(words: list[str], segment: str, herestrings: list[str], fed: str | None) -> list[str] | None:
     """The programs an interpreter call runs from the command itself, else None (not an interpreter, or a file)."""
-    while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS or words[0] in _PREFIX):
+    while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS or _program(words[0]) in _PREFIX):
         words = words[1:]
-    if not words or not _INTERPRETER.match(_basename(words[0])):
+    if not words or not _INTERPRETER.match(_program(words[0])):
         return None
-    programs, stdin = _program_flags(_basename(words[0]), words[1:])
+    programs, stdin = _program_flags(_program(words[0]), words[1:])
     if stdin:
         programs += _stdin_programs(segment, herestrings, fed)
     return programs
@@ -1907,13 +1915,13 @@ def _edited_files(args: list[str], script_flags: str) -> list[str]:
 
 def _hook_write_form(words: list[str], targets: list[str], cwd: str) -> str | None:
     """Whether a command writes what decides which checks run: a redirect, or a command that writes files."""
-    while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS or words[0] in _PREFIX):
+    while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS or _program(words[0]) in _PREFIX):
         words = words[1:]
     written = list(targets)
     removed: list[str] = []
     linked: list[str] = []
     if words:
-        name, args = _basename(words[0]), words[1:]
+        name, args = _program(words[0]), words[1:]
         plain = [a for a in args if not a.startswith("-")]
         if name in _REMOVERS:
             removed += plain[:-1] if name == "mv" else plain
@@ -1971,7 +1979,7 @@ def _words_escape(words: list[str], depth: int) -> str | None:
 
 def _command_escape(words: list[str], depth: int) -> str | None:
     command = words
-    while command and command[0] in _PREFIX:
+    while command and _program(command[0]) in _PREFIX:
         command = command[1:]
     found = _plain_escape(command, depth) if command else None
     if found is not None:
@@ -1981,7 +1989,7 @@ def _command_escape(words: list[str], depth: int) -> str | None:
 
 
 def _plain_escape(words: list[str], depth: int) -> str | None:
-    name, args = _basename(words[0]), words[1:]
+    name, args = _program(words[0]), words[1:]
     if name == "env":
         verdict, rest = _env_escape(args)
         return verdict or (_words_escape(rest, depth) if rest else None)
@@ -2059,7 +2067,7 @@ def _known_output(body: str) -> str | None:
     if _dynamic(body):
         return None
     words = _tokens(body)
-    if not words or _basename(words[0]) != "mktemp":
+    if not words or _program(words[0]) != "mktemp":
         return None
     folder, template, i = "/tmp", None, 1
     while i < len(words):
@@ -2185,7 +2193,7 @@ def _shell_stdin_escape(segment: str, strings: list[str], fed: str | None, depth
     programs = [*_segment_bodies(segment), *strings]
     if not programs and fed is not None:
         feeder = _tokens(_redirects(fed)[0])
-        if feeder[:1] in (["echo"], ["printf"]):
+        if feeder and _program(feeder[0]) in ("echo", "printf"):
             programs.append(" ".join(w for w in feeder[1:] if not w.startswith("-")))
         programs += _segment_bodies(fed)
         if not programs and _PROTECT is not None:

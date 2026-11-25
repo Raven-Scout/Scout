@@ -214,6 +214,29 @@ bash_pattern() {
     alt '\('
 }
 
+# Sets $re: the rules bash_needs_python also applies ignoring letter case (grep -i). On a case-insensitive
+# disk, macOS's default, the shell finds a program in any letter case (FIND, Rg, NOHUP, XARGS and GIT run
+# find, rg, nohup, xargs and git) and ACTION-ITEMS is the folder. So: a program fed paths by another, a cd
+# into action-items/, and each bash_pattern rule that names a program. Every program word keeps its word
+# boundary in front, so ignoring case cannot turn an argument's letters into a program.
+case_pattern() {
+    re=
+    word='(^|[^A-Za-z0-9_.-]|\\[nt])'
+    word_or_path='(^|[^A-Za-z0-9_./-]|\\[nt])'
+    alt "$word"'(xargs|parallel)([^A-Za-z0-9_.-]|$)'
+    alt '(cd|pushd|-C|--directory|--git-dir|--work-tree)[^;&|]*action-items'
+    alt "$word"'scoutctl kb .*(xargs|while |mapfile|readarray)'
+    alt '(for [A-Za-z_][A-Za-z0-9_]* in |mapfile|readarray).*scoutctl kb '
+    alt "$word"'(rg|find|tree|du|ag|ack|fd|ugrep)([^A-Za-z0-9_./-]|$)'
+    alt "$word"'[ef]?grep[^;&|]* (-[A-Za-z]*[rR]|--(dereference-)?recursive|-d *recurse|--directories=recurse)'
+    alt "$word"'ls[^;&|]* -[A-Za-z]*R'
+    alt "$word_or_path"'(env|nohup|setsid|disown|launchctl|osascript|open|tmux|screen|script|at|batch|ssh|mosh|systemd-run)([^A-Za-z0-9_./-]|$)'
+    alt "$word"'(tee|rm|rmdir|unlink|mv|cp|ln|install|rsync|touch|truncate|chmod|chown|chflags|shred|dd|sed|perl|curl|wget|tar|python[0-9.]*|pypy[0-9.]*|node|nodejs|ruby|php|deno|bun)([^A-Za-z0-9_.-]|$)'
+    alt "$word"'((ba|z|da|k)?sh)([^A-Za-z0-9_.-]|$)'
+    alt "$word"'git[^;&|]* (grep|-c )'
+    alt "$word"'git[^;&|]*(commit|am).*([^A-Za-z0-9_-]|\\[nt])-[A-Za-z]*n'
+}
+
 # Sets $t to program $1 by absolute path: /usr/bin or /bin first, else the first in the (filtered,
 # all-absolute) PATH, else empty. Running an empty $t fails with 127, which callers read as "cannot
 # decide". No subshell on the common path: [ -x ] is a builtin.
@@ -266,10 +289,10 @@ bash_needs_python() {
     bash_pattern
     matches "$re"
     [ "$?" -ne 1 ] && return 0
-    # A KB folder, a program fed paths by another, a cd into action-items/: also in any letter case (on a
-    # case-insensitive disk, macOS's default, ACTION-ITEMS is the folder and XARGS runs xargs), and below
-    # with quotes and backslashes gone (`cd 'action'-items`, `x\args`).
-    late='(^|[^A-Za-z0-9_.-]|\\[nt])(xargs|parallel)([^A-Za-z0-9_.-]|$)|(cd|pushd|-C|--directory|--git-dir|--work-tree)[^;&|]*action-items'
+    # case_pattern's rules in any letter case, and below with quotes and backslashes gone (`cd
+    # 'action'-items`, `x\args`, `NO''HUP`), where a KB folder's name counts too.
+    case_pattern
+    late=$re
     matches_i "$late"
     [ "$?" -ne 1 ] && return 0
     if [ -n "$SCOUT_SECRETS_DIR" ]; then
@@ -596,9 +619,9 @@ front-page-reads)
     verdict 0
     ;;
 
-# For the tests: the assembled Bash pattern, one line.
+# For the tests: the assembled Bash pattern, one line (`print-bash-pattern case`: case_pattern's).
 print-bash-pattern)
-    bash_pattern
+    if [ "${1-}" = case ]; then case_pattern; else bash_pattern; fi
     printf '%s\n' "$re"
     ;;
 
