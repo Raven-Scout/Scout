@@ -99,7 +99,8 @@ PRINTS_A_NOTE = [
 ]
 
 PRINTS_NO_NOTE = [
-    "grep -n x action-items/* 2>/dev/null",
+    # By its path: a run's bare grep is Claude Code's ugrep, which reads context/ through `*` (shell shadows).
+    "/usr/bin/grep -n x action-items/* 2>/dev/null",
     "cat action-items/* 2>/dev/null",
     "head -n 3 action-items/* 2>/dev/null",
     "ls -d */",
@@ -131,3 +132,25 @@ def test_what_zsh_reads_from_the_kb_the_gate_denies(home: Path, command: str) ->
 def test_what_reads_no_kb_note_under_zsh_the_gate_allows(home: Path, command: str) -> None:
     assert "kbnote" not in _zsh(home, command).lower()
     assert _gate(home, command) is None, command
+
+
+# Under Claude Code's shell snapshot a run's bare grep is the Claude binary's ugrep, which reads a folder `*` names
+# one level deep: these print a note in a run though BSD grep prints none. The snapshot's own functions run them
+# where a Claude binary with the embedded tools is installed; the gate's deny is checked everywhere.
+PRINTS_A_NOTE_UNDER_THE_SNAPSHOT = [
+    "grep -n x action-items/* 2>/dev/null",
+    "grep -l x */ 2>/dev/null",
+    "cd action-items && grep -n x context 2>/dev/null",
+]
+
+
+@pytest.mark.parametrize("command", PRINTS_A_NOTE_UNDER_THE_SNAPSHOT)
+def test_what_the_snapshots_grep_reads_from_the_kb_the_gate_denies(home: Path, command: str) -> None:
+    from tests.unit.test_kb_read_gate_shell_shadows import CLAUDE_BIN, SNAPSHOT_FUNCTIONS
+
+    assert "kbnote" not in _zsh(home, command).lower()  # BSD grep reads no note
+    if CLAUDE_BIN is not None:
+        shadowed = f"_cc_bin={CLAUDE_BIN!r}\n{SNAPSHOT_FUNCTIONS}\n{command}"
+        assert "kbnote" in _zsh(home, shadowed).lower(), "the case must really print a note under the snapshot"
+    out = _gate(home, command)
+    assert out is not None and out["hookSpecificOutput"]["permissionDecision"] == "deny", command

@@ -164,6 +164,29 @@ MUST_DENY = [
     ("", "(cd docs); grep -r TODO ."),
     ("", "(cd docs); cat $(find . -name '*.md')"),
     ("", "cd docs && (cd ..; cat $(find . -name '*.md'))"),
+    # a cd that may not run, or may not land, leaves the old folder possible (security review of this change)
+    ("", "cd nosuchdir; cat $(find . -name '*.md')"),
+    ("", "false && cd docs; cat $(find . -name '*.md')"),
+    ("", "if false; then cd docs; fi; cat $(find . -name '*.md')"),
+    ("", "g() { cd docs; }; cat $(find . -name '*.md')"),
+    ("", "cd docs/a.md; wc -l $(find .)"),
+    ("", "cd nosuchdir; grep -r TODO ."),
+    ("", "cd docs & grep -r TODO ."),
+    ("", "cd docs | true; grep -r TODO ."),
+    # a root a substitution prints: placed when a printer or lister prints it, else unknown
+    ("", 'sh -c "grep -r TODO $(echo .)"'),
+    ("docs", 'sh -c "cd ..; grep -r TODO $(echo .)"'),
+    ("", "grep -r TODO $(echo .)"),
+    ("", "find $(echo .) -name '*.md'"),
+    ("", "grep -r TODO $(pwd)"),
+    ("", "grep -r TODO $(cat list.txt)"),
+    ("", "grep -r TODO $(echo $PWD)"),
+    ("", "grep -r TODO $(git ls-files)"),
+    # a substitution that hands the run's grep a folder: read one level deep
+    ("", "grep -l TODO $(ls)"),
+    ("action-items", "grep -l TODO $(ls)"),
+    ("", "grep -l TODO $(ls -d k*)"),
+    ("docs", "grep -l TODO $(find .. -maxdepth 1)"),
 ]
 
 # Ordinary searches: the gate leaves them alone, and no KB note shows.
@@ -196,6 +219,13 @@ ALLOWED = [
     ("", 'cd docs && wc -l $(find . -name "*.md")'),
     ("", "cd scripts && cat `find .`"),
     ("", "(cd docs && cat $(find .))"),
+    ("", "cd docs && cd .. && cd scripts && cat $(find .)"),
+    ("", "cd nosuchdir && grep -r TODO ."),  # runs only where the cd landed
+    ("", "grep -r TODO $(echo docs)"),
+    ("", "find $(echo docs) -name '*.md'"),
+    ("docs", "grep -l TODO $(ls)"),
+    ("", "grep -l TODO $(ls docs)"),
+    ("", "grep -l TODO $(ls *.yaml)"),
 ]
 
 # By their path, grep and find are the BSD programs: these read no KB note, though the bare names would.
@@ -445,6 +475,8 @@ TRICKY = [w.format(i) for w in _WRAPS for i in _INNER] + [
     "echo `unterminated",
     "( ( cd docs ) ) ) )",
     "cat <<'A'\n$(find .)\n`find .`\nA",
+    "if true; then (cd docs; { cd ..; }); fi; done; esac; } } grep -r x $(ls -d */) $(echo)",
+    "cd; cd -; pushd docs && popd || cd ~; grep -l x $(printf '%s' a) $(ls -R) $(find)",
 ]
 
 

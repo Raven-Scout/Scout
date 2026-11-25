@@ -13,10 +13,11 @@ it.
 from __future__ import annotations
 
 import fnmatch
+import os
 import posixpath
 import re
 import shlex
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 KB_PATH = re.compile(r"(?:^|[\s'\"=:/<{,])(?:knowledge-base|knowledge_base|action-items/context)(?:/|\b|$)")
@@ -1187,16 +1188,6 @@ def _stem_letters(glob: str, name: str) -> bool:
 
 _SUBST = "\x01"  # marks a command substitution's output (`\x01<n>\x01`): files the gate can't see
 _SUBST_INDEX = re.compile("\x01(\\d+)\x01")
-# A substitution that prints where the vault is, or names a KB folder: `$(pwd)`, `$(git rev-parse --show-toplevel)`.
-_RISKY_SUBSTITUTION = re.compile(
-    r"(?:^|[\s;&|(])(?:pwd|dirname|realpath|readlink|basename)\b|rev-parse\s+--show-(?:toplevel|prefix|cdup)"
-    r"|\$\{?(?:PWD|HOME|OLDPWD|SCOUT_DATA_DIR)\b|~|kno|ledge|context|action-items",
-    re.IGNORECASE,
-)
-
-
-def _risky_substitution(inner: str) -> bool:
-    return bool(_names_kb(inner) or _RISKY_SUBSTITUTION.search(inner))
 
 
 def _restored(text: str, substitutions: list[str]) -> str:
@@ -1219,7 +1210,21 @@ def _shell_split(command: str) -> tuple[list[list[str]], list[str]]:
     shell splits (``rg -n "TODO|FIXME" scripts/`` is one piece). Each outermost ``$(…)`` or
     backtick, outside single quotes, is cut out and stands as :data:`_SUBST` in its piece. Each ``(``
     and ``)`` is a statement holding only :data:`_SUBSHELL_OPEN` or :data:`_SUBSHELL_CLOSE`."""
+    statements, _joins, substitutions = _shell_split_joined(command)
+    return statements, substitutions
+
+
+# How a statement is joined to the one before it. A run of empty statements (`a &&\n b`, `a && (b)`) passes on
+# the strongest join in it.
+_JOIN_RANK = {"": 0, "(": 1, ")": 1, ";": 2, "&": 3, "&&": 4, "||": 5}
+
+
+def _shell_split_joined(command: str) -> tuple[list[list[str]], list[str], list[str]]:
+    """:func:`_shell_split`'s statements, each with the operator that joins it to the statement before it
+    (``""`` first, ``;`` for a newline too, ``&&``, ``||``, ``&``; ``(`` for a subshell's first statement and
+    ``)`` for the one after it), and the substitutions."""
     statements: list[list[str]] = [[]]
+    joins: list[str] = [""]
     substitutions: list[str] = []
     buf: list[str] = []
     quote: str | None = None
@@ -1229,9 +1234,10 @@ def _shell_split(command: str) -> tuple[list[list[str]], list[str]]:
         statements[-1].append("".join(buf))
         buf.clear()
 
-    def statement() -> None:
+    def statement(join: str = ";") -> None:
         piece()
         statements.append([])
+        joins.append(join)
 
     while i < n:
         c = command[i]
@@ -1259,23 +1265,34 @@ def _shell_split(command: str) -> tuple[list[list[str]], list[str]]:
             quote = c
             buf.append(c)
         elif command.startswith(("&&", "||"), i):
-            statement()
+            statement(command[i : i + 2])
             i += 1
         elif c in "()":  # a subshell: a statement of its own, between markers
-            statement()
+            statement("")
             statements[-1].append(_SUBSHELL_OPEN if c == "(" else _SUBSHELL_CLOSE)
             statements.append([])
+            joins.append(c)
         elif c in ";\n":
-            statement()
+            statement(";")
         elif c == "&" and not (buf and buf[-1].endswith((">", "<"))) and not command.startswith((">", "&"), i + 1):
-            statement()
+            statement("&")
         elif c == "|":
             piece()
         else:
             buf.append(c)
         i += 1
     piece()
-    return [[p for p in s if p.strip()] for s in statements if any(p.strip() for p in s)], substitutions
+    kept: list[list[str]] = []
+    kept_joins: list[str] = []
+    carried = ""
+    for pieces, join in zip(statements, joins, strict=True):
+        carried = join if _JOIN_RANK[join] > _JOIN_RANK[carried] else carried
+        pieces = [p for p in pieces if p.strip()]
+        if pieces:
+            kept.append(pieces)
+            kept_joins.append(carried)
+            carried = ""
+    return kept, kept_joins, substitutions
 
 
 def _substitution_end(command: str, start: int) -> int:
@@ -1333,6 +1350,108 @@ def _loop_words(command: str) -> dict[str, list[str]]:
 _LONE_VAR = re.compile(r"^\$\{?([A-Za-z_]\w*)\}?$")
 
 
+_BLOCK_OPEN = {"if", "while", "until", "for", "case", "select"}
+_BLOCK_CLOSE = {"fi", "done", "esac", "}"}
+
+
+def _union(*lists: list[str | None]) -> list[str | None]:
+    return list(dict.fromkeys(f for one in lists for f in one))
+
+
+def _judged_piece(
+    name: str,
+    words: list[str],
+    args: list[str],
+    stripped: _Stripped,
+    where: str | None,
+    reaches: Callable[[_Recursive, str | None], bool],
+    read: bool,
+    env: Mapping[str, str],
+    local: Mapping[str, str],
+) -> bool:
+    """The recursive-read rule for one command run from ``where``: a reading command's recursive read (each way a
+    run's shell may run it), a bare grep's substitution operands (ugrep reads a folder it's given one level deep:
+    ``grep -l x $(ls)``), or ``git grep``."""
+    if name in _READ_COMMANDS:
+        for model, model_args in run_models(words[0], name, args):
+            rec = _recursive(model, model_args)
+            if rec is None and model == "ugrep" and not stripped.fed:
+                printed = [o for o in read_operands(model, model_args) or [] if _SUBST in o]
+                rec = _Recursive(printed, True, 1) if printed else None
+            if rec is None or (stripped.fed and not rec.roots):
+                continue  # not recursive, or xargs hands it the files to read
+            if read:
+                rec.content = True
+            if reaches(rec, where):
+                return True
+    elif name == "git":
+        sub, sub_args, chdirs = _git(args)
+        if sub != "grep":
+            return False
+        for c in chdirs:
+            where = _cd(where, c, env, local)
+        _flags, plain = _split_args(_operands("grep", sub_args))
+        paths = plain if any(a in ("-e", "-f") for a in sub_args) else plain[1:]
+        if not (stripped.fed and not paths) and reaches(_Recursive(paths, True), where):
+            return True
+    return False
+
+
+def _listed_by(inner: str) -> list[tuple[str, int | None]] | None:
+    """What a substitution prints when it prints paths the gate can place, each as ``(root, levels)``: the
+    paths are ``root`` itself (``levels`` 0) or up to ``levels`` below it (None: any depth). ``echo``/``printf``
+    print their words, ``pwd`` the folder, ``ls`` its operands' entries (``-d``: the operands; ``-R``: all below),
+    ``find`` and ``git ls-files`` the paths under their roots. None for anything else: what it prints can't be
+    known here."""
+    statements, _substitutions = _shell_split(inner)
+    if len(statements) != 1 or len(statements[0]) != 1 or _SUBST in inner:
+        return None
+    words = _strip(_shell_words(statements[0][0])).words
+    if not words:
+        return None
+    name, args = _command_name(words[0]), words[1:]
+    if any("$" in w or "`" in w for w in args):
+        return None  # a word the shell fills in (`$(echo $PWD)`): not one the gate can place
+    if name == "echo":
+        while args and re.fullmatch(r"-[neE]+", args[0]):
+            args = args[1:]
+        return [(w, 0) for w in args]
+    if name == "printf":
+        return [(args[0], 0)] if len(args) == 1 and "%" not in args[0] and "\\" not in args[0] else None
+    if name == "pwd":
+        return [(".", 0)]
+    if name == "ls":
+        flags, plain = _split_args(args)
+        letters = "".join(f[1:] for f in flags if not f.startswith("--"))
+        levels = None if "R" in letters or "--recursive" in flags else 0 if "d" in letters else 1
+        return [(w, levels) for w in plain or ["."]]
+    if name == "find":
+        depth = _int(_flag_value(args, {"-maxdepth"}))
+        return [(w, depth) for w in _find_roots(args, bfs=True) or ["."]]
+    if name == "git" and args[:1] == ["ls-files"]:  # the tracked files under its paths
+        return [(w, None) for w in _split_args(args[1:])[1] or ["."]]
+    return None
+
+
+def _glob_reaches_kb(path: str, vault: str, rec: _Recursive) -> bool:
+    """A depth-bounded read of a glob root (``ls -d k*`` handed to a one-level read): the glob's components are
+    matched against each KB folder's path, so ``*`` from the vault counts and ``*.yaml`` doesn't."""
+    parts = posixpath.normpath(path).split("/")
+    first = next(i for i, part in enumerate(parts) if _GLOB_CHARS.search(part))
+    prefix, pattern = "/".join(parts[:first]) or "/", parts[first:]
+    for kb_dir in KB_DIRS:
+        target = posixpath.join(vault, kb_dir)
+        if not (target + "/").startswith(prefix.rstrip("/") + "/"):
+            continue
+        rel = posixpath.relpath(target, prefix).split("/")
+        if not all(fnmatch.fnmatch(name.lower(), glob.lower()) for name, glob in zip(rel, pattern, strict=False)):
+            continue
+        landed = posixpath.join(prefix, *rel[: len(pattern)]) if len(pattern) <= len(rel) else target
+        if _reaches_kb(landed, vault, rec):
+            return True
+    return False
+
+
 def _judge_recursive(
     command: str,
     in_kb: bool,
@@ -1347,7 +1466,7 @@ def _judge_recursive(
     of what it lists."""
     if vault is None or depth > 4:
         return False
-    statements, substitutions = _shell_split(command)
+    statements, joins, substitutions = _shell_split_joined(command)
     local = _local_values(command)
     loops = _loop_words(command)
     here = posixpath.normpath(cwd) if cwd else None
@@ -1378,10 +1497,23 @@ def _judge_recursive(
                     return True
                 continue
             if _SUBST in root:
-                # Files a command prints are not a folder to walk, unless it prints where the vault is.
-                found = [int(i) for i in _SUBST_INDEX.findall(root)]
-                if rec.content and any(i >= len(substitutions) or _risky_substitution(substitutions[i]) for i in found):
+                # A root a command prints: what a printer or lister prints is placed (`$(echo .)`, `$(ls)`,
+                # `$(find .. -maxdepth 1)`), anything else is a root the gate can't place, and the search is
+                # counted as reaching the KB.
+                found = _SUBST_INDEX.findall(root)
+                listed = (
+                    _listed_by(substitutions[int(found[0])])
+                    if len(found) == 1 and int(found[0]) < len(substitutions)
+                    else None
+                )
+                if listed is None:
                     return True
+                marker = f"{_SUBST}{found[0]}{_SUBST}"
+                for printed, extra in listed:
+                    deeper = None if rec.depth is None or extra is None else rec.depth + extra
+                    one = _Recursive([root.replace(marker, printed)], rec.content, deeper, rec.excluded)
+                    if reaches(one, where):
+                        return True
                 continue
             word = _expand(root, env, local)
             if word == _UNKNOWN:
@@ -1398,53 +1530,84 @@ def _judge_recursive(
                         return True
                     continue
                 folder = posixpath.join(where, folder)
+            if rec.depth is not None and _GLOB_CHARS.search(word):  # a glob a few levels from the KB: match it
+                if _glob_reaches_kb(word if word.startswith("/") else posixpath.join(where or "/", word), vault, rec):
+                    return True
+                continue
             if _reaches_kb(folder, vault, rec):
                 return True
         return False
 
-    subshells: list[str | None] = []
-    for pieces in statements:
+    # The folders the shell may be in. A `cd` narrows them only when it surely runs and lands (top level, not after
+    # `||` or a command that may fail, not in an `if`, a loop, a `{ … }` or a function, not backgrounded or in a
+    # pipeline, to a folder that exists): otherwise the old folders stay possible beside the new ones.
+    after: list[str | None] = [here]  # where a statement that follows unconditionally runs
+    chain: list[str | None] = [here]  # where one joined by `&&` runs: the last statement succeeded
+    tried: list[str | None] = [here]  # where the last statement ran: one joined by `||` runs there too
+    sure = True  # the last statement surely ran
+    landed = False  # ... and surely succeeded (a `cd` that landed)
+    block = 0  # open `if`/loop/`case`/`{` blocks: what runs inside may not
+    stack: list[tuple[list[str | None], bool]] = []  # each open subshell: `after` and `sure` at its `(`
+    for index, (pieces, join) in enumerate(zip(statements, joins, strict=True)):
+        if join == "&&":
+            folders, certain = chain, sure and landed
+        elif join == "||":
+            folders, certain = _union(tried, chain), False
+        elif join == "(":
+            folders, certain = after, sure
+        else:
+            folders, certain = after, block == 0 and (not stack or stack[-1][1])
+        backgrounded = index + 1 < len(joins) and joins[index + 1] == "&"
+        if pieces == [_SUBSHELL_OPEN]:
+            stack.append((after, certain))
+            after, sure, landed = folders, certain, False
+            continue
+        if pieces == [_SUBSHELL_CLOSE]:  # a `cd` inside `( … )` ends at its `)`
+            if stack:
+                after, sure = stack.pop()
+            chain = tried = after
+            landed = False
+            continue
+        first = (_shell_words(pieces[0]) or [""])[0]
+        if first in _BLOCK_CLOSE:
+            block = max(0, block - 1)
+        if first == "{":
+            block += 1
+            certain = False
+        cd_to: str | None = None
         for piece in pieces:
-            if piece in (_SUBSHELL_OPEN, _SUBSHELL_CLOSE):  # a `cd` inside `( … )` ends at its `)`
-                if piece == _SUBSHELL_OPEN:
-                    subshells.append(here)
-                elif subshells:
-                    here = subshells.pop()
-                continue
-            if substituted(piece, here):
-                return True
+            for here_now in folders:
+                if substituted(piece, here_now):
+                    return True
             stripped = _strip(_shell_words(piece))
             words = stripped.words
             if not words:
                 continue
             if any(c.isspace() for c in words[0]):  # a program a shell prefix runs: `bash -c 'rg x'`
-                if _judge_recursive(_restored(" ".join(words), substitutions), in_kb, here, vault, env, depth + 1):
+                text = _restored(" ".join(words), substitutions)
+                if any(_judge_recursive(text, in_kb, f, vault, env, depth + 1) for f in folders):
                     return True
                 continue
             name, args = _command_name(words[0]), words[1:]
-            where = here if stripped.chdir is None else _cd(here, stripped.chdir, env, local)
             if name in ("cd", "pushd"):
-                here = _cd(here, args[0] if args else "~", env, local)  # a bare `cd` goes home
+                cd_to = args[0] if args else "~"  # a bare `cd` goes home
                 continue
-            if name in _READ_COMMANDS:
-                for model, model_args in run_models(words[0], name, args):
-                    rec = _recursive(model, model_args)
-                    if rec is None or (stripped.fed and not rec.roots):
-                        continue  # not recursive, or xargs hands it the files to read
-                    if read:
-                        rec.content = True
-                    if reaches(rec, where):
-                        return True
-            elif name == "git":
-                sub, sub_args, chdirs = _git(args)
-                if sub != "grep":
-                    continue
-                for c in chdirs:
-                    where = _cd(where, c, env, local)
-                _flags, plain = _split_args(_operands("grep", sub_args))
-                paths = plain if any(a in ("-e", "-f") for a in sub_args) else plain[1:]
-                if not (stripped.fed and not paths) and reaches(_Recursive(paths, True), where):
+            for here_now in folders:
+                where = here_now if stripped.chdir is None else _cd(here_now, stripped.chdir, env, local)
+                if _judged_piece(name, words, args, stripped, where, reaches, read, env, local):
                     return True
+        if first in _BLOCK_OPEN:
+            block += 1
+        tried = folders
+        if cd_to is not None and not backgrounded:
+            moved = _union([_cd(f, cd_to, env, local) for f in folders])
+            lands = len(pieces) == 1 and all(m is not None and os.path.isdir(m) for m in moved)
+            chain = moved
+            after = moved if certain and lands else _union(after, folders, moved)
+            sure, landed = certain, lands
+        else:
+            chain = folders
+            sure, landed = certain, False
     # A substitution no piece holds (none should be): judged from where the command starts, as before.
     rest = [s for i, s in enumerate(substitutions) if i not in judged]
     return any(_judge_recursive(s, in_kb, start, vault, env, depth + 1) for s in rest)
