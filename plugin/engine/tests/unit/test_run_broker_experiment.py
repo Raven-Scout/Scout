@@ -1493,7 +1493,7 @@ def test_broker_reads_the_plan_at_the_commit(vault: Path, monkeypatch: pytest.Mo
     _set(vault, "disk_budget_bytes", "999999")  # after the commit: the worktree's copy must not count
     # The uncommitted-change refusal would stop the run first; with it out of the way, the plan's source is pinned.
     monkeypatch.setattr(broker, "_uncommitted", lambda *_a, **_k: [])
-    assert _plan(vault) == broker.ExperimentPlan(6.0, [ModelRef("org/m", SHA_A)], 1000)
+    assert _plan(vault) == broker.ExperimentPlan(6.0, (ModelRef("org/m", SHA_A),), 1000)
 
 
 def test_disk_budget_is_clamped(vault: Path) -> None:
@@ -1501,5 +1501,21 @@ def test_disk_budget_is_clamped(vault: Path) -> None:
     assert _plan(vault, broker.LabLimits(max_total_bytes=10 << 30)).disk_budget_bytes == 10 << 30
 
 
+@pytest.mark.parametrize(
+    ("extra", "field"),
+    [
+        ("timeout_hours: 0\n", "timeout_hours"),
+        ("disk_budget_bytes: -1\n", "disk_budget_bytes"),
+        ('models:\n  - repo: org/m\n    revision: "main"\n', "models"),
+    ],
+)
+def test_malformed_ml_fields_are_refused_not_defaulted(vault: Path, fake_run: FakeRun, extra: str, field: str) -> None:
+    _commit_fields(vault, extra)
+    reply = _broker(vault).experiment(REQ)
+    assert reply.exit == broker.EXIT_REFUSED and reply.stderr.startswith("experiment refused:")
+    assert field in reply.stderr
+    assert fake_run.calls == []
+
+
 def test_no_disk_budget_means_512_mib(vault: Path) -> None:
-    assert _plan(vault, broker.LabLimits(max_total_bytes=10 << 30)) == broker.ExperimentPlan(None, [], 512 << 20)
+    assert _plan(vault, broker.LabLimits(max_total_bytes=10 << 30)) == broker.ExperimentPlan(None, (), 512 << 20)

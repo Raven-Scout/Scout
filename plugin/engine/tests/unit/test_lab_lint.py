@@ -428,6 +428,10 @@ def test_partially_staged_front_page_is_judged_by_its_staged_text(kb_repo) -> No
         (f"models:\n  - repo: ../x\n    revision: {'a' * 40}\n", "repo"),
         ("timeout_hours: 0\n", "timeout_hours"),
         ("disk_budget_bytes: -1\n", "disk_budget_bytes"),
+        (
+            f'models:\n  - repo: org/m\n    revision: "{"a" * 40}"\n  - repo: org/m\n    revision: "{"a" * 40}"\n',
+            "more than once",
+        ),
     ],
 )
 def test_lint_flags_bad_ml_fields(vault: Path, extra: str, field: str) -> None:

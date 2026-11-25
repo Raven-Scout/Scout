@@ -250,7 +250,7 @@ class ExperimentPlan:
     its disk budget in bytes, already clamped to the owner's ``max_total_bytes``."""
 
     timeout_hours: float | None
-    models: list[ModelRef]
+    models: tuple[ModelRef, ...]
     disk_budget_bytes: int
 
 
@@ -845,8 +845,18 @@ def validate_experiment(
     raw = head.frontmatter.get("cost_cap_usd")
     if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not _finite(raw) or raw <= 0:
         raise Refused(EXIT_REFUSED, f"{note.name} at HEAD has cost_cap_usd {raw!r}; it must be a number above 0")
+    fm = head.frontmatter
+    for key, parsed in (("timeout_hours", head.timeout_hours), ("disk_budget_bytes", head.disk_budget_bytes)):
+        if key in fm and parsed is None:
+            raise Refused(EXIT_REFUSED, f"{note.name} at HEAD has {key} {fm[key]!r}; it must be a number above 0")
+    if "models" in fm and (not isinstance(fm["models"], list) or len(fm["models"]) != len(head.models)):
+        raise Refused(
+            EXIT_REFUSED,
+            f"{note.name} at HEAD has a malformed models entry; each needs repo (owner/name) and revision "
+            "(a full 40-character commit hash)",
+        )
     budget = min(head.disk_budget_bytes or DEFAULT_DISK_BUDGET_BYTES, limits.max_total_bytes)
-    plan = ExperimentPlan(head.timeout_hours, list(head.models), budget)
+    plan = ExperimentPlan(head.timeout_hours, tuple(head.models), budget)
     return slug, eid, argv, min(float(raw), limits.max_cost_cap_usd), commit, plan
 
 

@@ -377,6 +377,9 @@ def _ml_fields(rel: str, text: str, fm: dict[str, Any]) -> list[Finding]:
                     line,
                 )
             )
+    pairs = [(e["repo"], e["revision"]) for e in models if isinstance(e, dict) and "repo" in e and "revision" in e]
+    for pair in sorted({p for p in pairs if pairs.count(p) > 1}, key=str):
+        out.append(_bad(rel, f"models lists {pair[0]}@{pair[1]} more than once", line))
     return out
 
 
