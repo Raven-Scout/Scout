@@ -9,6 +9,7 @@ adversarial spellings.
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import random
 import re
@@ -295,3 +296,126 @@ def test_no_prefixes_or_an_empty_one_searches_the_whole_text() -> None:
     pattern = re.compile(r"b|a")
     assert [m.span() for m in _finditer(pattern, None, "ab")] == [(0, 1), (1, 2)]
     assert [m.span() for m in _finditer(pattern, ("",), "ab")] == [(0, 1), (1, 2)]
+
+
+# ----- where prefixes may be set ---------------------------------------------------------------
+
+_BUILDERS = {
+    "prefixes": ("pattern", "_term_prefixes", "_term_regex"),
+    "bare_prefixes": ("bare_pattern", "_bare_prefixes", "_bare_regex"),
+}
+
+
+def _name(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _calls(node: ast.AST | None, fn: str) -> ast.Call | None:
+    return node if isinstance(node, ast.Call) and _name(node.func) == fn else None
+
+
+def _one_literal(prefix: ast.AST, pattern: ast.AST | None) -> bool:
+    """``prefixes=(x,)`` beside ``pattern=re.compile(_BEFORE + re.escape(x) + _AFTER)``."""
+    if not (isinstance(prefix, ast.Tuple) and len(prefix.elts) == 1):
+        return False
+    compiled = _calls(pattern, "compile")
+    if compiled is None or len(compiled.args) != 1 or compiled.keywords:
+        return False
+    outer = compiled.args[0]
+    if not (isinstance(outer, ast.BinOp) and isinstance(outer.op, ast.Add) and _name(outer.right) == "_AFTER"):
+        return False
+    inner = outer.left
+    if not (isinstance(inner, ast.BinOp) and isinstance(inner.op, ast.Add) and _name(inner.left) == "_BEFORE"):
+        return False
+    escaped = _calls(inner.right, "escape")
+    return escaped is not None and len(escaped.args) == 1 and ast.dump(escaped.args[0]) == ast.dump(prefix.elts[0])
+
+
+def _sites() -> list[tuple[str, bool]]:
+    """Every call in the engine passing ``prefixes=`` or ``bare_prefixes=``, and whether it keeps the rule."""
+    root = Path(outbound.__file__).resolve().parents[1]
+    out: list[tuple[str, bool]] = []
+    for path in sorted(root.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            kw = {k.arg: k.value for k in node.keywords if k.arg is not None}
+            for key, (pattern_key, prefix_fn, regex_fn) in _BUILDERS.items():
+                if key not in kw:
+                    continue
+                value, pattern = kw[key], kw.get(pattern_key)
+                built, regex = _calls(value, prefix_fn), _calls(pattern, regex_fn)
+                same_words = (
+                    built is not None
+                    and regex is not None
+                    and [ast.dump(a) for a in built.args] == [ast.dump(a) for a in regex.args]
+                    and not built.keywords
+                    and not regex.keywords
+                )
+                ok = same_words or (key == "prefixes" and _one_literal(value, pattern))
+                out.append((f"{path.relative_to(root.parent)}:{node.lineno}:{key}", ok))
+    return out
+
+
+def test_prefixes_are_set_only_beside_a_pattern_built_from_the_same_words() -> None:
+    """A new place that sets prefixes fails here until it builds them with its pattern, from the same words.
+
+    ``_term_prefixes(x)`` and ``_term_regex(x)`` both run :func:`outbound._words_of` over
+    ``_term_forms(x)`` (``_bare_*`` over ``_bare_forms``), and the pattern is those
+    words escaped between zero-width assertions, so each match starts with a first word.
+    """
+    sites = _sites()
+    assert [where for where, ok in sites if not ok] == []
+    # note_from_text (2), the shared-paths note (2), the Scanner's hidden paths (1): the scan sees them all
+    assert len(sites) == 5, sites
+
+
+def test_the_site_check_rejects_a_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The check has teeth: prefixes from other words, a hand-written pattern, or a replace() are refused."""
+    kb = tmp_path / "scout" / "kb"
+    kb.mkdir(parents=True)
+    (kb / "bad.py").write_text(
+        "PrivateNote(pattern=_term_regex(a), prefixes=_term_prefixes(b))\n"
+        "PrivateNote(pattern=re.compile('x|y'), prefixes=('x',))\n"
+        "PrivateNote(pattern=re.compile(_BEFORE + re.escape(a) + _AFTER), prefixes=(b,))\n"
+        "dataclasses.replace(note, prefixes=('sam',))\n"
+        "PrivateNote(bare_pattern=_term_regex(a), bare_prefixes=_term_prefixes(a))\n"
+        "PrivateNote(pattern=_term_regex(a), prefixes=_term_prefixes(a))\n",
+        encoding="utf-8",
+    )
+    (kb / "outbound.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(outbound, "__file__", str(kb / "outbound.py"))
+    assert [ok for _, ok in _sites()] == [False, False, False, False, False, True]
+
+
+# ----- case and Unicode folding -------------------------------------------------------------------
+
+
+def test_prefixes_are_found_in_the_same_folded_form_the_pattern_matches() -> None:
+    """No IGNORECASE: terms (_norm) and text (_folds) are both folded, so str.find sees what the pattern sees.
+
+    The fuzz also spells names upper, mixed case, NFD, fullwidth, with ß and
+    ligatures (``_mutate`` ops 0-3 and 11), and CORPUS has İ, ß/SS, ﬁ/ﬂ and
+    fullwidth lines; every one is compared with the plain finditer.
+    """
+    terms = outbound.terms_of(
+        [_note(n) for n in ("Straße Kid", "İstanbul Trip", "ﬁnn ﬂow", "ＦＵＬＬ Width", "Ŝtefan Novák")]
+    )
+    for note in terms.notes:
+        for pattern in (note.pattern, note.bare_pattern):
+            assert pattern is None or not pattern.flags & re.IGNORECASE
+    text = "STRASSE KID, i̇stanbul trip, FINN FLOW, full width, ŜTEFAN NOVÁK, Stefan Novak\n"
+    hits = outbound._hits(text, terms)
+    assert hits == outbound._hits(text, _stripped(terms))
+    assert {path for path, _, _ in hits} == {n.path for n in terms.notes}  # each spelling is found
+    assert outbound.find_mentions(text, terms, allow_markers=False) == [1]
+
+
+def test_an_ignorecase_pattern_is_searched_whole() -> None:
+    """A pattern compiled with IGNORECASE could match where a case-sensitive str.find sees no prefix."""
+    pattern = re.compile(r"(?<![^\W_])sam lee(?![^\W_])", re.IGNORECASE)
+    assert [m.span() for m in _finditer(pattern, ("sam",), "SAM LEE")] == [(0, 7)]

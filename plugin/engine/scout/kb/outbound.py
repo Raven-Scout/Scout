@@ -160,7 +160,9 @@ class PrivateNote:
     bare_pattern: re.Pattern[str] | None = None  # the accent-free forms of its longer terms, over bare text
     # Every match of ``pattern`` (``bare_pattern``) starts with one of these, as written, so :func:`_hits` tries
     # the pattern only where one occurs (:func:`_matches`). None: no such promise, the whole text is searched. Set
-    # only beside a pattern built from the same words (:func:`_prefixes`), never written by hand.
+    # only in the same call as the pattern, from the same words: ``prefixes=_term_prefixes(x)`` beside
+    # ``pattern=_term_regex(x)`` (``_bare_*`` likewise), or one literal beside ``_BEFORE + re.escape(it) + _AFTER``.
+    # tests/unit/test_kb_outbound_prefixes.py fails on any other way of setting them.
     prefixes: tuple[str, ...] | None = None
     bare_prefixes: tuple[str, ...] | None = None
 
@@ -490,22 +492,20 @@ def _with_shared(terms: PrivateTerms, vault: Path) -> PrivateTerms:
         for key, group in merged.items()
     ]
     shared_terms = [t for n in shared for t in n.terms]
-    paths = _term_regex(shared_terms)
-    bare_paths = _bare_regex(shared_terms)
     together = PrivateNote(
         path="shared-note-paths",
         slug="shared-note-paths",
         terms=(),
         link_keys=frozenset(),
         link_path="",
-        pattern=paths,
-        bare_pattern=bare_paths,
+        pattern=_term_regex(shared_terms),
+        bare_pattern=_bare_regex(shared_terms),
         prefixes=_term_prefixes(shared_terms),
         bare_prefixes=_bare_prefixes(shared_terms),
     )
     notes = (*terms.notes, _CITATION, together, *shared)
-    patterns = [p.pattern for p in (terms.any_term, _CITATION.pattern, paths) if p is not None]
-    bare = [p.pattern for p in (terms.any_bare, bare_paths) if p is not None]
+    patterns = [p.pattern for p in (terms.any_term, _CITATION.pattern, together.pattern) if p is not None]
+    bare = [p.pattern for p in (terms.any_bare, together.bare_pattern) if p is not None]
     return PrivateTerms(
         notes=notes,
         any_term=re.compile("|".join(patterns)),
@@ -630,7 +630,9 @@ def _matches(
     prefix that isn't), so each search resumes at the last match's end, as
     finditer does. ``seen`` keeps each prefix's occurrences across notes.
     """
-    if prefixes is None or "" in prefixes:
+    if prefixes is None or "" in prefixes or pattern.flags & re.IGNORECASE:
+        # No promise, or one str.find can't keep: the prefixes are found case-sensitively in the folded form,
+        # which is what the pattern matches against (it is built without IGNORECASE; folding does the rest).
         yield from pattern.finditer(form)
         return
     starts: set[int] = set()
