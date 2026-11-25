@@ -215,12 +215,13 @@ bash_pattern() {
     # -- A git call that picks its repository or top itself: `git --git-dir=~/V/.git --work-tree=/tmp/w -C
     #    /tmp/w/a show HEAD:./context/x.md` reads a note from the vault's history without naming the KB.
     alt '--git-dir|--work-tree|GIT_DIR|GIT_WORK_TREE'
-    #    And a git call whose paths cover the KB without naming it: one naming action-items/ (the folder
-    #    that holds context/: `git log -p -- action-items`), a pathspec `.`, `..`, `:/x` or `:(top)x`
-    #    from the vault, or `git archive` (everything below the folder it runs in).
-    alt 'git[^;&|]*action-items'
-    alt 'git[^;&|]* (\.\.?/?|:/[^ ;&|]*|:\([^ ;&|]*)( |\\"|"|$)'
-    alt 'git[^;&|]* archive'
+    #    And any git subcommand that prints file contents, whatever its paths: they can cover the KB without
+    #    naming it (`git log -p -- .`, `git grep x HEAD:`, `git archive HEAD`), and with no path it reads the
+    #    whole repository (the gate records that). Also -p/-v hunks of add, checkout, reset, restore, commit,
+    #    status and stash, and an exclusion pathspec (`:!docs` leaves everything else).
+    alt 'git[^;&|]* (show|diff|diff-tree|diff-index|diff-files|log|whatchanged|reflog|grep|blame|annotate|archive|cat-file|format-patch|fast-export|difftool|range-diff|merge-tree|unpack-file|stash (show|list))([^A-Za-z0-9_-]|$)'
+    alt 'git[^;&|]* (add|checkout|reset|restore|commit|status|stash)[^;&|]* (-p|--patch|-v|-vv|--verbose)([^A-Za-z0-9_-]|$)'
+    alt 'git[^;&|]*:[!^]'
 }
 
 # Sets $t to program $1 by absolute path: /usr/bin or /bin first, else the first in the (filtered,

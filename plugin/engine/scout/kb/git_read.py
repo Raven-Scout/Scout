@@ -205,7 +205,12 @@ def parse(args: list[str]) -> GitRead | None:
         if _names_only(sub_args) and not _patch(sub_args) and sub not in ("format-patch", "range-diff"):
             # `git show --stat HEAD:a.md` still prints the blob: a tree path is read whatever the flags say.
             _collect(sub, sub_args, read)
+            # A bare object id may be a blob (`git show --stat <blob>` prints it): any file, so recorded.
+            blob = sub == "show" and any(OBJECT_ID.match(w) for w in read.maybe_paths)
             read.pathspecs, read.maybe_paths = [], []
+            if blob:
+                read.unbounded = "repo"
+                return read
             return read if read.trees or read.files else None
         read.unbounded = "repo"
     elif sub in _PATCH_WHEN_ASKED:
@@ -336,12 +341,45 @@ def same_folder(a: Path, b: Path) -> bool:
 
 def rel_to(top: Path, folder: Path) -> str | None:
     """``folder`` relative to ``top`` by file identity (a case-insensitive disk, a symlinked spelling), with each
-    component's own letter case where it exists; ``""`` for ``top`` itself, None when ``folder`` is not below it."""
+    component's own letter case where it exists; ``""`` for ``top`` itself, None when ``folder`` is not below it.
+    A folder or top not on disk yet (made earlier in the same command) is compared by its resolved spelling,
+    ignoring letter case."""
     for depth, anc in enumerate((folder, *folder.parents)):
         if same_folder(anc, top):
             parts = folder.parts[len(folder.parts) - depth :] if depth else ()
             return "/".join(parts)
+    if folder.exists() and top.exists():
+        return None
+    a, b = [p.casefold() for p in top.parts], [p.casefold() for p in folder.parts]
+    return "/".join(folder.parts[len(a) :]) if b[: len(a)] == a else None
+
+
+def exclusion(word: str, prefix: str) -> str | None:
+    """The repository path an exclusion pathspec leaves out (``:!x``, ``:^x``, ``:(exclude)x`` from the folder,
+    ``:(exclude,top)x`` from the top), else None (not an exclusion, or one above the top)."""
+    m = re.match(r"^:\(([^)]*)\)(.*)$", word)
+    if m:
+        magic = {w.strip() for w in m[1].split(",")}
+        if "exclude" not in magic:
+            return None
+        rest = m[2]
+        return tree_path(f":(top){rest}" if "top" in magic else rest, prefix, pathspec=True)
+    if word.startswith((":!", ":^")):
+        rest = word[2:]
+        return (
+            tree_path(rest[1:], "", pathspec=True) if rest.startswith("/") else tree_path(rest, prefix, pathspec=True)
+        )
     return None
+
+
+# Subcommands for which a pathspec made only of exclusions means "everything below the folder git runs in" (git's
+# PATHSPEC_PREFER_CWD); for the rest it means the whole tree.
+PREFER_CWD = {"grep", "archive"}
+# Subcommands that read every file below a `<rev>:<folder>` they are given (a tree): `git grep x HEAD:action-items`,
+# `git archive HEAD:`, `git diff A:dir B:dir`. `git show`/`cat-file` of a tree print only its names.
+TREE_READERS = {"grep", "archive", "diff", "diff-tree", "diff-index", "difftool"}
+# A word that may be an object id (a blob's included): 7 to 64 hex digits.
+OBJECT_ID = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
 
 def tree_path(word: str, prefix: str, *, pathspec: bool) -> str | None:

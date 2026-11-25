@@ -628,6 +628,9 @@ def _git_reads_kb(
     vault_at = (git_read.rel_to(ours[0], paths.resolve_path(vault)) or "").casefold()
     kb_dirs = [posixpath.join(vault_at, d) if vault_at else d for d in KB_DIRS]
     prefix = git_read.rel_to(repo[0], here) or ""
+    in_git_dir = git_read.rel_to(repo[1], here) is not None or ".git" in prefix.casefold().split("/")
+    if in_git_dir:
+        prefix = ""  # inside the git folder git works from the top (`git -C .git grep x HEAD` reads it all)
 
     def in_kb(tree: str) -> bool:
         tree = tree.casefold()
@@ -655,7 +658,21 @@ def _git_reads_kb(
             return True
         return _kb_file_matches(vault, vault_at, pattern)
 
+    def left_in(root: str, excluded: list[str]) -> bool:
+        """Whether everything below ``root`` but the ``excluded`` paths still holds a KB path (a wildcard
+        exclusion is taken as excluding nothing)."""
+        root = root.casefold()
+
+        def out(path: str) -> bool:
+            return any(e == "" or path == e or path.startswith(e + "/") for e in excluded)
+
+        if in_kb(root):
+            return not out(root)
+        targets = [*kb_dirs, posixpath.join(vault_at, "knowledge-base.md") if vault_at else "knowledge-base.md"]
+        return any((root == "" or t.startswith(root + "/")) and not out(t) for t in targets)
+
     bounded, unresolved = False, False
+    whole_trees = read.sub in git_read.TREE_READERS  # `git grep x HEAD:dir` reads all below dir
     for word in read.trees:
         text = text_of(word)
         if text is None:
@@ -663,19 +680,32 @@ def _git_reads_kb(
             continue
         tree = git_read.tree_path(text, prefix, pathspec=False)
         bounded = True
-        if tree is not None and in_kb(tree):
+        if tree is not None and (covers(tree) if whole_trees else in_kb(tree)):
             return "kb"
+    excluded: list[str] = []
+    included = False
     for word, sure in [*((w, True) for w in read.pathspecs), *((w, False) for w in read.maybe_paths)]:
         text = text_of(word)
         if text is None:
             unresolved = True
             continue
-        if not sure and not (git_read.WILD.search(text) or os.path.lexists(here / os.path.expanduser(text))):
+        if sure and _is_exclusion(text):
+            left = git_read.exclusion(text, prefix)
+            if left is not None and not git_read.WILD.search(left):
+                excluded.append(left.casefold())
+            continue  # an exclusion reads nothing itself
+        on_disk = not in_git_dir and os.path.lexists(here / os.path.expanduser(text))  # .git/HEAD is no path
+        if not sure and not (git_read.WILD.search(text) or on_disk):
             continue  # a rev (`HEAD~3`, `main`), as git takes a word that names no file
         tree = git_read.tree_path(text, prefix, pathspec=True)
-        bounded = True
+        bounded = included = True
         if tree is not None and reaches(tree):
             return "kb"
+    if not included and any(_is_exclusion(w) for w in read.pathspecs):
+        # Only exclusions: git reads everything else, below its folder (grep, archive) or in the whole tree.
+        if left_in(prefix if read.sub in git_read.PREFER_CWD else "", excluded):
+            return "kb"
+        bounded = True
     if unresolved:
         return "unresolved"
     if bounded or read.unbounded is None:
@@ -683,6 +713,10 @@ def _git_reads_kb(
     if read.unbounded == "cwd":
         return "kb" if covers(prefix) else None
     return "whole"
+
+
+def _is_exclusion(word: str) -> bool:
+    return word.startswith((":!", ":^")) or bool(re.match(r"^:\([^)]*\bexclude\b", word))
 
 
 GIT_GLOB_CAP = 20000  # KB files a git pathspec's wildcard is matched against; more counts as a match

@@ -539,8 +539,6 @@ def test_a_hook_skip_reaches_python_from_the_shell(vault, tmp_path, command):
     "command",
     [
         "git status",
-        "git log -n 5",
-        "git diff HEAD",
         "git add notes/a.md",
         "git commit -m x",
         'git commit -m "non-urgent note"',
@@ -559,6 +557,14 @@ def test_ordinary_git_stays_in_the_shell(vault, tmp_path, command):
     payload = _payload("Bash", {"command": command}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
     assert res.returncode == 0 and res.stdout == "" and res.stderr == "", command
+
+
+@pytest.mark.parametrize("command", ["git log -n 5", "git diff HEAD", "git show --stat HEAD"])
+def test_git_content_subcommands_go_to_python_which_allows_the_ordinary_ones(vault, tmp_path, command):
+    """A git subcommand that can print file contents may cover the KB without naming it, so Python decides."""
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    assert _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing").returncode == 2
+    assert _decision(vault, "Bash", {"command": command}) is None
 
 
 @pytest.mark.parametrize("command", ["git mv notes/a.md notes/b.md", "git config user.email alex@example.com"])

@@ -1610,14 +1610,16 @@ def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | No
 
     assert _GIT_READ is not None
     stripped = raw_read._strip(words)
-    if not stripped.words or stripped.fed:
-        return None  # `xargs git …` takes its words from stdin: no tree path to judge
+    if not stripped.words:
+        return None
     git = _git_words(stripped.words)
     if git is None:
         return None
     read = git_read.parse([_unshield(w) for w in git])
     if read is None:
         return None
+    if stripped.fed:  # `… | xargs git cat-file -p`: its objects or paths come from stdin, which the gate can't see
+        read.trees, read.pathspecs, read.maybe_paths, read.files, read.no_index = [SUBST], [], [], [], False
     start = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
     given = {}
     for word in words[: len(words) - len(stripped.words)]:

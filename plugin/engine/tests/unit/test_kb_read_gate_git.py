@@ -178,6 +178,50 @@ MUST_DENY = [
     "cd action-items && git show HEAD:./context/x.md",
     "cd action-items; git -C context log -p .",
     "env -C action-items git show HEAD:./context/x.md",
+    # review of #817: a pathspec made only of exclusions reads everything else
+    "git log -p -- ':(exclude)docs'",
+    "git log -p -- ':!docs'",
+    "git log -p -- ':^docs'",
+    "git diff HEAD~1 -- ':(exclude)docs'",
+    "git diff HEAD~1 -- ':!docs'",
+    "git grep x -- ':(exclude)docs'",
+    "git grep x -- ':!docs'",
+    "git archive HEAD -- ':(exclude)docs' | tar x",
+    "git log -p -1 -- ':(exclude,top)docs'",
+    "git -C docs log -p -1 -- ':(exclude,top)docs'",  # log's exclusions apply to the whole tree
+    "git -C docs log -p -- ':(exclude)x'",
+    "git -C docs diff HEAD~1 -- ':!x'",
+    "git -C action-items grep x -- ':!action-items-2026-11-23.md'",
+    "git grep x -- ':!knowledge-base' ':!knowledge_base' ':!knowledge-base.md'",  # context/ is left
+    # review of #817: a <rev>:<folder> tree that grep, archive or a two-tree diff reads all of
+    "git grep x HEAD:",
+    "git grep x HEAD:action-items",
+    "git grep x HEAD:knowledge-base",
+    "git archive HEAD: | tar x",
+    "git archive HEAD:action-items | tar x",
+    "git diff HEAD~1: HEAD:",
+    "git diff HEAD~1:action-items HEAD:action-items",
+    "git diff-tree -p HEAD~1:action-items HEAD:action-items",
+    "git -C docs grep x HEAD:..",
+    "git -C docs grep x HEAD:",
+    "git -C docs archive HEAD: | tar x",
+    # review of #817: inside .git, git works from the top
+    "git -C .git grep x HEAD",
+    "git -C .git archive HEAD | tar x",
+    "git -C .git log -p -1 -- .",
+    "git -C .git/refs grep x HEAD",
+    "cd .git && git grep x HEAD",
+    "cd .git && git log -p -1 -- .",
+    "cd .git/refs && git -C .. grep x HEAD",
+    "git -C .GIT grep x HEAD",
+    # review of #817: a work tree made in the same command (not on disk when the gate looks)
+    "mkdir -p ~/new/action-items && git --git-dir=$HOME/Vault/.git --work-tree=$HOME/new"
+    " -C $HOME/new/action-items show HEAD:./context/x.md",
+    "mkdir -p ~/new/action-items && git --git-dir=$HOME/Vault/.git --work-tree=$HOME/new"
+    " -C $HOME/new/action-items log -p -- context",
+    "mkdir -p ~/new/q && GIT_DIR=$HOME/Vault/.git GIT_WORK_TREE=$HOME/new git -C $HOME/new/q grep x HEAD -- ..",
+    "mkdir -p ~/new/q && git --git-dir=$HOME/Vault/.git --work-tree=$HOME/new -C $HOME/new/q"
+    " show HEAD:../action-items/context/x.md",
 ]
 
 
@@ -266,7 +310,16 @@ ALLOWED = [
     "git -C action-items show HEAD:./action-items-2026-11-23.md",
     "git -C action-items log -p action-items-2026-11-23.md",
     "git -C action-items grep x -- action-items-2026-11-23.md",
-    "git -C action-items grep x -- ':!context'",
+    "git -C action-items grep x -- ':!context'",  # grep's exclusions apply below its folder
+    "git grep x -- ':!knowledge-base' ':!knowledge_base' ':!knowledge-base.md' ':!action-items/context'",
+    "git -C docs grep x -- ':!x'",
+    "git -C docs archive HEAD -- ':(exclude)x' | tar t",
+    "git log -p -- docs ':(exclude)docs/x'",
+    "git show --stat HEAD -- ':(exclude)docs'",
+    "git -C docs grep x HEAD:./",
+    "git diff HEAD~1:docs HEAD:docs",
+    "git show HEAD:",  # a tree's names
+    "git show HEAD:action-items",
     "git grep x docs/",
     "git grep x -- scripts",
     "git -C scripts grep x -- '*.py'",
@@ -310,10 +363,12 @@ def test_ordinary_git_use_is_allowed(home: Path, command: str) -> None:
         ("git format-patch --stdout -1", "format-patch"),
         ("git cat-file -p HEAD", "cat-file"),
         ("git -C action-items diff", "diff"),
+        ("git show --stat 0123abcd", "show"),  # an object id may be a blob
+        ("git ls-tree -r HEAD | git cat-file --batch", "cat-file"),
     ],
 )
 def test_a_whole_repository_read_is_recorded_with_its_subcommand(home: Path, command: str, subcommand: str) -> None:
-    assert gate.DENY_GIT_WHOLE_REPO_READS is False  # off until Jordan decides from the replay's counts
+    assert gate.DENY_GIT_WHOLE_REPO_READS is False  # off until the owner decides from the replay's counts
     assert _run(home, command) is None
     (row,) = _events(home)
     assert row["payload"] == {
@@ -359,6 +414,8 @@ UNRESOLVED_GIT = [
     "git -C action-items show HEAD:./$UNSET_X",
     "git -C action-items log -p -- $UNSET_X",
     "git -C action-i* show HEAD:./context/x.md",
+    "git ls-tree -r HEAD | xargs -n1 git cat-file -p",  # review of #817: objects from stdin
+    "git ls-tree -r HEAD | xargs -n1 git show",
 ]
 
 
@@ -487,6 +544,21 @@ def test_find_repo_reads_a_dot_git_file(tmp_path: Path) -> None:
             assert git_read.find_repo(tmp_path / "locked", None, None) is None
     finally:
         dot.chmod(0o644)
+
+
+@pytest.mark.parametrize(
+    ("word", "prefix", "left"),
+    [
+        (":!docs", "a", "a/docs"),
+        (":^/docs", "a", "docs"),
+        (":(exclude)docs", "a", "a/docs"),
+        (":(exclude,top)docs", "a", "docs"),
+        (":(icase)docs", "a", None),  # not an exclusion
+        ("docs", "a", None),
+    ],
+)
+def test_exclusion(word: str, prefix: str, left: str | None) -> None:
+    assert git_read.exclusion(word, prefix) == left
 
 
 def test_rel_to_a_folder_outside_the_top(tmp_path: Path) -> None:

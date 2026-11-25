@@ -27,9 +27,11 @@ alternatives match. And a run's payload over ``MAX_PAYLOAD`` bytes is blocked be
 is that long).
 
 The git-read change added four more alternatives at the end: any ``--git-dir``, ``--work-tree``, ``GIT_DIR`` or
-``GIT_WORK_TREE`` (a git call that picks its own repository or top), and a git call whose paths cover the KB without
-naming it (one naming action-items/, a ``.``/``..``/``:/x``/``:(top)x`` pathspec, ``git archive``). Every form
-``test_kb_read_gate_git.py`` must deny or record reaches Python (``GIT_FORMS``).
+``GIT_WORK_TREE`` (a git call that picks its own repository or top); any git subcommand that prints file contents
+(its paths can cover the KB without naming it, and with none it reads the whole repository); the ``-p``/``-v`` hunks
+of add, checkout, reset, restore, commit and status; and an exclusion pathspec (``:!x``, ``:^x``). Every form
+``test_kb_read_gate_git.py`` must deny or record reaches Python (``GIT_FORMS``), so ``git log --oneline -5`` and
+``git diff HEAD~3`` now reach it too (it allows them).
 """
 
 from __future__ import annotations
@@ -87,9 +89,11 @@ EXPANSION_ALTERNATIVES = (
     r"\(",
     # a git call that picks its repository or top, or whose paths cover the KB without naming it
     "--git-dir|--work-tree|GIT_DIR|GIT_WORK_TREE",
-    "git[^;&|]*action-items",
-    r'git[^;&|]* (\.\.?/?|:/[^ ;&|]*|:\([^ ;&|]*)( |\\"|"|$)',
-    "git[^;&|]* archive",
+    "git[^;&|]* (show|diff|diff-tree|diff-index|diff-files|log|whatchanged|reflog|grep|blame|annotate|archive|cat-file"
+    "|format-patch|fast-export|difftool|range-diff|merge-tree|unpack-file|stash (show|list))([^A-Za-z0-9_-]|$)",
+    "git[^;&|]* (add|checkout|reset|restore|commit|status|stash)[^;&|]*"
+    " (-p|--patch|-v|-vv|--verbose)([^A-Za-z0-9_-]|$)",
+    "git[^;&|]*:[!^]",
 )
 EXPANSION_PATTERN = "|".join(EXPANSION_ALTERNATIVES)
 # Rules prefilter.sh also applies ignoring letter case, to the command value as is and again with its quotes and
@@ -470,7 +474,21 @@ GIT_FORMS = (
     "GIT_DIR=/tmp/v/.git git show HEAD:./x",
     "git --work-tree=/tmp/w status -v",
     "git -C action-items status",
-    "git add action-items/action-items-2026-11-23.md && git commit -m 'update'",
+    # review of #817: whole-repository reads, exclusions, trees and blob ids reach Python too
+    "git diff",
+    "git show HEAD",
+    "git log -p",
+    "git diff-tree -p HEAD",
+    "git format-patch --stdout -1",
+    "git fast-export HEAD",
+    "git cat-file --batch-all-objects --batch",
+    "git log -p -- ':!docs'",
+    "git log -p -- ':^docs'",
+    "git grep x HEAD:",
+    "git show --stat 0123abcd",
+    "git ls-tree -r HEAD | xargs -n1 git cat-file -p",
+    "git add -p",
+    "git status -v",
 )
 
 # Commands that read a KB note once the shell has expanded them, though their text spells no KB path (the
@@ -526,9 +544,6 @@ EXPANSION_FORMS = (
 # Their harmless neighbours, which must stay in the shell: no expansion, or one that cannot make a path.
 NOT_EXPANSIONS = (
     "git status",
-    "git log --oneline -5",
-    "git log HEAD~1..HEAD",
-    "git diff HEAD~3",
     "echo $?",
     "echo done; exit $?",
     "[ -f notes/a.md ] && echo yes",
@@ -539,15 +554,15 @@ NOT_EXPANSIONS = (
     "scripts/scoutctl kb search widgets",
     "cat notes/a.md",
     "ls action-items",
-    # ordinary git use in a run, which names no folder above the KB
+    # ordinary git use in a run that prints no file's contents
     "git add docs/a.md",
     "git add docs/a.md && git commit -m 'update docs'",
-    "git diff --stat",
-    "git show --stat HEAD",
-    "git log -n 3 --format=%s",
-    "git diff HEAD -- docs/a.md",
-    "git show HEAD:docs/a.md",
-    "git log -p -3",
+    "git add action-items/action-items-2026-11-23.md && git commit -qm x",
+    "git commit -qam x",
+    "git rev-parse --show-toplevel",
+    "git branch -a",
+    "git ls-files docs",
+    "git push -q origin main",
 )
 
 RUN = {"SCOUT_MODE": "briefing"}
