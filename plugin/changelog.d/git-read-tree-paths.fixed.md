@@ -42,4 +42,9 @@
   --template`, an `ext::` URL, `GIT_SSH`, `GIT_ASKPASS`, `SSH_ASKPASS`, `GIT_ALLOW_PROTOCOL` and the
   `core.gitProxy` and `protocol.*` settings are denied in a run. A link's target is read from the link's own
   folder (`cd ~ && ln -s Vault V2`, `ln -s . self`), and a bundle or a push of the vault's repository into a
-  folder counts as a copy of it.
+  folder counts as a copy of it. A cluster of short flags stops at one that takes a value (`-Xx -x 'cmd'`). A
+  config key that makes git run a command is refused in a run by its name's ending, in any section
+  (`remote.x.uploadpack`, `remote.x.receivepack`, `*.cmd`, `*command`, `*.program`, `*.path`, `*.browser`, …),
+  plus `gc.recentObjectsHook`, `core.alternateRefsCommand` and `interactive.diffFilter`; a test checks the
+  list against `git help --config`. A link to a glob, or to a target the gate can't work out, counts as one
+  that may be the vault.

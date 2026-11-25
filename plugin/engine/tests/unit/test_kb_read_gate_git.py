@@ -296,6 +296,11 @@ MUST_DENY = [
     "git bisect run zsh -fc 'cat act*/cont*/x.md; exit 0'",
     "git rebase -q --exec 'sh -c \"cat \\$0/x.md\" action-items/context' HEAD",
     "git rebase -q -x 'git -C action-items show HEAD:./context/x.md' HEAD",
+    # review round 4: a short option that takes a value ends a cluster (`-Xx` is -X with value x)
+    "git rebase -q -Xx -x 'cat act*/cont*/x.md' HEAD",
+    "git rebase -q -sx -x 'cat act*/cont*/x.md' HEAD",
+    "git rebase -q --strategy-option -x 'cat act*/cont*/x.md' HEAD",
+    "git clone -q -bx -u 'sh -c \"cat act*/cont*/x.md >&2\"; false' . ~/c",
     # review round 2: merge-file prints the files it names
     "git merge-file -p action-items/context/x.md docs/a.md docs/a.md",
     "git -C action-items merge-file -p context/x.md ../docs/a.md ../docs/a.md",
@@ -322,7 +327,10 @@ AFTER_FOLDER_CHANGES = [
     "cd ~ && ln -s Vault V2 && git --git-dir=V2/.git grep x HEAD",
     "cd ~ && ln -s Vault/.git G2 && git --git-dir=G2 grep x HEAD",
     "ln -s . self && git -C self grep x",
-    "ln -s ../home/Vault ~/up && git -C ~/up grep x",  # relative to the link's folder (~)
+    "ln -s ../home/Vault ~/up && git -C ~/up grep x",
+    # review round 4: a link whose target is a glob, or can't be worked out, may be the vault
+    "cd ~/plain && ln -s ~/V*t && git -C Vault grep x",
+    "cd ~/plain && ln -s $(echo ~/Vault) v && git -C v grep x",  # relative to the link's folder (~)
     "git bundle create ~/b HEAD && git clone -q ~/b ~/cl && git -C ~/cl grep x",
     "git init -q --bare ~/bare.git && git push -q ~/bare.git HEAD:main && git --git-dir=$HOME/bare.git grep x main",
 ]
@@ -343,6 +351,16 @@ STRICT_DENIES = [
     "git -c protocol.allow=always fetch origin",
     "git -c core.gitProxy='cat act*/cont*/x.md' fetch git://example.com/x",
     "git config core.gitProxy 'cat act*/cont*/x.md'",
+    # review round 4: config keys that make git run a command, by their name's ending
+    "git config remote.x.uploadpack 'sh -c \"cat act*/cont*/x.md >&2\"; false' && git fetch x",
+    "git config remote.x.receivepack 'sh -c \"cat act*/cont*/x.md >&2\"; false' && git push x HEAD",
+    "git -c remote.origin.uploadpack='cat act*/cont*/x.md' fetch origin",
+    "git config sendemail.tocmd 'cat act*/cont*/x.md'",
+    "git config gpg.ssh.defaultKeyCommand 'cat act*/cont*/x.md'",
+    "git config gc.recentObjectsHook 'cat act*/cont*/x.md'",
+    "git config interactive.diffFilter 'cat act*/cont*/x.md'",
+    "git config web.browser 'cat act*/cont*/x.md'",
+    "git config mergetool.x.path ~/s",
     "GIT_SSH=$HOME/s git fetch -q origin",
     "export GIT_SSH=$HOME/s; git fetch -q origin",
     "GIT_ASKPASS=$HOME/s git fetch -q https://example.com/x",
@@ -746,3 +764,47 @@ def test_rel_to_a_folder_outside_the_top(tmp_path: Path) -> None:
     (tmp_path / "b").mkdir()
     assert git_read.rel_to(tmp_path / "a", tmp_path / "b") is None
     assert git_read.rel_to(tmp_path, tmp_path / "a") == "a"
+
+
+# Keys `git help --config` lists whose names end like a command's but aren't one (review of #817, round 4).
+BENIGN_CONFIG_KEYS = {
+    "advice.ignoredhook": "a boolean",
+    "advice.waitingforeditor": "a boolean",
+    "color.pager": "a boolean",
+    "diff.x.cachetextconv": "a boolean",
+    "gc.repackfilter": "an object filter spec",
+    "gitcvs.dbdriver": "a database driver name",
+    "http.proxy": "a proxy URL",
+    "rebase.reschedulefailedexec": "a boolean",
+    "remote.x.partialclonefilter": "an object filter spec",
+    "remote.x.proxy": "a proxy URL",
+    "uploadpack.allowfilter": "a boolean",
+}
+COMMAND_LIKE = (
+    "cmd", "command", "program", "helper", "hook", "editor", "pager", "browser", "askpass", "uploadpack",
+    "receivepack", "driver", "process", "smudge", "textconv", "tool", ".path", "gitproxy", "fsmonitor", "proxy",
+    "exec", "filter",
+)  # fmt: skip
+
+
+def test_every_git_config_key_that_runs_a_command_is_a_hook_form() -> None:
+    """Each key `git help --config` lists whose name ends like a command's is one the run gates refuse to set
+    (live_run._config_form), or a reviewed harmless one: a new git key that runs something fails here."""
+    import re
+
+    from scout.kb.live_run import _config_form
+
+    out = subprocess.run(["git", "help", "--config"], capture_output=True, text=True, check=False)
+    if out.returncode != 0 or not out.stdout.strip():
+        pytest.skip("this git can't list its config keys")
+    keys = {
+        re.sub(r"<[^>]*>", "x", line.strip()).lower()
+        for line in out.stdout.splitlines()
+        if re.match(r"^[A-Za-z][\w.<>-]*$", line.strip())
+    }
+    assert len(keys) > 300
+    command_like = {k for k in keys if k.endswith(COMMAND_LIKE) or k.startswith("pager.")}
+    missing = sorted(k for k in command_like if _config_form(k) is None and k not in BENIGN_CONFIG_KEYS)
+    assert not missing, missing
+    for key in ("remote.x.uploadpack", "remote.x.receivepack", "core.alternaterefscommand", "sendemail.tocmd"):
+        assert _config_form(key) is not None, key

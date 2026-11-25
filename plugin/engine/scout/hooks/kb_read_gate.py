@@ -662,8 +662,8 @@ def _links_to_vault(links: list[str], vault: Path, resolve: Callable[[str], str 
     home = paths.resolve_path(vault)
     for word in links:
         place = resolve(word)
-        if place is None:
-            return True  # a target the gate can't work out may be the vault
+        if place is None or git_read.WILD.search(word):
+            return True  # a target the gate can't work out, or a glob (`ln -s ~/V*t`), may be the vault
         target = paths.resolve_path(place)
         if git_read.rel_to(home, target) is not None or git_read.rel_to(target, home) is not None:
             return True

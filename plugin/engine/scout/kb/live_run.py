@@ -1117,10 +1117,16 @@ def _git_words(words: list[str]) -> list[str] | None:
 _COMMAND_KEYS = {
     "core.fsmonitor", "core.sshcommand", "core.pager", "core.editor", "core.attributesfile", "core.askpass",
     "credential.helper", "init.templatedir", "sequence.editor", "diff.external", "gpg.program",
-    "uploadpack.packobjectshook", "receive.procreceiverefs",
+    "uploadpack.packobjectshook", "receive.procreceiverefs", "core.gitproxy", "gc.recentobjectshook",
+    "core.alternaterefscommand", "interactive.difffilter",
 }  # fmt: skip
-_COMMAND_KEY_SUFFIXES = (".helper", ".textconv", ".driver", ".process", ".clean", ".smudge", ".command", ".cmd")
-_COMMAND_KEY_PREFIXES = ("pager.", "filter.", "credential.", "diff.", "merge.", "gpg.")
+# Any key that ends so names a command or program git runs, whatever section it is in (`remote.x.uploadpack`,
+# `browser.x.cmd`, `sendemail.tocmd`, `gpg.ssh.defaultkeycommand`, `mergetool.x.path`): checked against `git help
+# --config` by test_kb_read_gate_git.py, so a new key that runs something fails CI (review of #817, round 4).
+_COMMAND_KEY_SUFFIXES = (
+    "cmd", "command", ".program", ".helper", ".driver", ".process", ".clean", ".smudge", ".textconv",
+    ".uploadpack", ".receivepack", ".tool", ".guitool", ".path", ".browser",
+)  # fmt: skip
 
 
 def _config_form(key: str) -> str | None:
@@ -1132,7 +1138,7 @@ def _config_form(key: str) -> str | None:
         return "alias.*"
     if key == "include.path" or (key.startswith("includeif.") and key.endswith(".path")):
         return "include.path"
-    if key in _COMMAND_KEYS or (key.startswith(_COMMAND_KEY_PREFIXES) and key.endswith(_COMMAND_KEY_SUFFIXES)):
+    if key in _COMMAND_KEYS or key.endswith(_COMMAND_KEY_SUFFIXES):
         return key
     if key.startswith("pager."):
         return key
@@ -1815,6 +1821,19 @@ _GIT_RUN_OPTIONS: dict[str, tuple[set[str], set[str]]] = {
     "send-pack": ({"receive-pack", "exec"}, set()),
     "archive": ({"exec"}, set()),
 }  # fmt: skip
+# Each subcommand's other short options that take a value: in a cluster, the first one takes the rest of the word
+# (`-Xours`, `-Xx -x 'cmd'`), so the scan stops there.
+_GIT_VALUE_SHORTS: dict[str, set[str]] = {
+    "rebase": {"X", "s", "S", "C"},
+    "difftool": {"t"},
+    "mergetool": {"t"},
+    "ls-remote": {"o"},
+    "clone": {"b", "c", "o", "j"},
+    "fetch": {"o", "j"},
+    "pull": {"o", "j", "s", "X", "S"},
+    "push": {"o"},
+    "archive": {"o"},
+}
 _GIT_RUN_ENV = (
     "GIT_PAGER", "PAGER", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "EDITOR", "VISUAL", "GIT_SSH_COMMAND",
     "GIT_PROXY_COMMAND", "GIT_EXTERNAL_DIFF",
@@ -1841,7 +1860,7 @@ def _git_programs(words: list[str], cwd: str) -> list[str]:
     chdirs, _git_dir, _work_tree, at = git_read.split_global(git)
     sub, args = (raw_read.fold(git[at]), git[at + 1 :]) if at < len(git) else ("", [])
     longs, shorts = _GIT_RUN_OPTIONS.get(sub, (set(), set()))
-    programs = git_read.option_values(args, longs, shorts)
+    programs = git_read.option_values(args, longs, shorts, _GIT_VALUE_SHORTS.get(sub, set()))
     if sub == "bisect" and args[:1] == ["run"] and len(args) > 1:
         programs.append(shlex.join(args[1:]))
     if sub == "submodule":

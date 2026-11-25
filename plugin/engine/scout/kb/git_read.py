@@ -165,16 +165,21 @@ def rev_path(word: str) -> str | None:
     return None
 
 
-def option_values(args: list[str], longs: set[str], shorts: set[str]) -> list[str]:
+def option_values(
+    args: list[str], longs: set[str], shorts: set[str], stops: set[str] | frozenset[str] = frozenset()
+) -> list[str]:
     """The values a subcommand's words give the value-taking options named, as git's parse-options reads them: a
     long option (``longs``, without ``--``) by its name or any prefix of it (``--exe`` for ``--exec``; a prefix git
-    finds ambiguous only over-judges), as ``--opt=value`` or ``--opt value``; a short one (``shorts``) alone or at
-    the end of a cluster of flags (``-x cmd``, ``-qx cmd``, ``-ixcmd``), its value the rest of the word or the
-    next word. Stops at ``--``."""
+    finds ambiguous only over-judges), as ``--opt=value`` or ``--opt value``; a short one (``shorts``) alone or in
+    a cluster of flags (``-x cmd``, ``-qx cmd``, ``-ixcmd``), its value the rest of the word or the next word. In
+    a cluster, another option that takes a value (``stops``: rebase's ``-X``) takes the rest of the word, so the
+    scan of that word ends there. A next word taken as a value is still read for options of its own (``-Xx -x
+    'cmd'``): judging a word too many is safe, one too few is not. Stops at ``--``."""
     out: list[str] = []
     i = 0
     while i < len(args):
         a = args[i]
+        nxt = args[i + 1] if i + 1 < len(args) else None
         if a == "--":
             break
         if a.startswith("--") and len(a) > 2:
@@ -182,17 +187,17 @@ def option_values(args: list[str], longs: set[str], shorts: set[str]) -> list[st
             if any(long.startswith(name) for long in longs):
                 if eq:
                     out.append(value)
-                elif i + 1 < len(args):
-                    out.append(args[i + 1])
-                    i += 1
-        elif a.startswith("-") and len(a) > 1 and not a.startswith("--"):
+                elif nxt is not None:
+                    out.append(nxt)
+        elif a.startswith("-") and len(a) > 1:
             for j, c in enumerate(a[1:], 1):
                 if c in shorts:
                     if a[j + 1 :]:
                         out.append(a[j + 1 :])
-                    elif i + 1 < len(args):
-                        out.append(args[i + 1])
-                        i += 1
+                    elif nxt is not None:
+                        out.append(nxt)
+                    break
+                if c in stops:
                     break
         i += 1
     return out
