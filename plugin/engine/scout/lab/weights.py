@@ -63,6 +63,7 @@ OFF_REASON = "fetching model weights is off in the owner's config (lab.weights_m
 TIMEOUT_S = 60.0
 CHUNK_BYTES = 1 << 20
 LISTING_MAX_BYTES = 16 << 20
+LOCK_POLL_S = 0.5  # how often a fetch waiting for another one asks whether to stop
 CHECK_EVERY_S = 2.0  # how often a download asks whether to stop, and looks at the free disk
 CONFIG_PARSE_MAX_BYTES = 8 << 20  # a JSON file this size or smaller is read for remote code (any *config.json is)
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -256,11 +257,19 @@ def _write_index(root: Path, index: Mapping[str, Any]) -> None:
 
 
 @contextlib.contextmanager
-def _locked(root: Path) -> Iterator[None]:
-    """One fetch at a time per cache (two detached runs may start together)."""
+def _locked(root: Path, should_stop: Callable[[], str | None] | None = None) -> Iterator[None]:
+    """One fetch at a time per cache (two detached runs may start together). The wait for another fetch asks
+    ``should_stop`` as a download does, so a veto, a stop or the deadline still ends it."""
     fd = os.open(root / LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if should_stop is not None and (reason := should_stop()):
+                    raise LabError(reason) from None
+                time.sleep(LOCK_POLL_S)
         yield
     finally:
         os.close(fd)
@@ -306,17 +315,17 @@ def _remove_revision(root: Path, repo: str, revision: str) -> None:
             folder.rmdir()  # only when empty
 
 
-def evict(root: Path, need: int, in_use: Collection[tuple[str, str]]) -> int:
-    """Drop the least recently used revisions not in ``in_use`` until ``need`` bytes are freed; the bytes freed.
-    Raises :class:`LabError` ``the weights cache is full`` (dropping nothing) when even every such revision isn't
-    enough."""
+def _eviction_plan(root: Path, need: int, in_use: Collection[tuple[str, str]]) -> tuple[list[tuple[str, str]], int]:
+    """The least recently used revisions not in ``in_use`` that together free ``need`` bytes, and the bytes they
+    hold. A repo is matched case-folded (``Org/M`` and ``org/m`` are one folder on a case-insensitive volume).
+    Raises :class:`LabError` ``the weights cache is full`` when even every such revision isn't enough."""
     if need <= 0:
-        return 0
-    index = read_index(root)
-    revisions = index["revisions"]
+        return [], 0
+    protected = {(repo.casefold(), rev) for repo, rev in in_use}
+    revisions = read_index(root)["revisions"]
     candidates = []
     for repo, rev, folder in _revision_dirs(root):
-        if (repo, rev) in in_use:
+        if (repo.casefold(), rev) in protected:
             continue
         entry = revisions.get(_key(repo, rev))
         last = entry.get("last_used", 0.0) if isinstance(entry, dict) else 0.0
@@ -330,11 +339,26 @@ def evict(root: Path, need: int, in_use: Collection[tuple[str, str]]) -> int:
         freed += size
     if freed < need:
         raise LabError(FULL_REASON)
+    return chosen, freed
+
+
+def evict(root: Path, need: int, in_use: Collection[tuple[str, str]]) -> int:
+    """Drop the least recently used revisions not in ``in_use`` until ``need`` bytes are freed; the bytes freed.
+    Raises :class:`LabError` ``the weights cache is full`` (dropping nothing) when even every such revision isn't
+    enough (:func:`_eviction_plan`)."""
+    chosen, freed = _eviction_plan(root, need, in_use)
+    _drop(root, chosen)
+    return freed
+
+
+def _drop(root: Path, chosen: Sequence[tuple[str, str]]) -> None:
+    if not chosen:
+        return
+    index = read_index(root)
     for repo, rev in chosen:
         _remove_revision(root, repo, rev)
-        revisions.pop(_key(repo, rev), None)
+        index["revisions"].pop(_key(repo, rev), None)
     _write_index(root, index)
-    return freed
 
 
 def in_use(vault: Path) -> set[tuple[str, str]]:
@@ -360,8 +384,8 @@ def in_use(vault: Path) -> set[tuple[str, str]]:
 # -- fetching -------------------------------------------------------------------------------------------------------
 
 
-class _RemoteCode(LabError):
-    pass
+class _Unusable(LabError):
+    """A refusal that leaves nothing of the revision in the cache (remote code, a config that can't be read)."""
 
 
 def _refused(repo: str, why: object) -> LabError:
@@ -408,17 +432,19 @@ def _listing(model: ModelRef, token: str | None, http: Http) -> list[_Remote]:
         size = entry.get("size")
         if isinstance(size, bool) or not isinstance(size, int) or size < 0:
             raise _refused(model.repo, "a file without a size")
+        # Every file is fetched against a checksum: an LFS file's sha256, any other file's git blob id. One the
+        # listing gives none for is refused, never taken on its size alone.
         lfs = entry.get("lfs")
-        sha = lfs.get("sha256") if isinstance(lfs, dict) else None
-        blob = entry.get("blobId") if not isinstance(lfs, dict) else None
-        out.append(
-            _Remote(
-                name,
-                size,
-                sha if isinstance(sha, str) and _HEX64.match(sha) else None,
-                blob if isinstance(blob, str) and _HEX40.match(blob) else None,
-            )
-        )
+        if isinstance(lfs, dict):
+            sha = lfs.get("sha256")
+            if not (isinstance(sha, str) and _HEX64.match(sha)):
+                raise _refused(model.repo, f"no checksum for {name}")
+            out.append(_Remote(name, size, sha, None))
+        else:
+            blob = entry.get("blobId")
+            if not (isinstance(blob, str) and _HEX40.match(blob)):
+                raise _refused(model.repo, f"no checksum for {name}")
+            out.append(_Remote(name, size, None, blob))
     if not any(f.name.endswith(WEIGHTS_SUFFIX) for f in out):
         raise LabError(f"no safetensors weights in {model.repo}@{model.revision}")
     # The configs first: a repo that asks for remote code is refused before any weights bytes are fetched.
@@ -440,26 +466,37 @@ def _read(model: ModelRef, resp: Response, n: int) -> bytes:
         raise _refused(model.repo, exc) from None
 
 
-def _asks_for_code(path: Path, size: int) -> bool:
-    if size > CONFIG_PARSE_MAX_BYTES and not path.name.endswith("config.json"):
-        return False
+def _check_json(model: ModelRef, path: Path, name: str, size: int) -> None:
+    """Raises :class:`_Unusable` when the JSON file at ``path`` asks for remote code (``auto_map``, or
+    ``"trust_remote_code": true``), or is a ``*config.json`` that can't be read, so its remote-code fields can't be
+    ruled out. Other JSON files over 8 MiB (a tokenizer's vocabulary) aren't read."""
+    is_config = name.endswith("config.json")
+    if size > CONFIG_PARSE_MAX_BYTES and not is_config:
+        return
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeDecodeError):
-        return False
-    return isinstance(data, dict) and (bool(data.get("auto_map")) or data.get("trust_remote_code") is True)
+        if is_config:
+            raise _Unusable(f"the Hub refused {model.repo}: unreadable {name}") from None
+        return
+    if isinstance(data, dict) and (bool(data.get("auto_map")) or data.get("trust_remote_code") is True):
+        raise _Unusable(f"{model.repo} asks for trust_remote_code")
 
 
-def _sha256_of(path: Path) -> str:
-    h = hashlib.sha256()
+def _digests(path: Path, size: int) -> tuple[str, str]:
+    """The sha256 and the git blob id of the file at ``path`` (``size`` bytes)."""
+    sha, blob = hashlib.sha256(), hashlib.sha1(b"blob %d\0" % size)
     with open(path, "rb") as fh:
         while chunk := fh.read(CHUNK_BYTES):
-            h.update(chunk)
-    return h.hexdigest()
+            sha.update(chunk)
+            blob.update(chunk)
+    return sha.hexdigest(), blob.hexdigest()
 
 
 def _have(folder: Path, remote: _Remote, files: Mapping[str, Any]) -> str | None:
-    """The sha256 of ``remote`` when it is already in ``folder``, whole and right; else None."""
+    """The sha256 of ``remote`` when it is already in ``folder``, whole and right; else None. A file the cache's own
+    index recorded (its size and sha256, after that file was checked as it came in) is trusted as recorded; any other
+    file is read back and checked against the listing's checksum, as a download is."""
     path = folder / remote.name
     try:
         st = os.lstat(path)
@@ -468,12 +505,14 @@ def _have(folder: Path, remote: _Remote, files: Mapping[str, Any]) -> str | None
     if not os.path.isfile(path) or os.path.islink(path) or st.st_size != remote.size:
         return None
     known = files.get(remote.name)
-    sha = known.get("sha256") if isinstance(known, dict) else None
-    if not (isinstance(sha, str) and _HEX64.match(sha)):
-        sha = _sha256_of(path)
-    if remote.sha256 is not None and sha != remote.sha256:
-        return None
-    return sha
+    if isinstance(known, dict) and known.get("size") == remote.size:
+        sha = known.get("sha256")
+        if isinstance(sha, str) and _HEX64.match(sha):
+            return sha if remote.sha256 is None or sha == remote.sha256 else None
+    sha, blob = _digests(path, remote.size)
+    if remote.sha256 is not None:
+        return sha if sha == remote.sha256 else None
+    return sha if remote.blob is not None and blob == remote.blob else None
 
 
 class _Checks:
@@ -526,7 +565,7 @@ def _download(model: ModelRef, remote: _Remote, folder: Path, token: str | None,
         digest = sha.hexdigest()
         if remote.sha256 is not None and digest != remote.sha256:
             raise _refused(model.repo, "checksum mismatch")
-        if remote.sha256 is None and remote.blob is not None and blob.hexdigest() != remote.blob:
+        if remote.sha256 is None and blob.hexdigest() != remote.blob:  # the listing gave one or the other
             raise _refused(model.repo, "checksum mismatch")
         os.fsync(fd)
     except BaseException:
@@ -564,10 +603,10 @@ def _fetch_model(
             files[remote.name] = {"size": remote.size, "sha256": sha}
             if fetched:
                 _write_index(root, index)
-            if remote.name.endswith(".json") and _asks_for_code(folder / remote.name, remote.size):
-                raise _RemoteCode(f"{model.repo} asks for trust_remote_code")
+            if remote.name.endswith(".json"):
+                _check_json(model, folder / remote.name, remote.name, remote.size)
             out.append(Fetched(model.repo, model.revision, folder / remote.name, remote.size, sha))
-    except _RemoteCode:
+    except _Unusable:
         _remove_revision(root, model.repo, model.revision)
         index["revisions"].pop(_key(model.repo, model.revision), None)
         _write_index(root, index)
@@ -633,7 +672,7 @@ def fetch(
         raise LabError(OFF_REASON)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     keep = {*in_use, *((m.repo, m.revision) for m in wanted)}
-    with _locked(root):
+    with _locked(root, should_stop):
         index = read_index(root)
         done: dict[ModelRef, list[Fetched]] = {}
         todo: list[tuple[ModelRef, list[_Remote]]] = []
@@ -658,13 +697,15 @@ def fetch(
                     present[model][r.name] = sha
         if need > max_bytes:
             raise LabError(FULL_REASON)
-        over = _cache_bytes(root) + need - max_bytes
-        if over > 0:
-            evict(root, over, keep)
-            index = read_index(root)
+        # Plan the eviction, then check the floor with what it would free, and only then drop anything: a fetch
+        # the floor refuses leaves the cache as it was.
+        chosen, would_free = _eviction_plan(root, _cache_bytes(root) + need - max_bytes, keep)
         free = free_bytes(root)
-        if floor_bytes > 0 and (free is None or free - need < floor_bytes):
+        if floor_bytes > 0 and (free is None or free + would_free - need < floor_bytes):
             raise LabError(FLOOR_REASON)
+        if chosen:
+            _drop(root, chosen)
+            index = read_index(root)
         checks = _Checks(root, floor_bytes, should_stop)
         for model, remotes in todo:
 

@@ -568,10 +568,16 @@ def _is_shim(real: str) -> bool:
 def _owner_python_roots(python: str, homes: Sequence[str]) -> list[str]:
     """What to allow back for the owner's ``lab.python``: the interpreter it runs (:func:`_interpreter_root` of its
     resolved path), and, when it is a venv's (``<venv>/bin/python3`` beside ``<venv>/pyvenv.cfg``), the venv's folder,
-    where its packages are, unless that folder is a home folder or above one."""
+    where its packages are. Only an interpreter in a folder named ``bin`` makes one, and never a folder that is a home
+    folder or above one, as spelled or resolved."""
     out = [_interpreter_root(os.path.realpath(python), homes)]
-    venv = os.path.realpath(os.path.dirname(os.path.dirname(os.path.abspath(python))))
-    if os.path.isfile(os.path.join(venv, PYVENV_CFG)) and venv != "/" and not any(_within(h, venv) for h in homes):
+    bin_dir = os.path.dirname(os.path.abspath(python))
+    if os.path.basename(bin_dir) != "bin":
+        return out
+    spelled = os.path.dirname(bin_dir)
+    venv = os.path.realpath(spelled)
+    too_wide = any(_within(h, folder) for h in homes for folder in (venv, spelled))
+    if os.path.isfile(os.path.join(venv, PYVENV_CFG)) and venv != "/" and not too_wide:
         out.append(venv)
     return out
 

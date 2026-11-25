@@ -311,6 +311,101 @@ def test_a_file_name_that_leaves_the_folder_is_refused(root: Path, name: str) ->
     assert _cached_files(root) == []
 
 
+def _without(hub: FakeHub, name: str, key: str) -> None:
+    """Drop ``key`` (``"lfs.sha256"`` or ``"blobId"``) from ``name``'s entry in ``hub``'s listing."""
+    listing = hub.listing()
+    for entry in listing["siblings"]:
+        if entry["rfilename"] == name:
+            if key == "lfs.sha256":
+                del entry["lfs"]["sha256"]
+            else:
+                del entry[key]
+    hub.listing = lambda: listing  # type: ignore[method-assign]
+
+
+@pytest.mark.parametrize(("name", "key"), [("model.safetensors", "lfs.sha256"), ("config.json", "blobId")])
+def test_a_file_the_listing_gives_no_checksum_for_is_refused(root: Path, name: str, key: str) -> None:
+    hub = FakeHub(GOOD)
+    _without(hub, name, key)
+    with pytest.raises(LabError) as caught:
+        _fetch(root, hub)
+    assert str(caught.value) == f"the Hub refused {REPO}: no checksum for {name}"
+    assert hub.resolves() == [] and _cached_files(root) == []
+
+
+@pytest.mark.parametrize("name", ["model.safetensors", "config.json"])
+def test_a_same_size_file_already_there_is_checked_not_trusted(root: Path, name: str) -> None:
+    folder = root / REPO / REV
+    folder.mkdir(parents=True)
+    (folder / name).write_bytes(b"X" * len(GOOD[name]))  # the right size, the wrong bytes, not in the index
+    hub = FakeHub(GOOD)
+    got = {f.path.name: f for f in _fetch(root, hub)}
+    assert name in hub.resolves()  # fetched again
+    assert (folder / name).read_bytes() == GOOD[name]
+    assert got[name].sha256 == hashlib.sha256(GOOD[name]).hexdigest()
+
+
+def test_a_wait_for_another_fetch_still_hears_a_stop(root: Path) -> None:
+    import fcntl
+
+    root.mkdir(parents=True)
+    fd = os.open(root / weights.LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)  # another supervisor's fetch, still going
+        hub = FakeHub(GOOD)
+        with pytest.raises(LabError, match=r"\Astopped by the owner\Z"):
+            _fetch(root, hub, should_stop=lambda: "stopped by the owner")
+        assert hub.calls == []
+    finally:
+        os.close(fd)
+
+
+def test_the_floor_is_checked_before_anything_is_evicted(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    size, one = 10_000, 10_000 + len(CONFIG)
+    old, new = "a" * 40, "c" * 40
+    _fill(root, monkeypatch, [old], size)
+    model = [ModelRef(REPO, new)]
+    # What eviction would free doesn't bring the volume back over the floor: refused, and nothing is dropped.
+    monkeypatch.setattr(weights, "free_bytes", lambda _path: 999)
+    with pytest.raises(LabError, match=r"\Afree disk would fall below the floor\Z"):
+        _fetch(root, FakeHub(_sized(size), revision=new), model, max_bytes=one, floor_bytes=1000)
+    assert (root / REPO / old).is_dir()
+    # With the space the eviction frees counted, the fetch fits.
+    monkeypatch.setattr(weights, "free_bytes", lambda _path: 1000)
+    assert _fetch(root, FakeHub(_sized(size), revision=new), model, max_bytes=one, floor_bytes=1000)
+    assert not (root / REPO / old).exists() and (root / REPO / new).is_dir()
+
+
+def test_in_use_spellings_match_whatever_their_case(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``Org/M`` and ``org/m`` are one folder on a case-insensitive volume: an in-use revision under either spelling
+    is kept."""
+    size, one = 10_000, 10_000 + len(CONFIG)
+    old, new = "a" * 40, "c" * 40
+    _fill(root, monkeypatch, [old], size)
+    with pytest.raises(LabError, match=r"\Athe weights cache is full\Z"):
+        _fetch(root, FakeHub(_sized(size), revision=new), [ModelRef(REPO, new)], max_bytes=one, in_use={("ORG/M", old)})
+    assert (root / REPO / old).is_dir()
+
+
+def test_a_config_that_wont_parse_is_refused(root: Path) -> None:
+    hub = FakeHub({**GOOD, "config.json": b"{not json"})
+    with pytest.raises(LabError) as caught:
+        _fetch(root, hub)
+    assert str(caught.value) == f"the Hub refused {REPO}: unreadable config.json"
+    assert _cached_files(root) == [] and "model.safetensors" not in hub.resolves()
+
+
+def test_nested_and_case_variant_suffixes_are_skipped(root: Path) -> None:
+    files = {**GOOD, "sub/modeling.py": b"import os\n", "x.PY": b"import os\n", "x.Safetensors": b"PICKLE?"}
+    hub = FakeHub(files)
+    got = _fetch(root, hub)
+    assert sorted(hub.resolves()) == ["config.json", "model.safetensors", "tokenizer.json"]
+    assert sorted(f.path.name for f in got) == ["config.json", "model.safetensors", "tokenizer.json"]
+    with pytest.raises(LabError, match="no safetensors weights"):  # a case variant isn't the weights either
+        _fetch(root, FakeHub({"x.Safetensors": b"w", "config.json": CONFIG}, revision=OTHER_REV),
+               [ModelRef(REPO, OTHER_REV)])  # fmt: skip
+
+
 def test_fetching_is_off_until_the_owner_sets_a_cap(root: Path) -> None:
     hub = FakeHub(GOOD)
     with pytest.raises(LabError, match="weights_max_bytes"):
@@ -501,6 +596,21 @@ def test_python3_runs_the_owners_interpreter(tmp_path: Path) -> None:
 
 
 # -- against the kernel ----------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("layout", ["home", "not-bin"])
+def test_a_pyvenv_cfg_only_makes_a_venv_of_a_bin_folder_below_home(tmp_path: Path, layout: str) -> None:
+    env = h.make_env(tmp_path)
+    home = Path(env["HOME"])
+    if layout == "home":  # HOME/pyvenv.cfg with HOME/bin/python3: HOME itself must never come back
+        venv, py = home, home / "bin" / "python3"
+    else:  # HOME/tools/pyvenv.cfg with HOME/tools/libexec/python3: not a venv's interpreter
+        venv, py = home / "tools", home / "tools" / "libexec" / "python3"
+    py.parent.mkdir(parents=True, exist_ok=True)
+    py.symlink_to(os.path.realpath(sys.executable))
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    reads = runner._allow_reads(tmp_path / "vault", env, [], python=str(py))
+    assert Path(os.path.realpath(venv)) not in reads
 
 
 @pytest.fixture
