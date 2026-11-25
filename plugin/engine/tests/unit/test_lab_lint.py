@@ -421,6 +421,14 @@ def test_partially_staged_front_page_is_judged_by_its_staged_text(kb_repo) -> No
     assert any("Q5" in f.message for f in _lab_findings(kb_repo))
 
 
+def test_lint_unhashable_model_fields_give_findings_not_a_crash() -> None:
+    from scout.lab.lint import _ml_fields
+
+    entry = {"repo": ["org", "m"], "revision": "a" * 40}
+    found = _ml_fields("x.md", "models:\n", {"models": [entry, dict(entry)]})
+    assert len(found) == 2 and all("repo" in f.message for f in found)
+
+
 @pytest.mark.parametrize(
     ("extra", "field"),
     [
