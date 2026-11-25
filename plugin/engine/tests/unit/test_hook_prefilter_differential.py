@@ -53,6 +53,25 @@ ENTRIES: dict[str, tuple[str, str]] = {
 # Cases where the new command is meant to differ from the old one: {case id: reason}. Empty on purpose.
 INTENDED_DIFFERENCES: dict[str, str] = {}
 
+# The filters that find the session's vault from the payload's cwd, as their Python hooks do (#803
+# follow-up 1). The old commands walked up from their own $PWD, so for these the world puts the
+# case's place into the payload as Claude Code does (`"cwd"`, before the tool call): the old command
+# and the new one then look at the same place, and every other decision is still compared.
+PAYLOAD_CWD = frozenset({"mcp-tool-gate", "outbound-gate", "kb-read-label", "shared-read-record"})
+# A payload that is not a JSON object has no cwd to go by. Python then goes by its own working
+# directory, so the new filters start it where the old ones may not have (and the owner's payload
+# reaches it through read_payload, which drops trailing newlines): the one intended difference.
+NO_CWD_TO_READ = "no cwd in the payload: the filter now starts Python, which decides (#803 follow-up 1)"
+
+
+def _intended(case: Case) -> str | None:
+    if case.id in INTENDED_DIFFERENCES:
+        return INTENDED_DIFFERENCES[case.id]
+    if case.entry in PAYLOAD_CWD and not case.payload.lstrip().startswith("{"):
+        return NO_CWD_TO_READ
+    return None
+
+
 # The gate tests whose string literals make up the Bash corpus.
 CORPUS_SOURCES = (
     "tests/unit/test_hooks_kb_read_gate.py",
@@ -390,12 +409,26 @@ def world(tmp_path_factory: pytest.TempPathFactory) -> World:
     return World(tmp_path_factory.mktemp("prefilter"))
 
 
+def _with_cwd(world: World, case: Case, where: str | None = None) -> Case:
+    """``case`` with a top-level ``"cwd"`` in its payload, for a PAYLOAD_CWD entry whose payload is a JSON
+    object (as Claude Code sends it: cwd before the tool call). The place is ``where``, by default the
+    one the case runs in."""
+    payload = case.payload.lstrip()
+    if case.entry not in PAYLOAD_CWD or not payload.startswith("{"):
+        return case
+    rest = payload[1:]
+    sep = "" if rest.lstrip().startswith("}") else ", "
+    place = str(world.cwd(where or case.cwd))
+    return case._replace(payload='{"cwd": ' + json.dumps(place) + sep + rest)
+
+
 def _differences(world: World, cases: list[Case]) -> list[str]:
     """The cases where the old and the new command disagree, one line each."""
 
     def both(case: Case) -> str | None:
+        case = _with_cwd(world, case)
         old, new = world.run(OLD[case.entry], case), world.run(NEW[case.entry], case)
-        if old == new or case.id in INTENDED_DIFFERENCES:
+        if old == new or _intended(case):
             return None
         return f"{case.id}: old={old!r} new={new!r}"
 
@@ -609,6 +642,39 @@ def test_mcp_tool_gate_reads_the_connectors_file_as_before(tmp_path: Path, confi
 
 
 # ----- what the move itself must guarantee ----------------------------------------------------
+
+
+@pytest.mark.slow
+def test_an_owner_session_goes_by_the_payload_cwd_not_its_own(world: World) -> None:
+    """The one change of #803's follow-up 1, as a differential: an owner session whose hook runs in one
+    place while the payload's cwd names another. For each owner-session filter, the new command run from
+    anywhere decides exactly as the old one did when run from the payload's cwd (where the session is),
+    both ways: hook outside and session in the vault, and hook in the vault and session outside."""
+    payloads = [p for p in TOOL_PAYLOADS if p.startswith("{")]
+    moves = (("outside", "vault"), ("outside", "deep"), ("vault", "outside"), ("deep", "outside"))
+    cases = [
+        (_with_cwd(world, Case(f"{entry} payload[{i}] env[{j}] {here}->{there}", entry, p, env, here, x), there), there)
+        for entry in ("outbound-gate", "kb-read-label", "shared-read-record")
+        for i, p in enumerate(payloads)
+        for j, env in enumerate(OWNERS)
+        for here, there in moves
+        for x in (0, 1)
+    ]
+
+    def compare(item: tuple[Case, str]) -> tuple[str | None, bool]:
+        case, there = item
+        new = world.run(NEW[case.entry], case)
+        by_session = world.run(OLD[case.entry], case._replace(cwd=there))
+        by_hook = world.run(OLD[case.entry], case)
+        differs = None if new == by_session else f"{case.id}: new={new!r} old-from-the-session={by_session!r}"
+        return differs, by_hook != new
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(compare, cases))
+    assert [d for d, _ in results if d] == []
+    # Not vacuous: for each filter, the old command run where the hook runs decided otherwise somewhere.
+    for entry in ("outbound-gate", "kb-read-label", "shared-read-record"):
+        assert any(moved for (case, _), (_, moved) in zip(cases, results, strict=True) if case.entry == entry), entry
 
 
 def test_an_owner_session_never_starts_python_for_the_run_only_hooks(world: World) -> None:

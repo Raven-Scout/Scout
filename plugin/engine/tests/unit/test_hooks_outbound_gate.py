@@ -45,7 +45,9 @@ def vault(shared_vault: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _payload(tool: str, tool_input: dict, cwd: Path) -> io.StringIO:
-    return io.StringIO(json.dumps({"tool_name": tool, "tool_input": tool_input, "cwd": str(cwd)}))
+    # cwd before the tool call, as Claude Code sends it: the shell stage reads only a top-level cwd it can
+    # prove is one, and starts Python for any other.
+    return io.StringIO(json.dumps({"cwd": str(cwd), "tool_name": tool, "tool_input": tool_input}))
 
 
 def _decide(vault: Path, tool: str, tool_input: dict, env=RUN):
