@@ -1,0 +1,3086 @@
+{
+ "roles": [
+  {
+   "date": "2026-04-09",
+   "edges_into": {
+    "other index / reference": 0.2765957446808511,
+    "people": 0.19148936170212766,
+    "work projects": 0.5319148936170213
+   },
+   "nodes": {
+    "other index / reference": 4,
+    "people": 1,
+    "work projects": 10
+   }
+  },
+  {
+   "date": "2026-04-16",
+   "edges_into": {
+    "other index / reference": 0.15725806451612903,
+    "work projects": 0.3790322580645161,
+    "people": 0.17338709677419356,
+    "agent bookkeeping": 0.020161290322580645,
+    "owner's personal life": 0.07661290322580645,
+    "ontology entities": 0.1935483870967742
+   },
+   "nodes": {
+    "other index / reference": 7,
+    "people": 24,
+    "work projects": 20,
+    "agent bookkeeping": 3,
+    "owner's personal life": 9,
+    "ontology entities": 11
+   }
+  },
+  {
+   "date": "2026-04-23",
+   "edges_into": {
+    "other index / reference": 0.16025641025641027,
+    "people": 0.14743589743589744,
+    "work projects": 0.34615384615384615,
+    "agent bookkeeping": 0.035256410256410256,
+    "owner's personal life": 0.10576923076923077,
+    "ontology entities": 0.20512820512820512
+   },
+   "nodes": {
+    "other index / reference": 9,
+    "people": 25,
+    "work projects": 21,
+    "agent bookkeeping": 4,
+    "owner's personal life": 10,
+    "ontology entities": 13
+   }
+  },
+  {
+   "date": "2026-04-30",
+   "edges_into": {
+    "agent bookkeeping": 0.06502242152466367,
+    "other index / reference": 0.15022421524663676,
+    "people": 0.14349775784753363,
+    "work projects": 0.3071748878923767,
+    "ontology entities": 0.2062780269058296,
+    "owner's personal life": 0.1031390134529148,
+    "the agent itself (its project notes)": 0.02466367713004484
+   },
+   "nodes": {
+    "other index / reference": 11,
+    "people": 29,
+    "work projects": 21,
+    "agent bookkeeping": 4,
+    "owner's personal life": 11,
+    "ontology entities": 17,
+    "the agent itself (its project notes)": 3
+   }
+  },
+  {
+   "date": "2026-05-07",
+   "edges_into": {
+    "people": 0.12939001848428835,
+    "work projects": 0.2957486136783734,
+    "agent bookkeeping": 0.05545286506469501,
+    "other index / reference": 0.17744916820702403,
+    "ontology entities": 0.17744916820702403,
+    "owner's personal life": 0.13863216266173753,
+    "the agent itself (its project notes)": 0.025878003696857672
+   },
+   "nodes": {
+    "other index / reference": 18,
+    "people": 29,
+    "work projects": 23,
+    "agent bookkeeping": 4,
+    "owner's personal life": 16,
+    "ontology entities": 17,
+    "the agent itself (its project notes)": 4
+   }
+  },
+  {
+   "date": "2026-05-14",
+   "edges_into": {
+    "people": 0.13559322033898305,
+    "work projects": 0.3254237288135593,
+    "agent bookkeeping": 0.05254237288135593,
+    "other index / reference": 0.16610169491525423,
+    "ontology entities": 0.16779661016949152,
+    "the agent itself (its project notes)": 0.025423728813559324,
+    "owner's personal life": 0.1271186440677966
+   },
+   "nodes": {
+    "other index / reference": 18,
+    "people": 31,
+    "work projects": 28,
+    "agent bookkeeping": 4,
+    "owner's personal life": 16,
+    "ontology entities": 18,
+    "the agent itself (its project notes)": 4
+   }
+  },
+  {
+   "date": "2026-05-21",
+   "edges_into": {
+    "people": 0.11917808219178082,
+    "work projects": 0.36575342465753424,
+    "agent bookkeeping": 0.06027397260273973,
+    "other index / reference": 0.15205479452054796,
+    "ontology entities": 0.14520547945205478,
+    "archived copy": 0.00821917808219178,
+    "the agent itself (its project notes)": 0.045205479452054796,
+    "owner's personal life": 0.10410958904109589
+   },
+   "nodes": {
+    "other index / reference": 18,
+    "people": 28,
+    "work projects": 41,
+    "agent bookkeeping": 4,
+    "owner's personal life": 16,
+    "ontology entities": 19,
+    "the agent itself (its project notes)": 7,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-05-28",
+   "edges_into": {
+    "ontology entities": 0.14320096269554752,
+    "work projects": 0.36462093862815886,
+    "people": 0.1263537906137184,
+    "agent bookkeeping": 0.06016847172081829,
+    "other index / reference": 0.1588447653429603,
+    "archived copy": 0.007220216606498195,
+    "the agent itself (its project notes)": 0.049338146811071,
+    "owner's personal life": 0.09025270758122744
+   },
+   "nodes": {
+    "other index / reference": 22,
+    "people": 30,
+    "work projects": 44,
+    "agent bookkeeping": 4,
+    "owner's personal life": 16,
+    "ontology entities": 21,
+    "the agent itself (its project notes)": 8,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-06-04",
+   "edges_into": {
+    "work projects": 0.3289930555555556,
+    "people": 0.10850694444444445,
+    "agent bookkeeping": 0.051215277777777776,
+    "other index / reference": 0.1310763888888889,
+    "ontology entities": 0.2595486111111111,
+    "archived copy": 0.005208333333333333,
+    "the agent itself (its project notes)": 0.042534722222222224,
+    "owner's personal life": 0.07291666666666667
+   },
+   "nodes": {
+    "other index / reference": 22,
+    "people": 34,
+    "work projects": 47,
+    "agent bookkeeping": 4,
+    "owner's personal life": 16,
+    "ontology entities": 42,
+    "the agent itself (its project notes)": 8,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-06-11",
+   "edges_into": {
+    "work projects": 0.31491294473883424,
+    "people": 0.12036336109008328,
+    "other index / reference": 0.12944738834216502,
+    "agent bookkeeping": 0.059046177138531414,
+    "ontology entities": 0.2392127176381529,
+    "archived copy": 0.004542013626040878,
+    "the agent itself (its project notes)": 0.050719152157456475,
+    "owner's personal life": 0.0817562452687358
+   },
+   "nodes": {
+    "other index / reference": 22,
+    "people": 36,
+    "work projects": 49,
+    "agent bookkeeping": 10,
+    "owner's personal life": 16,
+    "ontology entities": 42,
+    "the agent itself (its project notes)": 10,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-06-18",
+   "edges_into": {
+    "work projects": 0.29338103756708406,
+    "other index / reference": 0.12403100775193798,
+    "people": 0.12760882528324388,
+    "agent bookkeeping": 0.07215265354800239,
+    "ontology entities": 0.24031007751937986,
+    "archived copy": 0.0035778175313059034,
+    "the agent itself (its project notes)": 0.07215265354800239,
+    "owner's personal life": 0.06678592725104353
+   },
+   "nodes": {
+    "other index / reference": 23,
+    "people": 40,
+    "work projects": 51,
+    "agent bookkeeping": 56,
+    "owner's personal life": 16,
+    "ontology entities": 48,
+    "the agent itself (its project notes)": 13,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-06-25",
+   "edges_into": {
+    "work projects": 0.2763440860215054,
+    "other index / reference": 0.11827956989247312,
+    "people": 0.1338709677419355,
+    "agent bookkeeping": 0.07849462365591398,
+    "ontology entities": 0.22903225806451613,
+    "archived copy": 0.0032258064516129032,
+    "the agent itself (its project notes)": 0.0913978494623656,
+    "owner's personal life": 0.06935483870967742
+   },
+   "nodes": {
+    "other index / reference": 23,
+    "people": 41,
+    "work projects": 51,
+    "agent bookkeeping": 59,
+    "owner's personal life": 19,
+    "ontology entities": 48,
+    "the agent itself (its project notes)": 17,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-07-02",
+   "edges_into": {
+    "work projects": 0.2704465629703964,
+    "people": 0.14149523331660813,
+    "other index / reference": 0.11339688911189162,
+    "agent bookkeeping": 0.0772704465629704,
+    "ontology entities": 0.2408429503261415,
+    "the agent itself (its project notes)": 0.08730556949322629,
+    "archived copy": 0.0030105368790767687,
+    "owner's personal life": 0.06623181133968892
+   },
+   "nodes": {
+    "other index / reference": 23,
+    "people": 42,
+    "work projects": 55,
+    "agent bookkeeping": 62,
+    "owner's personal life": 19,
+    "ontology entities": 50,
+    "the agent itself (its project notes)": 17,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-07-09",
+   "edges_into": {
+    "people": 0.14556962025316456,
+    "work projects": 0.27069133398247325,
+    "other index / reference": 0.11100292112950341,
+    "agent bookkeeping": 0.08033106134371958,
+    "ontology entities": 0.23807205452775074,
+    "the agent itself (its project notes)": 0.08519961051606621,
+    "owner's personal life": 0.06669912366114898,
+    "archived copy": 0.0024342745861733205
+   },
+   "nodes": {
+    "other index / reference": 23,
+    "people": 43,
+    "work projects": 56,
+    "agent bookkeeping": 63,
+    "owner's personal life": 20,
+    "ontology entities": 50,
+    "the agent itself (its project notes)": 17,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-07-16",
+   "edges_into": {
+    "work projects": 0.2725982016090866,
+    "agent bookkeeping": 0.0866067203028869,
+    "people": 0.1486038807382868,
+    "other index / reference": 0.10979649787032655,
+    "ontology entities": 0.23237103644107904,
+    "the agent itself (its project notes)": 0.08282063416942735,
+    "owner's personal life": 0.06483672503549456,
+    "archived copy": 0.00236630383341221
+   },
+   "nodes": {
+    "other index / reference": 23,
+    "people": 43,
+    "work projects": 56,
+    "agent bookkeeping": 70,
+    "owner's personal life": 20,
+    "ontology entities": 50,
+    "the agent itself (its project notes)": 17,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-07-23",
+   "edges_into": {
+    "agent bookkeeping": 0.09539170506912442,
+    "work projects": 0.2709677419354839,
+    "people": 0.15161290322580645,
+    "other index / reference": 0.10875576036866359,
+    "ontology entities": 0.22580645161290322,
+    "the agent itself (its project notes)": 0.08294930875576037,
+    "owner's personal life": 0.06221198156682028,
+    "archived copy": 0.002304147465437788
+   },
+   "nodes": {
+    "other index / reference": 23,
+    "people": 43,
+    "work projects": 56,
+    "agent bookkeeping": 77,
+    "owner's personal life": 20,
+    "ontology entities": 50,
+    "the agent itself (its project notes)": 17,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-07-30",
+   "edges_into": {
+    "work projects": 0.26135871916919085,
+    "agent bookkeeping": 0.1038511466897447,
+    "people": 0.15015144958892254,
+    "ontology entities": 0.2232799653829511,
+    "other index / reference": 0.10601471224578105,
+    "the agent itself (its project notes)": 0.07788836001730852,
+    "owner's personal life": 0.0752920813500649,
+    "archived copy": 0.0021635655560363477
+   },
+   "nodes": {
+    "other index / reference": 23,
+    "people": 44,
+    "work projects": 56,
+    "agent bookkeeping": 85,
+    "owner's personal life": 56,
+    "ontology entities": 53,
+    "the agent itself (its project notes)": 17,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-08-07",
+   "edges_into": {
+    "work projects": 0.2602958816473411,
+    "agent bookkeeping": 0.11395441823270691,
+    "people": 0.16113554578168732,
+    "ontology entities": 0.21631347461015593,
+    "other index / reference": 0.10355857656937226,
+    "the agent itself (its project notes)": 0.07197121151539385,
+    "owner's personal life": 0.07077169132347061,
+    "archived copy": 0.001999200319872051
+   },
+   "nodes": {
+    "other index / reference": 23,
+    "people": 45,
+    "work projects": 57,
+    "agent bookkeeping": 91,
+    "owner's personal life": 56,
+    "ontology entities": 53,
+    "the agent itself (its project notes)": 17,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-08-14",
+   "edges_into": {
+    "people": 0.18143899895724713,
+    "agent bookkeeping": 0.13555787278415016,
+    "work projects": 0.2558220368439347,
+    "ontology entities": 0.19603753910323254,
+    "other index / reference": 0.09940910670837678,
+    "owner's personal life": 0.0667361835245047,
+    "the agent itself (its project notes)": 0.06326034063260341,
+    "archived copy": 0.001737921445950643
+   },
+   "nodes": {
+    "other index / reference": 23,
+    "people": 48,
+    "work projects": 59,
+    "agent bookkeeping": 107,
+    "owner's personal life": 57,
+    "ontology entities": 53,
+    "the agent itself (its project notes)": 17,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-08-21",
+   "edges_into": {
+    "people": 0.1878238341968912,
+    "work projects": 0.25,
+    "agent bookkeeping": 0.15123056994818654,
+    "ontology entities": 0.19073834196891193,
+    "other index / reference": 0.09553108808290156,
+    "owner's personal life": 0.06347150259067358,
+    "the agent itself (its project notes)": 0.05958549222797927,
+    "archived copy": 0.0016191709844559584
+   },
+   "nodes": {
+    "other index / reference": 23,
+    "people": 51,
+    "work projects": 59,
+    "agent bookkeeping": 120,
+    "owner's personal life": 57,
+    "ontology entities": 54,
+    "the agent itself (its project notes)": 17,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-08-28",
+   "edges_into": {
+    "people": 0.20392042129900526,
+    "agent bookkeeping": 0.1556465769455822,
+    "work projects": 0.25570509069631364,
+    "ontology entities": 0.17788180222352254,
+    "other index / reference": 0.08952603861907549,
+    "owner's personal life": 0.05968402574605032,
+    "the agent itself (its project notes)": 0.056173200702165006,
+    "archived copy": 0.001462843768285547
+   },
+   "nodes": {
+    "other index / reference": 23,
+    "people": 54,
+    "work projects": 72,
+    "agent bookkeeping": 130,
+    "owner's personal life": 57,
+    "ontology entities": 54,
+    "the agent itself (its project notes)": 17,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-09-04",
+   "edges_into": {
+    "people": 0.20246848739495799,
+    "agent bookkeeping": 0.20194327731092437,
+    "work projects": 0.2423844537815126,
+    "ontology entities": 0.16334033613445378,
+    "other index / reference": 0.0819327731092437,
+    "owner's personal life": 0.05567226890756303,
+    "the agent itself (its project notes)": 0.050945378151260504,
+    "archived copy": 0.0013130252100840337
+   },
+   "nodes": {
+    "other index / reference": 23,
+    "people": 56,
+    "work projects": 74,
+    "agent bookkeeping": 142,
+    "owner's personal life": 57,
+    "ontology entities": 54,
+    "the agent itself (its project notes)": 17,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-09-11",
+   "edges_into": {
+    "other index / reference": 0.08100897404802328,
+    "people": 0.21707494542808634,
+    "agent bookkeeping": 0.20955614843560513,
+    "work projects": 0.23550812515158864,
+    "ontology entities": 0.15231627455736113,
+    "owner's personal life": 0.054571913655105504,
+    "the agent itself (its project notes)": 0.04875090953189425,
+    "archived copy": 0.001212709192335678
+   },
+   "nodes": {
+    "other index / reference": 24,
+    "people": 60,
+    "work projects": 74,
+    "agent bookkeeping": 151,
+    "owner's personal life": 57,
+    "ontology entities": 54,
+    "the agent itself (its project notes)": 17,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-09-21",
+   "edges_into": {
+    "people": 0.21874264186484577,
+    "work projects": 0.23239934071109017,
+    "other index / reference": 0.08076289145279021,
+    "agent bookkeeping": 0.2149752766658818,
+    "ontology entities": 0.14951730633388274,
+    "owner's personal life": 0.05486225570991288,
+    "the agent itself (its project notes)": 0.04756298563692018,
+    "archived copy": 0.0011773016246762421
+   },
+   "nodes": {
+    "other index / reference": 24,
+    "people": 60,
+    "work projects": 74,
+    "agent bookkeeping": 158,
+    "owner's personal life": 57,
+    "ontology entities": 54,
+    "the agent itself (its project notes)": 17,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-09-28",
+   "edges_into": {
+    "agent bookkeeping": 0.2217517272119456,
+    "work projects": 0.22665478047693335,
+    "people": 0.229997771339425,
+    "other index / reference": 0.08023178069979942,
+    "ontology entities": 0.1415199465121462,
+    "owner's personal life": 0.05415645197236461,
+    "the agent itself (its project notes)": 0.04457321149988857,
+    "archived copy": 0.0011143302874972142
+   },
+   "nodes": {
+    "other index / reference": 25,
+    "people": 65,
+    "work projects": 76,
+    "agent bookkeeping": 168,
+    "owner's personal life": 57,
+    "ontology entities": 54,
+    "the agent itself (its project notes)": 17,
+    "archived copy": 3
+   }
+  },
+  {
+   "date": "2026-10-05",
+   "edges_into": {
+    "agent bookkeeping": 0.23396637608966375,
+    "people": 0.22291407222914073,
+    "work projects": 0.23349937733499376,
+    "other index / reference": 0.08888542963885429,
+    "ontology entities": 0.11441469489414695,
+    "topics and sources": 0.0070049813200498134,
+    "owner's personal life": 0.05339352428393524,
+    "the agent itself (its project notes)": 0.043586550435865505,
+    "archived copy": 0.0023349937733499375
+   },
+   "nodes": {
+    "other index / reference": 26,
+    "people": 68,
+    "work projects": 83,
+    "agent bookkeeping": 411,
+    "owner's personal life": 58,
+    "ontology entities": 54,
+    "the agent itself (its project notes)": 19,
+    "archived copy": 4,
+    "topics and sources": 13
+   }
+  },
+  {
+   "date": "2026-10-12",
+   "edges_into": {
+    "agent bookkeeping": 0.2164626204740818,
+    "other index / reference": 0.06264652253190935,
+    "work projects": 0.26048450117218025,
+    "ontology entities": 0.0962490231831206,
+    "people": 0.2387340453243032,
+    "topics and sources": 0.03256056264652253,
+    "owner's personal life": 0.05027350872623079,
+    "the agent itself (its project notes)": 0.04063558218286012,
+    "archived copy": 0.001953633758791352
+   },
+   "nodes": {
+    "other index / reference": 22,
+    "people": 84,
+    "work projects": 159,
+    "agent bookkeeping": 436,
+    "owner's personal life": 59,
+    "ontology entities": 56,
+    "the agent itself (its project notes)": 21,
+    "archived copy": 4,
+    "topics and sources": 55
+   }
+  },
+  {
+   "date": "2026-10-19",
+   "edges_into": {
+    "agent bookkeeping": 0.21071083172147,
+    "other index / reference": 0.060686653771760156,
+    "work projects": 0.2531431334622824,
+    "ontology entities": 0.09368955512572534,
+    "people": 0.2393617021276596,
+    "topics and sources": 0.04485009671179884,
+    "owner's personal life": 0.05246615087040619,
+    "the agent itself (its project notes)": 0.04267408123791103,
+    "archived copy": 0.0024177949709864605
+   },
+   "nodes": {
+    "other index / reference": 22,
+    "people": 84,
+    "work projects": 163,
+    "agent bookkeeping": 456,
+    "owner's personal life": 64,
+    "ontology entities": 57,
+    "the agent itself (its project notes)": 23,
+    "archived copy": 8,
+    "topics and sources": 79
+   }
+  },
+  {
+   "date": "2026-10-26",
+   "edges_into": {
+    "agent bookkeeping": 0.20288210597980255,
+    "other index / reference": 0.05741518211732668,
+    "work projects": 0.2456598207193918,
+    "ontology entities": 0.08975377283558379,
+    "people": 0.23703619652785657,
+    "topics and sources": 0.07420855554294792,
+    "owner's personal life": 0.05038012027686373,
+    "the agent itself (its project notes)": 0.040394871212980826,
+    "archived copy": 0.0022693747872461136
+   },
+   "nodes": {
+    "other index / reference": 22,
+    "people": 85,
+    "work projects": 166,
+    "agent bookkeeping": 470,
+    "owner's personal life": 64,
+    "ontology entities": 57,
+    "the agent itself (its project notes)": 23,
+    "archived copy": 8,
+    "topics and sources": 113
+   }
+  },
+  {
+   "date": "2026-11-02",
+   "edges_into": {
+    "agent bookkeeping": 0.18260047281323877,
+    "other index / reference": 0.0499290780141844,
+    "work projects": 0.25957446808510637,
+    "ontology entities": 0.07621749408983451,
+    "people": 0.2249645390070922,
+    "archived copy": 0.02193853427895981,
+    "the agent itself (its project notes)": 0.04482269503546099,
+    "topics and sources": 0.09304964539007092,
+    "owner's personal life": 0.04690307328605201
+   },
+   "nodes": {
+    "other index / reference": 22,
+    "people": 86,
+    "work projects": 172,
+    "agent bookkeeping": 492,
+    "owner's personal life": 64,
+    "ontology entities": 57,
+    "the agent itself (its project notes)": 35,
+    "archived copy": 103,
+    "topics and sources": 145
+   }
+  },
+  {
+   "date": "2026-11-09",
+   "edges_into": {
+    "agent bookkeeping": 0.17887047924461072,
+    "other index / reference": 0.04747906645287725,
+    "work projects": 0.2684838767147693,
+    "ontology entities": 0.07295563869588455,
+    "people": 0.22029217887047925,
+    "archived copy": 0.021378941742383754,
+    "the agent itself (its project notes)": 0.04364867272403349,
+    "topics and sources": 0.09932300017815784,
+    "owner's personal life": 0.04756814537680385
+   },
+   "nodes": {
+    "other index / reference": 22,
+    "people": 86,
+    "work projects": 199,
+    "agent bookkeeping": 517,
+    "owner's personal life": 66,
+    "ontology entities": 57,
+    "the agent itself (its project notes)": 36,
+    "archived copy": 107,
+    "topics and sources": 169
+   }
+  },
+  {
+   "date": "2026-11-16",
+   "edges_into": {
+    "other index / reference": 0.04612230953194397,
+    "agent bookkeeping": 0.17577724632729758,
+    "work projects": 0.2702425691834643,
+    "ontology entities": 0.07089169798428425,
+    "people": 0.22155790912196788,
+    "archived copy": 0.021267509395285274,
+    "topics and sources": 0.10257943286641613,
+    "the agent itself (its project notes)": 0.04210796036897848,
+    "owner's personal life": 0.049453365220362144
+   },
+   "nodes": {
+    "other index / reference": 22,
+    "people": 87,
+    "work projects": 212,
+    "agent bookkeeping": 528,
+    "owner's personal life": 77,
+    "ontology entities": 57,
+    "the agent itself (its project notes)": 36,
+    "archived copy": 110,
+    "topics and sources": 195
+   }
+  },
+  {
+   "date": "2026-11-23",
+   "edges_into": {
+    "other index / reference": 0.04232638344568114,
+    "agent bookkeeping": 0.16374039818153316,
+    "work projects": 0.2883680827715943,
+    "ontology entities": 0.06560589434080577,
+    "people": 0.21241573914406647,
+    "archived copy": 0.020065841040915505,
+    "topics and sources": 0.12251136541777709,
+    "the agent itself (its project notes)": 0.03864242044207556,
+    "owner's personal life": 0.04632387521555103
+   },
+   "nodes": {
+    "other index / reference": 22,
+    "people": 93,
+    "work projects": 287,
+    "agent bookkeeping": 536,
+    "owner's personal life": 78,
+    "ontology entities": 57,
+    "the agent itself (its project notes)": 36,
+    "archived copy": 112,
+    "topics and sources": 252
+   }
+  },
+  {
+   "date": "2026-11-24",
+   "edges_into": {
+    "other index / reference": 0.04208557400046762,
+    "agent bookkeeping": 0.16280882238329047,
+    "work projects": 0.2907022055958226,
+    "ontology entities": 0.0652326397007248,
+    "people": 0.21175278622087132,
+    "archived copy": 0.01995167952614761,
+    "topics and sources": 0.12282752708284624,
+    "the agent itself (its project notes)": 0.038422570337463956,
+    "owner's personal life": 0.046216195152365365
+   },
+   "nodes": {
+    "other index / reference": 22,
+    "people": 93,
+    "work projects": 293,
+    "agent bookkeeping": 536,
+    "owner's personal life": 78,
+    "ontology entities": 57,
+    "the agent itself (its project notes)": 36,
+    "archived copy": 112,
+    "topics and sources": 255
+   }
+  }
+ ],
+ "ontology": [
+  {
+   "date": "2026-04-09",
+   "entities": 0,
+   "typed_edges": 0,
+   "unresolved": 0,
+   "unresolved_rate": 0,
+   "entity_types": 0,
+   "relation_types": 0,
+   "mean_degree": 0,
+   "top_hub_types": [],
+   "top_hub_degrees": [],
+   "isolated_entities": 0
+  },
+  {
+   "date": "2026-04-16",
+   "entities": 51,
+   "typed_edges": 168,
+   "unresolved": 18,
+   "unresolved_rate": 0.0967741935483871,
+   "entity_types": 8,
+   "relation_types": 20,
+   "mean_degree": 4.392156862745098,
+   "top_hub_types": [
+    "organization",
+    "person",
+    "project",
+    "person",
+    "project"
+   ],
+   "top_hub_degrees": [
+    25,
+    24,
+    8,
+    7,
+    7
+   ],
+   "isolated_entities": 0
+  },
+  {
+   "date": "2026-04-23",
+   "entities": 56,
+   "typed_edges": 178,
+   "unresolved": 22,
+   "unresolved_rate": 0.11,
+   "entity_types": 10,
+   "relation_types": 27,
+   "mean_degree": 4.25,
+   "top_hub_types": [
+    "organization",
+    "person",
+    "project",
+    "person",
+    "project"
+   ],
+   "top_hub_degrees": [
+    26,
+    26,
+    8,
+    7,
+    7
+   ],
+   "isolated_entities": 1
+  },
+  {
+   "date": "2026-04-30",
+   "entities": 67,
+   "typed_edges": 200,
+   "unresolved": 32,
+   "unresolved_rate": 0.13793103448275862,
+   "entity_types": 11,
+   "relation_types": 28,
+   "mean_degree": 4.149253731343284,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "project",
+    "person"
+   ],
+   "top_hub_degrees": [
+    31,
+    29,
+    12,
+    8,
+    7
+   ],
+   "isolated_entities": 3
+  },
+  {
+   "date": "2026-05-07",
+   "entities": 76,
+   "typed_edges": 254,
+   "unresolved": 30,
+   "unresolved_rate": 0.1056338028169014,
+   "entity_types": 12,
+   "relation_types": 31,
+   "mean_degree": 4.815789473684211,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "event",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    39,
+    30,
+    22,
+    13,
+    9
+   ],
+   "isolated_entities": 4
+  },
+  {
+   "date": "2026-05-14",
+   "entities": 82,
+   "typed_edges": 281,
+   "unresolved": 36,
+   "unresolved_rate": 0.11356466876971609,
+   "entity_types": 12,
+   "relation_types": 35,
+   "mean_degree": 5.097560975609756,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "event",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    43,
+    31,
+    22,
+    14,
+    12
+   ],
+   "isolated_entities": 3
+  },
+  {
+   "date": "2026-05-21",
+   "entities": 95,
+   "typed_edges": 310,
+   "unresolved": 44,
+   "unresolved_rate": 0.12429378531073447,
+   "entity_types": 17,
+   "relation_types": 43,
+   "mean_degree": 5.010526315789473,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "event",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    50,
+    31,
+    22,
+    15,
+    14
+   ],
+   "isolated_entities": 3
+  },
+  {
+   "date": "2026-05-28",
+   "entities": 102,
+   "typed_edges": 320,
+   "unresolved": 61,
+   "unresolved_rate": 0.16010498687664043,
+   "entity_types": 18,
+   "relation_types": 45,
+   "mean_degree": 4.882352941176471,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "event",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    51,
+    32,
+    22,
+    17,
+    15
+   ],
+   "isolated_entities": 1
+  },
+  {
+   "date": "2026-06-04",
+   "entities": 134,
+   "typed_edges": 410,
+   "unresolved": 47,
+   "unresolved_rate": 0.10284463894967177,
+   "entity_types": 17,
+   "relation_types": 47,
+   "mean_degree": 4.895522388059701,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "event",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    55,
+    54,
+    22,
+    20,
+    18
+   ],
+   "isolated_entities": 1
+  },
+  {
+   "date": "2026-06-11",
+   "entities": 138,
+   "typed_edges": 418,
+   "unresolved": 51,
+   "unresolved_rate": 0.10874200426439233,
+   "entity_types": 18,
+   "relation_types": 49,
+   "mean_degree": 4.884057971014493,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "event",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    58,
+    56,
+    21,
+    20,
+    18
+   ],
+   "isolated_entities": 1
+  },
+  {
+   "date": "2026-06-18",
+   "entities": 152,
+   "typed_edges": 460,
+   "unresolved": 38,
+   "unresolved_rate": 0.07630522088353414,
+   "entity_types": 19,
+   "relation_types": 51,
+   "mean_degree": 4.894736842105263,
+   "top_hub_types": [
+    "organization",
+    "person",
+    "event",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    61,
+    60,
+    22,
+    21,
+    20
+   ],
+   "isolated_entities": 2
+  },
+  {
+   "date": "2026-06-25",
+   "entities": 160,
+   "typed_edges": 487,
+   "unresolved": 38,
+   "unresolved_rate": 0.07238095238095238,
+   "entity_types": 19,
+   "relation_types": 56,
+   "mean_degree": 4.9375,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "event",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    63,
+    61,
+    22,
+    21,
+    20
+   ],
+   "isolated_entities": 1
+  },
+  {
+   "date": "2026-07-02",
+   "entities": 164,
+   "typed_edges": 501,
+   "unresolved": 38,
+   "unresolved_rate": 0.07050092764378478,
+   "entity_types": 19,
+   "relation_types": 56,
+   "mean_degree": 4.963414634146342,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "event",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    65,
+    62,
+    22,
+    21,
+    20
+   ],
+   "isolated_entities": 1
+  },
+  {
+   "date": "2026-07-09",
+   "entities": 167,
+   "typed_edges": 507,
+   "unresolved": 38,
+   "unresolved_rate": 0.06972477064220184,
+   "entity_types": 19,
+   "relation_types": 56,
+   "mean_degree": 4.946107784431137,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "event",
+    "project"
+   ],
+   "top_hub_degrees": [
+    66,
+    63,
+    22,
+    22,
+    20
+   ],
+   "isolated_entities": 1
+  },
+  {
+   "date": "2026-07-16",
+   "entities": 167,
+   "typed_edges": 507,
+   "unresolved": 37,
+   "unresolved_rate": 0.06801470588235294,
+   "entity_types": 19,
+   "relation_types": 56,
+   "mean_degree": 4.946107784431137,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "event",
+    "project"
+   ],
+   "top_hub_degrees": [
+    66,
+    63,
+    22,
+    22,
+    20
+   ],
+   "isolated_entities": 1
+  },
+  {
+   "date": "2026-07-23",
+   "entities": 167,
+   "typed_edges": 509,
+   "unresolved": 37,
+   "unresolved_rate": 0.06776556776556776,
+   "entity_types": 19,
+   "relation_types": 56,
+   "mean_degree": 4.958083832335329,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "event",
+    "project"
+   ],
+   "top_hub_degrees": [
+    66,
+    63,
+    22,
+    22,
+    20
+   ],
+   "isolated_entities": 1
+  },
+  {
+   "date": "2026-07-30",
+   "entities": 178,
+   "typed_edges": 531,
+   "unresolved": 37,
+   "unresolved_rate": 0.06514084507042253,
+   "entity_types": 19,
+   "relation_types": 57,
+   "mean_degree": 4.820224719101123,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "event",
+    "project"
+   ],
+   "top_hub_degrees": [
+    71,
+    64,
+    22,
+    22,
+    20
+   ],
+   "isolated_entities": 1
+  },
+  {
+   "date": "2026-08-07",
+   "entities": 180,
+   "typed_edges": 543,
+   "unresolved": 37,
+   "unresolved_rate": 0.06379310344827586,
+   "entity_types": 19,
+   "relation_types": 58,
+   "mean_degree": 4.877777777777778,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "event",
+    "project"
+   ],
+   "top_hub_degrees": [
+    73,
+    65,
+    22,
+    22,
+    20
+   ],
+   "isolated_entities": 1
+  },
+  {
+   "date": "2026-08-14",
+   "entities": 186,
+   "typed_edges": 567,
+   "unresolved": 39,
+   "unresolved_rate": 0.06435643564356436,
+   "entity_types": 19,
+   "relation_types": 58,
+   "mean_degree": 4.956989247311828,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "event",
+    "project"
+   ],
+   "top_hub_degrees": [
+    76,
+    68,
+    23,
+    22,
+    21
+   ],
+   "isolated_entities": 1
+  },
+  {
+   "date": "2026-08-21",
+   "entities": 190,
+   "typed_edges": 578,
+   "unresolved": 41,
+   "unresolved_rate": 0.06623586429725363,
+   "entity_types": 19,
+   "relation_types": 61,
+   "mean_degree": 4.947368421052632,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "event",
+    "project"
+   ],
+   "top_hub_degrees": [
+    80,
+    68,
+    24,
+    22,
+    21
+   ],
+   "isolated_entities": 2
+  },
+  {
+   "date": "2026-08-28",
+   "entities": 194,
+   "typed_edges": 610,
+   "unresolved": 40,
+   "unresolved_rate": 0.06153846153846154,
+   "entity_types": 19,
+   "relation_types": 65,
+   "mean_degree": 5.144329896907217,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    83,
+    69,
+    25,
+    24,
+    22
+   ],
+   "isolated_entities": 2
+  },
+  {
+   "date": "2026-09-04",
+   "entities": 196,
+   "typed_edges": 616,
+   "unresolved": 40,
+   "unresolved_rate": 0.06097560975609756,
+   "entity_types": 19,
+   "relation_types": 60,
+   "mean_degree": 5.153061224489796,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    83,
+    69,
+    25,
+    24,
+    22
+   ],
+   "isolated_entities": 2
+  },
+  {
+   "date": "2026-09-11",
+   "entities": 200,
+   "typed_edges": 628,
+   "unresolved": 40,
+   "unresolved_rate": 0.059880239520958084,
+   "entity_types": 19,
+   "relation_types": 60,
+   "mean_degree": 5.17,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    84,
+    70,
+    25,
+    24,
+    22
+   ],
+   "isolated_entities": 2
+  },
+  {
+   "date": "2026-09-21",
+   "entities": 200,
+   "typed_edges": 629,
+   "unresolved": 40,
+   "unresolved_rate": 0.059790732436472344,
+   "entity_types": 19,
+   "relation_types": 60,
+   "mean_degree": 5.18,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    85,
+    70,
+    25,
+    24,
+    22
+   ],
+   "isolated_entities": 2
+  },
+  {
+   "date": "2026-09-28",
+   "entities": 207,
+   "typed_edges": 649,
+   "unresolved": 42,
+   "unresolved_rate": 0.060781476121562955,
+   "entity_types": 19,
+   "relation_types": 62,
+   "mean_degree": 5.188405797101449,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    91,
+    72,
+    25,
+    24,
+    22
+   ],
+   "isolated_entities": 2
+  },
+  {
+   "date": "2026-10-05",
+   "entities": 222,
+   "typed_edges": 699,
+   "unresolved": 43,
+   "unresolved_rate": 0.057951482479784364,
+   "entity_types": 20,
+   "relation_types": 63,
+   "mean_degree": 5.243243243243243,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    95,
+    72,
+    26,
+    25,
+    24
+   ],
+   "isolated_entities": 2
+  },
+  {
+   "date": "2026-10-12",
+   "entities": 313,
+   "typed_edges": 756,
+   "unresolved": 40,
+   "unresolved_rate": 0.05025125628140704,
+   "entity_types": 21,
+   "relation_types": 63,
+   "mean_degree": 4.0702875399361025,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    115,
+    85,
+    26,
+    26,
+    25
+   ],
+   "isolated_entities": 70
+  },
+  {
+   "date": "2026-10-19",
+   "entities": 332,
+   "typed_edges": 786,
+   "unresolved": 42,
+   "unresolved_rate": 0.050724637681159424,
+   "entity_types": 24,
+   "relation_types": 63,
+   "mean_degree": 4.018072289156627,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    120,
+    86,
+    27,
+    26,
+    25
+   ],
+   "isolated_entities": 74
+  },
+  {
+   "date": "2026-10-26",
+   "entities": 335,
+   "typed_edges": 790,
+   "unresolved": 44,
+   "unresolved_rate": 0.05275779376498801,
+   "entity_types": 23,
+   "relation_types": 63,
+   "mean_degree": 4.005970149253732,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    122,
+    86,
+    27,
+    26,
+    25
+   ],
+   "isolated_entities": 75
+  },
+  {
+   "date": "2026-11-02",
+   "entities": 362,
+   "typed_edges": 864,
+   "unresolved": 49,
+   "unresolved_rate": 0.05366922234392114,
+   "entity_types": 26,
+   "relation_types": 63,
+   "mean_degree": 4.104972375690608,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    135,
+    86,
+    29,
+    28,
+    27
+   ],
+   "isolated_entities": 76
+  },
+  {
+   "date": "2026-11-09",
+   "entities": 370,
+   "typed_edges": 882,
+   "unresolved": 48,
+   "unresolved_rate": 0.05161290322580645,
+   "entity_types": 26,
+   "relation_types": 63,
+   "mean_degree": 4.113513513513514,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    141,
+    86,
+    31,
+    29,
+    28
+   ],
+   "isolated_entities": 76
+  },
+  {
+   "date": "2026-11-16",
+   "entities": 379,
+   "typed_edges": 907,
+   "unresolved": 48,
+   "unresolved_rate": 0.050261780104712044,
+   "entity_types": 26,
+   "relation_types": 63,
+   "mean_degree": 4.142480211081794,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    144,
+    86,
+    33,
+    31,
+    29
+   ],
+   "isolated_entities": 77
+  },
+  {
+   "date": "2026-11-23",
+   "entities": 402,
+   "typed_edges": 934,
+   "unresolved": 51,
+   "unresolved_rate": 0.05177664974619289,
+   "entity_types": 29,
+   "relation_types": 63,
+   "mean_degree": 4.029850746268656,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    147,
+    86,
+    34,
+    33,
+    29
+   ],
+   "isolated_entities": 91
+  },
+  {
+   "date": "2026-11-24",
+   "entities": 403,
+   "typed_edges": 934,
+   "unresolved": 51,
+   "unresolved_rate": 0.05177664974619289,
+   "entity_types": 29,
+   "relation_types": 63,
+   "mean_degree": 4.01985111662531,
+   "top_hub_types": [
+    "person",
+    "organization",
+    "project",
+    "project",
+    "project"
+   ],
+   "top_hub_degrees": [
+    147,
+    86,
+    34,
+    33,
+    29
+   ],
+   "isolated_entities": 92
+  }
+ ],
+ "hub_roles": {
+  "2026-04-09": [
+   [
+    "work projects",
+    10
+   ],
+   [
+    "people",
+    9
+   ],
+   [
+    "other index / reference",
+    5
+   ],
+   [
+    "other index / reference",
+    5
+   ],
+   [
+    "work projects",
+    3
+   ],
+   [
+    "other index / reference",
+    2
+   ],
+   [
+    "work projects",
+    2
+   ],
+   [
+    "work projects",
+    2
+   ],
+   [
+    "work projects",
+    2
+   ],
+   [
+    "work projects",
+    2
+   ]
+  ],
+  "2026-04-16": [
+   [
+    "ontology entities",
+    26
+   ],
+   [
+    "work projects",
+    16
+   ],
+   [
+    "other index / reference",
+    14
+   ],
+   [
+    "other index / reference",
+    11
+   ],
+   [
+    "work projects",
+    11
+   ],
+   [
+    "work projects",
+    11
+   ],
+   [
+    "work projects",
+    9
+   ],
+   [
+    "work projects",
+    9
+   ],
+   [
+    "people",
+    9
+   ],
+   [
+    "owner's personal life",
+    7
+   ]
+  ],
+  "2026-04-23": [
+   [
+    "ontology entities",
+    28
+   ],
+   [
+    "work projects",
+    17
+   ],
+   [
+    "other index / reference",
+    16
+   ],
+   [
+    "people",
+    12
+   ],
+   [
+    "other index / reference",
+    12
+   ],
+   [
+    "work projects",
+    12
+   ],
+   [
+    "work projects",
+    11
+   ],
+   [
+    "work projects",
+    11
+   ],
+   [
+    "work projects",
+    10
+   ],
+   [
+    "work projects",
+    10
+   ]
+  ],
+  "2026-04-30": [
+   [
+    "ontology entities",
+    31
+   ],
+   [
+    "work projects",
+    23
+   ],
+   [
+    "other index / reference",
+    18
+   ],
+   [
+    "people",
+    15
+   ],
+   [
+    "work projects",
+    15
+   ],
+   [
+    "other index / reference",
+    14
+   ],
+   [
+    "work projects",
+    13
+   ],
+   [
+    "work projects",
+    13
+   ],
+   [
+    "agent bookkeeping",
+    12
+   ],
+   [
+    "work projects",
+    12
+   ]
+  ],
+  "2026-05-07": [
+   [
+    "ontology entities",
+    32
+   ],
+   [
+    "work projects",
+    24
+   ],
+   [
+    "other index / reference",
+    22
+   ],
+   [
+    "work projects",
+    19
+   ],
+   [
+    "work projects",
+    17
+   ],
+   [
+    "people",
+    15
+   ],
+   [
+    "other index / reference",
+    14
+   ],
+   [
+    "other index / reference",
+    14
+   ],
+   [
+    "work projects",
+    14
+   ],
+   [
+    "work projects",
+    14
+   ]
+  ],
+  "2026-05-14": [
+   [
+    "ontology entities",
+    33
+   ],
+   [
+    "work projects",
+    25
+   ],
+   [
+    "other index / reference",
+    22
+   ],
+   [
+    "work projects",
+    21
+   ],
+   [
+    "work projects",
+    19
+   ],
+   [
+    "work projects",
+    16
+   ],
+   [
+    "people",
+    15
+   ],
+   [
+    "agent bookkeeping",
+    14
+   ],
+   [
+    "other index / reference",
+    14
+   ],
+   [
+    "other index / reference",
+    14
+   ]
+  ],
+  "2026-05-21": [
+   [
+    "ontology entities",
+    33
+   ],
+   [
+    "work projects",
+    30
+   ],
+   [
+    "work projects",
+    27
+   ],
+   [
+    "other index / reference",
+    23
+   ],
+   [
+    "work projects",
+    23
+   ],
+   [
+    "agent bookkeeping",
+    20
+   ],
+   [
+    "work projects",
+    17
+   ],
+   [
+    "work projects",
+    16
+   ],
+   [
+    "people",
+    16
+   ],
+   [
+    "other index / reference",
+    16
+   ]
+  ],
+  "2026-05-28": [
+   [
+    "work projects",
+    35
+   ],
+   [
+    "ontology entities",
+    34
+   ],
+   [
+    "work projects",
+    30
+   ],
+   [
+    "agent bookkeeping",
+    26
+   ],
+   [
+    "other index / reference",
+    24
+   ],
+   [
+    "work projects",
+    23
+   ],
+   [
+    "people",
+    19
+   ],
+   [
+    "other index / reference",
+    19
+   ],
+   [
+    "work projects",
+    18
+   ],
+   [
+    "work projects",
+    17
+   ]
+  ],
+  "2026-06-04": [
+   [
+    "ontology entities",
+    56
+   ],
+   [
+    "work projects",
+    40
+   ],
+   [
+    "work projects",
+    32
+   ],
+   [
+    "work projects",
+    30
+   ],
+   [
+    "other index / reference",
+    28
+   ],
+   [
+    "work projects",
+    27
+   ],
+   [
+    "agent bookkeeping",
+    27
+   ],
+   [
+    "other index / reference",
+    27
+   ],
+   [
+    "work projects",
+    20
+   ],
+   [
+    "people",
+    20
+   ]
+  ],
+  "2026-06-11": [
+   [
+    "ontology entities",
+    58
+   ],
+   [
+    "work projects",
+    43
+   ],
+   [
+    "other index / reference",
+    34
+   ],
+   [
+    "work projects",
+    32
+   ],
+   [
+    "work projects",
+    30
+   ],
+   [
+    "work projects",
+    29
+   ],
+   [
+    "other index / reference",
+    29
+   ],
+   [
+    "agent bookkeeping",
+    28
+   ],
+   [
+    "agent bookkeeping",
+    26
+   ],
+   [
+    "work projects",
+    24
+   ]
+  ],
+  "2026-06-18": [
+   [
+    "ontology entities",
+    67
+   ],
+   [
+    "work projects",
+    49
+   ],
+   [
+    "agent bookkeeping",
+    47
+   ],
+   [
+    "work projects",
+    39
+   ],
+   [
+    "other index / reference",
+    37
+   ],
+   [
+    "work projects",
+    34
+   ],
+   [
+    "agent bookkeeping",
+    33
+   ],
+   [
+    "work projects",
+    32
+   ],
+   [
+    "other index / reference",
+    32
+   ],
+   [
+    "work projects",
+    30
+   ]
+  ],
+  "2026-06-25": [
+   [
+    "ontology entities",
+    67
+   ],
+   [
+    "agent bookkeeping",
+    50
+   ],
+   [
+    "work projects",
+    49
+   ],
+   [
+    "work projects",
+    43
+   ],
+   [
+    "other index / reference",
+    42
+   ],
+   [
+    "agent bookkeeping",
+    39
+   ],
+   [
+    "work projects",
+    36
+   ],
+   [
+    "work projects",
+    33
+   ],
+   [
+    "the agent itself (its project notes)",
+    33
+   ],
+   [
+    "other index / reference",
+    32
+   ]
+  ],
+  "2026-07-02": [
+   [
+    "ontology entities",
+    71
+   ],
+   [
+    "agent bookkeeping",
+    52
+   ],
+   [
+    "work projects",
+    51
+   ],
+   [
+    "work projects",
+    44
+   ],
+   [
+    "agent bookkeeping",
+    43
+   ],
+   [
+    "other index / reference",
+    42
+   ],
+   [
+    "work projects",
+    37
+   ],
+   [
+    "the agent itself (its project notes)",
+    34
+   ],
+   [
+    "work projects",
+    33
+   ],
+   [
+    "work projects",
+    33
+   ]
+  ],
+  "2026-07-09": [
+   [
+    "ontology entities",
+    72
+   ],
+   [
+    "agent bookkeeping",
+    54
+   ],
+   [
+    "work projects",
+    53
+   ],
+   [
+    "agent bookkeeping",
+    47
+   ],
+   [
+    "work projects",
+    45
+   ],
+   [
+    "other index / reference",
+    42
+   ],
+   [
+    "work projects",
+    37
+   ],
+   [
+    "work projects",
+    34
+   ],
+   [
+    "the agent itself (its project notes)",
+    34
+   ],
+   [
+    "work projects",
+    33
+   ]
+  ],
+  "2026-07-16": [
+   [
+    "ontology entities",
+    72
+   ],
+   [
+    "work projects",
+    57
+   ],
+   [
+    "agent bookkeeping",
+    54
+   ],
+   [
+    "agent bookkeeping",
+    49
+   ],
+   [
+    "work projects",
+    47
+   ],
+   [
+    "other index / reference",
+    42
+   ],
+   [
+    "work projects",
+    38
+   ],
+   [
+    "work projects",
+    37
+   ],
+   [
+    "other index / reference",
+    34
+   ],
+   [
+    "the agent itself (its project notes)",
+    34
+   ]
+  ],
+  "2026-07-23": [
+   [
+    "ontology entities",
+    72
+   ],
+   [
+    "work projects",
+    58
+   ],
+   [
+    "agent bookkeeping",
+    54
+   ],
+   [
+    "agent bookkeeping",
+    51
+   ],
+   [
+    "work projects",
+    48
+   ],
+   [
+    "other index / reference",
+    42
+   ],
+   [
+    "work projects",
+    41
+   ],
+   [
+    "work projects",
+    38
+   ],
+   [
+    "other index / reference",
+    36
+   ],
+   [
+    "the agent itself (its project notes)",
+    36
+   ]
+  ],
+  "2026-07-30": [
+   [
+    "ontology entities",
+    75
+   ],
+   [
+    "work projects",
+    66
+   ],
+   [
+    "agent bookkeeping",
+    58
+   ],
+   [
+    "agent bookkeeping",
+    55
+   ],
+   [
+    "work projects",
+    51
+   ],
+   [
+    "other index / reference",
+    43
+   ],
+   [
+    "work projects",
+    42
+   ],
+   [
+    "other index / reference",
+    40
+   ],
+   [
+    "work projects",
+    38
+   ],
+   [
+    "the agent itself (its project notes)",
+    36
+   ]
+  ],
+  "2026-08-07": [
+   [
+    "ontology entities",
+    77
+   ],
+   [
+    "work projects",
+    72
+   ],
+   [
+    "agent bookkeeping",
+    67
+   ],
+   [
+    "agent bookkeeping",
+    60
+   ],
+   [
+    "work projects",
+    55
+   ],
+   [
+    "work projects",
+    47
+   ],
+   [
+    "other index / reference",
+    45
+   ],
+   [
+    "other index / reference",
+    42
+   ],
+   [
+    "work projects",
+    39
+   ],
+   [
+    "work projects",
+    36
+   ]
+  ],
+  "2026-08-14": [
+   [
+    "work projects",
+    85
+   ],
+   [
+    "ontology entities",
+    81
+   ],
+   [
+    "agent bookkeeping",
+    79
+   ],
+   [
+    "agent bookkeeping",
+    72
+   ],
+   [
+    "work projects",
+    61
+   ],
+   [
+    "work projects",
+    50
+   ],
+   [
+    "other index / reference",
+    49
+   ],
+   [
+    "other index / reference",
+    48
+   ],
+   [
+    "people",
+    41
+   ],
+   [
+    "work projects",
+    41
+   ]
+  ],
+  "2026-08-21": [
+   [
+    "agent bookkeeping",
+    92
+   ],
+   [
+    "work projects",
+    91
+   ],
+   [
+    "ontology entities",
+    82
+   ],
+   [
+    "agent bookkeeping",
+    73
+   ],
+   [
+    "work projects",
+    65
+   ],
+   [
+    "work projects",
+    54
+   ],
+   [
+    "people",
+    51
+   ],
+   [
+    "other index / reference",
+    49
+   ],
+   [
+    "other index / reference",
+    48
+   ],
+   [
+    "work projects",
+    42
+   ]
+  ],
+  "2026-08-28": [
+   [
+    "agent bookkeeping",
+    108
+   ],
+   [
+    "work projects",
+    98
+   ],
+   [
+    "ontology entities",
+    84
+   ],
+   [
+    "agent bookkeeping",
+    78
+   ],
+   [
+    "work projects",
+    69
+   ],
+   [
+    "people",
+    63
+   ],
+   [
+    "work projects",
+    59
+   ],
+   [
+    "other index / reference",
+    52
+   ],
+   [
+    "other index / reference",
+    49
+   ],
+   [
+    "other index / reference",
+    46
+   ]
+  ],
+  "2026-09-04": [
+   [
+    "agent bookkeeping",
+    124
+   ],
+   [
+    "work projects",
+    100
+   ],
+   [
+    "ontology entities",
+    84
+   ],
+   [
+    "agent bookkeeping",
+    84
+   ],
+   [
+    "work projects",
+    69
+   ],
+   [
+    "people",
+    68
+   ],
+   [
+    "work projects",
+    60
+   ],
+   [
+    "ontology entities",
+    55
+   ],
+   [
+    "work projects",
+    52
+   ],
+   [
+    "work projects",
+    52
+   ]
+  ],
+  "2026-09-11": [
+   [
+    "agent bookkeeping",
+    136
+   ],
+   [
+    "work projects",
+    105
+   ],
+   [
+    "agent bookkeeping",
+    92
+   ],
+   [
+    "ontology entities",
+    85
+   ],
+   [
+    "people",
+    74
+   ],
+   [
+    "work projects",
+    70
+   ],
+   [
+    "work projects",
+    62
+   ],
+   [
+    "work projects",
+    62
+   ],
+   [
+    "work projects",
+    60
+   ],
+   [
+    "ontology entities",
+    58
+   ]
+  ],
+  "2026-09-21": [
+   [
+    "agent bookkeeping",
+    140
+   ],
+   [
+    "work projects",
+    106
+   ],
+   [
+    "agent bookkeeping",
+    94
+   ],
+   [
+    "ontology entities",
+    85
+   ],
+   [
+    "people",
+    77
+   ],
+   [
+    "work projects",
+    70
+   ],
+   [
+    "work projects",
+    70
+   ],
+   [
+    "work projects",
+    63
+   ],
+   [
+    "ontology entities",
+    62
+   ],
+   [
+    "work projects",
+    62
+   ]
+  ],
+  "2026-09-28": [
+   [
+    "agent bookkeeping",
+    155
+   ],
+   [
+    "work projects",
+    108
+   ],
+   [
+    "agent bookkeeping",
+    103
+   ],
+   [
+    "ontology entities",
+    87
+   ],
+   [
+    "work projects",
+    84
+   ],
+   [
+    "people",
+    83
+   ],
+   [
+    "work projects",
+    72
+   ],
+   [
+    "work projects",
+    71
+   ],
+   [
+    "ontology entities",
+    66
+   ],
+   [
+    "work projects",
+    62
+   ]
+  ],
+  "2026-10-05": [
+   [
+    "agent bookkeeping",
+    231
+   ],
+   [
+    "agent bookkeeping",
+    185
+   ],
+   [
+    "work projects",
+    148
+   ],
+   [
+    "work projects",
+    143
+   ],
+   [
+    "people",
+    131
+   ],
+   [
+    "work projects",
+    111
+   ],
+   [
+    "work projects",
+    100
+   ],
+   [
+    "work projects",
+    99
+   ],
+   [
+    "other index / reference",
+    98
+   ],
+   [
+    "ontology entities",
+    91
+   ]
+  ],
+  "2026-10-12": [
+   [
+    "agent bookkeeping",
+    260
+   ],
+   [
+    "work projects",
+    224
+   ],
+   [
+    "agent bookkeeping",
+    217
+   ],
+   [
+    "people",
+    176
+   ],
+   [
+    "work projects",
+    172
+   ],
+   [
+    "work projects",
+    132
+   ],
+   [
+    "other index / reference",
+    118
+   ],
+   [
+    "work projects",
+    116
+   ],
+   [
+    "owner's personal life",
+    113
+   ],
+   [
+    "work projects",
+    112
+   ]
+  ],
+  "2026-10-19": [
+   [
+    "agent bookkeeping",
+    273
+   ],
+   [
+    "agent bookkeeping",
+    232
+   ],
+   [
+    "work projects",
+    225
+   ],
+   [
+    "work projects",
+    193
+   ],
+   [
+    "people",
+    184
+   ],
+   [
+    "work projects",
+    138
+   ],
+   [
+    "owner's personal life",
+    135
+   ],
+   [
+    "other index / reference",
+    125
+   ],
+   [
+    "work projects",
+    117
+   ],
+   [
+    "work projects",
+    116
+   ]
+  ],
+  "2026-10-26": [
+   [
+    "agent bookkeeping",
+    281
+   ],
+   [
+    "agent bookkeeping",
+    241
+   ],
+   [
+    "work projects",
+    229
+   ],
+   [
+    "work projects",
+    209
+   ],
+   [
+    "people",
+    188
+   ],
+   [
+    "work projects",
+    145
+   ],
+   [
+    "owner's personal life",
+    145
+   ],
+   [
+    "other index / reference",
+    125
+   ],
+   [
+    "work projects",
+    117
+   ],
+   [
+    "people",
+    115
+   ]
+  ],
+  "2026-11-02": [
+   [
+    "agent bookkeeping",
+    311
+   ],
+   [
+    "agent bookkeeping",
+    255
+   ],
+   [
+    "work projects",
+    245
+   ],
+   [
+    "work projects",
+    234
+   ],
+   [
+    "owner's personal life",
+    197
+   ],
+   [
+    "people",
+    190
+   ],
+   [
+    "work projects",
+    172
+   ],
+   [
+    "work projects",
+    134
+   ],
+   [
+    "work projects",
+    129
+   ],
+   [
+    "work projects",
+    129
+   ]
+  ],
+  "2026-11-09": [
+   [
+    "agent bookkeeping",
+    320
+   ],
+   [
+    "agent bookkeeping",
+    263
+   ],
+   [
+    "work projects",
+    250
+   ],
+   [
+    "work projects",
+    241
+   ],
+   [
+    "owner's personal life",
+    229
+   ],
+   [
+    "people",
+    193
+   ],
+   [
+    "work projects",
+    176
+   ],
+   [
+    "work projects",
+    140
+   ],
+   [
+    "people",
+    138
+   ],
+   [
+    "work projects",
+    132
+   ]
+  ],
+  "2026-11-16": [
+   [
+    "agent bookkeeping",
+    329
+   ],
+   [
+    "agent bookkeeping",
+    264
+   ],
+   [
+    "work projects",
+    255
+   ],
+   [
+    "work projects",
+    247
+   ],
+   [
+    "owner's personal life",
+    247
+   ],
+   [
+    "people",
+    196
+   ],
+   [
+    "work projects",
+    185
+   ],
+   [
+    "people",
+    145
+   ],
+   [
+    "work projects",
+    140
+   ],
+   [
+    "work projects",
+    135
+   ]
+  ],
+  "2026-11-23": [
+   [
+    "agent bookkeeping",
+    333
+   ],
+   [
+    "agent bookkeeping",
+    268
+   ],
+   [
+    "owner's personal life",
+    256
+   ],
+   [
+    "work projects",
+    255
+   ],
+   [
+    "work projects",
+    255
+   ],
+   [
+    "people",
+    201
+   ],
+   [
+    "work projects",
+    189
+   ],
+   [
+    "people",
+    150
+   ],
+   [
+    "work projects",
+    140
+   ],
+   [
+    "work projects",
+    135
+   ]
+  ],
+  "2026-11-24": [
+   [
+    "agent bookkeeping",
+    333
+   ],
+   [
+    "agent bookkeeping",
+    268
+   ],
+   [
+    "owner's personal life",
+    258
+   ],
+   [
+    "work projects",
+    255
+   ],
+   [
+    "work projects",
+    255
+   ],
+   [
+    "people",
+    201
+   ],
+   [
+    "work projects",
+    189
+   ],
+   [
+    "people",
+    152
+   ],
+   [
+    "work projects",
+    140
+   ],
+   [
+    "work projects",
+    135
+   ]
+  ]
+ },
+ "thrash": {
+  "pair_removals": 9715,
+  "pair_readds": 276,
+  "pairs_ever_readded": 263,
+  "removed_by_kind": {
+   "dreaming": 2530,
+   "consolidation": 913,
+   "briefing": 197,
+   "other": 1,
+   "work": 7,
+   "weekend": 88,
+   "research": 141,
+   "other-scheduled": 11,
+   "scout:": 5599,
+   "merge": 228
+  },
+  "readded_by_kind": {
+   "dreaming": 113,
+   "consolidation": 79,
+   "weekend": 14,
+   "research": 25,
+   "briefing": 15,
+   "other-scheduled": 2,
+   "scout:": 23,
+   "merge": 4,
+   "work": 1
+  },
+  "readds_by_role": {
+   "other index / reference": 130,
+   "agent bookkeeping": 82,
+   "work projects": 60,
+   "the agent itself (its project notes)": 2,
+   "owner's personal life": 1,
+   "ontology entities": 1
+  }
+ }
+}

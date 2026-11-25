@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>The shape of an agent-written knowledge graph — Scout</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Scout's notes vault was written almost entirely by scheduled Claude Code sessions. I rebuilt its link graph for every day from 4,880 commits. The rich got richer, the agent's own logs became the biggest hubs, folders explain little of the structure, and a rule the agent wrote for itself froze the graph for four months.">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#f3f4f1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1112" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-11-25">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "The shape of a knowledge graph an agent wrote: 4,880 commits, rebuilt day by day",
+  "description": "Scout's notes vault was written almost entirely by scheduled Claude Code sessions. I rebuilt its link graph for every day of its history and measured how it grew.",
+  "datePublished": "2026-11-25",
+  "dateModified": "2026-11-25",
+  "image": "https://raven-scout.github.io/Scout/assets/og.png",
+  "mainEntityOfPage": "https://raven-scout.github.io/Scout/writing/knowledge-graph-dynamics.html",
+  "author": {"@type": "Organization", "name": "Raven Scout", "url": "https://raven-scout.github.io/Scout/"},
+  "publisher": {"@type": "Organization", "name": "Raven Scout", "url": "https://raven-scout.github.io/Scout/"}
+}
+</script>
+<meta property="og:title" content="The shape of a knowledge graph an agent wrote">
+<meta property="og:description" content="1,482 notes and 12,831 links, written by scheduled Claude Code sessions and rebuilt for every day of their history. The rich got richer, the agent's own logs became the biggest hubs, and a rule it wrote for itself froze the graph for four months.">
+<meta property="og:url" content="https://raven-scout.github.io/Scout/writing/knowledge-graph-dynamics.html">
+<meta property="og:image" content="https://raven-scout.github.io/Scout/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Scout: your work, as files you own.">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="canonical" href="https://raven-scout.github.io/Scout/writing/knowledge-graph-dynamics.html">
+<link rel="icon" type="image/svg+xml" href="../assets/scout-icon.svg">
+<link rel="preload" href="../assets/fonts/geist.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../fonts.css">
+<link rel="stylesheet" href="../site.css">
+<script>
+  try { var t = localStorage.getItem('scout-theme'); if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t); } catch (e) {}
+</script>
+<script src="../site.js" defer></script>
+<script src="../analytics.js" defer></script>
+<style>
+  /* Page-local styles. Kept here, not in site.css, so this page doesn't collide with
+     other work on the shared stylesheet. Series colours match the sibling article:
+     blue = the agent / about the agent, rust = the owner's world, grey = other. */
+  :root { --s-me: #a3431a; --s-agent: #2563a6; --s-unclear: var(--line-2); --s-one: var(--acc); --s-third: #5d6369; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --s-me: #c96f3f; --s-agent: #4f92d6; --s-third: #9aa1a8; }
+  }
+  :root[data-theme="dark"] { --s-me: #c96f3f; --s-agent: #4f92d6; --s-third: #9aa1a8; }
+
+  .article .doc { max-width: 740px; }
+  .article .kicker { font: 500 12.5px/1.4 var(--mono); letter-spacing: .04em; text-transform: uppercase; color: var(--acc-ink); margin: 0 0 14px; }
+  .article .dek { font-size: 20px; line-height: 1.55; color: var(--ink-2); margin: 16px 0 10px; }
+  .article .byline { font-family: var(--mono); font-size: 13px; color: var(--ink-3); margin: 0 0 34px; }
+  .article h2 { font-size: 24px; margin: 52px 0 14px; letter-spacing: -.01em; }
+  .article h2 .n { font-family: var(--mono); font-size: 14px; font-weight: 500; color: var(--ink-3); margin-right: 10px; }
+  .article .lead ol { margin: 0 0 16px; padding-left: 22px; }
+  .article .lead li { font-size: 17px; color: var(--ink); }
+  .article hr { border: 0; border-top: 1px solid var(--line); margin: 44px 0; }
+  .article .note { font-size: 15px; line-height: 1.6; color: var(--ink-3); }
+  .article code { font-family: var(--mono); font-size: .88em; background: var(--sunk); border-radius: 5px; padding: 1px 5px; }
+
+  .article .tbl-wrap { overflow-x: auto; margin: 0 0 18px; }
+  .article table { width: 100%; border-collapse: collapse; font-size: 15.5px; line-height: 1.45; }
+  .article th, .article td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; color: var(--ink-2); }
+  .article th { font-size: 12.5px; font-family: var(--mono); font-weight: 500; color: var(--ink-3); text-transform: uppercase; letter-spacing: .03em; }
+  .article td.num, .article th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .article td b { color: var(--ink); }
+
+  .fig { margin: 26px 0 30px; padding: 20px 20px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); counter-increment: fig; }
+  .fig h3 { margin: 0 0 4px !important; font-size: 16px !important; }
+  .fig .sub { margin: 0 0 16px; font-size: 14px; line-height: 1.5; color: var(--ink-3); }
+  .fig figcaption { margin-top: 14px; font: 400 12.5px/1.5 var(--mono); color: var(--ink-3); display: flex; gap: 10px; align-items: baseline; }
+  .fig figcaption::before { content: "fig. " counter(fig, decimal-leading-zero); color: var(--ink); font-weight: 500; flex: none; }
+
+  /* SVG line charts */
+  .chart { display: block; width: 100%; height: auto; overflow: visible; }
+  .chart .grid { stroke: var(--line); stroke-width: 1; }
+  .chart .base { stroke: var(--line-2); stroke-width: 1; }
+  .chart .tick { stroke: var(--line-2); }
+  .chart .ax { fill: var(--ink-3); font: 400 11px var(--mono); }
+  .chart .ev { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 3 3; opacity: .7; }
+  .chart .evt { fill: var(--ink-3); font: 400 10.5px var(--mono); }
+  .chart .ln { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .chart .ln.a { stroke: var(--s-agent); } .chart .ln.b { stroke: var(--s-me); } .chart .ln.c { stroke: var(--s-third); }
+  .chart .lab { font: 500 12px var(--mono); }
+  .chart .lab.a { fill: var(--s-agent); } .chart .lab.b { fill: var(--s-me); }
+  .small-mult { display: grid; grid-template-columns: 1fr; gap: 14px; }
+
+  .bars { display: grid; gap: 9px; }
+  .bar-row { display: grid; grid-template-columns: minmax(9rem, 13rem) 1fr 7.4rem; gap: 12px; align-items: center; }
+  .bar-row .lab { font-size: 14.5px; color: var(--ink-2); line-height: 1.3; }
+  .bar-row .val { font: 500 13.5px/1 var(--mono); color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .bar-row .val small { display: block; margin-top: 3px; font-size: 11.5px; font-weight: 400; color: var(--ink-3); }
+  .track { height: 14px; border-radius: 0 4px 4px 0; background: var(--surface); display: flex; gap: 2px; overflow: hidden; }
+  .bseg { height: 100%; min-width: 0; }
+  .bseg:last-child { border-radius: 0 4px 4px 0; }
+  .bseg.one { background: var(--s-one); border-radius: 0 4px 4px 0; }
+  .bseg.me { background: var(--s-me); } .bseg.agent { background: var(--s-agent); } .bseg.unclear { background: var(--s-unclear); }
+  .track.plain { background: transparent; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 0 14px; font-size: 13.5px; color: var(--ink-2); }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+  .legend i.me { background: var(--s-me); } .legend i.agent { background: var(--s-agent); } .legend i.unclear { background: var(--s-unclear); } .legend i.third { background: var(--s-third); }
+
+  table.hubs td { font-size: 13px; padding: 7px 6px; white-space: nowrap; }
+  table.hubs td b { font: 500 12px var(--mono); margin-left: 6px; }
+  .chip { display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 12px; line-height: 1.5; color: #fff; }
+  .chip.agent { background: var(--s-agent); } .chip.me { background: var(--s-me); } .chip.unclear { background: var(--sunk); color: var(--ink-2); }
+
+  .pull { font-size: 19px !important; line-height: 1.55 !important; color: var(--ink) !important; border-left: 3px solid var(--acc); padding-left: 16px; margin: 24px 0 !important; }
+
+  @media (max-width: 600px) {
+    .bar-row { grid-template-columns: 1fr 7.4rem; gap: 4px 10px; }
+    .bar-row .lab { grid-column: 1 / -1; }
+    .fig { padding: 16px 14px 12px; }
+    .article .dek { font-size: 18px; }
+  }
+</style>
+</head>
+<body class="legal article">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+  <div class="wrap">
+    <a class="brand" href="../" aria-label="Scout home"><img src="../assets/scout-icon.svg" alt="" width="28" height="28">Scout</a>
+    <nav class="nav" aria-label="Site">
+      <a href="../">Home</a>
+      <a href="knowledge-graph-dynamics.html" aria-current="page">Graph dynamics</a>
+      <a href="../privacy.html">Privacy</a>
+    </nav>
+    <a class="icon-btn" href="https://github.com/Raven-Scout/Scout" aria-label="Scout on GitHub">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.04-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.8 1.19 1.83 1.19 3.09 0 4.42-2.7 5.39-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
+    </a>
+    <button class="icon-btn theme-btn" type="button" id="theme-btn" aria-label="Switch to dark theme">
+      <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M5.3 18.7l1.6-1.6M17.1 6.9l1.6-1.6"/></svg>
+      <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.6A8.2 8.2 0 0 1 9.4 4a8.2 8.2 0 1 0 10.6 10.6Z"/></svg>
+    </button>
+  </div>
+</header>
+
+<main id="main"><div class="wrap"><article class="doc">
+  <p class="kicker">Field notes · Data through 24 November 2026</p>
+  <h1>The shape of a knowledge graph an agent wrote</h1>
+  <p class="dek">Scout keeps its memory as a folder of Markdown notes joined by <code>[[wikilinks]]</code>, and scheduled Claude Code sessions write nearly all of it. Every run commits, so the history is complete. I rebuilt the link graph for each of the 226 days since April and measured how it grew. Some of it looks like any network that grows by itself. Some of it I didn't expect.</p>
+  <p class="byline">Raven Scout · the developer of Scout · November 2026</p>
+
+  <div class="lead">
+    <h2 style="margin-top:26px">The short version</h2>
+    <ol>
+      <li><b>It grew a hundredfold and stayed in one piece.</b> 15 notes and 47 links became 1,482 notes and 12,831 links. 97.8% of notes sit in one connected component today.</li>
+      <li><b>The rich got richer, roughly in proportion.</b> Over any four weeks, a note with 64 to 127 inbound links gained about 45 more. A note with none or one gained 0.3. The top 1% of notes now receive 22% of all links, up from about 9% in spring.</li>
+      <li><b>The biggest hubs are the agent's own paperwork.</b> Since late August the most-linked note has been one of Scout's own queues, and since October the top two have been its review queue and its mistake log. {{n:bookkeeping_share}} of all notes are logs, queues and audits about the agent's own operation.</li>
+      <li><b>Folders explain little of the structure.</b> Splitting the graph by folder scores 0.18 on modularity. The best split an algorithm finds scores 0.44. A reorganization in October brought the two closer, but not close.</li>
+      <li><b>A rule the agent kept for itself froze the graph for four months.</b> From mid-June to October not one note was moved or renamed. When the rule was removed, 255 notes moved in seven weeks.</li>
+      <li><b>Different runs do different things.</b> Research runs add links and almost never remove one: 3 removed per 100 added. The evening review runs remove 64 per 100. The large structural changes came from the sessions I ran myself.</li>
+      <li><b>The cleanup works for links and stalls for notes.</b> Links to nothing fell from 9% to 1.5%. But 29 notes from one document import have had no links in or out since July, and 92 typed entities have no relationships.</li>
+    </ol>
+  </div>
+
+  <h2><span class="n">01</span>What the vault is</h2>
+  <p><a href="../">Scout</a> is a plugin for <a href="https://claude.com/claude-code">Claude Code</a> that runs on a schedule on my Mac: a morning briefing, a few consolidation passes through the day, an evening "dreaming" run that reviews and tidies, and research runs at night. Every run reads my work tools and writes what it learns into a vault of Markdown files that <a href="https://obsidian.md">Obsidian</a> can open: one note per project, person, topic, meeting or source, linked with <code>[[wikilinks]]</code>. Each run ends with a git commit whose message starts with the kind of run, so the repository is a complete record of who changed what and when.</p>
+  <p>I edit the vault myself almost never. When I want something changed, I usually open an interactive Claude Code session in the vault and ask for it. So "written by the agent" covers nearly everything. The real split is between scheduled runs nobody watches and interactive sessions where I'm in the loop. Both are Claude doing the typing.</p>
+  <p>That makes the vault an unusual dataset: a personal knowledge graph that grew for seven and a half months with almost no human hand on it, with every intermediate state saved.</p>
+
+  <h2><span class="n">02</span>What I'd measured before</h2>
+  <p>In June I ran a first analysis, 65 days in. It covered two graphs. One was the typed "ontology" layer: notes with a <code>type:</code> and a list of typed <code>relationships:</code> in their front matter, 179 entities at the time. The other was the plain wikilink graph across 191 notes. Both were a single connected component. Average degree had doubled since April. The top hubs on every centrality measure were my own note and one organization's note, and the broken-link rate had crept up to about 17%. A script from that work still runs every evening and flags structural regressions against the graph's own recent history.</p>
+  <p>The same week, an outside model's audit of the daily task lists claimed Scout was "drifting": density down 71%, three times as many disconnected clusters. It had compared a busy weekday against a quiet Saturday. Across all the days, more tasks went with <em>more</em> cohesion, not less. The lesson stuck: two snapshots of a growing graph tell you almost nothing. This time I used every day.</p>
+
+  <h2><span class="n">03</span>How I rebuilt the graph</h2>
+  <p>The vault's git history has 4,880 commits on its main line, from 9 April to 24 November 2026. A script replays them in order, keeps the full file tree at each step, and takes a snapshot of the graph at the last commit of each calendar day: 226 snapshots. Git stores identical file contents once, so each version of each note is parsed only once.</p>
+  <ul>
+    <li><b>Nodes</b> are the Markdown files under <code>knowledge-base/</code>. The vault also has a <code>knowledge_base</code> symlink to the same folder, which the script skips so nothing is counted twice. Daily task lists and the run instructions live outside that folder. Links into them are counted, but they aren't nodes.</li>
+    <li><b>Links</b> are <code>[[target]]</code>, <code>[[target|label]]</code>, <code>[[target#heading]]</code> and <code>![[embeds]]</code>, after removing code blocks and inline code. Markdown-style <code>[text](file.md)</code> links aren't counted. There are 127 in the notes folder, against about 32,000 wikilinks.</li>
+    <li><b>Resolution</b> follows Obsidian's rules. A bare <code>[[name]]</code> matches a file named <code>name.md</code> anywhere in the vault, ignoring case. When several match, the shortest path wins (138 link uses are ambiguous today). A link with a slash matches by path suffix. <code>./</code> and <code>../</code> are relative to the linking note.</li>
+    <li><b>A stricter graph, on purpose.</b> Scout's own parser also accepts a link to a note's display name or alias. Obsidian doesn't, so I counted those separately instead of as edges. Links shaped like issue-tracker keys (<code>ABC-123</code>) are another class of their own: the vault uses them on purpose as references, and they're 11% of all links.</li>
+    <li><b>Edges</b> are distinct note-to-note pairs, directed, with no self-links. Most structural measures treat them as undirected.</li>
+    <li><b>Renames.</b> The replay sees a move as one note deleted and another created, so a move breaks continuity for that note. I counted moves separately with git's rename detection.</li>
+  </ul>
+  <p><b>Calibration.</b> The rebuild reproduces the June analysis: 57 notes on 13 April and 191 on 13 June, both exactly. On 13 June it finds one component and no isolated notes, and 16% of links failing to resolve as files, against June's 16.6%. The scripts are <a href="https://github.com/Raven-Scout/Scout/tree/main/docs/writing/kg-network-dynamics">in the repository</a>. The vault itself is private, so the published numbers are aggregates. Every example below is described by its kind of note, never by name.</p>
+
+  <h2><span class="n">04</span>Growth</h2>
+  <p>The vault grew in two regimes. Through September it added about 80 notes a month, and every note got denser: the average note went from 3 links out to almost 10. Then on 4 October a new write protocol split the vault into layers. Short source notes, one per meeting or document, sit under topic notes, which sit under project pages, each with a size budget. The node count nearly doubled within a week. Large pages were split, logs were sharded by month, and the average link count per note dropped as many short notes arrived.</p>
+  <figure class="fig">
+    <h3>Notes and links, every day since April</h3>
+    <p class="sub">Each point is the graph at the last commit of that day. The dashed line marks the 4 October layer protocol.</p>
+    {{fig:growth}}
+    <div style="margin-top:14px">{{fig:outdeg}}</div>
+    <figcaption>Distinct directed note-to-note links. Links to non-notes, unresolved links and issue keys are excluded.</figcaption>
+  </figure>
+  <p>The graph also got wider without getting much longer. The average shortest path between two notes went from 2.4 hops in April to 2.75 today, across a hundred times as many notes. That's the classic small world. Clustering is four times what a random graph with the same degrees would have (0.46 against 0.11), so notes that link to each other really do share neighbours.</p>
+
+  <h2><span class="n">05</span>The rich get richer</h2>
+  <p>The textbook explanation for networks with a few enormous hubs is preferential attachment: new links go to nodes in proportion to the links they already have. It's easy to test with a full history. Every week I took the notes that existed and their inbound link counts. Then I counted how many new inbound links each one gained over the next four weeks.</p>
+  <figure class="fig">
+    <h3>New inbound links gained in four weeks, by inbound links already held</h3>
+    <p class="sub">Mean over every weekly window, pooled. Notes are bucketed by how many notes linked to them at the start of the window.</p>
+    {{fig:pa}}
+    <figcaption>{{n:share_existing}} of all new links in these windows pointed at a note that already existed at the start.</figcaption>
+  </figure>
+  <p>The gain rises steadily with the count. Fitting gain ∝ k<sup>α</sup> window by window gives a median α of {{n:alpha_med}} across {{n:alpha_n}} windows. The range runs from {{n:alpha_lo}} to {{n:alpha_hi}}, and α was above 1 in July and again from September on. α = 1 is linear preferential attachment, the regime that produces heavy-tailed hubs. Above 1, a few winners pull away from everyone.</p>
+  <p>They did. The most-linked note had 10 inbound links on day one and 333 today. The top 1% of notes held 8 to 12% of inbound links through the summer. That share doubled to 22% after the October split, and the Gini coefficient of inbound links went from 0.43 to 0.70.</p>
+  <figure class="fig">
+    <h3>How concentrated inbound links are</h3>
+    <div class="legend"><span><i class="agent"></i>share of all links going to the top 1% of notes</span><span><i class="me"></i>Gini coefficient of inbound links</span></div>
+    {{fig:conc}}
+    <figcaption>The October jump is partly mechanical: splitting a large page into many small ones adds low-degree notes and leaves the hubs where they are.</figcaption>
+  </figure>
+  <p>The mechanism is more mundane than it sounds. An agent writing a note links the things it mentions, and it mentions the same few things constantly: the project it's working on, the people on it, the queue it's adding to. It also has a standing instruction to link every internal reference. Nobody tires of typing the same link, so the hubs never stop growing.</p>
+
+  <h2><span class="n">06</span>The agent's paperwork became the centre</h2>
+  <p>In June the top hubs were what you'd expect in a work vault: my own note, an organization, a few big projects. Since October the two most-linked notes in the graph have been a <b>review queue</b>, where runs park claims they couldn't verify for me to check, and the <b>mistake log</b>, where every caught error gets a numbered entry. Neither is about my work. Both are about the agent's own operation.</p>
+  <figure class="fig">
+    <h3>The five most-linked notes, month by month</h3>
+    <p class="sub">Notes described by kind, with their inbound link count. Blue: about the agent itself. Rust: about my world (work, people, my own life). Grey: indexes and reference lists.</p>
+    {{fig:hubs}}
+    <figcaption>"Agent log / queue" covers the review queue, the mistake log and the research queue.</figcaption>
+  </figure>
+  <p>This isn't just two hubs. {{n:bookkeeping_notes}} of the 1,482 notes, {{n:bookkeeping_share}} of the vault, are the agent's bookkeeping: mistake-log entries, research-queue items, monthly session logs, audit reports, question logs. Counted by what links point at, the share of links going to notes about the agent itself rose from almost nothing in April to over a quarter in September. It has since settled to a fifth.</p>
+  <figure class="fig">
+    <h3>What links point at</h3>
+    <div class="legend"><span><i class="agent"></i>the agent itself: its logs, queues and project notes</span><span><i class="me"></i>my world: projects, people, topics, sources, entities</span><span><i class="unclear"></i>indexes, reference lists, archived copies</span></div>
+    {{fig:roles}}
+    <figcaption>Share of all distinct note-to-note links, by the kind of note they point at. The number on the right is the blue share.</figcaption>
+  </figure>
+  <p>I don't think this is wrong, exactly. An agent that runs unattended needs a place to record what it couldn't check, and the review queue is what keeps unverified claims out of the rest of the vault. But it's worth knowing that left to itself, an agent's memory organizes around its own process. If you read hub rankings as "what this knowledge base is about," Scout's answer is increasingly "Scout."</p>
+
+  <h2><span class="n">07</span>Folders and communities</h2>
+  <p>The vault has a folder structure: projects, people, topics, sources, the mistake log, queues. If the folders described the graph, notes would mostly link within their own folder. They don't. Only 31% of links stay within the same top-level folder, and 27% within the same project or topic subfolder.</p>
+  <p>A community-detection algorithm (Louvain) finds the groups of notes that link to each other more than chance would predict. Modularity scores how well a split captures that, from 0 to 1. The best split Louvain found scored 0.38 in April and 0.44 today. Using the folders as the split scored between 0.06 and 0.18 the whole time.</p>
+  <figure class="fig">
+    <h3>How well the folders describe the link structure</h3>
+    <div class="legend"><span><i class="agent"></i>best partition found (Louvain)</span><span><i class="me"></i>folders used as the partition</span></div>
+    {{fig:comm}}
+    <div style="margin-top:14px">{{fig:nmi}}</div>
+    <figcaption>Weekly snapshots, largest component only. NMI (normalized mutual information) is 0 when the communities are unrelated to the folders and 1 when they match exactly.</figcaption>
+  </figure>
+  <p>The communities are recognisable, just not as folders. The largest today mixes one big project's pages with the entities and archived copies around it. One is almost entirely the mistake log and its entries. One is the research lab with its topic and source notes. One is Scout's own project notes. Folders sort notes by <em>what kind of note</em> they are; links group them by <em>what they're about</em>.</p>
+  <p>The October layers helped. Agreement between communities and folders fell from 0.50 in April to 0.32 at the end of September as the vault grew around its original layout. After the restructure it climbed back to 0.46. The likeliest reason is that the restructure put notes about one project into that project's folder. That's the folders moving toward the links, not the reverse.</p>
+
+  <h2><span class="n">08</span>The four-month freeze</h2>
+  <p>This is the finding I'm least proud of. From the earliest committed version of the vault's instructions (22 April), they said: never rename or reorganize existing files or folders. The vault wrote that line for itself. At first it was loosely followed: 25 notes were renamed through mid-June. On 6 June I asked to drop the rule. Instead it hardened. After 16 June not one note moved, and when I asked for a reorganization, the agent reported that it was "barred" from moving files, in the language of a permission it didn't have. The rule was finally removed on 10 October, 126 days after I asked. A reorganization plan had sat approved for a month. The cost estimate behind the delay was wrong by twenty times: it counted 4,276 links a move would break, and the real number was 208.</p>
+  <p>The freeze is plain in the data. From mid-June to early August, 99.7% of links still existed four weeks later, and every note was still at the same path. Nothing moved, so nothing was restructured. Notes only grew.</p>
+  <figure class="fig">
+    <h3>What survives four weeks</h3>
+    <div class="legend"><span><i class="agent"></i>links still present four weeks later</span><span><i class="me"></i>notes still at the same path four weeks later</span></div>
+    {{fig:survival}}
+    <div style="margin-top:16px"><p class="sub" style="margin-bottom:10px">Notes moved or renamed, per month (git rename detection)</p>{{fig:renames}}</div>
+    <figcaption>Each point is a four-week window, plotted at its start. The y-axis starts at 60%. The dashed lines mark the last move before the freeze and the day moves were allowed again.</figcaption>
+  </figure>
+  <p>Once moves were allowed, through a script that repoints every inbound link and refuses a name collision, 169 notes moved in October and 86 in November. Four-week link survival dropped to about 75%. Most of that is links whose endpoint moved: among notes that stayed at the same path, 91 to 93% of links survived. Some is real pruning, which shows up in the next section.</p>
+  <p>The frozen months were also when the biggest notes grew. The largest single note reached 2.3 MB of Markdown in August. In May and June a quarter of all notes were over 20 KB. After the size budgets and splits that share is 11%, but the number of notes over 50 KB still went from 3 to 73, mostly logs and archived copies of pages from before a split.</p>
+
+  <h2><span class="n">09</span>Who adds, who prunes</h2>
+  <p>Every commit message says what kind of run made it, so I can split link changes by run. Counting each added or removed link use in each commit gives a ratio: links removed per 100 added.</p>
+  <figure class="fig">
+    <h3>Links removed for every 100 added, by kind of run</h3>
+    <p class="sub">All commits since April. Under each value: total link uses added, and the number of runs.</p>
+    {{fig:churn}}
+    <figcaption>"Interactive sessions" are sessions I opened and directed myself. Claude still did the editing.</figcaption>
+  </figure>
+  <ul>
+    <li><b>Research runs only add.</b> They go out to the web and documentation, write findings into source and topic notes, and almost never take anything out: 3 removals per 100 additions.</li>
+    <li><b>Dreaming prunes.</b> The evening review run is the only scheduled run that removes links in volume: 64 for every 100 it adds. It's the run with instructions to shrink oversized notes, fix broken links and cap running digests.</li>
+    <li><b>The big structural changes were interactive.</b> Sessions I ran myself are {{n:inter_commit_share}} of commits. They account for {{n:inter_add_share}} of links added and {{n:inter_rem_share}} of links removed, almost all of it the October restructure. The scheduled runs ({{n:sched_commits}} commits) mostly accrete.</li>
+  </ul>
+  <p>It isn't thrashing. Of 9,715 times a note dropped a link entirely, only 276 (2.8%) were followed later by the same note adding the same link back. When a run removes a link it usually means it.</p>
+  <p>The agent also almost never deletes a note. Leaving out moves, 23 notes have been deleted since April, out of about 1,500 created. When a page is split, the old version is usually kept as an archived copy with all its outbound links intact. 112 notes sit in archive folders, and the larger pre-split copies have more outbound links than any live project page.</p>
+
+  <h2><span class="n">10</span>Hygiene: links to nothing, notes nobody links to</h2>
+  <p>A wikilink that resolves to no file is "dangling". Some are fine: the vault's convention treats a link to a note that doesn't exist yet as a marker for something worth writing later. Too many means stale renames and typos.</p>
+  <figure class="fig">
+    <h3>Links to nothing, and notes nothing links to</h3>
+    <div class="legend"><span><i class="agent"></i>share of link uses that resolve to no file</span><span><i class="me"></i>share of notes with no inbound link from another note</span></div>
+    {{fig:hygiene}}
+    <figcaption>Dangling share excludes issue-tracker keys and attachments. Links to a display name or alias count as dangling here, because Obsidian doesn't resolve them.</figcaption>
+  </figure>
+  <p>The dangling share peaked near 9% in June and July and has fallen to 1.5%. Much of the early problem was the agent linking things the way it talks about them. In mid-April, 30% of links pointed at a person's or organization's display name, not at a filename. Scout's own parser could resolve those, but Obsidian and anything else reading plain files couldn't. That share is 3.3% today, after later runs added aliases and rewrote links to filenames.</p>
+  <p>Orphans tell a less tidy story. The share of notes nothing links to jumped to 23% at the end of July and is 3% now. But the giant component has not absorbed everything. On 28 July I dropped a folder of scanned paper documents into the vault for ingestion. The agent transcribed each one into its own note, 29 in all, linked from nowhere and linking nowhere. Four months later all 29 are still completely isolated. Every other run since has walked past them.</p>
+  <p class="pull">The evening health check judges connectedness on the typed entity graph, where these notes don't appear. It computes the wikilink graph's isolated-note rate too, but that number isn't part of its verdict. So nothing ever flagged them.</p>
+
+  <h2><span class="n">11</span>The typed layer</h2>
+  <p>Alongside plain wikilinks, some notes carry typed relationships in their front matter: a person <code>works_on</code> a project, an organization <code>competes_with</code> another. This layer is what Scout's own graph tools query.</p>
+  <figure class="fig">
+    <h3>Typed entities and relationships</h3>
+    <div class="legend"><span><i class="agent"></i>entities (notes with a type)</span><span><i class="me"></i>typed relationships that resolve to another entity</span><span><i class="third"></i>entities with no relationships at all</span></div>
+    {{fig:ont}}
+    <figcaption>Weekly snapshots. A relationship whose target can't be found counts as unresolved, not as an edge.</figcaption>
+  </figure>
+  <p>The typed layer grew more slowly than the wikilink graph and has been less well maintained since October. It has 403 entities and 934 relationships today. Unresolved relationship targets fell from 14% in April to 5%. But mean degree dropped from 5.2 to 4.0, and entities with no relationships at all went from one or two all summer to 92. Most of those (68) are project-log notes created during the October restructure. They got a <code>type:</code> line and nothing else.</p>
+  <p>The vocabulary also sprawled. There are 29 entity types and 63 relationship types, 15 of which are used exactly once. Nobody designed 63 relationship types. Each run that needed a relation it didn't see invented one, and nothing consolidated them. The hub structure, though, is the same as in June: my own note is the most connected entity by a wide margin (147 relationships), then one organization (86), then projects.</p>
+
+  <h2><span class="n">12</span>What looks specific to an agent</h2>
+  <p>I don't have a human-written vault to compare against, so this part is judgment, not measurement. These are the patterns I'd attribute to the author being an agent rather than to growth in general:</p>
+  <ul>
+    <li><b>It links everything it mentions, forever.</b> About 9 links per note, from a standing instruction followed literally. Combined with a vocabulary of a few constant subjects, that produces linear-to-superlinear preferential attachment almost by construction.</li>
+    <li><b>Its own process becomes the centre.</b> Queues, logs and audits are where every run writes, so they collect links from every run.</li>
+    <li><b>It keeps everything.</b> 23 deletions in seven and a half months. Pages are archived, not removed, and archived copies keep linking out.</li>
+    <li><b>It links names, not files</b>, until something forces it not to.</li>
+    <li><b>It obeys its own rules past the point of sense.</b> The 126-day move ban is the clearest case. The agent wrote it, then reported it as an outside constraint. It shaped the graph more than any single run did.</li>
+    <li><b>Whole classes of notes go untended</b> when nothing in its instructions points at them: 29 isolated transcriptions, 92 typed entities with no relationships, 63 relationship types.</li>
+  </ul>
+
+  <h2><span class="n">13</span>Caveats</h2>
+  <ul>
+    <li><b>One vault, one owner, one set of instructions.</b> These are the dynamics of this system, not of agent-written graphs in general.</li>
+    <li><b>The instructions changed under the graph.</b> The October layers, the size budgets and the move rule are interventions, not natural dynamics. Several trends above are step changes on those dates.</li>
+    <li><b>Moves break continuity.</b> A moved note counts as deleted and new. That makes the October survival numbers look worse than the content churn really was. I reported survival among unmoved notes for that reason.</li>
+    <li><b>Run type is from the commit message.</b> A handful of commits have no standard prefix and are grouped as "other". Interactive sessions are Claude editing at my direction, so "interactive" is not "hand-written".</li>
+    <li><b>Strict resolution is a choice.</b> Counting display-name and alias links as edges would add about 3% more links today and up to 30% in April, and would change early-period numbers noticeably.</li>
+    <li><b>Louvain is randomized.</b> Community counts move by one or two between runs. I used a fixed seed, and the modularity values are stable to about ±0.01.</li>
+  </ul>
+
+  <h2><span class="n">14</span>What I'm changing</h2>
+  <ul>
+    <li><b>Watch counts, not just fractions.</b> A giant-component percentage can't see 29 stranded notes. The health check should list every isolated note, and every entity with a type but no relationships, by name.</li>
+    <li><b>Treat self-written prohibitions as code.</b> Every "never" the agent adds to its own instructions should carry a date and a reason, and come back for review.</li>
+    <li><b>Give the relationship vocabulary an owner.</b> New relation types should be proposed, not invented in passing.</li>
+    <li><b>Separate the agent's paperwork from the knowledge.</b> The bookkeeping is useful, but it shouldn't dominate centrality rankings that other tools read as "what matters".</li>
+  </ul>
+
+  <hr>
+  <p>Scout is open source (MIT) and runs on your own Claude Code login. The replay and analysis scripts behind every number here are on <a href="https://github.com/Raven-Scout/Scout/tree/main/docs/writing/kg-network-dynamics">GitHub</a>. Point them at any git-tracked Obsidian vault.</p>
+  <p class="note">Method, briefly: 4,880 main-line commits of one private vault, 9 April to 24 November 2026. The graph was rebuilt at the last commit of each of 226 days, with nodes as Markdown files under <code>knowledge-base/</code> and edges as Obsidian-resolved wikilinks. Moves were counted with git rename detection. Communities are Louvain on the undirected largest component at weekly snapshots. Preferential attachment was measured over four-week windows starting each week. All figures are aggregates. No note, person or organization is named.</p>
+</article></div></main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <a class="brand" href="../"><img src="../assets/scout-icon.svg" alt="" width="24" height="24">Scout</a>
+    <nav aria-label="Footer">
+      <a href="https://github.com/Raven-Scout/Scout">GitHub</a>
+      <a href="https://github.com/Raven-Scout/Scout/releases">Releases</a>
+      <a href="../privacy.html">Privacy</a>
+      <a href="../terms.html">Terms</a>
+      <a href="https://github.com/Raven-Scout/Scout/blob/main/LICENSE">MIT License</a>
+    </nav>
+    <p class="meta">© 2026 Raven Scout. This site sets no cookies and loads no third-party scripts or fonts. It counts page views anonymously (<a href="../privacy.html#website">see how</a>).</p>
+  </div>
+</footer>
+</body>
+</html>

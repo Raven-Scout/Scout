@@ -1,0 +1,1 @@
+Publish a long-form analysis of how Scout's agent-written knowledge graph grew, rebuilt day by day from its git history, at `docs/writing/knowledge-graph-dynamics.html`, with the replay and analysis scripts beside it.
