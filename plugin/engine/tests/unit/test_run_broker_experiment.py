@@ -1719,6 +1719,48 @@ def test_detached_start_replies_started(
     assert again.exit == broker.EXIT_LIMIT and len(fake_start.calls) == 1
 
 
+MODELS = f'models:\n  - repo: org/m\n    revision: "{"a" * 40}"\n'
+
+
+def test_attached_run_with_models_is_refused(
+    vault: Path, fake_run: FakeRun, no_start: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The weights are fetched when the experiment starts, before its gate, so one that names models runs detached
+    (ruling P2-h); attached, it is refused and keeps the run's allowance."""
+    _detached_on()
+    _commit_fields(vault, MODELS)
+    b = _broker(vault)
+    reply = b.handle(dict(REQ))
+    assert reply.exit == broker.EXIT_REFUSED
+    assert reply.stderr == "experiment refused: an experiment that names models runs detached\n"
+    assert b.experiments_run == 0 and fake_run.calls == []
+    # The owner's own session, without a broker, answers the same.
+    assert broker.client_experiment(SLUG, EID, ARGV, env=_owner_session_env(vault)) == broker.EXIT_REFUSED
+    assert (
+        capsys.readouterr().err.splitlines()[-1] == "experiment refused: an experiment that names models runs detached"
+    )
+    assert fake_run.calls == []
+
+
+def test_a_detached_start_hands_the_supervisor_the_models(vault: Path, fake_start: FakeStart) -> None:
+    _detached_on()
+    _commit_fields(vault, MODELS)
+    assert _broker(vault).handle(dict(DETACH)).exit == 0
+    assert fake_start.calls[0]["models"] == (ModelRef("org/m", "a" * 40),)
+
+
+def test_the_owners_python_reaches_the_runner(vault: Path, fake_run: FakeRun, tmp_path: Path) -> None:
+    py = tmp_path / "venv" / "bin" / "python3"
+    py.parent.mkdir(parents=True)
+    py.write_text("#!/bin/sh\n")
+    py.chmod(0o755)
+    _owner_config({"lab": {"python": str(py)}})
+    assert _broker(vault).handle(dict(REQ)).exit == 0
+    assert fake_run.calls[0]["python"] == str(py) and fake_run.calls[0]["argv"] == ARGV  # validated as python3
+    assert broker.client_experiment(SLUG, EID, ARGV, env=_owner_session_env(vault)) == 0
+    assert fake_run.calls[1]["python"] == str(py)
+
+
 def test_a_supervisor_that_doesnt_start_keeps_the_allowance(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from scout.lab import supervise
 

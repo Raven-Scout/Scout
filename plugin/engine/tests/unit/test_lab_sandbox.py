@@ -125,6 +125,35 @@ def test_profile_refuses_a_path_sbpl_cant_carry(tmp_path: Path) -> None:
             sandbox.experiment_profile(tmp_path, tmp_path / ".tmp", Path("/tmp/s"), [], [], env={}, deny_access=[bad])
 
 
+def test_profile_allows_the_named_revision_only(tmp_path: Path) -> None:
+    """The weights cache (spec §6.4) sits under the owner's home, which is denied by default (R32): the named revision
+    of a model comes back to read, nothing else under the cache does, and none of it may be written."""
+    from scout.lab import weights
+
+    env = {"HOME": str(tmp_path / "home")}
+    root = weights.cache_root(env)
+    named, other = root / "a" / "b" / ("1" * 40), root / "a" / "b" / ("2" * 40)
+    for folder in (named, other):
+        folder.mkdir(parents=True)
+        (folder / "x.safetensors").write_bytes(b"w")
+    exp = tmp_path / "exp"
+    (exp / ".tmp").mkdir(parents=True)
+    rules = sandbox.experiment_file_rules(exp, exp / ".tmp", [], env=env, weights_dirs=[named])
+    real = os.path.realpath
+    assert profile.decide(rules, real(named / "x.safetensors"), "read") == "allow"
+    assert profile.decide(rules, real(other / "x.safetensors"), "read") == "deny"
+    assert profile.decide(rules, real(root / "index.json"), "read") == "deny"
+    for path in (named / "x.safetensors", named / "new.bin", other / "x.safetensors", root / "index.json"):
+        assert profile.decide(rules, real(path), "write") == "deny", path
+        assert profile.decide(rules, real(path), "unlink") == "deny", path
+    text = sandbox.experiment_profile(exp, exp / ".tmp", Path("/tmp/s"), [], [], env=env, weights_dirs=[named])
+    # The kernel's text says the same: denied to write after the write allow-backs, read back after the home deny.
+    write_deny, read_back = text.index(f'(subpath "{real(named)}")'), text.rindex(f'(subpath "{real(named)}")')
+    assert text.index("(allow file-write*") < write_deny < text.index(f'(subpath "{real(tmp_path / "home")}")')
+    assert text.index(f'(subpath "{real(tmp_path / "home")}")') < read_back
+    assert text.rindex("(allow file-read-data", 0, read_back) > text.index(f'(subpath "{real(tmp_path / "home")}")')
+
+
 def test_committed_files_are_sealed_after_every_allow(tmp_path: Path) -> None:
     """R34: each op is denied after the experiment folder's allow-backs, file-read-data by name (a rule naming the
     operation wins over a later file-read* one)."""

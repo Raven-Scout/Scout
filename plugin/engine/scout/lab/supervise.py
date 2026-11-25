@@ -11,8 +11,10 @@ It does what an attached run does, through the attached runner whole (ruling P2-
    so an attached run of the same experiment is refused "already running" and a checker can tell it is alive
    (:func:`scout.lab.runs.alive`).
 2. It writes the state record (:mod:`scout.lab.runs`): started, deadline, its pid. :func:`start` returns then.
-3. It fetches the experiment's model weights, if any (:func:`fetch_weights`; the weights cache, Task 8). The
-   script's gate hasn't opened, so nothing of the script has run.
+3. It fetches the experiment's model weights, if any (:func:`fetch_weights`, :mod:`scout.lab.weights`), outside
+   every sandbox, with the owner's Hugging Face login, which it reads itself (never from the inputs) and hands to the
+   HTTP client only. The script's gate hasn't opened, so nothing of the script has run; a refused fetch is the
+   outcome, ``not run: <reason>``.
 4. It runs the script. Once the gate's kernel checks pass, the record gains the sweep's ``marker`` and ``outside``,
    so a later collect can find and kill what the script started if this process dies.
 5. It writes the outcome to the record, then lets the lock go.
@@ -38,14 +40,15 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from scout import config
 from scout.errors import LabError
-from scout.lab import runs
+from scout.lab import runs, weights
+from scout.lab.model import ModelRef, model_repo_ok, model_revision_ok
 from scout.sandbox import broker
 
 STOPPED_BY_OWNER = "stopped by the owner"
@@ -84,6 +87,10 @@ class Inputs:
     limits: dict[str, int]
     env: dict[str, str]
     claude_argv: list[str]
+    # ML experiments (spec §6.4): the models the plan names, the owner's cap on the weights cache, the owner's Python.
+    models: list[ModelRef] = field(default_factory=list)
+    weights_max_bytes: int = 0
+    python: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -97,12 +104,19 @@ class Inputs:
             "limits": dict(self.limits),
             "env": dict(self.env),
             "claude_argv": list(self.claude_argv),
+            "models": [{"repo": m.repo, "revision": m.revision} for m in self.models],
+            "weights_max_bytes": self.weights_max_bytes,
+            "python": self.python,
         }
 
     @classmethod
     def from_dict(cls, data: Any) -> Inputs:
         try:
             limits = {k: int(data["limits"][k]) for k in LIMIT_KEYS}
+            models = [ModelRef(str(m["repo"]), str(m["revision"])) for m in data.get("models", [])]
+            if not all(model_repo_ok(m.repo) and model_revision_ok(m.revision) for m in models):
+                raise ValueError("a model isn't pinned to a commit")
+            python = data.get("python")
             return cls(
                 vault=Path(str(data["vault"])),
                 slug=str(data["slug"]),
@@ -114,6 +128,9 @@ class Inputs:
                 limits=limits,
                 env={str(k): str(v) for k, v in data["env"].items()},
                 claude_argv=[str(a) for a in data["claude_argv"]],
+                models=models,
+                weights_max_bytes=int(data.get("weights_max_bytes", 0)),
+                python=None if python is None else str(python),
             )
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise LabError(f"the supervisor's inputs aren't usable ({exc.__class__.__name__})") from None
@@ -161,8 +178,27 @@ class Stopper:
         return None
 
 
-def fetch_weights(inputs: Inputs, should_stop: Callable[[], str | None]) -> None:
-    """Fetch the experiment's model weights into the owner's cache before the gate opens (Task 8). Nothing yet."""
+def fetch_weights(inputs: Inputs, should_stop: Callable[[], str | None]) -> list[weights.Fetched]:
+    """Every file of the experiment's models in the owner's weights cache, fetching what it lacks, before the gate
+    opens (:func:`scout.lab.weights.fetch`). The cache is under the owner's HOME (the inputs' env); the revisions
+    every ``planned`` or ``running`` experiment of the vault names are kept from eviction; the owner's login is read
+    here (:func:`scout.lab.weights.read_token`) and goes to the HTTP client only. Raises :class:`LabError` with the
+    reason the experiment is not run."""
+    if not inputs.models:
+        return []
+    try:
+        return weights.fetch(
+            inputs.models,
+            root=weights.cache_root(inputs.env),
+            max_bytes=inputs.weights_max_bytes,
+            floor_bytes=inputs.limits["disk_free_floor_bytes"],
+            in_use=weights.in_use(inputs.vault),
+            token=weights.read_token(inputs.env, os.environ),
+            http=weights.HubHttp(),
+            should_stop=should_stop,
+        )
+    except OSError as exc:  # the cache's own folder (a full disk, a permission): not the Hub's answer
+        raise LabError(f"the weights cache couldn't be written ({exc.__class__.__name__}: {exc})") from None
 
 
 def _one_line(reason: object) -> str:
@@ -180,7 +216,7 @@ def _outcome(inputs: Inputs, path: Path, stopper: Stopper, deadline: datetime) -
     if (reason := stopper()) is not None:
         return _not_run(reason)
     try:
-        fetch_weights(inputs, stopper)
+        fetched = fetch_weights(inputs, stopper) or []
     except LabError as exc:
         return _not_run(exc)
     if (reason := stopper()) is not None:
@@ -212,6 +248,9 @@ def _outcome(inputs: Inputs, path: Path, stopper: Stopper, deadline: datetime) -
             commit=inputs.commit,
             on_started=on_started,
             should_stop=stopper,
+            weights=fetched,
+            weights_root=weights.cache_root(inputs.env) if fetched else None,
+            python=inputs.python,
             **inputs.limits,
         )
     except runner.DiskFloorError:
@@ -329,14 +368,17 @@ def start(
     env: Mapping[str, str],
     claude_argv: Sequence[str] = ("claude",),
     command: Sequence[str] | None = None,
+    models: Sequence[ModelRef] = (),
 ) -> None:
     """Start a supervisor for ``slug`` ``eid`` in a session of its own, outside every sandbox, and return once its
     state record exists (started, deadline, pid). It doesn't wait for the script's gate: a weights fetch comes first.
 
-    ``limits`` are the owner's, with ``max_total_bytes`` already the plan's disk budget. ``command`` is what runs
-    before the inputs file (default: this interpreter, ``-m scout.lab.supervise``). Raises :class:`LabError` when an
-    earlier detached run of the experiment is alive or was never collected, when the supervisor exits before
-    writing its record (its reason, from its log), or when no record appears within 30 s (the supervisor is killed).
+    ``limits`` are the owner's, with ``max_total_bytes`` already the plan's disk budget; its ``weights_max_bytes``
+    and ``python`` go to the supervisor with ``models`` (the plan's, read at the validated commit). ``command`` is
+    what runs before the inputs file (default: this interpreter, ``-m scout.lab.supervise``). Raises
+    :class:`LabError` when an earlier detached run of the experiment is alive or was never collected, when the
+    supervisor exits before writing its record (its reason, from its log), or when no record appears within 30 s
+    (the supervisor is killed).
     """
     path = runs.record_path(vault, slug, eid, env)
     runs.ensure_dir(env)
@@ -362,6 +404,9 @@ def start(
         limits={k: int(getattr(limits, k)) for k in LIMIT_KEYS},
         env={k: env[k] for k in ENV_KEYS if env.get(k)},
         claude_argv=list(claude_argv),
+        models=list(models),
+        weights_max_bytes=int(limits.weights_max_bytes),
+        python=limits.python,
     )
     inputs_file = runs.inputs_path(path)
     log = runs.log_path(path)

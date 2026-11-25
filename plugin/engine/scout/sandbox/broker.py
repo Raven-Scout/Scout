@@ -87,6 +87,7 @@ EXIT_NOT_RUN = 4  # scoutctl lab experiment run: no broker to run it, or experim
 EXPERIMENTS_OFF = "experiments are off in the owner's config"  # LabLimits.experiments_enabled
 # Detached runs (spec §6.4): the owner's switches, the one-at-a-time rule, and what a collect says about a supervisor
 # that is gone without recording an outcome.
+MODELS_DETACHED = "an experiment that names models runs detached"  # its weights are fetched at start (P2-h)
 DETACHED_OFF = "detached runs are off in the owner's config"  # detached_max_hours or max_detached is 0
 DETACHED_BUSY = "a detached experiment is already running"
 SUPERVISOR_GONE = "the supervisor stopped without a result"
@@ -1244,6 +1245,8 @@ class Broker:
         except Refused as r:
             # A refused request ran nothing, so it keeps the run's allowance; the notice bounds its retries.
             return Reply(r.exit_code, f"experiment refused: {_one_line(r.reason)}\n", kind=REFUSED)
+        if plan.models and not detach:
+            return Reply(EXIT_REFUSED, f"experiment refused: {MODELS_DETACHED}\n", kind=REFUSED)
         timeout_s = min(requested, self.lab_limits.timeout_s) if requested is not None else self.lab_limits.timeout_s
         # A launch that would leave the volume under the owner's floor is not a run: it keeps the run's allowance.
         floor = self.lab_limits.disk_free_floor_bytes
@@ -1277,6 +1280,7 @@ class Broker:
                 max_open_files=self.lab_limits.max_open_files,
                 disk_free_floor_bytes=floor,
                 max_memory_bytes=self.lab_limits.max_memory_bytes,
+                python=self.lab_limits.python,
             )
         except runner.DiskFloorError:  # the free space moved since the check above: not run, allowance kept
             self.experiments_run -= 1
@@ -1699,7 +1703,7 @@ def start_detached(
     try:
         supervise.start(
             vault, slug, eid, argv, commit=commit, cap_usd=cap, deadline_s=detached_deadline_s(plan, limits, requested),
-            limits=run_limits, env=env,
+            limits=run_limits, env=env, models=plan.models,
         )  # fmt: skip
     except LabError as e:
         return Reply(e.exit_code, f"experiment refused: {_one_line(e)}\n", kind=REFUSED)
@@ -1912,6 +1916,9 @@ def client_experiment(
     except Refused as r:
         print(f"experiment refused: {_one_line(r.reason)}", file=sys.stderr)
         return r.exit_code
+    if plan.models and not detach:
+        print(f"experiment refused: {MODELS_DETACHED}", file=sys.stderr)
+        return EXIT_REFUSED
     if (uncollected := _uncollected(vault, slug, eid, env)) is not None:
         return _emit_experiment(uncollected)
     if detach:
@@ -1931,6 +1938,7 @@ def client_experiment(
             max_open_files=limits.max_open_files,
             disk_free_floor_bytes=limits.disk_free_floor_bytes,
             max_memory_bytes=limits.max_memory_bytes,
+            python=limits.python,
         )
     except runner.DiskFloorError:
         print(f"experiment not run: {runner.FLOOR_REASON}", file=sys.stderr)

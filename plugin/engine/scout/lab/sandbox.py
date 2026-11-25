@@ -120,23 +120,84 @@ def experiment_profile(
     allow_reads: Sequence[Path] = (),
     deny_read_dirs: Sequence[Path] = (),
     deny_access: Sequence[Path] = (),
+    weights_dirs: Sequence[Path] = (),
 ) -> str:
-    """The SBPL text for one experiment. Raises :class:`scout.sandbox.profile.ProfileError` on a path SBPL
-    can't carry.
+    """The SBPL text for one experiment: :func:`experiment_file_rules`, then the network, exec, signal and service
+    denies. ``deny_execs`` are programs (``literal``), to which the run sandbox's spawn routes are added. Raises
+    :class:`scout.sandbox.profile.ProfileError` on a path SBPL can't carry."""
+    sock = _real(meter_sock)
+    file_rules = experiment_file_rules(
+        exp_dir,
+        tmp_dir,
+        deny_reads,
+        env=env,
+        probe_file=probe_file,
+        allow_reads=allow_reads,
+        deny_read_dirs=deny_read_dirs,
+        deny_access=deny_access,
+        weights_dirs=weights_dirs,
+    )
+    execs: list[str] = []
+    programs: list[Path | str] = [*deny_execs, *SPAWN_EXECS]
+    for program in programs:
+        resolved = _real(program)
+        if resolved not in execs:
+            execs.append(resolved)
+    lines = [
+        "(version 1)",
+        ";; Scout lab experiment sandbox (scout.lab.sandbox; spec 2026-11-21 §6.3). Generated: don't edit.",
+        "(allow default)",
+        *render_rules(file_rules),
+        "(deny network*)",
+        f"(allow network-outbound (remote unix-socket (path-literal {_quote(sock)})))",
+        "(deny process-exec\n" + "\n".join(f"  (literal {_quote(p)})" for p in execs) + ")",
+        "(deny file-mount)",
+        "(deny job-creation)",
+        "(deny appleevent-send)",
+        # I1/I5: signals and process information only within this sandbox (the script and its children).
+        "(deny signal)",
+        "(allow signal (target same-sandbox))",
+        "(deny process-info*)",
+        "(allow process-info* (target same-sandbox))",
+        f"(deny sysctl-read (sysctl-name-prefix {_quote(PROCARGS_SYSCTL)}))",
+        "(deny mach-lookup\n" + "\n".join(f"  (global-name {_quote(n)})" for n in (*SPAWN_MACH, *DENIED_MACH)) + ")",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def experiment_file_rules(
+    exp_dir: Path,
+    tmp_dir: Path,
+    deny_reads: Sequence[Path],
+    *,
+    env: Mapping[str, str] | None = None,
+    probe_file: Path | None = None,
+    allow_reads: Sequence[Path] = (),
+    deny_read_dirs: Sequence[Path] = (),
+    deny_access: Sequence[Path] = (),
+    weights_dirs: Sequence[Path] = (),
+) -> list[Rule]:
+    """The file rules of one experiment's profile, in order (last match wins; :func:`scout.sandbox.profile.decide`
+    models them). Raises :class:`scout.sandbox.profile.ProfileError` on a path SBPL can't carry.
 
     Reads under the home folders (:func:`homes`) are denied, except below ``allow_reads`` (folders) and the
     experiment's own two folders, which are allowed back after every read deny. ``deny_reads`` are files (a
     ``literal``) or folders (a ``subpath``) denied after that, wherever they are, except inside the experiment's
     own folders; ``deny_read_dirs`` are folders denied as a ``subpath`` whether or not they
     exist yet; the secrets dirs and credential stores of ``env`` and of this process's
-    own environment are added. ``deny_execs`` are programs (``literal``), to which the run sandbox's spawn
-    routes are added. ``probe_file``, a runner-owned file in a folder the script can't write, gets
+    own environment are added. ``probe_file``, a runner-owned file in a folder the script can't write, gets
     ``file-write-data`` only (no unlink, rename or mode change): the fingerprint the runner's sweep asks the
     kernel about, which the script can't remove. ``deny_access`` are files denied to read and to write, last of
     all (a ``literal``, as spelled and as resolved now): the working-tree copies of the experiment's committed
     files (R34), which sit inside the experiment folder the profile otherwise lets the script read and write.
+
+    ``weights_dirs`` are the weights cache's revision folders the experiment names (spec §6.4,
+    :mod:`scout.lab.weights`): allowed back to read with ``allow_reads``, after the home folders' deny (the cache is
+    under the owner's home), and denied to write after the experiment's own write allow-backs, so the cache is
+    read-only to the script even if it ever sat inside a folder the script may write.
     """
-    exp, tmp, sock = _real(exp_dir), _real(tmp_dir), _real(meter_sock)
+    exp, tmp = _real(exp_dir), _real(tmp_dir)
+    weights = [_real(p) for p in weights_dirs]
     writes = [
         Rule("deny", "file-write*", "subpath", "/"),
         Rule("allow", "file-write*", "subpath", exp),
@@ -146,11 +207,13 @@ def experiment_profile(
     ]
     if probe_file is not None:
         writes.append(Rule("allow", "file-write-data", "literal", _real(probe_file)))
-    redeny = [Rule("deny", "file-write*", "regex", rx) for rx in ANYWHERE_SUFFIXES]
+    redeny = [Rule("deny", "file-write*", "subpath", w) for w in weights]
+    redeny += [Rule("deny", "file-write*", "regex", rx) for rx in ANYWHERE_SUFFIXES]
     redeny += [Rule("deny", op, "regex", rx) for op in ("file-read*", "file-write*") for rx in OTHER_TERMINALS]
     # R32: nothing under a home folder is readable unless it's allowed back; the denies below still apply inside.
     home_reads = [Rule("deny", "file-read-data", "subpath", home) for home in homes(env)]
     home_reads += [Rule("allow", "file-read-data", "subpath", _real(p)) for p in allow_reads]
+    home_reads += [Rule("allow", "file-read-data", "subpath", w) for w in weights]
     reads: list[Rule] = []
     for path in deny_reads:
         real = _real(path)
@@ -180,32 +243,7 @@ def experiment_profile(
         if rule not in seen:
             seen.add(rule)
             file_rules.append(rule)
-    execs: list[str] = []
-    programs: list[Path | str] = [*deny_execs, *SPAWN_EXECS]
-    for program in programs:
-        resolved = _real(program)
-        if resolved not in execs:
-            execs.append(resolved)
-    lines = [
-        "(version 1)",
-        ";; Scout lab experiment sandbox (scout.lab.sandbox; spec 2026-11-21 §6.3). Generated: don't edit.",
-        "(allow default)",
-        *render_rules(file_rules),
-        "(deny network*)",
-        f"(allow network-outbound (remote unix-socket (path-literal {_quote(sock)})))",
-        "(deny process-exec\n" + "\n".join(f"  (literal {_quote(p)})" for p in execs) + ")",
-        "(deny file-mount)",
-        "(deny job-creation)",
-        "(deny appleevent-send)",
-        # I1/I5: signals and process information only within this sandbox (the script and its children).
-        "(deny signal)",
-        "(allow signal (target same-sandbox))",
-        "(deny process-info*)",
-        "(allow process-info* (target same-sandbox))",
-        f"(deny sysctl-read (sysctl-name-prefix {_quote(PROCARGS_SYSCTL)}))",
-        "(deny mach-lookup\n" + "\n".join(f"  (global-name {_quote(n)})" for n in (*SPAWN_MACH, *DENIED_MACH)) + ")",
-    ]
-    return "\n".join(lines) + "\n"
+    return file_rules
 
 
 # -- asking the kernel about another process's sandbox ------------------------------------------
