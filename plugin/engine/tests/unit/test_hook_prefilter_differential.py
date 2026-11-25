@@ -116,9 +116,10 @@ CASE_RULES = (
     _W + r"((z|bz|xz|lz|lz4|zstd)[ef]?grep|(z|gz|bz|xz|lz|lz4|zstd)cat|(z|bz|xz)(less|more|diff|cmp))"
     r"([^A-Za-z0-9_./-]|$)",
     _W + r"[ef]?grep[^;&|]* (-[A-Za-z]*[zZ]|--decompress)",
-    _W + r"(unzip|funzip|zipinfo|bsdtar|gtar|7z|7za|7zz|7zr|ditto|cpio|bsdcpio|pax|gzip|gunzip"
+    _W + r"(unzip|funzip|zipinfo|zipgrep|zip|bsdtar|gtar|7z|7za|7zz|7zr|ditto|cpio|bsdcpio|pax|gzip|gunzip"
     r"|bzip2|bunzip2|xz|unxz|lzma|unlzma|zstd|unzstd|lz4|unlz4|brotli|lzip|lunzip|compress|uncompress|pigz|unpigz"
     r"|pbzip2|lbzip2)([^A-Za-z0-9_./-]|$)",
+    r"(^|[^A-Za-z0-9_./-]|\\[nt])(gstdbuf|xcrun|arch|caffeinate)([^A-Za-z0-9_./-]|$)",
     # Anything outside printable ASCII, or a JSON \u escape: the disk folds case the Unicode way (ﬁnd, xargſ, ßh).
     r"[^ -~]",
     r"\\u[0-9A-Fa-f]{4}",
@@ -135,9 +136,11 @@ ADDED_ALTERNATIVES = (
     r"(^|[^A-Za-z0-9_.-]|\\[nt])((z|bz|xz|lz|lz4|zstd)[ef]?grep|(z|gz|bz|xz|lz|lz4|zstd)cat|(z|bz|xz)(less|more|diff"
     r"|cmp))([^A-Za-z0-9_./-]|$)",
     r"(^|[^A-Za-z0-9_.-]|\\[nt])[ef]?grep[^;&|]* (-[A-Za-z]*[zZ]|--decompress)",
-    r"(^|[^A-Za-z0-9_.-]|\\[nt])(unzip|funzip|zipinfo|bsdtar|gtar|7z|7za|7zz|7zr|ditto|cpio|bsdcpio|pax|gzip|gunzip"
+    r"(^|[^A-Za-z0-9_.-]|\\[nt])(unzip|funzip|zipinfo|zipgrep|zip|bsdtar|gtar|7z|7za|7zz|7zr|ditto|cpio|bsdcpio|pax|gzip|gunzip"
     r"|bzip2|bunzip2|xz|unxz|lzma|unlzma|zstd|unzstd|lz4|unlz4|brotli|lzip|lunzip|compress|uncompress|pigz|unpigz"
     r"|pbzip2|lbzip2)([^A-Za-z0-9_./-]|$)",
+    r"(^|[^A-Za-z0-9_./-]|\\[nt])(gstdbuf|xcrun|arch|caffeinate)([^A-Za-z0-9_./-]|$)",
+    r"\\\\\\n",  # a backslash-newline, as JSON spells it
 )
 ADDED_PATTERN = "|".join(ADDED_ALTERNATIVES)
 ADDED_PATTERN_RE = re.compile(ADDED_PATTERN)

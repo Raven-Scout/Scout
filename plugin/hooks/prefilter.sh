@@ -231,7 +231,12 @@ bash_pattern() {
     alt "$word"'[ef]?grep[^;&|]* (-[A-Za-z]*[zZ]|--decompress)'
     # -- A program that reads an archive's members (unzip -p, bsdtar -xO, 7z e -so, cpio -i, ditto -x) or a
     #    file whole (gzip and kin). tar is the write rule's above.
-    alt "$word"'(unzip|funzip|zipinfo|bsdtar|gtar|7z|7za|7zz|7zr|ditto|cpio|bsdcpio|pax|gzip|gunzip|bzip2|bunzip2|xz|unxz|lzma|unlzma|zstd|unzstd|lz4|unlz4|brotli|lzip|lunzip|compress|uncompress|pigz|unpigz|pbzip2|lbzip2)([^A-Za-z0-9_./-]|$)'
+    alt "$word"'(unzip|funzip|zipinfo|zipgrep|zip|bsdtar|gtar|7z|7za|7zz|7zr|ditto|cpio|bsdcpio|pax|gzip|gunzip|bzip2|bunzip2|xz|unxz|lzma|unlzma|zstd|unzstd|lz4|unlz4|brotli|lzip|lunzip|compress|uncompress|pigz|unpigz|pbzip2|lbzip2)([^A-Za-z0-9_./-]|$)'
+    # -- A launcher that runs the word after it (xcrun, arch, gstdbuf, caffeinate): Python strips it.
+    alt "$word_or_path"'(gstdbuf|xcrun|arch|caffeinate)([^A-Za-z0-9_./-]|$)'
+    # -- A backslash-newline (JSON \\\n): zsh joins the words around it (`gr\<NL>ep`), so no rule above need
+    #    match the program or path it spells. Python judges the joined command.
+    alt '\\\\\\n'
 }
 
 # Sets $re: the rules bash_needs_python also applies ignoring letter case (grep -i). On a case-insensitive
@@ -257,7 +262,8 @@ case_pattern() {
     alt "$word"'git[^;&|]*(commit|am).*([^A-Za-z0-9_-]|\\[nt])-[A-Za-z]*n'
     alt "$word"'((z|bz|xz|lz|lz4|zstd)[ef]?grep|(z|gz|bz|xz|lz|lz4|zstd)cat|(z|bz|xz)(less|more|diff|cmp))([^A-Za-z0-9_./-]|$)'
     alt "$word"'[ef]?grep[^;&|]* (-[A-Za-z]*[zZ]|--decompress)'
-    alt "$word"'(unzip|funzip|zipinfo|bsdtar|gtar|7z|7za|7zz|7zr|ditto|cpio|bsdcpio|pax|gzip|gunzip|bzip2|bunzip2|xz|unxz|lzma|unlzma|zstd|unzstd|lz4|unlz4|brotli|lzip|lunzip|compress|uncompress|pigz|unpigz|pbzip2|lbzip2)([^A-Za-z0-9_./-]|$)'
+    alt "$word"'(unzip|funzip|zipinfo|zipgrep|zip|bsdtar|gtar|7z|7za|7zz|7zr|ditto|cpio|bsdcpio|pax|gzip|gunzip|bzip2|bunzip2|xz|unxz|lzma|unlzma|zstd|unzstd|lz4|unlz4|brotli|lzip|lunzip|compress|uncompress|pigz|unpigz|pbzip2|lbzip2)([^A-Za-z0-9_./-]|$)'
+    alt "$word_or_path"'(gstdbuf|xcrun|arch|caffeinate)([^A-Za-z0-9_./-]|$)'
     # -- Any byte outside printable ASCII, or a JSON \u escape. The disk folds case the Unicode way, and grep
     #    cannot: ﬁnd (the ﬁ ligature), xargſ and ſh (long s) and ßh run find, xargs, sh and ssh. Python folds them.
     alt '[^ -~]'

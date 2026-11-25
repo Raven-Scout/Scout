@@ -1636,6 +1636,11 @@ def _kb_read(words: list[str], reads: list[str], cwd: str, fed: str | None, oldp
                     if listed and any(marker in o and o != marker for o in stripped.words[1:]):
                         operands.append(UNSEEN_INPUT)  # a listed path inside a longer word: not one the gate can judge
             targets += [(word, where, how) for word in operands]
+        elif name in raw_read._ARCHIVERS or name in raw_read._COMPRESSORS:
+            # What it archives or compresses, placed as a lister's root (`tar -cf - .`, `zip -r x.zip ~/link`).
+            where = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
+            inputs, _lists = raw_read._archive_inputs(name, stripped.words[1:])
+            targets += [(word, where, "covers") for word in inputs if word != raw_read._UNSEEN]
     for word, where, how in [*targets, *roots]:
         found = _judge_read(word, where, how, oldpwd)
         if found is not None:
@@ -2043,6 +2048,9 @@ def expansion_escape(command: str) -> str | None:
     """The form of a parameter expansion in ``command`` that assigns a name that matters (HOME, XDG_CONFIG_HOME, the
     run's own variables) or one built at run time: ``${HOME:=…}``, ``${HOME::=…}``, ``${(P)v::=…}``. Read on the
     whole text, since the parser splits segments at ``(``, and a nested ``sh -c`` or ``eval`` is a substring of it."""
+    from scout.kb import raw_read
+
+    command = raw_read.join_continuations(command)  # `${HO\<NL>ME:=x}` is `${HOME:=x}`
     fd = _NAMED_FD.search(command)
     if fd is not None:
         return _name_form(fd[1])
@@ -2057,7 +2065,10 @@ def even_dollar_escape(command: str) -> str | None:
     HOME'``): bash reads ``$$`` and a plain quote, zsh a ``$`` and then ``$'…'``, and :func:`_ansi_c` keeps bash's
     reading, so the command zsh runs may set HOME unread. The gate asks it last, after :func:`run_escape`, whose own
     reasons (a KB read, a background, either reading) say more. No scheduled run in the replay has one."""
-    return HOME_FORM if _EVEN_DOLLAR_QUOTE.search(command) else None
+    from scout.kb import raw_read
+
+    joined = raw_read.join_continuations(command)
+    return HOME_FORM if _EVEN_DOLLAR_QUOTE.search(command) or _EVEN_DOLLAR_QUOTE.search(joined) else None
 
 
 def _name_form(name: str) -> str | None:
@@ -2281,6 +2292,14 @@ def run_escape(
         )
     try:
         found = _run_escape(command, depth)
+        if found is None and outer:
+            # zsh joins `\<newline>` (`ca\<NL>t …` is cat): judge the joined command too. The written one stays
+            # judged first, since a join inside a comment or a quoted here-document would hide what follows.
+            from scout.kb import raw_read
+
+            joined = raw_read.join_continuations(command)
+            if joined != command:
+                found = _run_escape(joined, depth)
         # Fail closed where the walk had to guess: an unclosed quote or a zsh group it can't rewrite (a run's
         # read), or a variable with more values than are checked (a read or a write).
         guessed = (_STATE["unparsed"] and kb_read is not None) or (

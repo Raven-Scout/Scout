@@ -82,6 +82,11 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (h / "linkdir").symlink_to(vault)
     (h / "loop.zip").symlink_to(h / "loop.zip")
     (h / "out-link.zip").symlink_to(h / "outside.zip")
+    # Archives the suffix doesn't tell: a tarball named .gz, and one with no suffix at all.
+    (vault / "kb.gz").write_bytes((vault / "kb.tgz").read_bytes())
+    (vault / "backup" / "kb.tgz").write_bytes((vault / "kb.tgz").read_bytes())
+    (vault / "backup" / "kbdump").write_bytes((vault / "kb.tgz").read_bytes())
+    (h / "list.txt").write_text("Vault/knowledge-base/a.md\n")
     monkeypatch.setenv("SCOUT_DATA_DIR", str(vault))
     return h.resolve()
 
@@ -208,6 +213,77 @@ MUST_DENY: list[tuple[str, str, bool | str]] = [
     ("gzcat < ../link.tgz", "", True),
     ("unzip -p ../loop.zip", "", False),  # a link loop: can't place it
 ]
+# The #822 security review's leaks at c4583807, one per form.
+MUST_DENY += [
+    # P1-P4: prefix options read getopt-style, env -S/-P, caffeinate, gstdbuf, xcrun, arch
+    ("exec -la x cat knowledge-base/a.md", "", True),
+    ("exec -cla x cat knowledge-base/a.md", "", True),
+    ("exec -la x grep -r TODO .", "", True),
+    ("noglob exec -la x cat context/x.md", "action-items", True),
+    ("env -S 'cat knowledge-base/a.md'", "", True),
+    ("env -S'cat knowledge-base/a.md'", "", True),
+    ("env -S 'grep -r TODO' .", "", True),
+    ("env -P /bin cat knowledge-base/a.md", "", True),
+    ("caffeinate -t 5 cat knowledge-base/a.md", "", True),
+    ("caffeinate -w 1 cat knowledge-base/a.md", "", False),  # waits on pid 1: not run here
+    ("gstdbuf -oL cat knowledge-base/a.md", "", True),
+    ("xcrun cat knowledge-base/a.md", "", False),
+    ("xcrun --sdk macosx grep -r TODO .", "", False),
+    ("arch -arm64 cat knowledge-base/a.md", "", False),  # runs only on Apple silicon
+    ("arch -arch arm64 grep -r TODO .", "", False),
+    # Q1: backslash-newline joins a word (main lets these through too)
+    ("cat kno\\\nwledge-base/a.md", "", True),
+    ("cat action-items/con\\\ntext/x.md", "", True),
+    ("gr\\\nep -r TODO .", "", True),
+    ("r\\\ng TODO", "", True),
+    ("ca\\\nt knowledge-base/a.md", "", True),
+    ("c\\\nat context/x.md", "action-items", True),
+    ("ca\\\nt kno\\\nwledge-base/a.md", "", True),
+    ("# x \\\ncat knowledge-base/a.md", "", True),  # a comment ends at the newline: joining it must not hide cat
+    # Q2: ANSI-C quoting in the command word
+    ("$'gr\\x65p' -r TODO .", "", True),
+    ("$'c\\x61t' context/x.md", "action-items", True),
+    # D1-D6: decompressing reads
+    ("rg -za TODO kb.tgz", "", True),
+    ("rg -za TODO backup", "", True),
+    ("rg --search-zip -a TODO backup", "", True),
+    ("grep -rZ -a TODO backup", "", BSD),
+    ("grep -r --decompress TODO backup", "", False),
+    ("zgrep -ra TODO backup", "", BSD),
+    ("zgrep -ra TODO ../linkdir", "", False),  # BSD grep -r doesn't follow a linked root
+    ("gzcat kb.gz", "", True),
+    ("gunzip -c kb.gz", "", True),
+    ("gunzip -c < kb.gz", "", True),
+    ("gzip -dc backup/kbdump", "", True),
+    ("gzcat backup/*", "", True),
+    ("gunzip -c backup/*", "", True),
+    ("gzcat backup/kb.t?z", "", True),
+    ("f=kb.tgz; gzcat $f", "", True),
+    ("echo kb.zip | xargs unzip -p", "", True),
+    ("echo kb.tgz | xargs gunzip -c", "", True),
+    ("zipgrep TODO kb.zip", "", True),
+    # A1-A3: an archive or compressed copy written from files that include notes
+    ("tar -cf - .", "", True),
+    ("tar -cf - *", "", True),
+    ("tar -cf - ..", "docs", True),
+    ("tar -cf - ~/Vault", "docs", True),
+    ('tar -cf - "$PWD"', "", True),
+    ("tar -cf - -C ../.. Vault", "docs", True),
+    ("pax -w .", "", True),
+    ("tar -cf - context", "action-items", True),
+    ("pax -w context", "action-items", True),
+    ("tar -czf ../x.tgz .; tar -xOzf ../x.tgz", "", True),
+    ("zip -qr ../x.zip knowledge-base; unzip -p ../x.zip", "", True),
+    ("zip -qr ../x.zip .; unzip -p ../x.zip", "", True),
+    ("ditto -c -k . ../x.zip; unzip -p ../x.zip", "", True),
+    ("gzip -c context/x.md > ../x.gz; gzcat ../x.gz", "action-items", True),
+    ("gzip -rc . | gunzip", "", True),
+    ("echo knowledge-base/a.md | cpio -o", "", True),
+    ("printf 'knowledge-base/a.md\\n' | pax -w", "", True),
+    ("echo knowledge-base/a.md | tar -cf - -T -", "", True),
+    ("echo knowledge-base/a.md | zip -q -0 - -@", "", True),  # -0: stored, not deflated
+    ("tar -cf - -T ../list.txt", "", False),  # a file list the gate can't see
+]
 
 
 @pytest.mark.parametrize(("command", "where", "zsh_reads"), MUST_DENY)
@@ -277,6 +353,23 @@ def test_a_ugrep_only_form_is_denied(home: Path, command: str, where: str, plain
         "gzip -dc < app.log.gz",
         "tar -czf ../out.tgz docs",
         "gzip -c docs/a.md > ../a.md.gz",
+        # the review's false-deny sweep for the new rules
+        "tar -czf ../d.tgz docs && tar -tzf ../d.tgz",
+        "gzip -dc app.log.gz | head -1",
+        "xz --version",
+        "gzip -9 -k plugin/x.py",
+        "zip -qr ../d.zip docs",
+        "pax -w docs > ../d.pax",
+        "grep -lZ TODO file.py",
+        "zgrep TODO app.log.gz",
+        "exec -la x grep -n x file.py",
+        "env -S 'grep -n x file.py'",
+        "env -P /bin grep -n x file.py",
+        "caffeinate -t 1 grep -n x file.py",
+        "echo hi # x\\\nls docs",
+        "ls \\\n  docs",
+        "printf 'a\\nb\\n'",
+        "$'gr\\x65p' -n x file.py",
     ],
 )
 def test_an_ordinary_command_is_still_allowed(home: Path, command: str) -> None:
