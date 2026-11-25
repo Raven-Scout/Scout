@@ -29,8 +29,8 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-from scout.agent_runtimes import awake, consent
-from scout.agent_runtimes.base import ANTHROPIC_ENV, AgentRuntime, Launch, RunRequest
+from scout.agent_runtimes import awake, registry
+from scout.agent_runtimes.base import ANTHROPIC_ENV, NON_ANTHROPIC_ENV_ALLOW, AgentRuntime, Launch, RunRequest
 
 TIMEOUT_EXIT = 124
 KILL_GRACE_S = 10.0
@@ -60,18 +60,29 @@ def build_request(
     )
 
 
-def unset_patterns(runtime: AgentRuntime, launch: Launch) -> tuple[str, ...]:
-    """The variables to remove from the CLI's environment: the adapter's, plus the Anthropic ones for any other
-    provider. The second part isn't the adapter's to waive."""
-    extra = () if runtime.provider == consent.ALWAYS else ANTHROPIC_ENV
-    return (*launch.env_unset, *extra)
+def is_anthropic(runtime: AgentRuntime) -> bool:
+    """Whether the runtime is Anthropic's, by its registered id (``registry.ANTHROPIC_RUNTIMES``), never by the
+    adapter's own ``provider`` (review of #806: an adapter saying "anthropic" mustn't keep the Claude token)."""
+    return runtime.id in registry.ANTHROPIC_RUNTIMES
 
 
-def launch_env(launch: Launch, base: Mapping[str, str], unset: tuple[str, ...] = ()) -> dict[str, str]:
-    """The CLI's environment: this process's, minus each variable matching an ``unset`` pattern, plus what the
-    adapter adds."""
-    env = {k: v for k, v in base.items() if not any(fnmatch.fnmatchcase(k, pat) for pat in unset)}
-    env.update(launch.env)
+def _matches(name: str, patterns: Sequence[str]) -> bool:
+    return any(fnmatch.fnmatchcase(name, pat) for pat in patterns)
+
+
+def launch_env(runtime: AgentRuntime, launch: Launch, base: Mapping[str, str]) -> dict[str, str]:
+    """The CLI's environment (#652 S5, review of #806).
+
+    Claude Code's is the runner's, minus the adapter's ``env_unset``, plus its ``env``, as before. Any other
+    runtime gets only :data:`base.NON_ANTHROPIC_ENV_ALLOW` of the runner's, minus its ``env_unset``, plus its
+    ``env`` minus every :data:`base.ANTHROPIC_ENV` name: no adapter can hand it the Claude token.
+    """
+    if is_anthropic(runtime):
+        env = {k: v for k, v in base.items() if not _matches(k, launch.env_unset)}
+        env.update(launch.env)
+        return env
+    env = {k: v for k, v in base.items() if _matches(k, NON_ANTHROPIC_ENV_ALLOW) and not _matches(k, launch.env_unset)}
+    env.update({k: v for k, v in launch.env.items() if not _matches(k, ANTHROPIC_ENV)})
     return env
 
 
@@ -216,7 +227,7 @@ def run(
     ``execute=False`` returns the argv instead (``--print-argv``, tests).
     """
     launch = runtime.headless_argv(req)
-    full_env = launch_env(launch, os.environ if env is None else env, unset_patterns(runtime, launch))
+    full_env = launch_env(runtime, launch, os.environ if env is None else env)
     if not execute:
         return launch.argv
     if req.timeout_s is None:
@@ -231,8 +242,8 @@ __all__ = [
     "build_request",
     "spent_s",
     "exec_launch",
+    "is_anthropic",
     "launch_env",
     "run",
     "run_with_timeout",
-    "unset_patterns",
 ]

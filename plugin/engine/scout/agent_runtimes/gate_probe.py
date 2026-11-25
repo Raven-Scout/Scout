@@ -648,6 +648,9 @@ def runtime_probe(adapter: AgentRuntime, vault: Path, binary: Path | None = None
     :func:`cached_probe` decides for Claude Code. Anything that goes wrong is a fail (fail closed)."""
     name = adapter.display_name
     try:
+        from scout.agent_runtimes.registry import check_adapter
+
+        check_adapter(adapter)  # a declared hook capability would pass here without any probe
         found = adapter.locate(binary)
         if found is None:
             return RuntimeProbe(False, f"{name} isn't installed", adapter.id, None)

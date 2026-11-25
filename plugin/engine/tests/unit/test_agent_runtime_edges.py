@@ -150,14 +150,26 @@ def test_run_can_return_the_argv_without_running() -> None:
 
 _RUNNER_ENV = {
     "PATH": "/usr/bin:/bin",
+    "HOME": "/Users/alex",
+    "LANG": "en_US.UTF-8",
+    "LC_ALL": "en_US.UTF-8",
     "SCOUT_MODE": "autonomous",
+    "GIT_CONFIG_COUNT": "1",
+    "GIT_CONFIG_KEY_0": "push.autoSetupRemote",
+    "GIT_CONFIG_VALUE_0": "false",
     "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-fake",
     "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",
+    "CLAUDE_PLUGIN_ROOT": "/opt/scout/plugin",
     "ANTHROPIC_API_KEY": "sk-ant-fake",
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:1",
-    "MY_CLAUDE_NOTE": "kept: the pattern is anchored",
-    "claude_lower": "kept: matching is case-sensitive",
+    "GH_TOKEN": "ghp_fake",
+    "AWS_SECRET_ACCESS_KEY": "fake",
+    "GOOGLE_APPLICATION_CREDENTIALS": "/Users/alex/creds.json",
+    "SSH_AUTH_SOCK": "/tmp/agent.sock",
+    "MY_CLAUDE_NOTE": "an unlisted name",
 }
+# What a runtime that isn't Anthropic's keeps of the above (base.NON_ANTHROPIC_ENV_ALLOW).
+_KEPT = {"PATH", "HOME", "LANG", "LC_ALL", "SCOUT_MODE", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"}
 
 
 def _env_of(runtime: DummyRuntime | ClaudeCode, tmp_path: Path) -> dict[str, str]:
@@ -176,24 +188,31 @@ def _env_of(runtime: DummyRuntime | ClaudeCode, tmp_path: Path) -> dict[str, str
     return seen
 
 
-def test_a_non_anthropic_runtime_never_gets_the_anthropic_variables(tmp_path: Path) -> None:
+def test_a_non_anthropic_runtime_gets_only_the_allowlist(tmp_path: Path) -> None:
     env = _env_of(DummyRuntime("d", provider="google"), tmp_path)
-    assert not [k for k in env if k.startswith(("CLAUDE_", "ANTHROPIC_"))]
-    assert env["PATH"] == "/usr/bin:/bin" and env["SCOUT_MODE"] == "autonomous"
-    assert env["MY_CLAUDE_NOTE"] and env["claude_lower"]
-    assert env["DUMMY_MARK"] == "1"  # what the adapter adds still arrives
+    assert set(env) == _KEPT | {"DUMMY_MARK"}  # what the adapter adds still arrives
+    assert {k: env[k] for k in _KEPT} == {k: _RUNNER_ENV[k] for k in _KEPT}
 
 
-def test_an_adapter_cant_keep_the_anthropic_variables_but_can_add_its_own(tmp_path: Path) -> None:
-    dummy = DummyRuntime("d", provider="openai", launch_env_unset=("SCOUT_MODE",))
+def test_an_adapter_can_remove_more_but_cant_add_back_the_claude_token(tmp_path: Path) -> None:
+    """Review of #806: Launch.env was applied after the scrub, so an adapter could put the token back."""
+    dummy = DummyRuntime(
+        "d",
+        provider="openai",
+        launch_env_unset=("SCOUT_MODE",),
+        launch_env_add={"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-back", "ANTHROPIC_API_KEY": "x", "AGENT_X": "1"},
+    )
     env = _env_of(dummy, tmp_path)
-    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env and "ANTHROPIC_API_KEY" not in env
-    assert "SCOUT_MODE" not in env
+    assert not [k for k in env if k.startswith(("CLAUDE_", "ANTHROPIC_"))]
+    assert "SCOUT_MODE" not in env and env["AGENT_X"] == "1"
 
 
-def test_an_anthropic_runtime_keeps_the_runners_environment(tmp_path: Path) -> None:
+def test_an_adapter_saying_anthropic_isnt_trusted(tmp_path: Path) -> None:
+    """Only a registered Anthropic id (registry.ANTHROPIC_RUNTIMES) keeps the runner's environment."""
     env = _env_of(DummyRuntime("d", provider="anthropic"), tmp_path)
-    assert {k: env[k] for k in _RUNNER_ENV} == _RUNNER_ENV
+    assert set(env) == _KEPT | {"DUMMY_MARK"}
+    assert not rt_exec.is_anthropic(DummyRuntime("d", provider="anthropic"))
+    assert rt_exec.is_anthropic(ClaudeCode())
 
 
 def test_claude_codes_environment_is_the_runners_plus_its_marker(tmp_path: Path) -> None:

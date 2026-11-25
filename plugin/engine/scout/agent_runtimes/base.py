@@ -130,10 +130,29 @@ class RunRequest:
 
 
 # Environment variables that carry an Anthropic credential or Claude Code's own settings, such as the
-# CLAUDE_CODE_OAUTH_TOKEN the retry wrapper exports. ``exec`` removes them for every runtime whose provider
-# isn't Anthropic, whatever its adapter says, so they never reach another vendor's CLI or the shells it starts
-# (#652 S5). fnmatch patterns, matched case-sensitively.
+# CLAUDE_CODE_OAUTH_TOKEN the retry wrapper exports. A runtime that isn't Anthropic's never gets one, not even
+# from its own adapter's ``Launch.env`` (#652 S5). fnmatch patterns, matched case-sensitively.
 ANTHROPIC_ENV: tuple[str, ...] = ("CLAUDE_*", "ANTHROPIC_*")
+# All a runtime that isn't Anthropic's gets of the runner's environment (review of #806): the account and locale,
+# git's per-run settings the retry wrapper adds (GIT_CONFIG_COUNT/KEY_n/VALUE_n), and Scout's own SCOUT_*. Anything
+# else (cloud credentials, GH_TOKEN, SSH_AUTH_SOCK, another vendor's keys) stays behind. An adapter that needs more
+# names it in ``Launch.env``, where a reviewer sees it.
+NON_ANTHROPIC_ENV_ALLOW: tuple[str, ...] = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TMPDIR",
+    "TZ",
+    "LANG",
+    "LC_*",
+    "TERM",
+    "XDG_*",
+    "__CF_USER_TEXT_ENCODING",
+    "GIT_CONFIG_*",
+    "SCOUT_*",
+)
 
 
 @dataclass(frozen=True)
@@ -246,6 +265,7 @@ def caps_own_spend(runtime: AgentRuntime) -> bool:
 __all__ = [
     "ANTHROPIC_ENV",
     "HOOK_CAPABILITIES",
+    "NON_ANTHROPIC_ENV_ALLOW",
     "TIER_F_REQUIRES",
     "TIER_L_REQUIRES",
     "AgentRuntime",

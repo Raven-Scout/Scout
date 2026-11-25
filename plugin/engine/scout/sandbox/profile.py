@@ -194,6 +194,41 @@ def carve_outs(vault: Path | None, env: Mapping[str, str]) -> list[tuple[str, st
     return out
 
 
+def _check_runtime_paths(extra: SandboxPaths, base: Sequence[str], env: Mapping[str, str]) -> None:
+    """Refuse (:class:`ProfileError`) a runtime's paths that could re-open what Scout protects (review of #806).
+
+    Every path must be absolute and normalised. A writable folder must lie strictly under one of the runtime's
+    own protected trees, must not hold (or be) any of Scout's protected paths or secrets dirs, and may lie under
+    one of Scout's only where that is another agent CLI's home folder (``hook_paths.AGENT_DIRS`` under each of
+    ``hook_paths.homes``: agy's data dir in ``~/.gemini``). Anything else, such as a carve-out in the vault's
+    ``.claude/`` or ``.git/``, would turn one of Scout's denies into an allow.
+    """
+    for path in (*extra.protected, *extra.writable):
+        text = str(path)
+        if not os.path.isabs(text) or os.path.normpath(text) != text:
+            raise ProfileError(f"the runtime's sandbox path {text!r} isn't absolute and normalised")
+    agent_homes = [
+        form
+        for home in hook_paths.homes(env)
+        for name in hook_paths.AGENT_DIRS
+        for form in _forms(str(home / name), env)
+    ]
+    for path in extra.writable:
+        forms = _forms(str(path), env)
+        if not any(_under(f, own) and f.casefold() != own.casefold() for f in forms for own in _owned(extra, env)):
+            raise ProfileError(f"the runtime's writable path {str(path)!r} isn't under one of its own protected trees")
+        for form in forms:
+            for root in base:
+                if _under(root, form):
+                    raise ProfileError(f"the runtime's writable path {form!r} would re-open {root!r}")
+                if _under(form, root) and not any(_under(form, a) and _under(a, root) for a in agent_homes):
+                    raise ProfileError(f"the runtime's writable path {form!r} is inside Scout's protected {root!r}")
+
+
+def _owned(extra: SandboxPaths, env: Mapping[str, str]) -> list[str]:
+    return [form for tree in extra.protected for form in _forms(str(tree), env)]
+
+
 def build_rules(
     vault: Path | None, env: Mapping[str, str] | None = None, *, runtime_paths: SandboxPaths | None = None
 ) -> list[Rule]:
@@ -201,7 +236,8 @@ def build_rules(
 
     ``runtime_paths`` is what the run's agent runtime adds (its adapter's ``sandbox_paths``, #652 S6): its
     protected trees join the kernel's own, and its writable folders join the carve-outs, so a protected tree
-    of either kind under one of them is denied again."""
+    of either kind under one of them is denied again. :func:`_check_runtime_paths` refuses any that could
+    re-open one of Scout's own."""
     env = os.environ if env is None else env
     extra = runtime_paths or SandboxPaths()
     try:
@@ -218,7 +254,7 @@ def build_rules(
                 # GIT_CONFIG_GLOBAL=/dev/null names no file a run could change; denying it breaks `> /dev/null`.
                 continue
             protected.append(Rule("deny", "file-write*", "subpath" if spec.tree else "literal", form))
-    for tree in [*kernel_trees(vault, env), *extra.protected]:
+    for tree in kernel_trees(vault, env):
         for form in _forms(str(tree), env):
             protected.append(Rule("deny", "file-write*", "subpath", form))
     secrets: list[Rule] = []
@@ -237,6 +273,10 @@ def build_rules(
         # already denied above (hook_paths.AGENT_TEXT is a protected tree); this adds the kernel's read deny.
         for form in _forms(str(vault.joinpath(*hook_paths.AGENT_TEXT_DIR)), env):
             secrets.append(Rule("deny", "file-read-data", "subpath", form))
+    _check_runtime_paths(extra, [r.path for r in (*protected, *secrets)], env)
+    for tree in extra.protected:
+        for form in _forms(str(tree), env):
+            protected.append(Rule("deny", "file-write*", "subpath", form))
     rules += protected + secrets
     # 2. the carve-outs
     allows: list[Rule] = []

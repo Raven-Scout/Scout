@@ -38,6 +38,7 @@ class DummyRuntime:
         sandbox: SandboxPaths | None = None,
         launch_env_unset: tuple[str, ...] = (),
         launch_cwd: Path | None = None,
+        launch_env_add: Mapping[str, str] | None = None,
     ) -> None:
         self.id = runtime_id
         self.declared_capabilities = declared
@@ -49,6 +50,7 @@ class DummyRuntime:
         self._sandbox = sandbox or SandboxPaths()
         self._env_unset = launch_env_unset
         self._cwd = launch_cwd
+        self._env_add = dict(launch_env_add or {})
 
     def locate(self, hint: Path | None) -> Path | None:
         return hint or self.binary
@@ -81,7 +83,9 @@ class DummyRuntime:
         argv = [str(binary), "run", "--model", req.model, "--title", req.run_name]
         if req.budget_cap is not None:
             argv += ["--usd", req.budget_cap]
-        return Launch(argv=(*argv, req.prompt), env={"DUMMY_MARK": "1"}, env_unset=self._env_unset, cwd=self._cwd)
+        return Launch(
+            argv=(*argv, req.prompt), env={"DUMMY_MARK": "1", **self._env_add}, env_unset=self._env_unset, cwd=self._cwd
+        )
 
     def classify_failure(self, log_tail: str, exit_code: int) -> Failure:
         return Failure(FailureKind.OTHER, None, f"exit {exit_code}")

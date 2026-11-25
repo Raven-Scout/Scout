@@ -59,6 +59,23 @@ def test_claude_code_and_the_dummy_are_agent_runtimes() -> None:
     assert isinstance(DummyRuntime("d"), AgentRuntime)
 
 
+def test_an_adapter_cant_declare_a_hook_capability(vault: Path) -> None:
+    """Review of #806: runtime_probe trusts capabilities(), which adds the declared set."""
+    liar = DummyRuntime("liar", declared=frozenset({C.PRE_TOOL_BLOCK}), binary=Path("/bin/true"))
+    with pytest.raises(ValueError, match="pre_tool_block"):
+        registry.register(liar)
+    res = gate_probe.runtime_probe(liar, vault)
+    assert not res.ok and "only a probe may prove" in res.reason
+
+
+def test_no_adapter_can_take_claude_codes_id() -> None:
+    with pytest.raises(ValueError):
+        registry.register(DummyRuntime("claude-code", provider="anthropic"))
+    assert registry.ANTHROPIC_RUNTIMES == frozenset({"claude-code"})
+    for runtime_id in registry.ids():
+        registry.check_adapter(registry.get(runtime_id))
+
+
 # -- caps_own_spend is the declared budget_cap, not a second flag ---------------------------------------------
 
 
@@ -186,10 +203,54 @@ def test_a_runtimes_protected_tree_and_its_carve_out(world: tuple[Path, Path, di
     assert sbx.decide(sbx.build_rules(v, env), str(data / "hooks.json")) == "allow"
 
 
-def test_a_runtimes_carve_out_cant_open_scouts_own_protected_roots(world: tuple[Path, Path, dict[str, str]]) -> None:
+@pytest.mark.parametrize(
+    ("protected", "writable"),
+    [
+        ("~/.claude", "~/.claude/plugins"),  # Scout's kernel tree, even when the adapter claims it
+        ("@/.claude", "@/.claude/skills"),  # the vault's .claude/ (review of #806)
+        ("@/.git", "@/.git/info"),  # the vault's git dir: .git/info/attributes would become writable
+        ("~/.agentcli", ".claude/skills"),  # relative
+        ("~/.agentcli", "~/.agentcli/../.agentcli/x"),  # not normalised
+        ("~/.agentcli", "~/.agentx/sessions"),  # not under the adapter's own protected tree
+        ("~/.gemini", "~/.gemini"),  # a carve-out equal to its own tree re-opens it
+        ("~/", "~/.scout-secrets"),  # holds Scout's secrets
+        ("~/", "~/.local"),  # holds the owner's stores and the engine pointer
+    ],
+)
+def test_a_runtime_carve_out_that_could_reopen_scouts_paths_is_refused(
+    world: tuple[Path, Path, dict[str, str]], protected: str, writable: str
+) -> None:
     home, v, env = world
-    rules = sbx.build_rules(v, env, runtime_paths=SandboxPaths(writable=(home / ".claude",)))
-    assert sbx.decide(rules, str(home / ".claude" / "settings.json")) == "deny"
+
+    def path(spec: str) -> Path:
+        if spec.startswith("~/"):
+            return Path(str(home) + spec[1:]) if spec != "~/" else home
+        if spec.startswith("@/"):
+            return Path(str(v) + spec[1:])
+        return Path(spec)
+
+    paths = SandboxPaths(protected=(path(protected),), writable=(path(writable),))
+    with pytest.raises(sbx.ProfileError):
+        sbx.build_rules(v, env, runtime_paths=paths)
+
+
+def test_a_carve_out_in_another_agent_clis_home_folder_is_allowed(world: tuple[Path, Path, dict[str, str]]) -> None:
+    """agy's data dir is under ~/.gemini, which Scout protects as another CLI's hook folder (Phase 2's shape)."""
+    home, v, env = world
+    gemini = home / ".gemini"
+    paths = SandboxPaths(protected=(gemini,), writable=(gemini / "antigravity-cli",))
+    rules = sbx.build_rules(v, env, runtime_paths=paths)
+    assert sbx.decide(rules, str(gemini / "antigravity-cli" / "brain" / "c1.jsonl")) == "allow"
+    assert sbx.decide(rules, str(gemini / "config" / "hooks.json")) == "deny"
+
+
+def test_a_refused_carve_out_fails_the_sandbox_so_the_run_is_skipped(
+    world: tuple[Path, Path, dict[str, str]],
+) -> None:
+    home, v, env = world
+    bad = SandboxPaths(protected=(v / ".claude",), writable=(v / ".claude" / "skills",))
+    result = launch.prepare(v, env, available=lambda: True, self_test=lambda _p: None, runtime_paths=bad)
+    assert result.status == "failed" and "inside Scout's protected" in result.reason
 
 
 def test_claude_codes_profile_is_unchanged(world: tuple[Path, Path, dict[str, str]]) -> None:
