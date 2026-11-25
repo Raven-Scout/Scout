@@ -177,6 +177,52 @@ READS_A_NOTE = [
     ("printf '%s\\n' */*/* | while read f; do cat \"$f\" 2>/dev/null; done", ()),
 ]
 
+# Interpreter one-liners and programs on stdin that read a note (scout.kb.program_reads), and moves and links out of
+# the KB followed by a read: each really prints a note under zsh (the differential test's INTERPRETER_FORMS too).
+READS_A_NOTE += [
+    ("""python3 -c 'print(open("knowledge-base/projects/a/a.md").read())'""", ("python3",)),
+    ("""python3 -c 'from pathlib import Path; print((Path("knowledge-base") / "a.md").read_text())'""", ("python3",)),
+    ("""python3 -c 'import os; print(open(os.path.join("action-items", "context", "x.md")).read())'""", ("python3",)),
+    ("""python3 -c 'p = "kn" + "owledge-base/a.md"; print(open(p).read())'""", ("python3",)),
+    ("""python3 -c 'n = "a"; print(open(f"knowledge-base/{n}.md").read())'""", ("python3",)),
+    ("""python3 -c 'import sys; print(open(sys.argv[1]).read())' knowledge-base/a.md""", ("python3",)),
+    ("""python3 -c 'import subprocess; subprocess.run(["cat", "knowledge-base/a.md"])'""", ("python3",)),
+    ("""python3 -c 'import os; os.system("cat knowledge-base/a.md")'""", ("python3",)),
+    ("""python3 -c 'import glob; [print(open(f).read()) for f in glob.glob("knowledge-base/*.md")]'""", ("python3",)),
+    ("""python3 -c 'import os; os.chdir("knowledge-base"); print(open("a.md").read())'""", ("python3",)),
+    ("python3 - <<'EOF'\nprint(open('knowledge-base/a.md').read())\nEOF", ("python3",)),
+    ("python3 - knowledge-base/a.md <<'EOF'\nimport sys\nprint(open(sys.argv[1]).read())\nEOF", ("python3",)),
+    ("""echo 'print(open("knowledge-base/a.md").read())' | python3""", ("python3",)),
+    ("""python3 <<< 'print(open("knowledge-base/a.md").read())'""", ("python3",)),
+    ("""ruby -e 'puts File.read("knowledge-base/a.md")'""", ("ruby",)),
+    ("""ruby -e 'puts IO.readlines("knowledge-base/a.md")'""", ("ruby",)),
+    ("""ruby -e 'puts `cat knowledge-base/a.md`'""", ("ruby",)),
+    ("ruby -ne print knowledge-base/a.md", ("ruby",)),
+    ("ruby -pe '' knowledge-base/a.md", ("ruby",)),
+    ("""ruby -e 'puts ARGF.read' knowledge-base/a.md""", ("ruby",)),
+    ("""ruby -e 'Dir.glob("knowledge-base/**/*.md").each { |f| puts File.read(f) }'""", ("ruby",)),
+    ("""ruby -C knowledge-base -e 'puts File.read("a.md")'""", ("ruby",)),
+    ("""node -e 'console.log(require("fs").readFileSync("knowledge-base/a.md", "utf8"))'""", ("node",)),
+    ("""node -e 'console.log(require("child_process").execSync("cat knowledge-base/a.md").toString())'""", ("node",)),
+    (
+        """node -e 'const n = "a"; console.log(require("fs").readFileSync(`knowledge-base/${n}.md`, "utf8"))'""",
+        ("node",),
+    ),
+    ("""node -e 'console.log(require("fs").readFileSync(process.argv[1], "utf8"))' knowledge-base/a.md""", ("node",)),
+    ("node <<'EOF'\nconsole.log(require('fs').readFileSync('knowledge-base/a.md', 'utf8'))\nEOF", ("node",)),
+    ("perl - knowledge-base/a.md <<'EOF'\nprint while <>\nEOF", ("perl",)),
+    ("""php -r 'echo file_get_contents("knowledge-base/a.md");'""", ("php",)),
+    ("""lua -e 'print(io.open("knowledge-base/a.md"):read("a"))'""", ("lua",)),
+    ("""Rscript -e 'cat(readLines("knowledge-base/a.md"))'""", ("Rscript",)),
+    ("mv knowledge-base/a.md docs/m.md; cat docs/m.md", ()),
+    ("mv knowledge-base/a.md docs/; cat docs/a.md", ()),
+    ("cd action-items; mv context ../docs/c; cat ../docs/c/x.md", ()),
+    ("ln knowledge-base/a.md docs/h.md; cat docs/h.md", ()),
+    ("link knowledge-base/a.md docs/h.md; cat docs/h.md", ("link",)),
+    ("ln -s ../knowledge-base docs/kb; cat docs/kb/a.md", ()),
+    ("cd docs; ln ../knowledge-base/a.md h.md; cat h.md", ()),
+]
+
 READS_NO_NOTE = [
     ("tar cf ../out.tar docs/", ("tar",)),
     ("cp -r docs/ ../x", ("cp",)),
@@ -189,6 +235,16 @@ READS_NO_NOTE = [
     ("cat \"$(cat <<'EOF'\ndocs/a.md\nEOF\n)\"", ()),
     ("X=kn; cat <<'EOF'\n$(cat ${X}owledge-base/a.md)\nEOF", ()),
     ('find docs | while read f; do cat "$f" 2>/dev/null; done', ("find",)),
+    ("python3 -c 'print(1+1)'", ("python3",)),
+    ("""python3 -c 'print(open("docs/a.md").read())'""", ("python3",)),
+    ("""python3 -c 'open("knowledge-base/new.md", "w").write("x")'""", ("python3",)),
+    ("python3 - <<'EOF'\nprint(open('docs/a.md').read())\nEOF", ("python3",)),
+    ("""ruby -e 'puts File.read("docs/a.md")'""", ("ruby",)),
+    ("ruby -ne print docs/a.md", ("ruby",)),
+    ("""node -e 'console.log(require("fs").readFileSync("docs/a.md", "utf8"))'""", ("node",)),
+    ("mv docs/a.md docs/b.md; cat docs/b.md", ()),
+    ("ln -s docs/a.md b; cat b", ()),
+    ("mv knowledge-base/x.md knowledge-base/y.md", ()),
 ]
 
 

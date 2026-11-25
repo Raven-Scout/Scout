@@ -1366,15 +1366,17 @@ def _judge_other(
                 any(_names_kb(d) for d in other.dests) or (seg_in_kb and bool(relative))
             )
             reads = [] if into_kb else other.reads
-            if any(_names_kb(w) or _glob_names_kb(w) for w, _how in reads) or any(
+            spelled = [(p, how) for p, how, _live in other.spelled]  # a program's own paths
+            if any(_names_kb(w) or _glob_names_kb(w) for w, _how in [*reads, *spelled]) or any(
                 _names_kb(p) for p in [*other.literal, *other.folders]
             ):
                 return True
-            if seg_in_kb and any(not w.startswith(("/", "~")) for w in [*(w for w, _ in reads), *other.literal]):
+            near = [w for w in [*(w for w, _ in [*reads, *spelled]), *other.literal] if not w.startswith(("/", "~"))]
+            if seg_in_kb and near:
                 return True
             if other.stdin_list and not into_kb and _KB_SOURCE.search(upstream):
                 return True
-            if vault is not None and where is not None and _covers(reads, where, vault, env, local):
+            if vault is not None and where is not None and _covers([*reads, *spelled], where, vault, env, local):
                 return True
             for program in other.programs:
                 if raw_kb_read(program, in_kb=seg_in_kb, cwd=where, vault=vault, env=env):

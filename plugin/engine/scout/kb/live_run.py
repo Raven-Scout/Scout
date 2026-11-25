@@ -986,6 +986,13 @@ def _shield_single(inner: str) -> str:
     return "".join(_SHIELD.get(c, _SHIELD_DOLLAR if c == "$" else c) for c in inner)
 
 
+def _shield_spelled(text: str, live: str) -> str:
+    """A path a program spells (scout.kb.program_reads.ProgramReads.spelled), shielded but for what the program
+    itself expands: a glob's ``*``, ``?`` and ``[`` ("glob"), a leading ``~`` ("tilde")."""
+    keep = "*?[" if live == "glob" else "~" if live == "tilde" else ""
+    return "".join(c if c in keep else _SHIELD_DOLLAR if c == "$" else _SHIELD.get(c, c) for c in text)
+
+
 def _shield_double(inner: str) -> str:
     """Inside double quotes `$NAME`, `${…}` (a pattern in it too: `${X%*/}`), `$(…)` and backticks stay live; glob
     characters, a brace that doesn't follow `$`, and `~` are literal."""
@@ -1652,7 +1659,14 @@ def _secret_read(words: list[str], reads: list[str], cwd: str) -> str | None:
     return None
 
 
-def _kb_read(words: list[str], reads: list[str], cwd: str, fed: str | None, oldpwd: str | None = None) -> str | None:
+def _kb_read(
+    words: list[str],
+    reads: list[str],
+    cwd: str,
+    fed: str | None,
+    oldpwd: str | None = None,
+    stdin: list[str] | None = None,
+) -> str | None:
     """Ask _KB_READ about each file a reading command reads (scout.kb.raw_read's readers, past their prefixes),
     and each input redirect, as the shell hands them over: brace lists expanded, the command's own variables put
     in, from the folder it runs in (``cd``, ``env -C``). An ``xargs`` reader also reads what it is fed: the words
@@ -1686,7 +1700,7 @@ def _kb_read(words: list[str], reads: list[str], cwd: str, fed: str | None, oldp
                     if listed and any(marker in o and o != marker for o in stripped.words[1:]):
                         operands.append(UNSEEN_INPUT)  # a listed path inside a longer word: not one the gate can judge
             targets += [(word, where, how) for word in operands]
-        targets += _other_targets(name, stripped, cwd, fed, oldpwd)
+        targets += _other_targets(name, stripped, cwd, fed, oldpwd, stdin or [])
     for word, where, how in [*targets, *roots]:
         found = _judge_read(word, where, how, oldpwd)
         if found is not None:
@@ -1695,20 +1709,21 @@ def _kb_read(words: list[str], reads: list[str], cwd: str, fed: str | None, oldp
 
 
 def _other_targets(
-    name: str, stripped: _Stripped, cwd: str, fed: str | None, oldpwd: str | None
+    name: str, stripped: _Stripped, cwd: str, fed: str | None, oldpwd: str | None, stdin: list[str]
 ) -> list[tuple[str, str, str]]:
     """What :mod:`scout.kb.other_reads` says the command reads beyond its operands, as ``_kb_read`` targets: a
     copy's sources (none when it copies into the KB), the files a stdin list names, the paths a program opens
     as written (no glob or ``~``, and no ``$`` but one the shell fills in before the program sees it:
     ``sed "r $(…)"``), the environment variables a program opens (awk's ``ENVIRON["F"]``, from a ``F=…`` the
-    command sets or the run's own), and :data:`PROGRAM_PATH` for a path it builds at run time."""
+    command sets or the run's own), and :data:`PROGRAM_PATH` for a path it builds at run time.
+    ``stdin``: the programs an interpreter reading its program from stdin gets (``python3 - <<EOF``)."""
     from scout.kb.other_reads import into_kb_counts, other_reads
 
     args = stripped.words[1:]
-    other = other_reads(name, args)  # the words as quoted: a quoted `*` in a copy's source is no glob
+    other = other_reads(name, args, stdin)  # the words as quoted: a quoted `*` in a copy's source is no glob
     if other is None:
         return []
-    program = other_reads(name, [_unshield(w) for w in args]) or other  # a program's text as the shell passes it
+    program = other_reads(name, [_unshield(w) for w in args], stdin) or other  # a program's text as the shell passes it
     where = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
     out: list[tuple[str, str, str]] = []
     into_kb = any(_judge_read(dest, where, "dest", oldpwd) == KB_READ for dest in other.dests)
@@ -1736,6 +1751,8 @@ def _other_targets(
     for env_name in program.environ:
         value = _prefix_assignments(stripped).get(env_name)
         out.append((_shield_single(value) if value is not None else f"${{{env_name}}}", where, "file"))
+    # A glob a program matches is a glob (``glob.glob("kn*/*.md")``); nothing else in its text is.
+    out += [(_shield_spelled(path, live), where, how) for path, how, live in program.spelled]
     if program.built:
         out.append((PROGRAM_PATH, where, "file"))
     return out
@@ -1746,15 +1763,16 @@ def _prefix_assignments(stripped: _Stripped) -> dict[str, str]:
     return dict(stripped.assignments)
 
 
-def _other_programs(words: list[str]) -> list[str]:
-    """The shell commands a program in ``words`` runs (awk's ``system()``, perl's backticks, …)."""
+def _other_programs(words: list[str], stdin: list[str] | None = None) -> list[str]:
+    """The shell commands a program in ``words`` runs (awk's ``system()``, perl's backticks, python's
+    ``subprocess.run``, …), ``stdin`` the programs it would read there."""
     from scout.kb import raw_read
     from scout.kb.other_reads import other_reads
 
     stripped = raw_read._strip(words).words
     if not stripped:
         return []
-    other = other_reads(raw_read._command_name(stripped[0]), stripped[1:])
+    other = other_reads(raw_read._command_name(stripped[0]), stripped[1:], stdin or [])
     return other.programs if other is not None else []
 
 
@@ -2573,10 +2591,11 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
                 kb_clean, _writes, literal_reads, _strings = _redirects(shielded)
                 literal_words = _tokens(kb_clean)
             found = _secret_read(literal_words, literal_reads, cwd)
+            stdin = _stdin_programs(segment, strings, fed) if _KB_READ is not None else []
             if found is None and _KB_READ is not None:
-                found = _kb_read(literal_words, literal_reads, cwd, fed, oldpwd)
+                found = _kb_read(literal_words, literal_reads, cwd, fed, oldpwd, stdin)
             if found is None and _KB_READ is not None:
-                for program in _other_programs(words):  # awk's system("…"), perl's backticks: commands too
+                for program in _other_programs(words, stdin):  # awk's system("…"), perl's backticks: commands too
                     # It runs in this segment's folder: `cd action-items; awk 'BEGIN{system("cat context/x")}'`.
                     inner = _run_escape(f"cd {shlex.quote(cwd)} && {program}" if cwd else program, depth + 1)
                     if inner is not None and inner != "detach":
