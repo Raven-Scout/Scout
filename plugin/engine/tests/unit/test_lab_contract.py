@@ -65,3 +65,20 @@ def test_contract_carries_no_absolute_paths(tmp_path: Path) -> None:
     for doc in docs:
         text = json.dumps(doc)
         assert str(vault) not in text and "/Users/" not in text
+
+
+def test_contract_checkpoint_bytes(tmp_path: Path) -> None:
+    """Every thread row carries ``checkpoint_bytes`` (0 for the fixture thread, which has no checkpoints), and
+    the canonical fixture the app reads says so."""
+    canonical = json.loads(CANONICAL_LIST.read_text(encoding="utf-8"))
+    assert [t["checkpoint_bytes"] for t in canonical["threads"]] == [0]
+    vault = _vault(tmp_path)
+    folder = paths.thread_dir(vault, "summary-drift") / "experiments" / "summary-drift-E1-baseline" / "checkpoints"
+    (folder / "deep").mkdir(parents=True)
+    (folder / "a.bin").write_bytes(b"x" * 1000)
+    (folder / "deep" / "b.bin").write_bytes(b"y" * 234)
+    (folder / "link.bin").symlink_to(folder / "a.bin")  # a link is neither followed nor counted
+    other = paths.thread_dir(vault, "summary-drift") / "experiments" / "summary-drift-E1-baseline" / "out.bin"
+    other.write_bytes(b"z" * 77)  # not under checkpoints/: not counted
+    [row] = summary.lab_list(vault, None, full=True, now=NOW)["threads"]
+    assert row["checkpoint_bytes"] == 1000 + 234

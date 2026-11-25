@@ -729,6 +729,80 @@ def test_an_over_cap_run_still_reports_ran_with_its_exit(
     assert capsys.readouterr().err.splitlines()[-1] == "experiment ran: exit -9"
 
 
+def _plan_budget(vault: Path, budget: int) -> None:
+    """Commit a ``disk_budget_bytes`` into E2's note, at T so the notice has passed by AFTER_NOTICE."""
+    note = _note(vault)
+    text = note.read_text(encoding="utf-8").replace(
+        "status: running\n", f"status: running\ndisk_budget_bytes: {budget}\n", 1
+    )
+    assert f"disk_budget_bytes: {budget}" in text
+    note.write_text(text, encoding="utf-8")
+    _commit(vault, T, "lab: a disk budget")
+
+
+def test_broker_runs_with_the_plans_budget(vault: Path, fake_run: FakeRun) -> None:
+    """The runner gets the plan's budget, clamped to the owner's maximum, never the owner's maximum itself."""
+    _owner_config({"lab": {"max_total_bytes": 1 << 30, "disk_free_floor_bytes": 0, "max_memory_bytes": 123456}})
+    _plan_budget(vault, 2 << 20)
+    assert _broker(vault).handle(dict(REQ)).exit == 0
+    call = fake_run.calls[0]
+    assert call["max_total_bytes"] == 2 << 20
+    assert (call["disk_free_floor_bytes"], call["max_memory_bytes"]) == (0, 123456)
+
+
+def test_a_plan_budget_over_the_owners_maximum_is_clamped(vault: Path, fake_run: FakeRun) -> None:
+    _owner_config({"lab": {"max_total_bytes": 4096, "disk_free_floor_bytes": 0}})
+    _plan_budget(vault, 1 << 30)
+    assert _broker(vault).handle(dict(REQ)).exit == 0
+    assert fake_run.calls[0]["max_total_bytes"] == 4096
+
+
+def test_the_owners_own_session_passes_the_plans_budget_and_floors(vault: Path, fake_run: FakeRun) -> None:
+    _owner_config({"lab": {"disk_free_floor_bytes": 0, "max_memory_bytes": 99}})
+    _plan_budget(vault, 3 << 20)
+    assert broker.client_experiment(SLUG, EID, ARGV, env=_owner_session_env(vault)) == 0
+    call = fake_run.calls[0]
+    assert (call["max_total_bytes"], call["disk_free_floor_bytes"], call["max_memory_bytes"]) == (3 << 20, 0, 99)
+
+
+def test_the_broker_refuses_to_start_below_the_floor_and_keeps_the_allowance(
+    vault: Path, fake_run: FakeRun, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _owner_config({"lab": {"disk_free_floor_bytes": 1000}})
+    _plan_budget(vault, 500)
+    monkeypatch.setattr(runner, "free_bytes", lambda _vault: 1499)  # free - budget = 999 < floor
+    b = _broker(vault)
+    reply = b.handle(dict(REQ))
+    assert (reply.exit, reply.stderr) == (
+        broker.EXIT_NOT_RUN,
+        "experiment not run: free disk would fall below the floor\n",
+    )
+    assert fake_run.calls == [] and b.experiments_run == 0
+    monkeypatch.setattr(runner, "free_bytes", lambda _vault: 1500)  # exactly the floor is allowed
+    assert b.handle(dict(REQ)).exit == 0 and b.experiments_run == 1
+
+
+def test_a_floor_the_runner_hits_after_the_broker_check_is_not_run_either(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runner, "run_experiment", FakeRun(error=runner.DiskFloorError()))
+    b = _broker(vault)
+    reply = b.handle(dict(REQ))
+    assert (reply.exit, reply.stderr) == (
+        broker.EXIT_NOT_RUN,
+        "experiment not run: free disk would fall below the floor\n",
+    )
+    assert b.experiments_run == 0
+
+
+def test_the_owners_own_session_below_the_floor_is_not_run(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(runner, "run_experiment", FakeRun(error=runner.DiskFloorError()))
+    assert broker.client_experiment(SLUG, EID, ARGV, env=_owner_session_env(vault)) == broker.EXIT_NOT_RUN
+    assert capsys.readouterr().err.splitlines()[-1] == "experiment not run: free disk would fall below the floor"
+
+
 # -- the verb's place in the broker ------------------------------------------------------------------------------
 
 

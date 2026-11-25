@@ -53,6 +53,12 @@ What it holds the script to, and why each piece is where it is:
   SQLite temp stores leave no name to walk), and kills the run past ``lab.max_total_bytes`` (``over_bytes``; a
   folder the runner can't list, or a live holder whose files the kernel won't list, counts as over). Either kill
   goes through the timeout's kill path, and the run log records both flags.
+  Two more totals ride the same polls and the same kill path (spec §6.4). The **free-disk floor**
+  (``lab.disk_free_floor_bytes``): before launch ``free_bytes(vault) - budget`` must stay at or over the floor
+  (:class:`DiskFloorError`, the script never runs), and at every poll the volume's free bytes must too, whatever
+  filled the disk (``over_disk_floor``). **Memory** (``lab.max_memory_bytes``, 0 = half of the Mac's): the sum of
+  the physical footprints (:func:`footprint_bytes`, GPU allocations included) of the processes holding this
+  run's sandbox is held to the limit (``over_memory``). The run log records both flags beside the others.
 - **The script can't stop its supervisor.** The profile lets it signal only processes holding its own
   sandbox, so it can't freeze or kill the runner (which would leave its own setsid children
   unswept). A runner killed from outside (by the owner, or the OS) still leaves them: then
@@ -88,6 +94,7 @@ What it holds the script to, and why each piece is where it is:
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import datetime as _dt
 import fcntl
 import hashlib
@@ -159,6 +166,9 @@ _GATE = (
 )
 # How often the runner checks a running script's totals (processes and bytes).
 _POLL_S = 1.0
+# What "half of the Mac's memory" is when the Mac won't say how much it has (a conservative fixed limit).
+FALLBACK_MEMORY_BYTES = 8 * 1024**3
+FLOOR_REASON = "free disk would fall below the floor"
 # Apple's git, whichever PATH finds first: /usr/bin/git is a shim that starts one of the other two.
 KNOWN_GITS = (
     "/usr/bin/git",
@@ -183,6 +193,73 @@ class RunOutcome:
     timed_out: bool
     over_bytes: bool = False  # the folder and its scratch dir held more than max_total_bytes (W4)
     over_processes: bool = False  # the sandbox held more than max_processes processes at a poll (W4)
+    over_disk_floor: bool = False  # the volume's free bytes fell under the owner's floor at a poll (spec §6.4)
+    over_memory: bool = False  # the processes' physical footprints together passed the memory limit at a poll
+
+
+class DiskFloorError(LabError):
+    """Launching would leave the volume under the owner's free-disk floor: the experiment was not run. Exit 4 (not
+    run), not 2 (refused), and the run broker doesn't count it against the run's allowance."""
+
+    exit_code = 4
+
+    def __init__(self) -> None:
+        super().__init__(FLOOR_REASON)
+
+
+def free_bytes(vault: Path) -> int | None:
+    """Bytes free to this user on the volume holding ``vault`` (``f_bavail * f_frsize`` of the resolved path);
+    None when the volume can't be read."""
+    try:
+        st = os.statvfs(os.path.realpath(vault))
+    except OSError:
+        return None
+    return st.f_bavail * st.f_frsize
+
+
+def physical_memory_bytes() -> int:
+    """The Mac's physical memory (``hw.memsize``); :data:`FALLBACK_MEMORY_BYTES` when it can't be read."""
+    try:
+        total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (ValueError, OSError, AttributeError):
+        return FALLBACK_MEMORY_BYTES
+    return total if total > 0 else FALLBACK_MEMORY_BYTES
+
+
+def memory_limit(max_memory_bytes: int) -> int:
+    """The memory limit a run is held to: the owner's, or (0) half of :func:`physical_memory_bytes`."""
+    return max_memory_bytes if max_memory_bytes > 0 else physical_memory_bytes() // 2
+
+
+_RUSAGE_INFO_V4 = 4
+_RUSAGE_BUF_BYTES = 512  # rusage_info_v4 is 304 bytes; room to spare
+_PHYS_FOOTPRINT_OFFSET = 16 + 7 * 8  # ri_uuid[16], then ri_user_time .. ri_resident_size, then ri_phys_footprint
+_rusage: object | None = None
+
+
+def footprint_bytes(pid: int) -> int | None:
+    """The physical footprint of process ``pid`` (``ri_phys_footprint`` from libproc's ``proc_pid_rusage``; the
+    figure Activity Monitor calls Memory, GPU allocations included). None when the call fails: a process that
+    vanished, or one the kernel won't report."""
+    global _rusage
+    try:
+        if _rusage is None:
+            lib = ctypes.CDLL(sandbox._LIBPROC, use_errno=True)
+            fn = lib.proc_pid_rusage
+            fn.restype = ctypes.c_int
+            fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+            _rusage = fn
+        buf = ctypes.create_string_buffer(_RUSAGE_BUF_BYTES)
+        if _rusage(pid, _RUSAGE_INFO_V4, buf) != 0:  # type: ignore[operator]
+            return None
+        return int.from_bytes(buf.raw[_PHYS_FOOTPRINT_OFFSET : _PHYS_FOOTPRINT_OFFSET + 8], "little")
+    except (OSError, AttributeError):
+        return None
+
+
+def _holders_footprint(holders: set[int]) -> int:
+    """The footprints of ``holders`` added up; one that vanished counts 0."""
+    return sum(footprint_bytes(pid) or 0 for pid in holders)
 
 
 # --- checks ----------------------------------------------------------------------------
@@ -884,6 +961,8 @@ def _log_body(
     max_processes: int,
     max_total_bytes: int,
     nproc: int,
+    floor: int,
+    mem_limit: int,
 ) -> str:
     return "\n".join(
         [
@@ -895,6 +974,8 @@ def _log_body(
             f"over_processes: {'true' if outcome.over_processes else 'false'} (limit {max_processes}; "
             f"the kernel refuses forks past {nproc} of the owner's processes)",
             f"over_bytes: {'true' if outcome.over_bytes else 'false'} (cap {max_total_bytes} bytes)",
+            f"over_disk_floor: {'true' if outcome.over_disk_floor else 'false'} (floor {floor} bytes free)",
+            f"over_memory: {'true' if outcome.over_memory else 'false'} (limit {mem_limit} bytes)",
             f"spent_usd: {outcome.spent_usd:.4f} (this run {max(outcome.spent_usd - spent_before, 0.0):.4f}, "
             f"cap {cap_usd:.2f})",
             "--- stdout (tail) ---",
@@ -923,6 +1004,8 @@ def run_experiment(
     max_processes: int = broker.LabLimits.max_processes,
     max_total_bytes: int = broker.LabLimits.max_total_bytes,
     max_open_files: int = broker.LabLimits.max_open_files,
+    disk_free_floor_bytes: int = 0,
+    max_memory_bytes: int = 0,
 ) -> RunOutcome:
     """Run ``argv`` for experiment ``eid`` of thread ``slug`` under the experiment sandbox.
 
@@ -943,6 +1026,12 @@ def run_experiment(
     ``max_processes`` and ``max_total_bytes`` are the owner's totals for the run (see the module docstring); a run
     killed for either still returns its outcome, with ``over_processes`` or ``over_bytes`` set. ``max_open_files``
     is the descriptors the script may hold open (the gate's ``ulimit -n``).
+
+    ``max_total_bytes`` is the experiment's disk budget (the broker passes the plan's, clamped to the owner's
+    maximum). ``disk_free_floor_bytes`` (0 = none) is the free space the volume must keep: a launch that would leave
+    less raises :class:`DiskFloorError`, and a run that sees less at a poll is killed (``over_disk_floor``).
+    ``max_memory_bytes`` is the processes' physical footprint together (0 = half of the Mac's memory); past it the
+    run is killed (``over_memory``).
     """
     source = os.environ if env is None else env
     if not argv:
@@ -958,6 +1047,9 @@ def run_experiment(
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise LabError(f"{name} is {value!r}; it must be a whole number greater than 0")
+    for name, value in (("free disk floor", disk_free_floor_bytes), ("max memory", max_memory_bytes)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise LabError(f"{name} is {value!r}; it must be a whole number, 0 or more")
     if commit is not None and not _SHA_RE.match(commit):
         raise LabError(f"{commit!r} is not a commit id")
     note, private = _running_note(vault, slug, eid)  # checks the slug and EID the lock file is named by
@@ -970,7 +1062,16 @@ def run_experiment(
             if not profile.available():
                 raise LabError("experiments need macOS sandbox-exec, which isn't available here; not run")
             source_tree = None if commit is None else (commit, exp_rel)
-            totals = (max_processes, max_total_bytes, max_open_files)
+            free = free_bytes(vault)
+            if disk_free_floor_bytes > 0 and (free is None or free - max_total_bytes < disk_free_floor_bytes):
+                raise DiskFloorError
+            totals = (
+                max_processes,
+                max_total_bytes,
+                max_open_files,
+                disk_free_floor_bytes,
+                memory_limit(max_memory_bytes),
+            )
             return _run(
                 vault,
                 slug,
@@ -1087,9 +1188,9 @@ def _run(
     source: Mapping[str, str],
     claude_argv: Sequence[str],
     source_tree: tuple[str, str] | None,
-    totals: tuple[int, int, int],
+    totals: tuple[int, int, int, int, int],
 ) -> RunOutcome:
-    max_processes, max_total_bytes, max_open_files = totals
+    max_processes, max_total_bytes, max_open_files, floor, mem_limit = totals
     _clear(exp_fd, TMP_NAME)
     os.mkdir(TMP_NAME, 0o700, dir_fd=exp_fd)
     tmp_real = os.path.join(exp_real, TMP_NAME)
@@ -1187,7 +1288,7 @@ def _run(
             child_env[ENV_SOURCE_DIR] = src  # the committed scripts; the working folder stays exp_real
         out_path, err_path = os.path.join(private_dir, "stdout"), os.path.join(private_dir, "stderr")
         started = config.now(vault)
-        timed_out = over_bytes = over_processes = False
+        timed_out = over_bytes = over_processes = over_disk_floor = over_memory = False
         clean = False
         nproc = _nproc_limit(max_processes)  # counted last thing before the launch
         with _new_file(out_path) as out_f, _new_file(err_path) as err_f:
@@ -1253,6 +1354,12 @@ def _run(
                         if len(holders) > max_processes:
                             over_processes = True
                             break
+                        if floor > 0 and ((free := free_bytes(vault)) is None or free < floor):
+                            over_disk_floor = True
+                            break
+                        if _holders_footprint(holders) > mem_limit:
+                            over_memory = True
+                            break
                         continue
                     # The script exited: its last writes, and the unlinked files of anything it left running.
                     over_bytes = over(_holders(probe, marker, outside))
@@ -1271,9 +1378,21 @@ def _run(
             timed_out=timed_out,
             over_bytes=over_bytes,
             over_processes=over_processes,
+            over_disk_floor=over_disk_floor,
+            over_memory=over_memory,
         )
         body = _log_body(
-            argv, started, config.now(vault), outcome, spent_before, cap_usd, max_processes, max_total_bytes, nproc
+            argv,
+            started,
+            config.now(vault),
+            outcome,
+            spent_before,
+            cap_usd,
+            max_processes,
+            max_total_bytes,
+            nproc,
+            floor,
+            mem_limit,
         )
         if not clean:
             body += "survivors: a process holding this experiment's sandbox was still alive after the sweep\n"

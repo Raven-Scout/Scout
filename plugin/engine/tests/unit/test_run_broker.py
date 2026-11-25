@@ -99,6 +99,36 @@ def test_a_path_outside_what_a_run_may_commit_is_refused(vault: Path, paths: lis
     assert reason in err.value.reason
 
 
+def _lab_file(vault: Path, rel: str, size: int) -> None:
+    path = vault / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as f:
+        f.truncate(size)  # sparse: no disk used
+
+
+def test_commit_refuses_a_large_lab_file(vault: Path) -> None:
+    rel = "knowledge-base/lab/t/experiments/t-E1-x/out.bin"
+    _lab_file(vault, rel, 11 * 1024 * 1024)
+    with pytest.raises(broker.Refused) as err:
+        broker.validate_commit(_commit([rel]), vault, _env())
+    assert err.value.exit_code == broker.EXIT_REFUSED
+    assert rel in err.value.reason and "checkpoints/" in err.value.reason
+
+
+def test_commit_allows_a_lab_file_at_the_limit(vault: Path) -> None:
+    rel = "knowledge-base/lab/t/experiments/t-E1-x/out.bin"
+    _lab_file(vault, rel, broker.LAB_COMMIT_MAX_FILE_BYTES)
+    assert broker.validate_commit(_commit([rel]), vault, _env())[1] == [rel]
+
+
+def test_commit_allows_a_large_file_elsewhere(vault: Path) -> None:
+    """The 10 MiB rule is the lab's only: a large file outside knowledge-base/lab/ passes."""
+    _lab_file(vault, "notes/big.bin", 11 * 1024 * 1024)
+    _lab_file(vault, "knowledge-base/projects/big.bin", 11 * 1024 * 1024)
+    msg_paths = broker.validate_commit(_commit(["notes/big.bin", "knowledge-base/projects/big.bin"]), vault, _env())[1]
+    assert msg_paths == ["notes/big.bin", "knowledge-base/projects/big.bin"]
+
+
 def test_a_link_out_of_the_vault_is_refused(vault: Path, tmp_path: Path) -> None:
     (tmp_path / "elsewhere.md").write_text("x\n")
     (vault / "notes" / "link.md").symlink_to(tmp_path / "elsewhere.md")

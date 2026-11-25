@@ -411,6 +411,31 @@ def _control(text: str) -> bool:
     return any(ord(c) < 0x20 or c == "\x7f" for c in text)
 
 
+LAB_COMMIT_MAX_FILE_BYTES = 10 * 1024 * 1024
+LAB_DIR_REL = "knowledge-base/lab"
+
+
+def _refuse_large_lab_file(rel: str, vault_real: str) -> None:
+    """A regular file over :data:`LAB_COMMIT_MAX_FILE_BYTES` under ``knowledge-base/lab/`` is refused (exit 2):
+    weights and other big outputs belong in an experiment's ``checkpoints/`` folder, which the vault's .gitignore
+    leaves out. ``lstat`` on the resolved folder plus the leaf, so no link is followed."""
+    if rel != LAB_DIR_REL and not rel.startswith(LAB_DIR_REL + "/"):
+        return
+    try:
+        st = os.lstat(
+            os.path.join(os.path.realpath(os.path.join(vault_real, os.path.dirname(rel))), os.path.basename(rel))
+        )
+    except OSError:
+        return
+    if stat.S_ISREG(st.st_mode) and st.st_size > LAB_COMMIT_MAX_FILE_BYTES:
+        raise Refused(
+            EXIT_REFUSED,
+            f"'{rel}' is {st.st_size} bytes, over the {LAB_COMMIT_MAX_FILE_BYTES // (1024 * 1024)} MiB a lab file may "
+            "be in a commit; put large outputs (weights, caches) under the experiment's checkpoints/ folder, "
+            "which is never committed",
+        )
+
+
 def validate_commit(req: Mapping[str, Any], vault: Path, env: Mapping[str, str]) -> tuple[str, list[str], str | None]:
     """(message, paths relative to the vault, override) for a commit request, or :class:`Refused` (exit 2).
 
@@ -462,6 +487,7 @@ def validate_commit(req: Mapping[str, Any], vault: Path, env: Mapping[str, str])
         form = hook_paths.removes_protected(spelled, vault, env) or hook_paths.removes_protected(real, vault, env)
         if form is not None:
             raise Refused(EXIT_REFUSED, f"'{p}' is protected ({form}); a scheduled run doesn't commit it")
+        _refuse_large_lab_file(rel, vault_real)
         out.append(rel)
     return msg, out, override
 
@@ -1150,13 +1176,18 @@ class Broker:
             return Reply(EXIT_LIMIT, f"experiment refused: this run has run its {ran}\n", kind=RUN_LIMIT)
         try:
             requested = _requested_timeout(req)
-            slug, eid, argv, cap, commit, _plan = validate_experiment(
+            slug, eid, argv, cap, commit, plan = validate_experiment(
                 req, self.vault, self.lab_limits, self.clock(), self.env
-            )  # the plan is used from Task 6 on
+            )
         except Refused as r:
             # A refused request ran nothing, so it keeps the run's allowance; the notice bounds its retries.
             return Reply(r.exit_code, f"experiment refused: {_one_line(r.reason)}\n", kind=REFUSED)
         timeout_s = min(requested, self.lab_limits.timeout_s) if requested is not None else self.lab_limits.timeout_s
+        # A launch that would leave the volume under the owner's floor is not a run: it keeps the run's allowance.
+        floor = self.lab_limits.disk_free_floor_bytes
+        free = runner.free_bytes(self.vault)
+        if floor > 0 and (free is None or free - plan.disk_budget_bytes < floor):
+            return Reply(EXIT_NOT_RUN, f"experiment not run: {runner.FLOOR_REASON}\n", kind=REFUSED)
         # Counted once the runner is called, whatever it answers: a script that ran and then failed a check
         # (a survivor of the kill sweep) still ran.
         self.experiments_run += 1
@@ -1171,9 +1202,14 @@ class Broker:
                 env=self.env,
                 commit=commit,
                 max_processes=self.lab_limits.max_processes,
-                max_total_bytes=self.lab_limits.max_total_bytes,
+                max_total_bytes=plan.disk_budget_bytes,
                 max_open_files=self.lab_limits.max_open_files,
+                disk_free_floor_bytes=floor,
+                max_memory_bytes=self.lab_limits.max_memory_bytes,
             )
+        except runner.DiskFloorError:  # the free space moved since the check above: not run, allowance kept
+            self.experiments_run -= 1
+            return Reply(EXIT_NOT_RUN, f"experiment not run: {runner.FLOOR_REASON}\n", kind=REFUSED)
         except LabError as e:
             return Reply(e.exit_code, f"experiment refused: {_one_line(e)}\n", kind=REFUSED)
         return _outcome_reply(outcome)
@@ -1595,7 +1631,7 @@ def client_experiment(
 
     vault = _vault(env)
     try:
-        slug, eid, args, cap, commit, _plan = validate_experiment(
+        slug, eid, args, cap, commit, plan = validate_experiment(
             {"slug": slug, "eid": eid, "argv": list(argv)}, vault, limits, datetime.now(UTC), env
         )
     except Refused as r:
@@ -1612,9 +1648,14 @@ def client_experiment(
             env=env,
             commit=commit,
             max_processes=limits.max_processes,
-            max_total_bytes=limits.max_total_bytes,
+            max_total_bytes=plan.disk_budget_bytes,
             max_open_files=limits.max_open_files,
+            disk_free_floor_bytes=limits.disk_free_floor_bytes,
+            max_memory_bytes=limits.max_memory_bytes,
         )
+    except runner.DiskFloorError:
+        print(f"experiment not run: {runner.FLOOR_REASON}", file=sys.stderr)
+        return EXIT_NOT_RUN
     except LabError as e:
         print(f"experiment refused: {_one_line(e)}", file=sys.stderr)
         return e.exit_code

@@ -437,6 +437,131 @@ def test_writing_past_the_total_bytes_cap_is_killed(tmp_path: Path, where: str) 
 
 
 @kernel
+def test_kernel_budget_kills_a_writer(tmp_path: Path) -> None:
+    """The budget the caller passes (the plan's) is the cap: a script writing past 1 MiB is killed."""
+    vault = h.make_vault(tmp_path)
+    write = f"{h.PY} -I -c \"open('a.bin', 'wb').write(b'x' * 700000); open('b.bin', 'wb').write(b'x' * 700000)\""
+    out = h.run(vault, tmp_path, f"{write}; sleep 30", timeout_s=40, max_total_bytes=1 << 20)
+    assert out.over_bytes is True and out.exit != 0 and out.timed_out is False
+
+
+# -- the free-disk floor and memory (spec section 6.4) ------------------------------------------------------------
+
+BUDGET = 1 << 20
+FLOOR = 10_000
+HUGE = 10**13
+
+
+@kernel
+def test_run_refuses_to_start_below_the_floor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vault = h.make_vault(tmp_path)
+    monkeypatch.setattr(runner, "free_bytes", lambda _vault: FLOOR + BUDGET - 1)
+    with pytest.raises(runner.DiskFloorError, match="free disk would fall below the floor") as err:
+        h.run(vault, tmp_path, "touch ran.marker", max_total_bytes=BUDGET, disk_free_floor_bytes=FLOOR)
+    assert isinstance(err.value, LabError) and err.value.exit_code == 4
+    assert not (h.exp_dir(vault) / "ran.marker").exists()
+    monkeypatch.setattr(runner, "free_bytes", lambda _vault: FLOOR + BUDGET)  # exactly enough
+    out = h.run(vault, tmp_path, "touch ran.marker", max_total_bytes=BUDGET, disk_free_floor_bytes=FLOOR)
+    assert out.exit == 0 and (h.exp_dir(vault) / "ran.marker").exists()
+    assert out.over_disk_floor is False
+    assert "over_disk_floor: false" in next(h.exp_dir(vault).glob("run-*.log")).read_text()
+
+
+@kernel
+def test_run_stops_when_free_space_falls_below_the_floor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vault = h.make_vault(tmp_path)
+    calls = {"n": 0}
+
+    def free(_vault: Path) -> int:
+        calls["n"] += 1
+        return HUGE if calls["n"] <= 3 else FLOOR - 1  # the launch check and two polls see room; the third doesn't
+
+    monkeypatch.setattr(runner, "free_bytes", free)
+    started = time.monotonic()
+    out = h.run(vault, tmp_path, "sleep 60", timeout_s=50, max_total_bytes=BUDGET, disk_free_floor_bytes=FLOOR)
+    assert time.monotonic() - started < 20
+    assert out.over_disk_floor is True and out.timed_out is False and out.exit != 0
+    assert out.over_bytes is False and out.over_memory is False
+    log = next(h.exp_dir(vault).glob("run-*.log")).read_text()
+    assert "over_disk_floor: true" in log and "over_memory: false" in log
+
+
+@kernel
+def test_a_zero_floor_never_stops_a_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vault = h.make_vault(tmp_path)
+    monkeypatch.setattr(runner, "free_bytes", lambda _vault: 0)
+    out = h.run(vault, tmp_path, "sleep 2; echo done", disk_free_floor_bytes=0)
+    assert out.exit == 0 and out.over_disk_floor is False
+
+
+@kernel
+def test_run_stops_over_memory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vault = h.make_vault(tmp_path)
+    seen: list[int] = []
+
+    def footprint(pid: int) -> int:
+        seen.append(pid)
+        return 600  # every holder: two or more together pass 1000
+
+    monkeypatch.setattr(runner, "footprint_bytes", footprint)
+    out = h.run(vault, tmp_path, "sleep 60 & sleep 60 & wait", timeout_s=50, max_memory_bytes=1000)
+    assert out.over_memory is True and out.timed_out is False and out.exit != 0 and out.over_disk_floor is False
+    assert seen, "the footprint is read for the processes holding the sandbox"
+    assert "over_memory: true (limit 1000 bytes)" in next(h.exp_dir(vault).glob("run-*.log")).read_text()
+
+
+@kernel
+def test_a_vanished_holder_counts_zero_toward_memory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vault = h.make_vault(tmp_path)
+    monkeypatch.setattr(runner, "footprint_bytes", lambda pid: None)
+    out = h.run(vault, tmp_path, "sleep 2; echo done", max_memory_bytes=1)
+    assert out.exit == 0 and out.over_memory is False
+
+
+def test_default_memory_limit_is_half_the_mac() -> None:
+    sysctl = subprocess.run(["/usr/sbin/sysctl", "-n", "hw.memsize"], capture_output=True, text=True, check=True)
+    memsize = int(sysctl.stdout)
+    assert runner.physical_memory_bytes() == memsize
+    assert runner.memory_limit(0) == memsize // 2
+    assert runner.memory_limit(12345) == 12345
+
+
+def test_an_unreadable_memory_size_falls_back_to_8_gib(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(_name: str) -> int:
+        raise ValueError("no such name")
+
+    monkeypatch.setattr(runner.os, "sysconf", broken)
+    assert runner.physical_memory_bytes() == 8 * 1024**3
+    assert runner.memory_limit(0) == 4 * 1024**3
+
+
+@kernel
+def test_the_default_limit_is_what_a_run_with_zero_is_held_to(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vault = h.make_vault(tmp_path)
+    monkeypatch.setattr(runner, "physical_memory_bytes", lambda: 2000)  # half: 1000
+    monkeypatch.setattr(runner, "footprint_bytes", lambda pid: 1001)
+    out = h.run(vault, tmp_path, "sleep 60", timeout_s=50, max_memory_bytes=0)
+    assert out.over_memory is True
+    assert "(limit 1000 bytes)" in next(h.exp_dir(vault).glob("run-*.log")).read_text()
+
+
+def test_footprint_bytes_reads_a_live_process_and_none_for_a_gone_one() -> None:
+    mine = runner.footprint_bytes(os.getpid())
+    assert mine is not None and mine > 1_000_000
+    child = subprocess.Popen(["/usr/bin/true"])
+    child.wait()
+    assert runner.footprint_bytes(child.pid) is None
+
+
+@pytest.mark.parametrize("field", ["disk_free_floor_bytes", "max_memory_bytes"])
+@pytest.mark.parametrize("value", [-1, True, 1.5])
+def test_refuses_bad_floor_and_memory(tmp_path: Path, field: str, value: object) -> None:
+    vault = h.make_vault(tmp_path)
+    with pytest.raises(LabError, match="whole number"):
+        h.run(vault, tmp_path, "true", **{field: value})  # type: ignore[arg-type]
+
+
+@kernel
 def test_under_the_total_bytes_cap_runs_to_the_end(tmp_path: Path) -> None:
     vault = h.make_vault(tmp_path)
     write = f"{h.PY} -I -c \"open('half.bin', 'wb').write(b'x' * 524288)\""

@@ -17,6 +17,7 @@ replies and unanswered comments counted on its line. ``lab show`` counts them in
 from __future__ import annotations
 
 import datetime as _dt
+import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -150,6 +151,29 @@ def _experiment_ids(vault: Path, thread: Thread, now: _dt.datetime, hidden: set[
     return {"planned": planned, "running": running, "due": due, "held": held}
 
 
+def _checkpoint_bytes(vault: Path, thread: Thread) -> int:
+    """The bytes of the regular files under each of the thread's experiments' ``checkpoints/`` folders (``lstat``;
+    a link is neither followed nor counted). Those folders are never committed, so the wrap can say what they hold."""
+    total = 0
+    root = paths.thread_dir(vault, thread.slug) / "experiments"
+    try:
+        folders = [Path(e.path) / "checkpoints" for e in os.scandir(root) if e.is_dir(follow_symlinks=False)]
+    except OSError:
+        return 0
+    stack = [f for f in folders if not f.is_symlink()]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as it:
+                for entry in it:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+        except OSError:
+            continue
+    return total
+
+
 def _summary(vault: Path, thread: Thread, now: _dt.datetime, hidden: set[str]) -> dict[str, Any]:
     questions = _questions(thread)
     last_run = thread.frontmatter.get("last_run")
@@ -171,6 +195,7 @@ def _summary(vault: Path, thread: Thread, now: _dt.datetime, hidden: set[str]) -
         "experiments": _experiment_ids(vault, thread, now, hidden),
         "last_run": None if last_run is None else _json(last_run),
         "problems": len(thread.problems),
+        "checkpoint_bytes": _checkpoint_bytes(vault, thread),
     }
 
 
@@ -190,6 +215,7 @@ def _broken_summary(vault: Path, thread: Thread, exc: Exception) -> dict[str, An
         "experiments": {"planned": [], "running": [], "due": [], "held": []},
         "last_run": None,
         "problems": len(thread.problems) + 1,
+        "checkpoint_bytes": _checkpoint_bytes(vault, thread),
         "error": f"cannot summarize this thread: {exc.__class__.__name__}: {exc}"[:300],
     }
 
