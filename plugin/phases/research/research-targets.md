@@ -76,6 +76,7 @@ A proposal holds one Question and 2–5 starting questions (`--open`, repeated),
 **Sources:**
 - a question in an active thread big enough to stand alone;
 - a coverage mandate with no thread;
+- an `inbox.md` line marked `[for research]`: remove it from `inbox.md` once its proposal is made;
 - an empty lab (`lab list --json` gives no threads, as on a vault with no lab folder yet): use entity scoring, in this priority order:
   1. entities {{USER_NAME}} interacted with this week (from dreaming session logs);
   2. 🔴 HIGH priority project entities;

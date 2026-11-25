@@ -8,15 +8,14 @@ requires: null
 
 # PHASE 2: DEEP RESEARCH
 
-For each research target, execute a focused research cycle.
+A research target is a thread's open question (Step 1d). Run a focused cycle for each.
 
 ## Step 2a: Gather Current KB State
 
-Read the entity's current file. Note:
+Read the thread's front page (`lab show <slug> --json`) and the notes in its Evidence (`scripts/scoutctl kb read`). Note:
 - What {{INSTANCE_NAME}} already knows (don't re-research known facts)
 - What's thin or missing (focus research here)
 - `last_verified:` / `last_updated:` dates
-- Existing relationships that might lead to new discoveries
 
 ## Step 2b: External Research
 

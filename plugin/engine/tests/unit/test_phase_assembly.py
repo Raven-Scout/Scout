@@ -227,6 +227,25 @@ def test_every_assembled_brain_file_carries_the_run_health_phase(kind):
     assert 'Never write "by this run"' in text
 
 
+def test_research_brain_assembles_with_the_lab():
+    """The Lab phases reach RESEARCH.md only, and nothing in it still points at the retired queue."""
+    from scout.scripts.bootstrap import _assemble
+    from tests.unit.test_briefing_mode_layer import _config
+
+    cfg = _config(enabled_connectors={"slack", "telegram"})
+    assert cfg.plugin_root.resolve() == PHASES_ROOT.parent.resolve()
+    research = _assemble(cfg, "RESEARCH")
+    for needle in ("PHASE 1: THE LAB", "PHASE 2E: EXPERIMENTS", "scoutctl lab experiment run"):
+        assert needle in research, needle
+    for gone in ("research-queue/", "research_queue"):
+        assert gone not in research, gone
+    for kind in ("SKILL", "DREAMING"):
+        text = _assemble(cfg, kind)
+        assert "PHASE 1: THE LAB" not in text and "PHASE 2E: EXPERIMENTS" not in text, kind
+        assert "{{USER_NAME}}" not in text, kind
+    assert "{{USER_NAME}}" not in research and "Test User" in research
+
+
 # --- the RESPOND brain (immediate response, spec 2026-11-21 §4) -------------------------------------------
 
 PHASES_ROOT = Path(__file__).parent.parent.parent.parent / "phases"

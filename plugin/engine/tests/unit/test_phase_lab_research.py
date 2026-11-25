@@ -18,6 +18,11 @@ from scout.scripts.phase_assembly import parse_phase_file
 PLUGIN = Path(__file__).resolve().parents[3]
 TARGETS = PLUGIN / "phases" / "research" / "research-targets.md"
 EXPERIMENTS = PLUGIN / "phases" / "research" / "lab-experiments.md"
+DEEP = PLUGIN / "phases" / "research" / "deep-research.md"
+INTEGRATION = PLUGIN / "phases" / "research" / "knowledge-integration.md"
+COMMIT = PLUGIN / "phases" / "research" / "commit-notify.md"
+INBOX = PLUGIN / "phases" / "core" / "inbox-processing.md"
+RUNNER = PLUGIN / "templates" / "run-research.sh.tmpl"
 SUB_GROUPS = {"question", "understanding", "evidence", "timeline", "experiment"}  # ruling R1
 # `scoutctl lab <word>( <word>)?`, and a backticked short form (`lab reply …`) the text uses after naming scoutctl.
 _LAB_COMMAND = re.compile(r"(?:scoutctl |`)lab ([a-z][a-z-]*)(?: ([a-z][a-z-]*))?")
@@ -237,7 +242,7 @@ def test_both_phases_are_research_only() -> None:
 
 def _named_commands() -> set[tuple[str, ...]]:
     found: set[tuple[str, ...]] = set()
-    for path in (TARGETS, EXPERIMENTS):
+    for path in (TARGETS, EXPERIMENTS, DEEP, INTEGRATION, COMMIT, INBOX):
         for first, second in _LAB_COMMAND.findall(_text(path)):
             found.add((first, second) if first in SUB_GROUPS and second else (first,))
     return found
@@ -246,7 +251,163 @@ def _named_commands() -> set[tuple[str, ...]]:
 def test_every_lab_command_named_exists() -> None:
     found = _named_commands()
     assert {("experiment", "collect"), ("experiment", "stop"), ("reply",), ("propose",)} <= found
+    # Step 3d's thread updates, the wrap's gather and the inbox route.
+    assert {
+        ("understanding", "set"),
+        ("question", "answer"),
+        ("evidence", "add"),
+        ("timeline", "add"),
+        ("list",),
+        ("comment",),
+    } <= found
     runner = CliRunner()
     for words in sorted(found):
         result = runner.invoke(lab_app, [*words, "--help"])
         assert result.exit_code == 0, (words, result.output)
+
+
+# --- Task 11: deep research, integration, commit and wrap -----------------------------------------------
+
+
+def _section(path: Path, heading: str) -> str:
+    """The body of the one section in ``path`` whose text holds ``heading``."""
+    (section,) = [s for s in parse_phase_file(path) if heading in s.body]
+    return re.sub(r"\s+", " ", section.body)
+
+
+def test_deep_research_targets_a_threads_open_question() -> None:
+    text = _flat(DEEP)
+    assert "A research target is a thread's open question" in text.split("## Step 2a", 1)[0]
+    step = text.split("## Step 2a", 1)[1].split("## Step 2b", 1)[0]
+    assert "front page" in step and "Evidence" in step
+    assert "scripts/scoutctl kb read" in step
+
+
+def test_integration_and_wrap_pin_the_thread_updates() -> None:
+    integration = _flat(INTEGRATION)
+    assert '--tag "research run"' in integration
+    assert "a sentence a cold reader understands" in integration
+    slack = _section(COMMIT, "## Step 4d: Slack Notification")
+    telegram = _section(COMMIT, "## Step 4d: Telegram Notification")
+    for wrap in (slack, telegram):
+        assert "comments still waiting" in wrap
+        assert "awaiting your approval" in wrap
+    assert "only normal-visibility threads" in slack
+
+
+def test_step_3d_updates_the_thread_after_the_topic_notes() -> None:
+    text = _flat(INTEGRATION)
+    step = text.split("## Step 3d: Update the thread", 1)[1]
+    for phrase in (
+        "lab understanding set <slug> --file",
+        "under 2 KB",
+        "lab question answer",
+        "drop",
+        "add",
+        "lab evidence add <slug> --target",
+        "--why",
+        'lab timeline add <slug> --tag "research run" --did',
+        "--found",
+        "--questions",
+        "[--steers",
+        "per touched thread",
+        "never a commit subject or a file list",
+    ):
+        assert phrase in step, phrase
+    assert text.index("## Step 3a") < text.index("## Step 3d")
+    step_3c = text.split("## Step 3c", 1)[1].split("## Step 3d", 1)[0]
+    assert "Do NOT create action items" in step_3c
+    assert "research→Scout findings path" in step_3c
+
+
+def test_commit_names_threads_and_lists_lab_files() -> None:
+    commit = _section(COMMIT, "## Step 4a: Commit")
+    step_4a = commit.split("## Step 4a", 1)[1].split("## Step 4b", 1)[0]
+    assert '"research [HH:MM]: <threads worked and what moved>"' in step_4a
+    assert "knowledge-base/lab/" in step_4a
+    step_4b = commit.split("## Step 4b", 1)[1].split("## Step 4c", 1)[0]
+    assert "threads worked" in step_4b and "entities updated" not in step_4b
+
+
+def test_both_wraps_gather_the_lab_at_wrap_time() -> None:
+    for heading in ("## Step 4d: Slack Notification", "## Step 4d: Telegram Notification"):
+        wrap = _section(COMMIT, heading)
+        for phrase in (
+            "scripts/scoutctl lab list --json",
+            "one line per touched thread",
+            "`unanswered_comments`",
+            "`active` and `paused`",
+            "`not run`",
+            "still running",
+            "elapsed",
+            "`checkpoint_bytes`",
+            "`needs_you.proposals`",
+        ):
+            assert phrase in wrap, (heading, phrase)
+
+
+def test_slack_wrap_never_names_a_private_thread_and_telegram_may() -> None:
+    """Review Focus 5: the Slack wrap never names a private thread, though the Telegram wrap may."""
+    slack = _section(COMMIT, "## Step 4d: Slack Notification")
+    assert "private threads also moved" in slack
+    telegram = _section(COMMIT, "## Step 4d: Telegram Notification")
+    assert "may name `[private]` items and private threads by their exact title" in telegram
+
+
+def test_research_runner_prompt_follows_the_lab_phases() -> None:
+    """Ruling P2-R13: the run prompt no longer sends a run to the retired research queue."""
+    text = _text(RUNNER)
+    prompt = text[text.index('PROMPT="') : text.index('"\n', text.index('PROMPT="') + 8)]
+    assert "research-queue" not in prompt and "score entities" not in prompt
+    steps = [
+        "Step 2: Execute Phase 1 (The Lab)",
+        "owner comments first",
+        "PHASE 2E",
+        "Step 3: Execute Phase 2 (Deep Research)",
+        "Step 4: Execute Phase 3 (Knowledge Integration)",
+        "Step 3d",
+        "Step 5: Commit",
+        "Step 6: Send the wrap notification",
+    ]
+    at = [prompt.index(s) for s in steps]
+    assert at == sorted(at), "the runner's steps are out of order"
+
+
+def test_inbox_research_entries_go_to_the_lab() -> None:
+    """Ruling P2-R14: an inbox idea joins a matching thread as an owner comment, else waits for a proposal."""
+    text = _flat(INBOX)
+    assert "research-queue" not in text
+    route = text.split("**Research/idea**", 1)[1].split("4. **Project-specific**", 1)[0]
+    for phrase in (
+        "`active` or `paused`",
+        'scripts/scoutctl lab comment <slug> --text "Q: <entry>" --author',
+        "{{USER_NAME}}",
+        "[for research]",
+    ):
+        assert phrase in route, phrase
+    proposals = _flat(TARGETS).split("## Step 1f", 1)[1].split("## Step 1g", 1)[0]
+    assert "`[for research]`" in proposals and "inbox.md" in proposals
+    assert "once its proposal is made" in proposals
+
+
+def test_run_sandbox_allows_lab_writes(tmp_path: Path) -> None:
+    """Every `scoutctl lab` write a run makes lands in the lock file and the thread folder."""
+    import os
+    import subprocess
+
+    from scout.kb import hook_paths
+    from scout.sandbox import launch, profile
+
+    root = tmp_path.resolve()
+    home, vault = root / "home", root / "vault"
+    (home / ".claude").mkdir(parents=True)
+    vault.mkdir()
+    subprocess.run(["git", "init", "-q", str(vault)], check=True)
+    env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_CONFIG_DIR", "SCOUT_SECRETS_DIR", "GIT_DIR")}
+    env.update(HOME=str(home), XDG_CONFIG_HOME=str(home / ".config"))
+    env.pop("GIT_CONFIG_GLOBAL", None)
+    env.pop(launch.ENV_SWITCH, None)
+    hook_paths._ROOTS_CACHE.clear()
+    rules = profile.build_rules(vault, env)
+    for path in (vault / ".scout-state" / "lab.lock", vault / "knowledge-base" / "lab" / "t" / "t.md"):
+        assert profile.decide(rules, str(path)) == "allow", path
