@@ -1182,7 +1182,9 @@ def _git_escape(args: list[str]) -> str | None:
             return form
     if i >= len(args):
         return None
-    subcommand, rest = args[i].lower(), args[i + 1 :]  # git refuses `git COMMIT`: folding only over-denies
+    from scout.kb.raw_read import fold
+
+    subcommand, rest = fold(args[i]), args[i + 1 :]  # git refuses `git COMMIT`: folding only over-denies
     if _dynamic(subcommand):
         return "git <unknown>"
     if subcommand in _WRITES_COMMITS:

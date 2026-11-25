@@ -10,13 +10,14 @@ Synthetic vault only; the shell pre-filter's side is in test_hook_prefilter_diff
 
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 
 import pytest
 
 from scout.hooks import kb_read_gate as gate
 from scout.kb import live_run
-from scout.kb.raw_read import SHELL_ONLY, program_name, raw_kb_read
+from scout.kb.raw_read import SHELL_ONLY, fold, program_name, raw_kb_read
 from tests.unit.test_hooks_kb_read_gate import RUN, _denied, _payload
 
 
@@ -52,10 +53,24 @@ def _run(vault: Path, command: str, cwd: Path | None = None):
         ("EXEC", "EXEC"),
         ("Eval", "Eval"),
         ("cd", "cd"),
+        # APFS folds the Unicode way: the ﬁ ligature, the long s and ß
+        ("ﬁnd", "find"),
+        ("xargſ", "xargs"),
+        ("ſh", "sh"),
+        ("ßh", "ssh"),
+        ("oſaſcript", "osascript"),
+        ("ＦＩＮＤ", "find"),  # fullwidth: over-denied, never let through
+        ("ſet", "ſet"),  # folds to a builtin, so it is not the builtin
     ],
 )
 def test_a_program_name_folds_and_a_builtin_keeps_its_spelling(word: str, program: str) -> None:
     assert program_name(word) == program
+
+
+@pytest.mark.parametrize("word", ["café", "ßh", "xärgs", "Ångström", "ﬁnd"])
+def test_an_nfd_spelling_folds_as_the_nfc_one(word: str) -> None:
+    """APFS compares names normalisation-insensitively: an NFD spelling is the same file."""
+    assert fold(unicodedata.normalize("NFD", word)) == fold(unicodedata.normalize("NFC", word))
 
 
 def test_command_and_time_are_programs_too() -> None:
@@ -209,3 +224,39 @@ def test_the_escape_check_folds_the_program() -> None:
     assert live_run.run_escape("/usr/bin/nice NOHUP sleep 1") == "detach"
     assert live_run.run_escape("GIT -c core.hooksPath=x commit") == "-c core.hooksPath"
     assert live_run.run_escape("echo NOHUP") is None
+
+
+# ----- the Unicode way: APFS folds the ﬁ ligature (U+FB01), the long s (U+017F) and ß ------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ﬁnd . -type f -exec cat {} +",
+        "ﬁnd . -name a.md",
+        "scoutctl kb files | xargſ cat",
+        "echo knowledge-base/a.md | xargſ cat",
+        "echo x | base64 -d | zſh",
+        "ßh host true",
+        "oſaſcript -e beep",
+        "ſcreen -dm x",
+        "ſh -c 'cat knowledge-base/a.md'",
+        "/bin/ſh -c 'cat knowledge-base/a.md'",
+        "baſh -c 'cat knowledge-base/a.md'",
+        "ſed -n p knowledge-base/a.md",
+        "rſync x .git/hooks/pre-commit",
+        "ſcript -q out ls",
+        "GIT -c core.hooksPath=x commit -m x",
+        unicodedata.normalize("NFD", "ﬁnd . -name a.md"),
+    ],
+)
+def test_a_program_folded_the_unicode_way_is_denied(vault: Path, command: str) -> None:
+    assert _denied(_run(vault, command))
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["echo 'naïve café'", "git commit -m 'Fix the — dash'", "cat docs/a.md # ä", "ls docs"],
+)
+def test_a_non_ascii_argument_is_allowed(vault: Path, command: str) -> None:
+    assert _run(vault, command) is None

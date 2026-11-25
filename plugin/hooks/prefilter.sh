@@ -235,6 +235,10 @@ case_pattern() {
     alt "$word"'((ba|z|da|k)?sh)([^A-Za-z0-9_.-]|$)'
     alt "$word"'git[^;&|]* (grep|-c )'
     alt "$word"'git[^;&|]*(commit|am).*([^A-Za-z0-9_-]|\\[nt])-[A-Za-z]*n'
+    # -- Any byte outside printable ASCII, or a JSON \u escape. The disk folds case the Unicode way, and grep
+    #    cannot: ﬁnd (the ﬁ ligature), xargſ and ſh (long s) and ßh run find, xargs, sh and ssh. Python folds them.
+    alt '[^ -~]'
+    alt '\\u[0-9A-Fa-f]{4}'
 }
 
 # Sets $t to program $1 by absolute path: /usr/bin or /bin first, else the first in the (filtered,
@@ -271,7 +275,7 @@ matches() {
 
 # The same, ignoring letter case.
 matches_i() {
-    printf '%s' "$v" | "$GREP" -qiE -e "$1"
+    printf '%s' "$v" | LC_ALL=C "$GREP" -qiE -e "$1"
 }
 
 # Sets $v to the payload's command value, as JSON spells it (quotes and escapes kept). Returns grep's

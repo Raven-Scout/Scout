@@ -16,6 +16,7 @@ import fnmatch
 import posixpath
 import re
 import shlex
+import unicodedata
 from collections.abc import Mapping
 from typing import Any
 
@@ -110,7 +111,7 @@ def _strip(words: list[str]) -> _Stripped:
     while words:
         word = words[0]
         base = _command_name(word)  # `/usr/bin/env`, `/usr/bin/xargs` are prefixes too
-        if base in _PREFIX_WORDS and (_unquoted(word).lower() == base or "/" in word):
+        if base in _PREFIX_WORDS and (fold(_unquoted(word)) == base or "/" in word):
             if base == "command" and len(words) > 1 and words[1] in ("-v", "-V") and not _names_kb(" ".join(words[2:])):
                 return _Stripped([], fed, chdir)  # a lookup: nothing runs (main denied one naming a KB path)
             word = base
@@ -932,7 +933,7 @@ def _git(args: list[str]) -> tuple[str | None, list[str], list[str]]:
         elif a.startswith("-"):
             i += 1
         else:
-            return a.lower(), args[i + 1 :], chdirs
+            return fold(a), args[i + 1 :], chdirs
     return None, [], chdirs
 
 
@@ -1051,8 +1052,17 @@ def program_name(name: str) -> str:
     gate compares program names folded, always (an odd-cased name in a run may be over-denied, never let
     through). A builtin or keyword in :data:`SHELL_ONLY` keeps its spelling. `command` and `time` are not
     there: /usr/bin/command and /usr/bin/time run the word after them, as the builtins do."""
-    folded = name.lower()
+    folded = fold(name)
     return name if folded in SHELL_ONLY else folded
+
+
+def fold(text: str) -> str:
+    """``text`` as a case-insensitive disk compares a name: Unicode-normalised and fully case-folded. APFS folds
+    with full Unicode case folding, so ``ﬁnd`` (the ﬁ ligature), ``xargſ`` and ``ſh`` (long s) and ``ßh`` run
+    find, xargs, sh and ssh, which ``str.lower()`` leaves alone. NFKC before and after ``casefold()`` also makes
+    an NFD spelling and a compatibility form (``ｆｉｎｄ``) read the same; one that folds where the disk wouldn't
+    is only over-denied."""
+    return unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", text).casefold())
 
 
 def _du_summary(args: list[str]) -> bool:

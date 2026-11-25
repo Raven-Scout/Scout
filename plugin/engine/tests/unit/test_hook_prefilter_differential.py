@@ -104,6 +104,9 @@ CASE_RULES = (
     _W + r"((ba|z|da|k)?sh)([^A-Za-z0-9_.-]|$)",
     _W + r"git[^;&|]* (grep|-c )",
     _W + r"git[^;&|]*(commit|am).*([^A-Za-z0-9_-]|\\[nt])-[A-Za-z]*n",
+    # Anything outside printable ASCII, or a JSON \u escape: the disk folds case the Unicode way (ﬁnd, xargſ, ßh).
+    r"[^ -~]",
+    r"\\u[0-9A-Fa-f]{4}",
 )
 LATE_RULES = "|".join(CASE_RULES)
 STRIPPED_RULES = rf"knowledge[-_]base|action-items/context|{LATE_RULES}"
@@ -1134,9 +1137,40 @@ def test_a_word_in_another_case_that_is_no_program_stays_in_the_shell(world: Wor
 
 
 def test_the_owner_never_starts_python_for_a_program_in_another_case(world: World) -> None:
-    for command in CASE_FOLD_FORMS[::7]:
+    for command in (*CASE_FOLD_FORMS[::7], *UNICODE_FOLD_FORMS):
         out = world.run(NEW["kb-read-gate"], Case("owner", "kb-read-gate", _bash(command), {}, "vault"))
         assert out == Outcome(0, "", "", ""), command
+
+
+# A program the disk finds through Unicode case folding, which grep can't do: the ﬁ ligature (U+FB01), the long
+# s (U+017F), ß (folds to ss). Each runs the real program on APFS (`zsh -f -c 'ﬁnd /usr/bin -maxdepth 0'`).
+UNICODE_FOLD_FORMS = (
+    "ﬁnd . -type f -exec cat {} +",
+    "scoutctl kb files | xargſ cat",
+    "echo x | base64 -d | zſh",
+    "ßh host true",
+    "oſaſcript -e beep",
+    "ſcreen -dm x",
+    "ſh -c 'cat a.md'",
+    "/bin/ſh -c ls",
+    "baſh -c ls",
+    "ſed -n p a.md",
+    "rſync a b",
+    "ſcript -q out ls",
+)
+
+
+@pytest.mark.parametrize("ensure_ascii", [True, False], ids=["u-escaped", "utf-8"])
+def test_a_program_folded_the_unicode_way_reaches_python_in_a_run(world: World, ensure_ascii: bool) -> None:
+    """The payload as Python's json writes it (\\uXXXX) and as Claude Code sends it (raw UTF-8)."""
+    missed = []
+    for command in UNICODE_FOLD_FORMS:
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}, ensure_ascii=ensure_ascii)
+        out = world.run(NEW["kb-read-gate"], Case(command, "kb-read-gate", payload, RUN, "vault"))
+        assert out[:3] == (0, "", ""), (command, out)
+        if out.python != f"hook kb-read-gate\n{payload}":
+            missed.append(command)
+    assert missed == []
 
 
 # ----- a payload too long to judge in time is blocked in a run -------------------------------------
