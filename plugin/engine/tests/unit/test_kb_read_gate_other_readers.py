@@ -108,6 +108,31 @@ MORE_FORMS = [
     "cd action-items; perl -e 'print `cat context/x.md`'",
     "cd action-items; perl -e 'system(\"cat context/x.md\")'",
     'cd action-items; perl -e \'open(F, "-|", "cat", "context/x.md"); print <F>\'',
+    # #819 review: perl's list forms, @ARGV, q{} / qx{}; awk's joined and held commands, ENVIRON; tar's filter;
+    # a path the shell fills into sed's script; echo/printf words read by a loop
+    'perl -e \'system "cat", "knowledge-base/a.md"\'',
+    'perl -e \'exec("cat", "knowledge-base/a.md")\'',
+    'cd action-items; perl -e \'system "cat", "context/x.md"\'',
+    "perl -e 'local @ARGV=(\"knowledge-base/a.md\"); print <>'",
+    "perl -e '@ARGV = qw(knowledge-base/a.md); print while <>'",
+    "perl -e 'push @ARGV, \"knowledge-base/a.md\"; print <>'",
+    "perl -e 'print qx{cat knowledge-base/a.md}'",
+    "perl -e 'open(my $f, \"<\", q{knowledge-base/a.md}); print <$f>'",
+    "perl -e '$f = q{knowledge-base/a.md}; open(F, $f); print <F>'",
+    'perl -e \'my $f = "knowledge-base/a.md"; open(F, "<", $f); print <F>\'',
+    'awk \'BEGIN{system("cat kn" "owledge-base/a.md")}\'',
+    "awk 'BEGIN{c = \"cat knowledge-base/a.md\"; system(c)}'",
+    'awk \'BEGIN{("cat kn" "owledge-base/a.md") | getline l; print l}\'',
+    'awk \'BEGIN{c = "cat kn" "owledge-base/a.md"; while ((c | getline l) > 0) print l}\'',
+    'awk \'BEGIN{print "cat knowledge-base/a.md" | "sh"}\'',
+    'awk \'BEGIN{while ((getline l < ("kn" "owledge-base/a.md")) > 0) print l}\'',
+    "F=knowledge-base/a.md awk 'BEGIN{getline l < ENVIRON[\"F\"]; print l}'",
+    "cd action-items; env F=context/x.md awk 'BEGIN{getline l < ENVIRON[\"F\"]; print l}'",
+    "tar cf knowledge-base/x.tar --use-compress-program='tee /dev/stderr' knowledge-base/a.md",
+    "tar -I 'tee /dev/stderr' -cf knowledge-base/x.tar knowledge-base/a.md",
+    'D=knowledge-base; sed "r $D/a.md" docs/a.md',
+    "printf '%s\\n' */*/* | while read f; do cat \"$f\"; done",
+    'echo knowledge-base/a.md | while read f; do cat "$f"; done',
     # plain readers
     "cd action-items; unexpand con*/x.md",
     "cd action-items; sdiff con*/x.md ../docs/a.md",
@@ -211,14 +236,42 @@ def test_an_ordinary_copy_compare_or_program_is_allowed(home: Path, command: str
 # ----- a path a program builds at run time ----------------------------------------------------------------
 
 BUILT = [
-    'awk \'BEGIN{getline l < ("kn" "owledge-base/a.md"); print l}\'',
     "awk 'BEGIN{getline l < f; print l}'",
     "awk 'BEGIN{f = d \"/x.md\"; getline l < f}'",
     "perl -e 'open(F, $ENV{X}); print <F>'",
     'perl -e \'open(F, "<", "$d/x.md"); print <F>\'',
     "perl -e 'print `cat $f`'",
     "tar cf - -T ../list.txt",
+    # #819 review: a script file's text isn't in the command; a command or path built from what isn't a literal
+    "sed -f ../script.sed docs/a.md",
+    "awk -f ../prog.awk docs/a.md",
+    "awk 'BEGIN{system(x)}'",
+    "awk 'BEGIN{system(\"cat \" substr(x, 1))}'",
+    "awk 'BEGIN{(c d) | getline l}'",
+    "awk 'BEGIN{print \"x\" | cmd}'",
+    "awk 'BEGIN{print $0 | \"sh\"}'",
+    "perl -e 'exec \"cat\", $f'",
+    "perl -e 'print qx{cat $f}'",
+    "perl -e '@ARGV = ($f); print <>'",
 ]
+
+
+@pytest.mark.parametrize(
+    ("command", "category"),
+    [
+        ('sed "r $(echo knowledge-base/a.md)" docs/a.md', "command_output"),  # a path the shell fills in
+        ("awk 'BEGIN{getline l < ENVIRON[\"F\"]; print l}'", "unset_variable"),  # F set neither here nor in the run
+    ],
+)
+def test_a_path_the_shell_or_environment_fills_in_is_recorded(home: Path, command: str, category: str) -> None:
+    assert _run(home, command) is None
+    (row,) = [r for r in _events(home) if r["kind"] == "kb_read_gate.unresolved_read"]
+    assert row["payload"]["categories"] == [category]
+
+
+def test_tars_filter_program_is_a_command_of_its_own(home: Path) -> None:
+    assert KB_DENY in _denied(_run(home, "tar -I 'cat knowledge-base/a.md' -cf ../x.tar docs"))
+    assert _run(home, "tar -czf knowledge-base/backup.tgz knowledge-base/a.md") is None  # into the KB, no filter
 
 
 @pytest.mark.parametrize("command", BUILT)
@@ -349,7 +402,26 @@ def test_other_reads_finds_nothing_more_for_these(words: list[str]) -> None:
         (["perl", "-e", "open(F, shift)"], {"built": False}),
         (["perl", "-e", 'system("cat $x")'], {"built": True}),
         (["perl", "-e", "print `date`"], {"programs": ["date"]}),
-        (["perl", "-e", "print qx(date)"], {"built": True}),
+        (["perl", "-e", "print qx(date)"], {"programs": ["date"]}),
+        (["perl", "-e", "print qx{cat $f}"], {"built": True}),
+        # awk's evaluator: escapes, where an expression starts and ends, words inside strings, mixed ENVIRON
+        (["awk", 'BEGIN{getline l < "a\\"b"}'], {"literal": ['a"b']}),
+        (["awk", 'print "a" | "sort"'], {"programs": ["sort"]}),
+        (["awk", 'BEGIN{c = "ls"; while ((c | getline l) > 0) n++}'], {"programs": ["ls"]}),
+        (["awk", 'BEGIN{x = "date" | getline}'], {"programs": ["date"]}),
+        (["awk", "BEGIN{system()}"], {"built": True}),
+        (["awk", 'BEGIN{print "f = x"; f = "a"; getline < f}'], {"literal": ["a"], "built": False}),
+        (["awk", 'BEGIN{getline < (ENVIRON["H"] "/x")}'], {"built": True, "environ": []}),
+        (["awk", 'BEGIN{print "getline < x | getline; system(y)"}'], {"built": False, "programs": []}),
+        (["awk", 'BEGIN{getline < "a" x}'], {"literal": ["a"], "built": True}),
+        # perl's quote-like strings: escapes, nesting, a same-character delimiter, a literal with more after it
+        (["perl", "-e", "open(F, q{a\\}b})"], {"literal": ["a}b"]}),
+        (["perl", "-e", "open(F, q{a{b}c})"], {"literal": ["a{b}c"]}),
+        (["perl", "-e", "open(F, q/a b/)"], {"literal": ["a b"]}),
+        (["perl", "-e", 'open(F, q{a} . "b")'], {"built": True}),
+        (["perl", "-e", '$a=$b; $b=$c; $c=$d; $d=$e; $e="x"; open(F, $a)'], {"built": True}),
+        (["perl", "-e", 'open(F, $mode, "x")'], {"built": True}),
+        (["perl", "-e", 'open(F, "-"); open(G, ">out")'], {"literal": [], "built": False}),
     ],
 )
 def test_other_reads_edges(words: list[str], expected: dict) -> None:

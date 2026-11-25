@@ -506,7 +506,8 @@ def _lister_output(body: str) -> str | None:
 
 
 def _record_listed_reads(words: list[str], fed: str | None) -> None:
-    """``lister | while read f``: ``f`` holds paths the lister prints (``IFS= read -r f`` too)."""
+    """``lister | while read f``: ``f`` holds paths the lister prints (``IFS= read -r f`` too), or the words
+    ``echo`` / ``printf`` print."""
     from scout.kb import raw_read
 
     while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS):
@@ -515,9 +516,14 @@ def _record_listed_reads(words: list[str], fed: str | None) -> None:
         return
     names, roots = _fed_sources(fed)
     if not names:  # a lister (its roots are [] when a filter keeps every note out: `fd -e py`)
-        placeholder = _listed(roots)
-        for name in raw_read._read_names(words[0], words[1:]):
-            _set_var(name, [placeholder])
+        values = [_listed(roots)]
+    elif names != [UNSEEN_INPUT]:  # `printf '%s\n' */*/* | while read f`: each word echo or printf prints
+        values = names[:MAX_CHECKED_PATHS]
+        _STATE["capped"] = _STATE["capped"] or len(names) > MAX_CHECKED_PATHS
+    else:
+        return
+    for name in raw_read._read_names(words[0], words[1:]):
+        _set_var(name, values)
 
 
 # A `date` format whose output has no `/` and no space: digits, the literal characters given, `%z`'s sign.
@@ -1611,8 +1617,10 @@ def _other_targets(
 ) -> list[tuple[str, str, str]]:
     """What :mod:`scout.kb.other_reads` says the command reads beyond its operands, as ``_kb_read`` targets: a
     copy's sources (none when it copies into the KB), the files a stdin list names, the paths a program opens
-    as written (shielded: no glob, ``~`` or ``$``), and :data:`PROGRAM_PATH` for one it builds at run time."""
-    from scout.kb.other_reads import other_reads
+    as written (no glob or ``~``, and no ``$`` but one the shell fills in before the program sees it:
+    ``sed "r $(…)"``), the environment variables a program opens (awk's ``ENVIRON["F"]``, from a ``F=…`` the
+    command sets or the run's own), and :data:`PROGRAM_PATH` for a path it builds at run time."""
+    from scout.kb.other_reads import into_kb_counts, other_reads
 
     args = stripped.words[1:]
     other = other_reads(name, args)  # the words as quoted: a quoted `*` in a copy's source is no glob
@@ -1621,15 +1629,30 @@ def _other_targets(
     program = other_reads(name, [_unshield(w) for w in args]) or other  # a program's text as the shell passes it
     where = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
     out: list[tuple[str, str, str]] = []
-    if not any(_judge_read(dest, where, "dest", oldpwd) == KB_READ for dest in other.dests):
+    into_kb = any(_judge_read(dest, where, "dest", oldpwd) == KB_READ for dest in other.dests)
+    if not (into_kb and into_kb_counts(other)):
         out += [(word, where, how) for word, how in other.reads]
         if other.stdin_list:
             names, listed = _fed_sources(fed)
             out += [(n, where, "file") for n in names] + [(root, cwd, "covers") for root in listed]
-    out += [(_shield_single(path), where, "file") for path in program.literal]
+    # The quoted parse keeps a `$` the shell fills in (`sed "r $(echo x)"`, `sed "r $D/x"`) apart from one the
+    # program's own quotes keep: judge the path that way when both parses found the same paths.
+    paired = len(other.literal) == len(program.literal)
+    for i, path in enumerate(program.literal):
+        quoted = other.literal[i] if paired else ""
+        live = paired and re.search(r"\$(?=[A-Za-z_{(])", quoted) is not None
+        out.append(("".join(_SHIELD.get(c, c) for c in quoted) if live else _shield_single(path), where, "file"))
+    for env_name in program.environ:
+        value = _prefix_assignments(stripped).get(env_name)
+        out.append((_shield_single(value) if value is not None else f"${{{env_name}}}", where, "file"))
     if program.built:
         out.append((PROGRAM_PATH, where, "file"))
     return out
+
+
+def _prefix_assignments(stripped: _Stripped) -> dict[str, str]:
+    """``NAME=value`` words the command puts in its own environment (``F=x awk …``, ``env F=x awk …``)."""
+    return dict(stripped.assignments)
 
 
 def _other_programs(words: list[str]) -> list[str]:

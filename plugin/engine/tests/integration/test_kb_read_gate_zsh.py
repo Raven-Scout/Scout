@@ -160,6 +160,21 @@ READS_A_NOTE = [
     ('cd action-items; find . -type f | while IFS= read -r f; do cat "$f"; done', ("find",)),
     ('cd action-items; rg --files | while read f; do cat "$f"; done', ("rg",)),
     ("cd action-items; cat $(rg --files)", ("rg",)),
+    # #819 review
+    ('perl -e \'system "cat", "knowledge-base/a.md"\'', ("perl",)),
+    ('perl -e \'exec "cat", "knowledge-base/a.md"\'', ("perl",)),
+    ("perl -e 'local @ARGV=(\"knowledge-base/a.md\"); print <>'", ("perl",)),
+    ("perl -e 'print qx{cat knowledge-base/a.md}'", ("perl",)),
+    ("perl -e 'open(my $f, \"<\", q{knowledge-base/a.md}); print <$f>'", ("perl",)),
+    ("perl -e '$f = q{knowledge-base/a.md}; open(F, $f); print <F>'", ("perl",)),
+    ('awk \'BEGIN{system("cat kn" "owledge-base/a.md")}\'', ("awk",)),
+    ("awk 'BEGIN{c = \"cat knowledge-base/a.md\"; system(c)}'", ("awk",)),
+    ('awk \'BEGIN{("cat kn" "owledge-base/a.md") | getline l; print l}\'', ("awk",)),
+    ('awk \'BEGIN{print "cat knowledge-base/a.md" | "sh"}\'', ("awk",)),
+    ("F=knowledge-base/a.md awk 'BEGIN{getline l < ENVIRON[\"F\"]; print l}'", ("awk",)),
+    ("tar cf knowledge-base/x.tar --use-compress-program='tee /dev/stderr' knowledge-base/a.md 2>&1", ("tar",)),
+    ('D=knowledge-base; sed "r $D/a.md" docs/a.md', ("sed",)),
+    ("printf '%s\\n' */*/* | while read f; do cat \"$f\" 2>/dev/null; done", ()),
 ]
 
 READS_NO_NOTE = [

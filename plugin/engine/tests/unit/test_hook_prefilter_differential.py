@@ -597,6 +597,20 @@ READER_FORMS = (
     'cd action-items; for f in $(ack -f); do cat "$f"; done',
     "cd action-items; cat $(ugrep -rl kb)",
     'cd action-items; ug -rl kb | while read f; do cat "$f"; done',
+    # #819 review: perl's list forms, @ARGV, q{}; awk's joined and held commands, ENVIRON; tar's filter; a path
+    # the shell fills into sed's script; echo/printf words read by a loop
+    'perl -e \'system "cat", "knowledge-base/a.md"\'',
+    "perl -e 'local @ARGV=(\"knowledge-base/a.md\"); print <>'",
+    "perl -e 'print qx{cat knowledge-base/a.md}'",
+    "perl -e '$f = q{knowledge-base/a.md}; open(F, $f); print <F>'",
+    'awk \'BEGIN{system("cat kn" "owledge-base/a.md")}\'',
+    "awk 'BEGIN{c = \"cat knowledge-base/a.md\"; system(c)}'",
+    'awk \'BEGIN{("cat kn" "owledge-base/a.md") | getline l; print l}\'',
+    'awk \'BEGIN{print "cat knowledge-base/a.md" | "sh"}\'',
+    "F=knowledge-base/a.md awk 'BEGIN{getline l < ENVIRON[\"F\"]; print l}'",
+    "tar cf knowledge-base/x.tar --use-compress-program='tee /dev/stderr' knowledge-base/a.md",
+    'D=knowledge-base; sed "r $D/a.md" docs/a.md',
+    "printf '%s\\n' */*/* | while read f; do cat \"$f\"; done",
 )
 
 # Their harmless neighbours, which must stay in the shell.

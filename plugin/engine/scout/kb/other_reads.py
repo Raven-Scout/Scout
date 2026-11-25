@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import posixpath
 import re
+import shlex
 from dataclasses import dataclass, field
 
 # How a path is read (scout.kb.live_run.KB_READ_HOW): "file" opens it, "covers" reads every file below it.
@@ -39,6 +40,16 @@ class OtherReads:
     built: bool = False  # a program opens a path it builds at run time
     stdin_list: bool = False  # it reads the files named on its stdin (``find . | cpio -o``)
     programs: list[str] = field(default_factory=list)  # shell commands a program runs
+    # Its data passes through a program it names (tar's `-I`, `--to-command`): a copy into the KB still reads
+    # what it copies, since that program sees it on the way.
+    piped: bool = False
+    # Paths a program takes from the environment (awk's `ENVIRON["F"]`): the variable's name, judged as `$F`.
+    environ: list[str] = field(default_factory=list)
+
+
+def into_kb_counts(other: OtherReads) -> bool:
+    """Whether a copy whose target is in the KB reads nothing out of it (true unless its data is piped)."""
+    return not other.piped
 
 
 # ----- options ---------------------------------------------------------------------------------------------
@@ -122,7 +133,8 @@ _COMPRESSORS = {"gzip", "gunzip", "bzip2", "bunzip2", "xz", "unxz", "lzma", "unl
 _TAR_VALUES = {"-f", "--file", "-C", "--directory", "-T", "--files-from", "-X", "--exclude-from", "--exclude",
                "-b", "--blocking-factor", "-H", "--format", "-I", "--use-compress-program", "-K", "-N", "--newer",
                "-L", "-V", "--label", "-F", "-g", "--listed-incremental", "--transform", "--owner", "--group",
-               "--mode", "--mtime", "--strip-components", "--options", "--include"}  # fmt: skip
+               "--mode", "--mtime", "--strip-components", "--options", "--include", "--to-command",
+               "--checkpoint-action"}  # fmt: skip
 # Old-style tar (`tar cvf out.tar dir`): the bundle's letters that take the next words, in order.
 _TAR_LETTER_VALUES = set("fCTXbHIKNLVFg")
 _ZIP_VALUES = {"-b", "-n", "-t", "-tt", "-P", "-O", "--out", "-Z", "-s", "-sp", "-ds", "-dd"}
@@ -195,6 +207,12 @@ def _tar(args: list[str]) -> OtherReads:
     creates = _has(opts, "-c", "-r", "-u", "--create", "--append", "--update")
     archive = _values(opts, "-f", "--file")
     out = OtherReads()
+    # A program the archive's bytes go through: a command of its own, and one that sees every file tar reads.
+    filters = _values(opts, "-I", "--use-compress-program", "--to-command")
+    filters += [v.split("=", 1)[1] for v in _values(opts, "--checkpoint-action") if v.startswith("exec=")]
+    if filters:
+        out.programs += filters
+        out.piped = True
     for listed in _values(opts, "-T", "--files-from"):
         if listed == "-":
             out.stdin_list = True
@@ -289,7 +307,8 @@ def _sed(args: list[str]) -> OtherReads:
     ``e COMMAND`` runs one; ``-f FILE`` reads its script from a file."""
     args = [a for i, a in enumerate(args) if not (i and args[i - 1] == "-i" and (not a or a.startswith(".")))]
     programs, files, _plain = _scripts(args, {"-e", "--expression"}, {"-f", "--file"})
-    out = OtherReads(reads=[(f, FILE) for f in files if f != "-"])
+    # A script file's text isn't in the command: what its `r` commands read is unknown (as tar's -T list is).
+    out = OtherReads(reads=[(f, FILE) for f in files if f != "-"], built=bool(files))
     for program in programs:
         for line in program.split("\n"):
             _sed_line(line, out)
@@ -344,12 +363,16 @@ def _sed_line(line: str, out: OtherReads) -> None:
 
 
 _AWK_STRING = r'"(?:[^"\\\n]|\\.)*"'
-_AWK_END = re.compile(r"\s*(?:$|[);},\n>|&]|\bthen\b)")
-_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _GETLINE_FROM = re.compile(r"\bgetline\b\s*(?:\$?[A-Za-z_][A-Za-z0-9_]*(?:\s*\[[^\]]*\])?)?\s*<(?!=)\s*")
-_AWK_PIPE_GETLINE = re.compile(rf"({_AWK_STRING}|[A-Za-z_][A-Za-z0-9_]*)\s*\|&?\s*getline\b")
-_AWK_SYSTEM = re.compile(rf"\bsystem\s*\(\s*({_AWK_STRING})\s*\)")
-_AWK_OUT_PIPE = re.compile(rf"\|&?\s*({_AWK_STRING})")
+_AWK_PIPE_GETLINE = re.compile(r"\|&?\s*getline\b")
+_AWK_SYSTEM = re.compile(r"\bsystem\s*\(")
+_AWK_PRINT_PIPE = re.compile(r"\bprintf?\b")
+# One piece of an awk string expression: a literal, ENVIRON["NAME"], or a variable.
+_AWK_TOKEN = re.compile(rf'\s*(?:({_AWK_STRING})|ENVIRON\s*\[\s*"([A-Za-z_]\w*)"\s*\]|([A-Za-z_][A-Za-z0-9_]*))')
+# What ENVIRON["NAME"] stands for in a value: the shell's `$NAME` (see OtherReads.environ).
+_ENV_MARK = re.compile("\0env:([A-Za-z_][A-Za-z0-9_]*)\0")
+_SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
+_AWK_LIMIT = 16  # values an expression may take before it counts as built
 
 
 def _awk_unescape(literal: str) -> str:
@@ -357,12 +380,14 @@ def _awk_unescape(literal: str) -> str:
 
 
 def _awk(args: list[str]) -> OtherReads:
-    """awk's ``getline < FILE`` (a literal, or a variable the program or ``-v`` sets to one) reads that file; a
-    command it pipes into ``getline``, out of ``print``, or runs with ``system()`` is a command of its own;
-    ``-f FILE`` reads its program from a file."""
+    """awk's ``getline < FILE`` reads that file; a command it pipes into ``getline``, out of ``print``, or runs
+    with ``system()`` is a command of its own (and what it prints into a shell is too). A file or a command is
+    worked out from string literals, the variables the program, ``-v`` or an ``x=y`` operand set to them, and
+    ``ENVIRON["NAME"]``, joined as awk joins them; anything else is built at run time. ``-f FILE`` reads its
+    program from a file."""
     opts, _ = _getopt(args, {"-f", "--file", "-v", "--assign", "-F", "--field-separator", "-e", "--source"})
     programs, files, plain = _scripts(args, {"-e", "--source"}, {"-f", "--file"})
-    out = OtherReads(reads=[(f, FILE) for f in files if f != "-"])
+    out = OtherReads(reads=[(f, FILE) for f in files if f != "-"], built=bool(files))  # its program isn't here
     assigned = [v for v in _values(opts, "-v", "--assign") if "=" in v]
     assigned += [p for p in plain if re.match(r"^[A-Za-z_]\w*=", p)]  # `awk '…' f=x file`: an assignment
     given = {a.split("=", 1)[0]: a.split("=", 1)[1] for a in assigned}
@@ -371,67 +396,234 @@ def _awk(args: list[str]) -> OtherReads:
     return out
 
 
-def _awk_values(program: str, name: str, given: dict[str, str]) -> list[str] | None:
-    """The literal values variable ``name`` takes in ``program`` (and from ``-v``); None when one is built."""
-    values = [given[name]] if name in given else []
-    for m in re.finditer(rf"(?<![\w$.]){re.escape(name)}\s*=(?!=)\s*", program):
-        lit = re.match(_AWK_STRING, program[m.end() :])
-        if lit is None or not _AWK_END.match(program, m.end() + lit.end()):
+def _awk_layout(program: str) -> tuple[list[bool], list[int]]:
+    """For each character of ``program``: whether it is inside a string literal, and its paren depth."""
+    in_string, depth = [False] * len(program), [0] * len(program)
+    level, quoted, i = 0, False, 0
+    while i < len(program):
+        c = program[i]
+        in_string[i], depth[i] = quoted, level
+        if quoted and c == "\\" and i + 1 < len(program):
+            in_string[i + 1], depth[i + 1] = True, level
+            i += 2
+            continue
+        if c == '"':
+            quoted = not quoted
+            in_string[i] = True
+        elif not quoted and c == "(":
+            level += 1
+        elif not quoted and c == ")":
+            level -= 1
+            depth[i] = level
+        i += 1
+    return in_string, depth
+
+
+def _awk_forward(program: str, at: int, layout: tuple[list[bool], list[int]], *, commas: bool = False) -> int:
+    """Where the expression that starts at ``at`` ends: at a top-level `;`, `}`, newline, `|`, `>`, `&&`, `,`
+    (unless ``commas``: a print's arguments), or the `)` that closes the parens it sits in."""
+    in_string, depth = layout
+    base = depth[at] if at < len(program) else 0
+    stops = ";}\n|>" if commas else ";}\n,|>"
+    for i in range(at, len(program)):
+        if in_string[i]:
+            continue
+        if depth[i] < base or (depth[i] == base and (program[i] in stops or program.startswith("&&", i))):
+            return i
+    return len(program)
+
+
+def _awk_backward(program: str, at: int, layout: tuple[list[bool], list[int]]) -> int:
+    """Where the expression that ends just before ``at`` (a `|`) starts: after a top-level `;`, `{`, `}`,
+    newline, `,`, `=` or `(` of its own level, or the start."""
+    in_string, depth = layout
+    base = depth[at - 1] if at else 0
+    i = at - 1
+    while i >= 0:
+        if not in_string[i]:
+            c = program[i]
+            if c == "(" and depth[i] < base or (depth[i] == base and c in ";{}\n,"):
+                return i + 1
+            if depth[i] == base and c == "=" and (i == 0 or program[i - 1] not in "=!<>") and program[i + 1] != "=":
+                return i + 1
+            if depth[i] < base:
+                return i + 1
+        i -= 1
+    return 0
+
+
+def _awk_eval(expr: str, program: str, given: dict[str, str], depth: int = 0) -> list[str] | None:
+    """The strings an awk expression can be (see :func:`_awk`), or None when any part is something else."""
+    expr = expr.strip()
+    while expr.startswith("(") and expr.endswith(")") and _awk_layout(expr)[1][-1] == 0:
+        expr = expr[1:-1].strip()
+    if not expr or depth > 3:
+        return None
+    values, i = [""], 0
+    while i < len(expr):
+        m = _AWK_TOKEN.match(expr, i)
+        if m is None or m.end() == i:
             return None
-        values.append(_awk_unescape(lit[0]))
+        if m[1] is not None:
+            part: list[str] | None = [_awk_unescape(m[1])]
+        elif m[2] is not None:
+            part = [f"\0env:{m[2]}\0"]
+        else:
+            part = _awk_values(program, m[3], given, depth + 1)
+        if part is None:
+            return None
+        values = [v + p for v in values for p in part]
+        if len(values) > _AWK_LIMIT:
+            return None
+        i = m.end()
+        while i < len(expr) and expr[i].isspace():
+            i += 1
+    return values
+
+
+def _awk_values(program: str, name: str, given: dict[str, str], depth: int = 0) -> list[str] | None:
+    """The values variable ``name`` takes in ``program`` (and from ``-v``); None when one is built, or when it
+    is never set (an awk builtin such as ``ARGV``, or a name the gate can't see filled)."""
+    values = [given[name]] if name in given else []
+    layout = _awk_layout(program)
+    for m in re.finditer(rf"(?<![\w$.\"]){re.escape(name)}\s*=(?!=)", program):
+        if layout[0][m.start()]:
+            continue  # inside a string
+        found = _awk_eval(program[m.end() : _awk_forward(program, m.end(), layout)], program, given, depth)
+        if found is None:
+            return None
+        values += found
     return values or None
 
 
 def _awk_program(program: str, given: dict[str, str], out: OtherReads) -> None:
-    for m in _GETLINE_FROM.finditer(program):
-        at = m.end()
-        lit = re.match(_AWK_STRING, program[at:])
-        if lit is not None and _AWK_END.match(program, at + lit.end()):
-            out.literal.append(_awk_unescape(lit[0]))
-            continue
-        ident = _IDENT.match(program, at)
-        if ident is not None and ident[0] in ("ARGV", "FILENAME"):
-            continue  # the operands, which are judged as files already
-        if ident is not None and _AWK_END.match(program, ident.end()):
-            values = _awk_values(program, ident[0], given)
-            if values is not None:
-                out.literal += values
-                continue
-        out.built = True
-    for m in _AWK_PIPE_GETLINE.finditer(program):
-        word = m[1]
-        if word.startswith('"'):
-            out.programs.append(_awk_unescape(word))
-        else:
-            values = _awk_values(program, word, given)
-            if values is None:
+    layout = _awk_layout(program)
+
+    def paths(expr: str) -> None:
+        """A file it reads: judged by each value, ENVIRON's as the shell's `$NAME`."""
+        found = _awk_eval(expr, program, given)
+        if found is None:
+            out.built = True
+            return
+        for value in found:
+            names = _ENV_MARK.findall(value)
+            if names and _ENV_MARK.fullmatch(value):
+                out.environ.append(names[0])
+            elif names:
                 out.built = True
             else:
-                out.programs += values
-    for pattern in (_AWK_SYSTEM, _AWK_OUT_PIPE):
-        out.programs += [_awk_unescape(m[1]) for m in pattern.finditer(program)]
+                out.literal.append(value)
+
+    def commands(expr: str) -> None:
+        """A command it runs: each value, judged as a command; one it builds (or takes from ENVIRON) is built."""
+        found = _awk_eval(expr, program, given)
+        if found is None or any(_ENV_MARK.search(v) for v in found):
+            out.built = True
+        else:
+            out.programs += found
+
+    for m in _GETLINE_FROM.finditer(program):
+        if layout[0][m.start()]:
+            continue
+        at = m.end()
+        primary = re.match(rf"\s*(?:{_AWK_STRING}|ENVIRON\s*\[[^\]]*\]|[A-Za-z_]\w*)", program[at:])
+        if program[at : at + 1] == "(":  # a parenthesised file name
+            end = at + 1
+            while end < len(program) and (layout[1][end] > layout[1][at] or layout[0][end]):
+                end += 1
+            paths(program[at : end + 1])
+        elif primary is not None and primary[0].strip() in ("ARGV", "FILENAME"):
+            continue  # the operands, which are judged as files already
+        elif primary is not None:
+            paths(primary[0])
+            rest = program[at + primary.end() :]
+            if re.match(r"\s*(?:\[|" + _AWK_STRING + r"|[A-Za-z_(])", rest):
+                out.built = True  # `getline < "a" x`: what follows may make the name longer
+        else:
+            out.built = True
+    for m in _AWK_PIPE_GETLINE.finditer(program):
+        if not layout[0][m.start()]:
+            commands(program[_awk_backward(program, m.start(), layout) : m.start()])
+    for m in _AWK_SYSTEM.finditer(program):
+        if layout[0][m.start()]:
+            continue
+        end = m.end()
+        while end < len(program) and (layout[1][end] >= layout[1][m.end() - 1] + 1 or layout[0][end]):
+            end += 1
+        commands(program[m.end() : end])
+    for m in _AWK_PRINT_PIPE.finditer(program):
+        if layout[0][m.start()]:
+            continue
+        printed_end = _awk_forward(program, m.end(), layout, commas=True)
+        if not program.startswith("|", printed_end) or program.startswith("||", printed_end):
+            continue
+        target_at = printed_end + 1 + (program[printed_end + 1 : printed_end + 2] == "&")
+        target = program[target_at : _awk_forward(program, target_at, layout)]
+        commands(target)
+        runs = _awk_eval(target, program, given)
+        if runs is not None and any(r.split()[:1] and posixpath.basename(r.split()[0]) in _SHELLS for r in runs):
+            if not any("-c" in r.split() for r in runs):  # `print "cat x" | "sh"`: what it prints is a command
+                commands(program[m.end() : printed_end].replace(",", " "))
 
 
-_PERL_STRING = r"""'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*\""""
 _PERL_OPEN = re.compile(r"\bopen\s*\(?\s*(?:(?:my|our|local)\s+)?(?:\$\w+|\*?\w+)\s*,\s*")
 _PERL_READS_ARGV = re.compile(r"<<?>>?|<ARGV>|\bARGV\b|\$ARGV\b|\breadline\s*\(?\s*\)?\s*;|\beof\s*\(\s*\)")
-_PERL_SYSTEM = re.compile(rf"\b(?:system|exec)\s*\(?\s*({_PERL_STRING})")
-_PERL_BACKTICK = re.compile(r"`([^`]*)`|\bqx\s*([({\[/])")
+_PERL_SYSTEM = re.compile(r"\b(?:system|exec)\b\s*")
+_PERL_BACKTICK = re.compile(r"`([^`]*)`")
+_PERL_QX = re.compile(r"\bqx\s*(?=[^\w\s])")
+# `@ARGV = (…)`, `local @ARGV = …`, `push @ARGV, …`, `unshift(@ARGV, …)`: the files `<>` will read.
+_PERL_SETS_ARGV = re.compile(r"@ARGV\s*=(?!=)\s*|\b(?:push|unshift)\s*\(?\s*@ARGV\s*,\s*")
+_PERL_ARGV_WORDS = re.compile(r"\$ARGV(?:\[\d+\])?|shift(?:\s*\(?\s*@ARGV\s*\)?)?|\$_")
+_PAIRS = {"(": ")", "{": "}", "[": "]", "<": ">"}
+
+
+def _perl_quoted(text: str, at: int, interpolates: bool) -> tuple[int, str, bool] | None:
+    """The quote-like string whose delimiter sits at ``text[at]`` (``q{…}``, ``qq(…)``, ``qx/…/``): where it
+    ends, its text, and whether it interpolates."""
+    if at >= len(text):
+        return None
+    opener = text[at]
+    closer = _PAIRS.get(opener, opener)
+    depth, i, out = 1, at + 1, []
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and i + 1 < len(text):
+            out.append(text[i + 1] if text[i + 1] in (opener, closer, "\\") else text[i : i + 2])
+            i += 2
+            continue
+        if c == closer and opener != closer:
+            depth -= 1
+        elif c == opener and opener != closer:
+            depth += 1
+        elif c == closer:
+            depth = 0
+        if depth == 0:
+            body = "".join(out)
+            return i + 1, body, interpolates and bool(re.search(r"(?<!\\)[$@]", body))
+        out.append(c)
+        i += 1
+    return None
 
 
 def _perl_literal(token: str) -> tuple[str | None, bool]:
-    """A Perl string literal's text, and whether it interpolates (a double-quoted one with ``$`` or ``@``)."""
-    if token.startswith("'"):
+    """A Perl string literal's text (``'…'``, ``"…"``, ``q{…}``, ``qq{…}``), and whether it interpolates (``$``
+    or ``@`` in a double-quoted one). ``(None, False)`` for anything else."""
+    token = token.strip()
+    if token.startswith("'") and len(token) > 1 and token.endswith("'"):
         return re.sub(r"\\([\\'])", r"\1", token[1:-1]), False
-    if token.startswith('"'):
+    if token.startswith('"') and len(token) > 1 and token.endswith('"'):
         text = token[1:-1]
-        live = bool(re.search(r"(?<!\\)[$@]", text))
-        return re.sub(r"\\(.)", r"\1", text), live
+        return re.sub(r"\\(.)", r"\1", text), bool(re.search(r"(?<!\\)[$@]", text))
+    m = re.match(r"(qq|q)\s*(?=[^\w\s,;])", token)
+    if m is not None:
+        found = _perl_quoted(token, m.end(), m[1] == "qq")
+        if found is not None and found[0] == len(token):
+            return found[1], found[2]
     return None, False
 
 
 def _perl_args(text: str) -> list[str]:
-    """The comma-separated arguments of an ``open`` call, up to where the call ends."""
+    """The comma-separated arguments of a call, up to where it ends (a `;`, an unmatched `)`, `or`/`and`)."""
     args, depth, buf, quote, i = [], 0, [], None, 0
     while i < len(text):
         c = text[i]
@@ -442,6 +634,10 @@ def _perl_args(text: str) -> list[str]:
                 i += 2
                 continue
             quote = None if c == quote else quote
+        elif c == "\\" and i + 1 < len(text):  # `q{a\}b}`: an escaped bracket opens or closes nothing
+            buf.append(text[i : i + 2])
+            i += 2
+            continue
         elif c in "'\"":
             quote = c
             buf.append(c)
@@ -465,7 +661,26 @@ def _perl_args(text: str) -> list[str]:
     return [a for a in args if a]
 
 
-def _perl_open(args: list[str], out: OtherReads) -> None:
+def _perl_values(arg: str, text: str, depth: int = 0) -> list[str] | None:
+    """The strings an argument can be: a literal that doesn't interpolate, or a scalar the program sets to
+    one (``$f = q{…}; open(F, $f)``); None for anything else."""
+    value, live = _perl_literal(arg)
+    if value is not None:
+        return None if live else [value]
+    name = re.fullmatch(r"\$([A-Za-z_]\w*)", arg.strip())
+    if name is None or name[1] in ("ARGV", "_") or depth > 3:
+        return None
+    values: list[str] = []
+    for m in re.finditer(rf"(?:\b(?:my|our|local)\s+)?\${re.escape(name[1])}\s*=(?![=~])\s*", text):
+        rhs = _perl_args(text[m.end() :])
+        found = _perl_values(rhs[0], text, depth + 1) if rhs else None
+        if found is None:
+            return None
+        values += found
+    return values or None
+
+
+def _perl_open(args: list[str], text: str, out: OtherReads) -> None:
     if not args:
         return
     if len(args) >= 2:
@@ -475,42 +690,55 @@ def _perl_open(args: list[str], out: OtherReads) -> None:
             return
         mode = mode.strip()
         if "|" in mode:  # `open(F, "-|", "cat", "x")`: runs a command
-            words = [_perl_literal(a) for a in args[1:]]
-            if any(w is None or live for w, live in words):
-                out.built = True
-            else:
-                out.programs.append(" ".join(w for w, _ in words if w is not None))
+            _perl_command(args[1:], text, out)
             return
         if not mode.startswith(("<", "+<")) and mode:
             return  # it writes
-        _perl_path(args[1], out)
+        _perl_path(args[1], text, out)
         return
-    text, live = _perl_literal(args[0])
-    if text is None or live:
-        if not re.fullmatch(r"\$ARGV(?:\[\d+\])?|shift(?:\s*@ARGV)?|\$_", args[0]):
+    if _PERL_ARGV_WORDS.fullmatch(args[0].strip()):
+        return  # the files ARGV names are judged as operands
+    found = _perl_values(args[0], text)
+    if found is None:
+        out.built = True
+        return
+    for value in (v.strip() for v in found):
+        if value.startswith("|") or value.endswith("|"):
+            out.programs.append(value.strip("|").strip())
+        elif not value.startswith((">", "+>")):
+            path = re.sub(r"^\+?<\s*", "", value)
+            if path and path != "-":
+                out.literal.append(path)
+
+
+def _perl_path(arg: str, text: str, out: OtherReads) -> None:
+    if _PERL_ARGV_WORDS.fullmatch(arg.strip()):
+        return  # the files ARGV names are judged as operands
+    found = _perl_values(arg, text)
+    if found is None:
+        out.built = True
+    else:
+        out.literal += [v for v in found if v and v != "-"]
+
+
+def _perl_command(args: list[str], text: str, out: OtherReads) -> None:
+    """``system LIST``, ``exec LIST``, a piped ``open``'s command: one string is a shell command, a list is the
+    program and its arguments (judged as that command). Anything it builds at run time is built."""
+    words: list[str] = []
+    for arg in args:
+        found = _perl_values(arg, text)
+        if found is None or len(found) != 1:
             out.built = True
-        return
-    text = text.strip()
-    if text.startswith("|") or text.endswith("|"):
-        out.programs.append(text.strip("|").strip())
-    elif not text.startswith((">", "+>")):
-        path = re.sub(r"^\+?<\s*", "", text)
-        if path and path != "-":
-            out.literal.append(path)
-
-
-def _perl_path(arg: str, out: OtherReads) -> None:
-    text, live = _perl_literal(arg)
-    if text is not None and not live:
-        if text and text != "-":
-            out.literal.append(text)
-    elif not re.fullmatch(r"\$ARGV(?:\[\d+\])?|shift(?:\s*@ARGV)?|\$_", arg):
-        out.built = True  # the files ARGV names are judged as operands
+            return
+        words.append(found[0])
+    if words:
+        out.programs.append(words[0] if len(words) == 1 else shlex.join(words))
 
 
 def _perl(args: list[str]) -> OtherReads | None:
-    """perl -e/-E: the files ``open`` names, and its operands when it reads ``ARGV`` (``-n``, ``-p``, ``<>``);
-    the commands ``system``, backticks and a piped ``open`` run. A script file is its own business."""
+    """perl -e/-E: the files ``open`` names and those ``@ARGV`` is set to, its operands when it reads ``ARGV``
+    (``-n``, ``-p``, ``<>``); the commands ``system``, ``exec``, backticks, ``qx`` and a piped ``open`` run. A
+    path or a command built at run time is built. A script file is its own business."""
     programs: list[str] = []
     operands: list[str] = []
     loops = False
@@ -539,18 +767,34 @@ def _perl(args: list[str]) -> OtherReads | None:
     if loops or _PERL_READS_ARGV.search(text):
         out.reads += [(o, FILE) for o in operands if o != "-"]
     for m in _PERL_OPEN.finditer(text):
-        _perl_open(_perl_args(text[m.end() :]), out)
+        _perl_open(_perl_args(text[m.end() :]), text, out)
+    for m in _PERL_SETS_ARGV.finditer(text):
+        rest = text[m.end() :]
+        qw = re.match(r"\s*qw\s*(?=[^\w\s])", rest)
+        if qw is not None:  # `@ARGV = qw(a b)`
+            words = _perl_quoted(rest, qw.end(), False)
+            if words is None:
+                out.built = True
+            else:
+                out.literal += words[1].split()
+            continue
+        listed = _perl_args(rest[1:] if rest.startswith("(") else rest)
+        for arg in listed:
+            _perl_path(arg, text, out)
     for m in _PERL_SYSTEM.finditer(text):
-        command, live = _perl_literal(m[1])
-        if command is None or live:
-            out.built = True
-        else:
-            out.programs.append(command)
+        rest = text[m.end() :]
+        _perl_command(_perl_args(rest[1:] if rest.startswith("(") else rest), text, out)
     for m in _PERL_BACKTICK.finditer(text):
-        if m[1] is not None and not re.search(r"(?<!\\)[$@]", m[1]):
-            out.programs.append(m[1])
-        else:
+        if re.search(r"(?<!\\)[$@]", m[1]):
             out.built = True
+        else:
+            out.programs.append(m[1])
+    for m in _PERL_QX.finditer(text):
+        found = _perl_quoted(text, m.end(), text[m.end()] != "'")
+        if found is None or found[2]:
+            out.built = True
+        else:
+            out.programs.append(found[1])
     return out
 
 

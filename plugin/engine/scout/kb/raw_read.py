@@ -99,10 +99,13 @@ _KB_RG_TYPES = {"all", "md", "markdown", "yaml", "csv", "json", "txt", "html"}
 class _Stripped:
     """A segment's command words after its prefixes, and what the prefixes said."""
 
-    def __init__(self, words: list[str], fed: bool, chdir: str | None) -> None:
+    def __init__(
+        self, words: list[str], fed: bool, chdir: str | None, assignments: list[tuple[str, str]] | None = None
+    ) -> None:
         self.words = words
         self.fed = fed  # `xargs`/`parallel` gives the command its arguments from stdin
         self.chdir = chdir  # `env -C <dir>` runs it in another folder
+        self.assignments = assignments or []  # `F=x cmd`, `env F=x cmd`: what it puts in the command's environment
 
 
 def _strip(words: list[str]) -> _Stripped:
@@ -111,6 +114,7 @@ def _strip(words: list[str]) -> _Stripped:
     keywords (``do``, ``then``, ``!``). ``command -v x`` runs nothing."""
     fed = False
     chdir: str | None = None
+    assignments: list[tuple[str, str]] = []
     words = list(words)
     prefix: str | None = None
     pending = 0  # positionals the prefix still takes before the command (`timeout 10 …`)
@@ -139,10 +143,13 @@ def _strip(words: list[str]) -> _Stripped:
             pending -= 1
             words.pop(0)
         elif _ASSIGNMENT.match(word) or word in _KEYWORDS:
+            if word not in _KEYWORDS:
+                name, _eq, value = word.partition("=")
+                assignments.append((name, value))
             words.pop(0)
         else:
             break
-    return _Stripped(words, fed, chdir)
+    return _Stripped(words, fed, chdir, assignments)
 
 
 def _unquoted(text: str) -> str:
@@ -1290,7 +1297,7 @@ def _judge_other(
     the KB, or any relative one run from inside it; a recursive one rooted where it reaches a KB note (``cwd``
     and ``vault`` given); a stdin list from a pipe that carries KB paths (``find knowledge-base | cpio -o``); and
     the shell commands such a program runs. A copy into the KB reads nothing out of it."""
-    from scout.kb.other_reads import other_reads
+    from scout.kb.other_reads import into_kb_counts, other_reads
 
     if depth > 4:
         return False
@@ -1321,7 +1328,9 @@ def _judge_other(
             seg_in_kb = in_kb if stripped.chdir is None else _names_kb(stripped.chdir)
             where = here if stripped.chdir is None else _cd(here, stripped.chdir, env, local)
             relative = [d for d in other.dests if not d.startswith(("/", "~"))]
-            into_kb = any(_names_kb(d) for d in other.dests) or (seg_in_kb and bool(relative))
+            into_kb = into_kb_counts(other) and (
+                any(_names_kb(d) for d in other.dests) or (seg_in_kb and bool(relative))
+            )
             reads = [] if into_kb else other.reads
             if any(_names_kb(w) or _glob_names_kb(w) for w, _how in reads) or any(_names_kb(p) for p in other.literal):
                 return True
