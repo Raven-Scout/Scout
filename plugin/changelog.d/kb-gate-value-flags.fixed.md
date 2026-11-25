@@ -1,0 +1,13 @@
+- **A value flag before the pattern no longer hides a vault-root search from the `kb-read-gate`** (`engine/scout/kb/raw_read.py`, `hooks/prefilter.sh`; follow-up to #541). `ack -t markdown TODO`, `ugrep -rO md TODO`, `fd --newer 1d people` and `ag -W 80 TODO` read the flag's value as the pattern and the pattern as a folder outside the KB, so they were allowed from the vault root. The gate now reads short-flag clusters the way the tools do (`-rO md`, `-epy`) and knows more value flags for each tool. Other fixes in the same change:
+  - ugrep's `-3` and `--depth=N` count as recursive, and its `-g`, `-O` and `-t` filters are read as comma-separated lists.
+  - fd's `-C` is a base directory, and an exec command ends at `;`.
+  - `ug`, `ug+`, `ugrep+`, `fdfind` and `ack-grep` are judged as the tools they run, and the shell pre-filter sends them to Python.
+  - fd always counts as a lister when it feeds `xargs`. So do ag, ack and ugrep when they print file paths (`ag -g`, `ack -f`, `ugrep -l`). For example, `fd . | xargs cat` run from `action-items/` reads `context/`.
+  - The file a flag opens counts as read: `grep -f`/`--file`, `sed -f`, `awk -f`, `jq --from-file` and `ack --files-from`, so `grep -f k*/note.md docs/a.md` is denied. A value attached to `-e` (`grep -eTODO k*/…`, `sed -n -e'1,20p' k*/…`) is read as the pattern, so the KB file after it is judged.
+  - The gate's operand reader (`read_operands`) and its recursive-read check now share this one parser, so they agree on what a value flag takes.
+  - ugrep's filters read the way ugrep reads them. An entry starting with `!` or `^` excludes (`-O '^py'`, `-g '^*.py'`), so it never narrows the search. A `-t` type matches by its first letters (`-t mark` is markdown). `-J`, `-K`, `--range` and `--depth N` take a value.
+  - ack's `--type=noTYPE` excludes a type, so it doesn't narrow the search.
+  - fd's exec flag counts inside a cluster or attached: `fd -Hx cat`, `fd -xcat`, `fd -x=cat`.
+  - grep's `-r` counts inside a cluster with a count, as in `grep -rnA3 TODO` and `grep -r3 TODO .`.
+  - A filter to code is still allowed: `ack -t python`, `ugrep -rO py`.
+  - These no longer count as KB reads: `ag -V`, `fd -V`, `fd -h`, `ag --list-file-types`, `ack --help-types`, `fd -epy x` and `ag --context 3 x`.

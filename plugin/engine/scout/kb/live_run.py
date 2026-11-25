@@ -1829,7 +1829,7 @@ def _listed_roots(name: str, args: list[str]) -> list[str] | None:
         if not lists:
             return None
         return raw_read.read_operands(name, args) or ["."]
-    return None
+    return raw_read.listed_roots(name, args)  # fd, ag -g, ack -f, ugrep -l (#791)
 
 
 _PRINTF_SPEC = re.compile(r"%(?:%|[-+ #0-9.]*[sbdiu])")
