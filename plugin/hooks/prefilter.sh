@@ -222,6 +222,12 @@ bash_pattern() {
     alt 'git[^;&|]* (show|diff|diff-tree|diff-index|diff-files|log|whatchanged|reflog|grep|blame|annotate|archive|cat-file|format-patch|fast-export|difftool|range-diff|merge-tree|unpack-file|stash (show|list))([^A-Za-z0-9_-]|$)'
     alt 'git[^;&|]* (add|checkout|reset|restore|commit|status|stash)[^;&|]* (-p|--patch|-v|-vv|--verbose)([^A-Za-z0-9_-]|$)'
     alt 'git[^;&|]*:[!^]'
+    # -- HOME. The gates expand `~` and `$HOME` with the run's own HOME, so a command that points HOME
+    #    elsewhere first (`HOME=x cmd`, `unset HOME`, `export HOME=…`) names files they never check.
+    #    Every mention goes to Python, which denies a change and lets `HOME=$HOME` or a read through.
+    #    A quoted or escaped name (`HO''ME=x`, `H\OME=x`) is matched below, once quotes are removed;
+    #    arithmetic (`(( H$v = 1 ))`) and zsh's `${(P)v::=…}` are the `(` and `$` alternatives above.
+    alt 'HOME'
 }
 
 # Sets $t to program $1 by absolute path: /usr/bin or /bin first, else the first in the (filtered,
@@ -286,9 +292,30 @@ bash_needs_python() {
         case "$p" in *"$SCOUT_SECRETS_DIR"*) return 0 ;; esac
     fi
     tool tr
+    tr=$t
+    raw=$v
     # shellcheck disable=SC1003 # the set is ', " and \ (one backslash after the shell's escaping)
-    v=$(printf '%s' "$v" | "$t" -d "'\"\\\\") || return 0
+    v=$(printf '%s' "$raw" | "$tr" -d "'\"\\\\") || return 0
     matches_i "knowledge[-_]base|action-items/context|$late"
+    [ "$?" -ne 1 ] && return 0
+    # The names a run may not set, and the builtins that set what they name, read again from the raw
+    # value: JSON's \n and \t become spaces first, so a word after them still starts a word once \ is
+    # gone, and an escaped backslash (\\, as in `\\typeset`) goes before that, so its second half doesn't
+    # read as \t. Case matters for both (`home` is another variable, `READ` no builtin).
+    tool sed
+    # shellcheck disable=SC1003 # the set is ', " and \ (one backslash after the shell's escaping)
+    v=$(printf '%s' "$raw" | "$t" -e 's/\\\\//g' -e 's/\\[nt]/ /g' | "$tr" -d "'\"\\\\") || return 0
+    # HOME, SCOUT_MODE and SCOUT_READER spelled with quotes or backslashes (`HO''ME=x`,
+    # `export SCOUT_MO\DE=x`).
+    matches 'HOME|SCOUT_(MODE|READER)'
+    [ "$?" -ne 1 ] && return 0
+    # A builtin that sets or unsets the variables it names, anywhere in the command, its own name perhaps
+    # quoted or escaped (`"read" HOM?`, `\export`, `r''ead`): its target need not spell HOME (`export
+    # $v=…`, `read H$v`, `read HOM?` with a file named HOME), so Python reads every one, and denies a
+    # target it can't read for certain. zsh's own setters too (`print -v`, `zstyle -s`, `zformat -f`,
+    # `strftime -s`, `getln`, the module builtins), and `repeat N`, a keyword the command follows.
+    # print's option may be built too (`print -$x NAME`), so a $ or backtick in it counts as -v.
+    matches '(^|[^A-Za-z0-9_.-])(export|declare|typeset|local|readonly|integer|float|unset|read|select|getopts|vared|mapfile|readarray|let|for|repeat|zstyle|zformat|strftime|getln|zparseopts|zstat|sysread|sysopen|zselect|zpty|zregexparse)([^A-Za-z0-9_.-]|$)|print(f)?[^;&|]* -[A-Za-z]*[v$`]'
     [ "$?" -ne 1 ]
 }
 

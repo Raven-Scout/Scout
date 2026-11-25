@@ -203,6 +203,117 @@ def test_run_may_read_its_run_env(vault, command):
     assert _decision(vault, "Bash", {"command": command}) is None
 
 
+# --- a run may not point HOME elsewhere: the gate expands ~ and $HOME with the run's own -------------------
+
+
+def _owner_state() -> str:
+    return str(Path.home() / ".local" / "state")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The gate read `~` as the run's HOME, so these wrote the owner's stores unseen (review of #792).
+        "HOME={state}/scout ; echo x >> ~/run-limits.json",
+        "export HOME={state} ; cp /dev/null ~/scout/run-limits.json",
+        "HOME={state}/scout/run-brokers sh -c 'echo x > $HOME/lab-vetoes.jsonl'",
+        "env HOME={state}/scout python3 -c \"open('x','w')\"",
+        "unset HOME; echo x > ~/x",
+        "for HOME in {state}/scout; do echo x > ~/run-limits.json; done",
+        # review of #800: each of these changes `~`, verified in zsh -f with a run's options
+        "typeset H\\OME=$PWD/h; git commit -m msg",
+        "export HO''ME=$PWD/h; git commit -m msg",
+        "export HO\\ME=$PWD/h; git commit -m msg",
+        "printf -v HO''ME %s $PWD/h; git commit -m msg",
+        "read HO''ME <<< $PWD/h; git commit -m msg",
+        "unset HO''ME",
+        "IFS= read -r HOME <<< $PWD/h; git commit -m msg",
+        "HOME+=/.claude; echo x >> ~/settings.json",
+        "HOME[1,-1]=$PWD/h; git commit -m msg",
+        ": ${{HOME::=$PWD/h}}; git commit -m msg",
+        "echo ${{HOME::=/x}}",
+        ": ${{HOME:=/x}}",
+        "select HOME in $PWD/h; do break; done <<< 1; git commit -m msg",
+        "nocorrect export HOME=$PWD/h; git commit -m msg",
+        "- export HOME=$PWD/h; git commit -m msg",
+        "noglob HOME=/x true",
+        # a name built at run time
+        "v=HO; v+=ME; : ${{(P)v::=$PWD/h}}; git commit -m msg",
+        "v=HO; v+=ME; export $v=$PWD/h; git commit -m msg",
+        'v=HO; v+=ME; typeset "$v=$PWD/h"; git commit -m msg',
+        "v=HO; v+=ME; read $v <<< $PWD/h; git commit -m msg",
+        'v=HO; v+=ME; eval "$v=$PWD/h"; git commit -m msg',
+        # review 2 of #800: a name built in part, or by a glob, which the shell may expand to HOME
+        "read HOM? <<< $PWD/h; git commit -m msg",
+        "export HOM?=.claude; echo x >> ~/settings.json",
+        "v=OME; export H$v=$PWD/h; git commit -m msg",
+        "v=OME; read H$v <<< /x; echo x >> ~/settings.json",
+        "v=OME; printf -v H$v /x; echo x >> ~/settings.json",
+        'v=OME; typeset "H${{v}}=/x"; echo x >> ~/settings.json',
+        'v=OME; eval "H${{v}}=/x"; echo x >> ~/settings.json',
+        "v=HOME; : ${{(P)${{v}}::=/x}}; echo x >> ~/settings.json",
+        "read -d '' HOME <<< /x",
+        # review 3 of #800: verified to skip the commit hook in zsh
+        "\\read HOM? <<< h; git commit -qm m1",
+        "print -v HOM? h; git commit -qm m2",
+        "print -v HOME /p/h; git commit -m m",
+        "zstyle :x y /p/h; zstyle -s :x y HOM?; git commit -m m",
+        "zformat -f HOM? /p/h; git commit -m m",
+        "strftime -s HOM? %s; git commit -m m",
+        "repeat 1 read HOM? <<< /p/h; git commit -m m",
+        "pr''intf -v HOM? /p/h; git commit -m m",
+        "\\typeset H$v=/p/h; git commit -m m",
+        "exec {{HOME}}>/dev/null; echo x >> ~/settings.json",
+        # review 4 of #800: a $'…' escape spells the builtin, or print's option is built at run time
+        "eval $'\\x72ead HOM? <<< h'; git commit -qm m",
+        "eval $'\\162ead HOM? <<< h'; git commit -qm m",
+        "$'\\x72ead' HOM? <<< h; git commit -qm m",
+        "x=v; print -$x HOM? /p/h; git commit -qm m",
+    ],
+)
+def test_run_denies_a_command_that_points_home_elsewhere(vault, command):
+    reason = _denied(_decision(vault, "Bash", {"command": command.format(state=_owner_state())}))
+    assert "HOME" in reason and "SCOUT_MODE" not in reason
+    assert not (vault / ".scout-logs").exists() or not _events(vault), "a HOME change isn't a hook skip"
+
+
+def test_run_denies_an_even_dollar_run_before_an_escaped_quote(vault):
+    # zsh reads a `$` and then $'…', so this runs `read HOME`; bash reads `$$` and a plain quote. Either the read gate
+    # (which can't judge it) or the HOME rule after it denies.
+    _denied(_decision(vault, "Bash", {"command": "eval $$'; \\x72ead HOME <<< /p/h'; git commit -qm m"}))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "HOME=$HOME python3 scripts/clock-status.py",
+        'HOME="$HOME" ls notes',
+        "echo $HOME",
+        "ls ~/Documents",
+        "export HOME",
+        "HOME=~ ls",
+        "HOME=$HOME/ ls",
+        'echo "HOME is $HOME"',
+        "read -r HOME_DIR <<< x",
+        'while IFS= read -r line; do echo "$line"; done < notes.txt',
+        "read -t $T ans",
+        'read -p "$prompt" ans',
+        "read -r -d '' body <<< x",
+        "printf -v out '%s' x",
+        'getopts "ab:" opt',
+        "let i=$i+1",
+        "for f in $HOME/docs/*; do echo $f; done",
+        'echo "${HOME=}"',
+    ],
+)
+def test_run_may_keep_or_read_its_home(vault, command):
+    assert _decision(vault, "Bash", {"command": command}) is None
+
+
+def test_owner_session_may_set_home(vault):
+    assert _decision(vault, "Bash", {"command": "HOME=/tmp/x ls"}, env={}) is None
+
+
 @pytest.mark.parametrize("env", [{}, {"SCOUT_READER": "owner"}])
 def test_owner_session_may_change_the_run_env(vault, env):
     assert _decision(vault, "Bash", {"command": "env -u SCOUT_MODE git commit -m x"}, env=env) is None
@@ -228,6 +339,11 @@ def _events(vault: Path) -> list[dict]:
         ("git --config-env=core.hooksPath=D commit -m x", "--config-env core.hooksPath"),
         ("git config core.hooksPath /dev/null", "git config core.hooksPath"),
         ("GIT_CONFIG_COUNT=1 git commit -m x", "GIT_CONFIG_*"),
+        ("XDG_CONFIG_HOME=./x git commit -m x", "XDG_CONFIG_HOME"),
+        ("export XDG_CONFIG_HOME=./x; git commit -m x", "XDG_CONFIG_HOME"),
+        ("XDG_CONFIG_HOME+=/x; git commit -m x", "XDG_CONFIG_HOME"),
+        (": ${XDG_CONFIG_HOME:=./x}; git commit -m x", "XDG_CONFIG_HOME"),
+        ("IFS= read -r XDG_CONFIG_HOME <<< ./x; git commit -m x", "XDG_CONFIG_HOME"),
         ("git commit-tree abc -m x", "commit-tree"),
         ("git update-ref refs/heads/main abc", "update-ref"),
         ("rm .git/hooks/pre-commit", ".git/hooks"),
@@ -456,6 +572,75 @@ def test_a_run_env_change_or_detach_reaches_python_from_the_shell(vault, tmp_pat
     assert res.returncode == 2
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "HOME=/tmp/x scripts/scoutctl status",
+        "export HOME=/tmp/x",
+        "unset HOME",
+        "read HOME",
+        "printf -v HOME %s x",
+        # quoted or escaped: matched once the shell stage has removed quotes and backslashes (review of #800)
+        "typeset H\\OME=/tmp/x; git commit -m msg",
+        "export HO''ME=/tmp/x; git commit -m msg",
+        "unset HO''ME",
+        "export SCOUT_MO''DE=x; git commit -m msg",
+        "unset SCOUT_REA''DER",
+        # a name built at run time names no HOME at all
+        "export $v=/tmp/x; git commit -m msg",
+        'typeset "$v=/tmp/x"; git commit -m msg',
+        "read $v <<< /tmp/x; git commit -m msg",
+        'printf -v "$v" %s x',
+        ": ${(P)v::=/tmp/x}",
+        # a name built by a glob or in part: the builtin's name, anywhere in the command, sends it on
+        "read HOM? <<< /tmp/x; git commit -m msg",
+        "IFS= read -r H$v <<< /tmp/x",
+        "v=OME; for H$v in /x; do :; done",
+        "(( H$v = 1 ))",
+        # the builtin's own name quoted or escaped, or behind a quoted prefix value (review 3 of #800)
+        '"read" HOM? <<< /tmp/x; git commit -m msg',
+        "r''ead HOM? <<< /tmp/x",
+        "\\read HOM? <<< /tmp/x",
+        'ex""port H$v=/tmp/x',
+        'X="a b" read HOM? <<< /tmp/x',
+        "ls\n'read' HOM? <<< /tmp/x",
+        "\\typeset H$v=/tmp/x",
+        "e''xport HOM?=x",
+        "pr''intf -v HOM? /tmp/x",
+        "print -v HOM? h; git commit -qm m2",
+        "zstyle -s :x y HOM?",
+        "zformat -f HOM? /tmp/x",
+        "strftime -s HOM? %s",
+        "repeat 1 read HOM? <<< /tmp/x",
+        "zparseopts -A HOM? a",
+        # a $'…' escape can spell any word, and print's option may be built at run time (review 4 of #800)
+        "$'\\x72ead' HOM? <<< /tmp/x",
+        "$'\\162ead' HOM? <<< /tmp/x",
+        "x=v; print -$x HOM? /tmp/x",
+        "print -`echo v` HOM? /tmp/x",
+        # the shell stage doesn't look for command position, so a builtin's name used as a plain word goes on too;
+        # Python allows these (about 1.8% of replayed run calls newly reach it)
+        "scripts/scoutctl kb read projects/widgets/widgets.md",
+        "git log --format=export -1",
+        'echo "read the notes"',
+    ],
+)
+def test_a_home_change_reaches_python_from_the_shell(vault, tmp_path, command):
+    # No KB word and no other trigger: only the HOME, run-env or built-name rules send it to Python (here: missing,
+    # so exit 2).
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 2
+
+
+def test_a_home_change_is_denied_through_the_real_cli(vault):
+    payload = _payload("Bash", {"command": "export HOME=/tmp/x ; echo x >> ~/run-limits.json"}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
+    assert res.returncode == 0, res.stderr
+    out = json.loads(res.stdout)["hookSpecificOutput"]
+    assert out["permissionDecision"] == "deny" and "HOME" in out["permissionDecisionReason"]
+
+
 def test_a_run_env_change_is_denied_through_the_real_cli(vault):
     payload = _payload("Bash", {"command": "env -u SCOUT_MODE git commit -m x"}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
@@ -465,7 +650,14 @@ def test_a_run_env_change_is_denied_through_the_real_cli(vault):
 
 @pytest.mark.parametrize(
     "command",
-    ["git add notes/a.md && git commit -m x 2>&1", "scripts/git-safe-commit.sh msg notes/a.md >&2", "ls notes"],
+    [
+        "git add notes/a.md && git commit -m x 2>&1",
+        "scripts/git-safe-commit.sh msg notes/a.md >&2",
+        "ls notes",
+        "git status --short",
+        'echo "reading the notes"',  # a builtin's name only as part of a word
+        "scripts/scoutctl health --json",
+    ],
 )
 def test_ordinary_run_commands_still_exit_in_the_shell(vault, tmp_path, command):
     payload = _payload("Bash", {"command": command}, vault).getvalue()

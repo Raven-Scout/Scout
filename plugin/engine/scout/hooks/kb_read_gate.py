@@ -155,6 +155,14 @@ def _deny_run_env() -> str:
     )
 
 
+def _deny_home() -> str:
+    return (
+        f"{MARK} A scheduled run doesn't set, unset or export HOME, or set a variable whose name it builds at run "
+        "time (`export $v=…`, `read $v`): what `~` and `$HOME` name decides which files this gate protects. Use the "
+        "paths as they are, and name the variables you set; Scout's commands find their own folders."
+    )
+
+
 def _deny_agy_server() -> str:
     return (
         f"{MARK} A scheduled run doesn't use the ANTIGRAVITY_* variables (the agent CLI's local server address, "
@@ -430,7 +438,15 @@ def decide(
         if not isinstance(command, str):
             raise ValueError("Bash call without a command")
         from scout.kb import hook_paths
-        from scout.kb.live_run import DELEGATE_FORM, KB_READ, UNRESOLVED_READ, run_escape
+        from scout.kb.live_run import (
+            DELEGATE_FORM,
+            HOME_FORM,
+            KB_READ,
+            UNRESOLVED_READ,
+            even_dollar_escape,
+            expansion_escape,
+            run_escape,
+        )
 
         if hook_paths.names_agy_server_env(command):
             return _deny_agy_server()  # before the path checks (runtime-agnostic Phase 2A.3)
@@ -536,9 +552,15 @@ def decide(
                 memo[target] = _literal_globs(target)
             return memo[target]
 
-        escape = run_escape(command, protect=protect, secret=secret, kb_read=kb_read, git_read=git_read)
+        escape = (
+            expansion_escape(command)
+            or run_escape(command, protect=protect, secret=secret, kb_read=kb_read, git_read=git_read)
+            or even_dollar_escape(command)
+        )
         if escape == "env":
             return _deny_run_env()
+        if escape == HOME_FORM:
+            return _deny_home()
         if escape == KB_READ:
             return _deny_bash()
         if escape == UNRESOLVED_READ:
