@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from scout.hooks import kb_read_gate as gate
+from scout.kb.raw_read import listed_roots
 from tests.unit.test_hooks_kb_read_gate import RUN, _denied, _payload
 
 MARK = "kb-only-line"  # appears only in the KB notes, or in what a KB script prints
@@ -35,6 +36,7 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "knowledge-base/pats.md": "kb-only\n",  # a grep pattern file
         "knowledge-base/sub.md": f"s/.*/{MARK}/\n",  # a sed script
         "knowledge-base/print.md": f'{{print "{MARK}"}}\n',  # an awk program
+        "action-items/context/x.md": f"{MARK}\n",
         "docs/a.md": "TODO docs-line x\n",
         "docs/b.md": f"{MARK}\n",  # matched only by the KB pattern file
         "docs/pats.txt": "docs\n",
@@ -48,8 +50,9 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return h.resolve()
 
 
-def _gate(home: Path, command: str):
-    return gate.run(stdin=_payload("Bash", {"command": command}, home / "Vault"), env={**RUN, "HOME": str(home)})
+def _gate(home: Path, command: str, where: str = ""):
+    cwd = home / "Vault" / where
+    return gate.run(stdin=_payload("Bash", {"command": command}, cwd), env={**RUN, "HOME": str(home)})
 
 
 def _zsh(home: Path, command: str) -> str | None:
@@ -105,3 +108,62 @@ def test_a_flag_that_reads_no_kb_note_under_zsh_is_allowed(home: Path, command: 
     out = _zsh(home, command)
     assert out is None or MARK not in out, out
     assert _gate(home, command) is None
+
+
+# ----- the search tools as listers that feed xargs ----------------------------------------------------
+# Run from action-items/, a lister there prints context/x.md, and `xargs cat` reads it. (From the vault
+# root the recursive-read rule denies these already.)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "fd . | xargs cat",
+        "fd -e md | xargs head -1",
+        "fdfind x | xargs cat",
+        "ag -g x | xargs cat",
+        "ag -l TODO | xargs cat",
+        "ack -f | xargs cat",
+        "ack-grep -g x | xargs cat",
+        "ugrep -rl TODO . | xargs cat",
+        "ug -l TODO context/x.md | xargs cat",
+    ],
+)
+def test_a_search_tool_listing_kb_files_into_xargs_is_denied(home: Path, command: str) -> None:
+    assert _denied(_gate(home, command, "action-items"))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "fd . scripts | xargs cat",
+        "fd -e sh | xargs wc -l",
+        "ag -g run scripts | xargs cat",
+        "ack -f scripts | xargs wc -l",
+        "ugrep -rl TODO scripts | xargs cat",
+    ],
+)
+def test_a_search_tool_listing_other_files_into_xargs_is_allowed(home: Path, command: str) -> None:
+    assert _gate(home, command) is None
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "expected"),
+    [
+        ("fd", ["."], ["."]),
+        ("fdfind", ["x", "docs"], ["docs"]),
+        ("fd", ["-e", "py"], []),  # a filter that keeps every KB note out
+        ("fd", [".", "-X", "cat"], None),  # prints what cat prints
+        ("fd", ["-V"], None),
+        ("ag", ["-g", "x", "docs"], ["docs"]),
+        ("ag", ["-l", "x"], ["."]),
+        ("ag", ["x"], None),  # prints matching lines, not paths
+        ("ack", ["-f"], ["."]),
+        ("ack-grep", ["-g", "x"], ["."]),
+        ("ugrep", ["-rl", "x", "docs"], ["docs"]),
+        ("ug", ["-r", "x", "."], None),
+        ("cat", ["a"], None),
+    ],
+)
+def test_listed_roots_of_the_other_search_tools(name: str, args: list[str], expected: list[str] | None) -> None:
+    assert listed_roots(name, args) == expected

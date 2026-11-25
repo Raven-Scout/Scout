@@ -451,6 +451,30 @@ def read_operands(name: str, args: list[str]) -> list[str] | None:
     return [p for p in [*given, *plain] if p and p != "-"]
 
 
+# The search tools' flags that make them print file paths: names that match, or that hold a match.
+_LISTS_FILES = {
+    "ag": {"-g", "-l", "-L", "--files-with-matches", "--files-without-matches"},
+    "ack": {"-f", "-g", "-l", "-L", "--files-with-matches", "--files-without-matches"},
+    "ugrep": {"-l", "-L", "--files-with-matches", "--files-without-match"},
+}
+
+
+def listed_roots(name: str, args: list[str]) -> list[str] | None:
+    """For ``fd``, and ``ag``/``ack``/``ugrep`` when they print file paths (``ag -g``, ``ack -f``,
+    ``ugrep -l``): the folders whose file paths they print, for ``… | xargs cat`` to read. None for any other
+    call. Their other names (``fdfind``, ``ack-grep``, ``ug``) count too. [] when a file filter keeps every
+    KB note out of the listing (``fd -e py``)."""
+    name = _ALIASES.get(name, name)
+    if name == "fd":
+        if _fd_without_exec(args)[1] or _not_a_read(name, args):
+            return None  # it prints what the command it runs prints
+        rec = _recursive("fd", args)
+        return [] if rec is None else rec.roots or ["."]
+    if name not in _LISTS_FILES or not any(f in _LISTS_FILES[name] for f, _v in _options(name, args)):
+        return None
+    return read_operands(name, args) or ["."]
+
+
 _BRACE_SEQUENCE = re.compile(r"^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.(-?\d+))?$")
 
 
