@@ -409,15 +409,17 @@ def world(tmp_path_factory: pytest.TempPathFactory) -> World:
     return World(tmp_path_factory.mktemp("prefilter"))
 
 
-def _with_cwd(world: World, case: Case) -> Case:
-    """``case`` with the place it runs in as the payload's top-level ``"cwd"``, for a PAYLOAD_CWD entry
-    whose payload is a JSON object (as Claude Code sends it: cwd before the tool call)."""
+def _with_cwd(world: World, case: Case, where: str | None = None) -> Case:
+    """``case`` with a top-level ``"cwd"`` in its payload, for a PAYLOAD_CWD entry whose payload is a JSON
+    object (as Claude Code sends it: cwd before the tool call). The place is ``where``, by default the
+    one the case runs in."""
     payload = case.payload.lstrip()
     if case.entry not in PAYLOAD_CWD or not payload.startswith("{"):
         return case
     rest = payload[1:]
     sep = "" if rest.lstrip().startswith("}") else ", "
-    return case._replace(payload='{"cwd": ' + json.dumps(str(world.cwd(case.cwd))) + sep + rest)
+    place = str(world.cwd(where or case.cwd))
+    return case._replace(payload='{"cwd": ' + json.dumps(place) + sep + rest)
 
 
 def _differences(world: World, cases: list[Case]) -> list[str]:
@@ -640,6 +642,39 @@ def test_mcp_tool_gate_reads_the_connectors_file_as_before(tmp_path: Path, confi
 
 
 # ----- what the move itself must guarantee ----------------------------------------------------
+
+
+@pytest.mark.slow
+def test_an_owner_session_goes_by_the_payload_cwd_not_its_own(world: World) -> None:
+    """The one change of #803's follow-up 1, as a differential: an owner session whose hook runs in one
+    place while the payload's cwd names another. For each owner-session filter, the new command run from
+    anywhere decides exactly as the old one did when run from the payload's cwd (where the session is),
+    both ways: hook outside and session in the vault, and hook in the vault and session outside."""
+    payloads = [p for p in TOOL_PAYLOADS if p.startswith("{")]
+    moves = (("outside", "vault"), ("outside", "deep"), ("vault", "outside"), ("deep", "outside"))
+    cases = [
+        (_with_cwd(world, Case(f"{entry} payload[{i}] env[{j}] {here}->{there}", entry, p, env, here, x), there), there)
+        for entry in ("outbound-gate", "kb-read-label", "shared-read-record")
+        for i, p in enumerate(payloads)
+        for j, env in enumerate(OWNERS)
+        for here, there in moves
+        for x in (0, 1)
+    ]
+
+    def compare(item: tuple[Case, str]) -> tuple[str | None, bool]:
+        case, there = item
+        new = world.run(NEW[case.entry], case)
+        by_session = world.run(OLD[case.entry], case._replace(cwd=there))
+        by_hook = world.run(OLD[case.entry], case)
+        differs = None if new == by_session else f"{case.id}: new={new!r} old-from-the-session={by_session!r}"
+        return differs, by_hook != new
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(compare, cases))
+    assert [d for d, _ in results if d] == []
+    # Not vacuous: for each filter, the old command run where the hook runs decided otherwise somewhere.
+    for entry in ("outbound-gate", "kb-read-label", "shared-read-record"):
+        assert any(moved for (case, _), (_, moved) in zip(cases, results, strict=True) if case.entry == entry), entry
 
 
 def test_an_owner_session_never_starts_python_for_the_run_only_hooks(world: World) -> None:
