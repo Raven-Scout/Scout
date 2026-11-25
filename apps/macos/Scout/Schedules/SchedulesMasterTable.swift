@@ -17,60 +17,98 @@ struct SchedulesMasterTable: View {
     /// Run-health warnings by slot key (`RunOutcomeDisplay.slotWarnings`).
     var warnings: [String: [RunOutcomeDisplay.SlotWarning]] = [:]
 
-    /// The table's keyboard focus. A row is a plain button, which doesn't
-    /// take focus on a click, so the click sets it: the arrows work at once.
+    /// Set inside `SchedulesMasterList`: its focus, whose Tab stop and arrow
+    /// keys sit around both the Table and the Cards view, so switching
+    /// between them keeps the keys (UI audit T4). The table then adds no stop
+    /// or key handler of its own.
+    var listFocus: FocusState<Bool>.Binding?
+
+    /// The table's keyboard focus when it stands alone. A row is a plain
+    /// button, which doesn't take focus on a click, so the click sets it: the
+    /// arrows work at once.
     @FocusState private var tableFocused: Bool
 
     /// The rows in the order drawn: the new draft first, then the slots. The
     /// arrow keys walk this (UI audit #57); the Cards view shares it.
+    /// The schedule VoiceOver names as the arrow keys reach `key`.
+    static func name(of key: String, slots: [Slot], newDraftSlot: Slot?) -> String? {
+        ((newDraftSlot.map { [$0] } ?? []) + slots).first { $0.key == key }?.displayName
+    }
+
     static func keyboardOrder(slots: [Slot], newDraftSlot: Slot?) -> [String] {
         (newDraftSlot.map { [$0.key] } ?? []) + slots.map(\.key)
     }
 
     var body: some View {
-        // Reading the scale here re-lays the table out when Text size changes.
-        let columns = SchedulesColumns(scale: TextScale.shared.factor)
-        GeometryReader { geo in
-            let available = geo.size.width
-            let mode = columns.mode(forAvailable: available)
-            if mode == .stacked {
-                SchedulesMasterCards(slots: slots, newDraftSlot: newDraftSlot,
-                                     selectedSlotKey: $selectedSlotKey, warnings: warnings,
-                                     twentyFourHour: true)
+        ScrollViewReader { proxy in
+            if let listFocus {
+                layout(focus: listFocus, proxy: proxy)
             } else {
-                table(columns, mode: mode, nameWidth: columns.nameWidth(forAvailable: available, mode: mode))
+                layout(focus: $tableFocused, proxy: proxy)
+                    // One Tab stop and one key handler around both layouts, so
+                    // the focus outlives a switch between them. At 1100 pt a
+                    // click on a row opened the detail pane, the narrower table
+                    // stacked into cards, its focus sink went with the table,
+                    // and the focus fell to the "Table" button above (UI audit
+                    // T4). It sits behind the header too, so Tab reaches it
+                    // before any row. ↑ ↓ Home End move the selection once the
+                    // table has keyboard focus; a click on a row gives it focus.
+                    .dsFocusContainer($tableFocused)
+                    .keyboardListNavigation(
+                        when: tableFocused,
+                        ids: { Self.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot) },
+                        selection: $selectedSlotKey,
+                        announce: { Self.name(of: $0, slots: slots, newDraftSlot: newDraftSlot) }
+                    ) { key in
+                        proxy.scrollTo(key)
+                    }
             }
         }
     }
 
-    private func table(_ columns: SchedulesColumns, mode: SchedulesColumns.Mode, nameWidth: CGFloat) -> some View {
+    private func layout(focus: FocusState<Bool>.Binding, proxy: ScrollViewProxy) -> some View {
+        // Reading the scale here re-lays the table out when Text size changes.
+        let columns = SchedulesColumns(scale: TextScale.shared.factor)
+        return GeometryReader { geo in
+            let available = geo.size.width
+            let mode = columns.mode(forAvailable: available)
+            Group {
+                if mode == .stacked {
+                    // The table's focus, not the cards' own (see `SchedulesMasterCards.tableFocus`).
+                    SchedulesMasterCards(slots: slots, newDraftSlot: newDraftSlot,
+                                         selectedSlotKey: $selectedSlotKey, warnings: warnings,
+                                         twentyFourHour: true, tableFocus: focus)
+                } else {
+                    table(columns, mode: mode, nameWidth: columns.nameWidth(forAvailable: available, mode: mode),
+                          focus: focus)
+                }
+            }
+            // A click that opens the detail pane can stack the table:
+            // keep the clicked row in view as it becomes a card.
+            .onChange(of: mode == .stacked) {
+                guard let key = selectedSlotKey else { return }
+                DispatchQueue.main.async { proxy.scrollTo(key) }
+            }
+        }
+    }
+
+    private func table(_ columns: SchedulesColumns, mode: SchedulesColumns.Mode, nameWidth: CGFloat,
+                       focus: FocusState<Bool>.Binding) -> some View {
         // The row the ring marks while the table has the keys (see `SchedulesMasterCards`).
         let ringed = KeyboardListNavigation.ringed(selectedSlotKey, in: Self.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot))
         return VStack(alignment: .leading, spacing: 0) {
             headerRow(columns, mode: mode, nameWidth: nameWidth)
             Divider().background(DS.Rule.hard)
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        if let draft = newDraftSlot {
-                            row(for: draft, columns: columns, mode: mode, nameWidth: nameWidth, ringed: ringed)
-                            Divider().background(DS.Rule.soft)
-                        }
-                        ForEach(slots) { slot in
-                            row(for: slot, columns: columns, mode: mode, nameWidth: nameWidth, ringed: ringed)
-                            Divider().background(DS.Rule.soft)
-                        }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if let draft = newDraftSlot {
+                        row(for: draft, columns: columns, mode: mode, nameWidth: nameWidth, ringed: ringed, focus: focus)
+                        Divider().background(DS.Rule.soft)
                     }
-                }
-                // ↑ ↓ Home End move the selection once the table has keyboard
-                // focus; a click on a row gives it focus.
-                .dsFocusContainer($tableFocused)
-                .keyboardListNavigation(
-                    when: tableFocused,
-                    ids: { Self.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot) },
-                    selection: $selectedSlotKey
-                ) { key in
-                    proxy.scrollTo(key)
+                    ForEach(slots) { slot in
+                        row(for: slot, columns: columns, mode: mode, nameWidth: nameWidth, ringed: ringed, focus: focus)
+                        Divider().background(DS.Rule.soft)
+                    }
                 }
             }
         }
@@ -100,23 +138,68 @@ struct SchedulesMasterTable: View {
 
     @ViewBuilder
     private func row(for slot: Slot, columns: SchedulesColumns, mode: SchedulesColumns.Mode, nameWidth: CGFloat,
-                     ringed: String?) -> some View {
+                     ringed: String?, focus: FocusState<Bool>.Binding) -> some View {
         let isSelected = selectedSlotKey == slot.key
-        // A button, not a tap gesture, so rows take keyboard focus and
-        // VoiceOver reads each one as a selectable button.
+        // A button, not a tap gesture, so VoiceOver reads each row as a
+        // selectable button. No Tab stop of its own: the table's is
+        // (`dsContainerItem`), and the arrow keys reach the rows.
         Button {
             selectedSlotKey = slot.key
-            tableFocused = true
+            // In the click's own action: set a turn later, a focus move out
+            // of the sidebar is dropped (review of #767).
+            focus.wrappedValue = true
         } label: {
             SlotTableRow(slot: slot, isSelected: isSelected, nameWidth: nameWidth,
                          warnings: warnings[slot.key] ?? [], columns: columns, mode: mode)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plainHit)
-        // Tab onto the table itself rings this row (T4).
-        .dsCursorRing(ringed == slot.key, cornerRadius: 4)
+        // The table's stop and arrows reach every row; a row isn't a stop of its own.
+        .dsContainerItem()
+        // Tab onto the table itself rings this row (T4): the cards' ring,
+        // drawn inside the row because the row runs edge to edge. Drawn
+        // around it, the ScrollView clipped it, so only part of it showed,
+        // and none of it at the window's edge.
+        .dsCursorRing(ringed == slot.key, cornerRadius: 6, outset: -2)
         .accessibilitySelected(isSelected)
         .accessibilityIdentifier("schedules-row-\(slot.key)")
         .id(slot.key)
+    }
+}
+
+/// The Schedules Table or Cards view, whichever is chosen, inside one Tab stop
+/// and one arrow-key handler. Each view had its own, so switching views with
+/// the picker took the focused one away and the focus fell to the sidebar
+/// (or, with Keyboard navigation on, to the status bar): review of #767.
+struct SchedulesMasterList: View {
+    let cards: Bool
+    let slots: [Slot]
+    let newDraftSlot: Slot?
+    @Binding var selectedSlotKey: String?
+    var warnings: [String: [RunOutcomeDisplay.SlotWarning]] = [:]
+
+    @FocusState private var listFocused: Bool
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            Group {
+                if cards {
+                    SchedulesMasterCards(slots: slots, newDraftSlot: newDraftSlot, selectedSlotKey: $selectedSlotKey,
+                                         warnings: warnings, tableFocus: $listFocused)
+                } else {
+                    SchedulesMasterTable(slots: slots, newDraftSlot: newDraftSlot, selectedSlotKey: $selectedSlotKey,
+                                         warnings: warnings, listFocus: $listFocused)
+                }
+            }
+            .dsFocusContainer($listFocused)
+            .keyboardListNavigation(
+                when: listFocused,
+                ids: { SchedulesMasterTable.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot) },
+                selection: $selectedSlotKey,
+                announce: { SchedulesMasterTable.name(of: $0, slots: slots, newDraftSlot: newDraftSlot) }
+            ) { key in
+                proxy.scrollTo(key)
+            }
+        }
     }
 }

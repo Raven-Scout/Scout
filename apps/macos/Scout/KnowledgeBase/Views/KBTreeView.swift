@@ -47,6 +47,9 @@ struct KBTreeView: View {
                 let out = KBTreeKeyboard.handle(key, cursor: cursor ?? selectedPath, nodes: nodes, expanded: expanded)
                 guard out.changed else { return .ignored }
                 expanded = out.expanded
+                if out.cursor != cursor, let row = out.cursor {
+                    ListCursorAnnouncement.post(URL(fileURLWithPath: row).deletingPathExtension().lastPathComponent)
+                }
                 cursor = out.cursor
                 if let open = out.open { selectedPath = open }
                 if let row = out.cursor { proxy.scrollTo(row) }
@@ -187,6 +190,8 @@ private struct KBTreeRow: View {
         if node.isDirectory {
             Button { toggle(); onClick(node.relativePath) } label: { dirLabel }
                 .buttonStyle(.plainHit)
+                // The tree's stop, arrows and Return reach every row (T4).
+                .dsContainerItem()
                 .dsCursorRing(ring == node.relativePath)
                 .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
                 .accessibilityAddTraits(isCursor ? .isSelected : [])
@@ -200,6 +205,7 @@ private struct KBTreeRow: View {
         } else {
             Button { selectedPath = node.relativePath; onClick(node.relativePath) } label: { fileLabel }
                 .buttonStyle(.plainHit)
+                .dsContainerItem()
                 // While the tree itself has the keys, the current row rings (T4).
                 .dsCursorRing(ring == node.relativePath)
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
