@@ -248,7 +248,9 @@ struct ActionItemsView: View {
                     cursorTaskID = nil
                     return .handled
                 }
-                .onAppear { listFocused = true }
+                // Only when nothing holds the keys (the app just opened):
+                // arriving from the sidebar leaves them there.
+                .dsFocusOnAppear($listFocused)
         }
     }
 

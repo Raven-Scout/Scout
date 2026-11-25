@@ -66,7 +66,17 @@ private struct ProbeList: View {
         .onChange(of: item) { _, item in
             for i in 0..<3 { log.ownFocus[i] = item == i }
         }
-        .onAppear { if focusOnAppear { listFocused = true } }
+        .modifier(FocusOnAppear(on: focusOnAppear, focus: $listFocused))
+    }
+}
+
+/// `dsFocusOnAppear` when `on`, as Action Items opens.
+private struct FocusOnAppear: ViewModifier {
+    let on: Bool
+    var focus: FocusState<Bool>.Binding
+
+    func body(content: Content) -> some View {
+        if on { content.dsFocusOnAppear(focus) } else { content }
     }
 }
 

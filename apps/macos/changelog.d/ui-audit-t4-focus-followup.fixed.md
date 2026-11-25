@@ -1,7 +1,10 @@
-- **A click on a list gives it the keys.** A click on a Schedules row, or on any part of an Action Items card,
-  now makes it current and lets ↑ ↓ move from there, even when the keys were elsewhere, such as the sidebar or
-  the search field. Before, a click on a Schedules row, or on an Action Items card's description, left ↓ doing
-  nothing. A click into a comment editor, or one that selects text, keeps the keys there.
+- **A click on a list gives it the keys.** A click on a Schedules row or card, a Knowledge Base tree row, or
+  any part of an Action Items card now makes it current and lets ↑ ↓ move from there, even when the keys were
+  elsewhere, such as the sidebar or the search field. Before, on a page just opened from the sidebar, a click
+  picked the item but ↓ did nothing until Tab had once reached the list. A click into a comment editor, or
+  one that selects text, keeps the keys there.
+- **Tab reaches the Action Items list.** Tab from the search field now stops on the list itself, where ↑ ↓
+  move through the cards. Before, Tab passed it by and landed on the first card's buttons.
 - **The Schedules table keeps the keys when it stacks into cards.** At narrow widths, a click on a row opens the
   details pane and the table becomes cards. The focus now stays on the list, at the clicked schedule, instead
   of jumping to the "Table" button.

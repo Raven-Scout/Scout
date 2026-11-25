@@ -194,12 +194,14 @@ extension View {
     /// ring. Key handlers on this view also hear keys a focused button inside
     /// didn't use: gate them on `focus` (`keyboardListNavigation(when:)`).
     /// Pass `showsCursor: false` while a field inside has the keys.
+    ///
+    /// The sink is an AppKit view (`DSFocusSink`): a SwiftUI `.focusable()`
+    /// one ignored `focus = true` on a freshly shown page until Tab had
+    /// focused it once, so a click from the sidebar gave the list no keys.
     func dsFocusContainer(_ focus: FocusState<Bool>.Binding, showsCursor: Bool = true) -> some View {
         background {
-            Color.clear
-                .focusable()
+            DSFocusSink()
                 .focused(focus)
-                .focusEffectDisabled()
                 .accessibilityHidden(true)
         }
         .environment(\.dsFocusContainerShowsCursor, focus.wrappedValue && showsCursor)
