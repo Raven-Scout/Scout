@@ -26,6 +26,7 @@ _READ_COMMANDS = {
     "mawk", "wc", "tree", "bat", "nl", "strings", "stat", "du", "file", "cut", "sort", "uniq", "diff", "cmp",
     "comm", "od", "xxd", "hexdump", "tac", "rev", "paste", "column", "fold", "fmt", "pr", "zcat", "base64",
     "iconv", "jq", "yq", "view", "vi", "vim", "nano", "most", "pg", "ag", "ack", "fd", "ugrep",
+    "ug", "ug+", "ugrep+", "fdfind", "ack-grep",  # aliases: _command_name reads them as ugrep, fd, ack
 }  # fmt: skip
 _PREFIX_WORDS = {
     "xargs", "sudo", "command", "builtin", "env", "nice", "time", "exec", "timeout", "gtimeout", "stdbuf",
@@ -74,8 +75,6 @@ _KB_SOURCE = re.compile(
     r"(?:knowledge-base|knowledge_base|action-items/context)"
     r"|\bscoutctl\s+kb\s+(?:files|search|resolve|name-lookup|delta|structure|query|related|traverse|path|stat)\b"
 )
-# A recursive read: what it reads under a folder it doesn't name.
-_RECURSIVE_FLAG = re.compile(r"^-(?:[A-Za-z]*[rR][A-Za-z]*|-recursive|-dereference-recursive|d=?recurse)$")
 # knowledge-base/ontology/schema.yaml and parser.py are tooling, not notes: reading them is fine.
 ONTOLOGY_TOOLING = re.compile(r"(?:^|/)(?:knowledge-base|knowledge_base)/ontology/(?:schema\.ya?ml|parser\.py)$")
 WHOLE_VAULT_GLOBS = {"*", "**", "**/*", "*.md", "**/*.md", "**/*.*"}
@@ -253,27 +252,39 @@ _RG_VALUES = {"-A", "-B", "-C", "-e", "-f", "-g", "-j", "-m", "-M", "-t", "-T", 
 _FIND_VALUES = {"-name", "-iname", "-path", "-ipath", "-wholename", "-regex", "-iregex", "-type", "-size",
                 "-mtime", "-mmin", "-atime", "-amin", "-ctime", "-cmin", "-newer", "-user", "-group", "-perm",
                 "-maxdepth", "-mindepth", "-printf", "-fprint", "-links", "-inum", "-samefile"}  # fmt: skip
-_AG_VALUES = {"-A", "-B", "-C", "-G", "-g", "-m", "-p", "--after", "--before", "--context", "--depth",
-              "--file-search-regex", "--ignore", "--ignore-dir", "--max-count", "--pager", "--path-to-ignore",
-              "--workers"}  # fmt: skip
-_ACK_VALUES = {"-A", "-B", "-C", "-g", "-m", "--after-context", "--before-context", "--context", "--ignore-dir",
-               "--ignore-file", "--match", "--max-count", "--output", "--pager", "--type", "--type-add",
-               "--type-del", "--type-set"}  # fmt: skip
-_FD_VALUES = {"-d", "-e", "-E", "-t", "-S", "-o", "-j", "-c", "--max-depth", "--min-depth", "--exact-depth",
-              "--extension", "--exclude", "--type", "--size", "--changed-within", "--changed-before", "--owner",
-              "--base-directory", "--search-path", "--path-separator", "--threads", "--max-results", "--color",
-              "--ignore-file", "--format", "--and"}  # fmt: skip
-# fd's flags that run a command on what it finds: everything after them is that command.
+# ag's `-A`/`-B`/`-C` take a count only when the next word is a number (`ag -A x` searches for `x`),
+# and its `--after`/`--before`/`--context` take one only attached (`--context=3`).
+_AG_VALUES = {"-A", "-B", "-C", "-G", "-g", "-m", "-p", "-W", "--depth", "--file-search-regex", "--ignore",
+              "--ignore-dir", "--max-count", "--pager", "--path-to-ignore", "--workers", "--width",
+              "--color-path", "--color-match", "--color-line-number"}  # fmt: skip
+_AG_COUNTS = {"-A", "-B", "-C"}
+_ACK_VALUES = {"-A", "-B", "-C", "-g", "-m", "-t", "-T", "--after-context", "--before-context", "--context",
+               "--ignore-dir", "--ignore-file", "--match", "--max-count", "--output", "--pager", "--type",
+               "--type-add", "--type-del", "--type-set", "--and", "--or", "--not", "--range-start", "--range-end",
+               "--files-from"}  # fmt: skip
+_UGREP_VALUES = _GREP_VALUES | {"-g", "--glob", "-t", "-O", "-M", "-N", "-J", "-K", "--and", "--andnot", "--not",
+                                 "--depth", "--jobs", "--range"}  # fmt: skip
+_FD_VALUES = {"-d", "-e", "-E", "-t", "-S", "-o", "-j", "-c", "-C", "--max-depth", "--min-depth",
+              "--exact-depth", "--extension", "--exclude", "--type", "--size", "--changed-within",
+              "--changed-before", "--newer", "--older", "--changed-after", "--change-newer-than",
+              "--change-older-than", "--owner", "--base-directory", "--search-path", "--path-separator",
+              "--threads", "--max-results", "--color", "--ignore-file", "--ignore-contain", "--format", "--and",
+              "--batch-size"}  # fmt: skip
+# fd's flags that run a command on what it finds: the words after them are that command, up to a `;`.
 _FD_EXEC = {"-x", "--exec", "-X", "--exec-batch"}
+# Other names the search tools are installed under (Debian's `fdfind`, `ack-grep`; ugrep's `ug`).
+_ALIASES = {"ug": "ugrep", "ug+": "ugrep", "ugrep+": "ugrep", "fdfind": "fd", "ack-grep": "ack"}
+# The type names for the formats the KB keeps, in ack's and ugrep's `-t` (ugrep's `+` adds shebangs).
+_KB_TOOL_TYPES = {"markdown", "md", "yaml", "yml", "json", "csv", "tsv", "html", "htm", "xml", "text", "txt"}
 _VALUE_FLAGS: dict[str, set[str]] = {
     "head": {"-n", "-c", "--lines", "--bytes"},
     "tail": {"-n", "-c", "--lines", "--bytes"},
     "grep": _GREP_VALUES, "egrep": _GREP_VALUES, "fgrep": _GREP_VALUES,
-    "ugrep": _GREP_VALUES | {"-g", "--glob"},
+    "ugrep": _UGREP_VALUES,
     "rg": _RG_VALUES,
     "ag": _AG_VALUES, "ack": _ACK_VALUES, "fd": _FD_VALUES,
-    "sed": {"-e", "-f", "-l"},
-    "awk": {"-v", "-f", "-F"}, "gawk": {"-v", "-f", "-F"}, "mawk": {"-v", "-f", "-F"},
+    "sed": {"-e", "-f", "-l", "--expression", "--file"},
+    "awk": {"-v", "-f", "-F", "--file"}, "gawk": {"-v", "-f", "-F", "--file"}, "mawk": {"-v", "-f", "-F", "--file"},
     "cut": {"-d", "-f", "-c", "-b"},
     "sort": {"-k", "-t", "-o", "-S", "-T"},
     "uniq": {"-f", "-s", "-w"},
@@ -284,21 +295,73 @@ _VALUE_FLAGS: dict[str, set[str]] = {
 }  # fmt: skip
 
 
+def _scan(name: str, args: list[str]) -> tuple[list[tuple[str, str | None]], list[str]]:
+    """``args`` read getopt-style: each option given with its value (``-t md``, ``-tmd``, ``-rt md``,
+    ``--type md``, ``--type=md``), and the words that are not a value (flags included)."""
+    takes = _VALUE_FLAGS.get(name, set())
+    opts: list[tuple[str, str | None]] = []
+    words: list[str] = []
+    i, ended = 0, False
+    while i < len(args):
+        a = args[i]
+        i += 1
+        if ended or a == "-" or not a.startswith("-"):
+            words.append(a)
+            continue
+        words.append(a)
+        if a == "--":
+            ended = True  # kept in `words`, so _split_args still reads what follows as positionals
+        elif a.startswith("--"):
+            flag, eq, value = a.partition("=")
+            if eq:
+                opts.append((flag, value))
+            elif flag in takes and i < len(args):
+                opts.append((flag, args[i]))
+                i += 1
+            else:
+                opts.append((flag, None))
+        else:
+            for j, ch in enumerate(a[1:], 1):
+                if not ch.isalnum():
+                    break  # not a flag letter: the rest is a value we don't know (`sed -i.bak`)
+                flag = "-" + ch
+                if flag not in takes:
+                    opts.append((flag, None))
+                    continue
+                if j < len(a) - 1:
+                    opts.append((flag, a[j + 1 :]))  # attached: `-tpy`, `-rO md` → `-O` takes `md`
+                elif i < len(args) and not (name == "ag" and flag in _AG_COUNTS and not args[i].isdigit()):
+                    opts.append((flag, args[i]))
+                    i += 1
+                else:
+                    opts.append((flag, None))
+                break
+    return opts, words
+
+
+def _options(name: str, args: list[str]) -> list[tuple[str, str | None]]:
+    return _scan(name, args)[0]
+
+
 def _operands(name: str, args: list[str]) -> list[str]:
     """``args`` without the values of the reader's value-taking flags."""
-    takes = _VALUE_FLAGS.get(name, set())
-    out, skip, ended = [], False, False
-    for a in args:
-        if skip:
-            skip = False
-        elif not ended and a == "--":
-            ended = True
-            out.append(a)  # kept, so _split_args still reads what follows as positionals
-        elif not ended and a in takes:
-            skip = True
-        else:
-            out.append(a)
-    return out
+    return _scan(name, args)[1]
+
+
+def _values(name: str, args: list[str], flags: set[str]) -> list[str]:
+    """The values given to any of ``flags``, quotes gone."""
+    return [v.strip("\"'") for f, v in _options(name, args) if f in flags and v is not None]
+
+
+def _split_list(value: str) -> list[str]:
+    """A comma-separated list of globs or names, keeping a ``{a,b}`` together."""
+    out, depth, start = [], 0, 0
+    for i, c in enumerate(value):
+        depth += {"{": 1, "}": -1}.get(c, 0)
+        if c == "," and depth <= 0:
+            out.append(value[start:i])
+            start = i + 1
+    return [p for p in [*out, value[start:]] if p]
 
 
 def _uses_operand(name: str, args: list[str], names: set[str]) -> bool:
@@ -306,6 +369,17 @@ def _uses_operand(name: str, args: list[str], names: set[str]) -> bool:
 
 
 _NOT_A_READ = {"--version", "--help", "-version", "-help", "--type-list"}
+# Per tool: the flags that print a version, help or a type list and read no file.
+_TOOL_NOT_A_READ = {
+    "rg": {"-V"}, "grep": {"-V"}, "egrep": {"-V"}, "fgrep": {"-V"}, "ugrep": {"-V"},
+    "ag": {"-V", "--list-file-types"}, "fd": {"-V", "-h"}, "ack": {"--help-types", "--dump"},
+}  # fmt: skip
+
+
+def _not_a_read(name: str, args: list[str]) -> bool:
+    return any(a in _NOT_A_READ or a in _TOOL_NOT_A_READ.get(name, ()) for a in args)
+
+
 # Readers whose first operand is a pattern or a program, not a file, unless a flag gives it (`grep -e x f`).
 _PROGRAM_FIRST: dict[str, set[str]] = {
     **dict.fromkeys(("grep", "egrep", "fgrep"), {"-e", "-f", "--regexp", "--file"}),
@@ -313,6 +387,10 @@ _PROGRAM_FIRST: dict[str, set[str]] = {
     "sed": {"-e", "-f", "--expression", "--file"},
     **dict.fromkeys(("awk", "gawk", "mawk"), {"-f", "--file"}),
     "jq": {"-f", "--from-file"},
+    "ugrep": {"-e", "-f", "--regexp", "--file"},
+    "ag": {"-g"},  # `ag -g PATTERN dir`: -g's value is the pattern
+    "ack": {"--match", "-f", "-g"},  # `ack -f dir` lists files: no pattern
+    "fd": set(),  # `fd [pattern] [path...]`
 }
 # Readers that read a folder they're given (its names, or the files below it); the rest only open files.
 _FOLDER_READERS = {"tree", "du", "find", "rg", "ag", "ack", "fd", "ugrep", "diff"}  # `diff -N dir empty/` prints it
@@ -326,18 +404,32 @@ def reads_folders(name: str, args: list[str]) -> bool:
     if name in _FOLDER_READERS:
         return True
     if name in ("grep", "egrep", "fgrep"):
-        pairs = zip(args, [*args[1:], ""], strict=True)
-        return any(_RECURSIVE_FLAG.match(a) for a in args) or any(
-            a == "--directories=recurse" or (a in ("-d", "--directories") and b == "recurse") for a, b in pairs
-        )
+        return _grep_recursive(name, args)
     return False
+
+
+# The flags whose value is a file the reader opens: a pattern file, a script, a file list.
+_FILE_FLAGS: dict[str, set[str]] = {
+    **dict.fromkeys(("grep", "egrep", "fgrep", "ugrep", "rg"), {"-f", "--file"}),
+    "sed": {"-f", "--file"},
+    **dict.fromkeys(("awk", "gawk", "mawk"), {"-f", "--file"}),
+    "jq": {"-f", "--from-file"},
+    "ack": {"--files-from"},
+}
+
+
+def _program_given(name: str, args: list[str]) -> bool:
+    """A flag gives the pattern or program (``grep -e x``, ``sed -ne p``, ``rg --regexp=x``), so every
+    positional is a file. Read with :func:`_scan`, so a cluster ending in ``-e`` counts too."""
+    given = _PROGRAM_FIRST.get(name, set())
+    return any(flag in given for flag, _value in _options(name, args))
 
 
 def read_operands(name: str, args: list[str]) -> list[str] | None:
     """The files a reading command (:data:`_READ_COMMANDS`) reads, as written: its positionals without its
     flags' values, a pattern or program it takes first (``grep x f``, ``sed 1p f``, ``awk '{…}' f``, ``jq . f``),
     or ``find``'s expression (its roots only). None for a call that reads no file (``--version``, ``du -s``)."""
-    if any(a in _NOT_A_READ for a in args) or (name == "du" and _du_summary(args)):
+    if _not_a_read(name, args) or (name == "du" and _du_summary(args)):
         return None
     if name == "find":
         roots: list[str] = []
@@ -349,10 +441,34 @@ def read_operands(name: str, args: list[str]) -> list[str] | None:
     if name == "sed":  # BSD `sed -i '' …` / `sed -i .bak …`: the backup suffix is -i's own word
         args = [a for i, a in enumerate(args) if not (i and args[i - 1] == "-i" and (not a or a.startswith(".")))]
     _flags, plain = _split_args(_operands(name, args))
-    given = _PROGRAM_FIRST.get(name)
-    if given is not None and plain and not any(a in given or a.split("=", 1)[0] in given for a in args):
+    if name in _PROGRAM_FIRST and plain and not _program_given(name, args):
         plain = plain[1:]
-    return [p for p in plain if p and p != "-"]
+    given = [v for f, v in _options(name, args) if f in _FILE_FLAGS.get(name, ()) and v]  # `grep -f pats f`
+    return [p for p in [*given, *plain] if p and p != "-"]
+
+
+# The search tools' flags that make them print file paths: names that match, or that hold a match.
+_LISTS_FILES = {
+    "ag": {"-g", "-l", "-L", "--files-with-matches", "--files-without-matches"},
+    "ack": {"-f", "-g", "-l", "-L", "--files-with-matches", "--files-without-matches"},
+    "ugrep": {"-l", "-L", "--files-with-matches", "--files-without-match"},
+}
+
+
+def listed_roots(name: str, args: list[str]) -> list[str] | None:
+    """For ``fd``, and ``ag``/``ack``/``ugrep`` when they print file paths (``ag -g``, ``ack -f``,
+    ``ugrep -l``): the folders whose file paths they print, for ``… | xargs cat`` to read. None for any other
+    call. Their other names (``fdfind``, ``ack-grep``, ``ug``) count too. [] when a file filter keeps every
+    KB note out of the listing (``fd -e py``)."""
+    name = _ALIASES.get(name, name)
+    if name == "fd":
+        if _fd_without_exec(args)[1] or _not_a_read(name, args):
+            return None  # it prints what the command it runs prints
+        rec = _recursive("fd", args)
+        return [] if rec is None else rec.roots or ["."]
+    if name not in _LISTS_FILES or not any(f in _LISTS_FILES[name] for f, _v in _options(name, args)):
+        return None
+    return read_operands(name, args) or ["."]
 
 
 _BRACE_SEQUENCE = re.compile(r"^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.(-?\d+))?$")
@@ -489,43 +605,46 @@ def _recursive(name: str, args: list[str]) -> _Recursive | None:
     """Where a recursive read starts, or None for a command that isn't one, or one whose file
     filter stays out of the KB (``--glob 'action-items/*.md'``, ``--include=*.py``), as for the
     Grep tool."""
-    if any(a in _NOT_A_READ for a in args) or (name in ("rg", "grep", "egrep", "fgrep", "ugrep") and "-V" in args):
+    if _not_a_read(name, args):
         return None
     runs = False  # fd -x/-X: it runs a command on each file it finds
     if name == "fd":
-        cut = next((i for i, a in enumerate(args) if a in _FD_EXEC or a.startswith(("--exec=", "--exec-batch="))), None)
-        if cut is not None:
-            args, runs = args[:cut], True
+        args, runs = _fd_without_exec(args)
     flags, plain = _split_args(_operands(name, args) if name != "find" else args)
     filters: list[str] = []
     if name in ("grep", "egrep", "fgrep", "ugrep"):
-        recursive = any(_RECURSIVE_FLAG.match(f) for f in flags) or any(
-            a in ("-d", "--directories") and i + 1 < len(args) and args[i + 1] == "recurse" for i, a in enumerate(args)
-        )
-        if not recursive:
+        if not _grep_recursive(name, args):
             return None
-        pattern_given = _pattern_flag(args)
+        pattern_given = _program_given(name, args)
         roots = plain if pattern_given else plain[1:]
         filters = [a.split("=", 1)[1] for a in args if a.startswith("--include=")] + _flag_values(args, {"--include"})
-        if name == "ugrep":  # ugrep also filters with `-g GLOB`, `!` negating
-            globs = _flag_values(args, {"-g", "--glob"}) + [a.split("=", 1)[1] for a in args if a.startswith("--glob=")]
-            filters += [g for g in globs if not g.strip("\"'").startswith("!")]
-        return _filtered(_Recursive(roots, True, None, _exclusions(args)), filters)
+        types: list[str] = []
+        if name == "ugrep":  # ugrep also filters with `-g GLOBS`, `-O EXTS` and `-t TYPES`
+            filters += _ugrep_includes(name, args, {"-g", "--glob"})
+            filters += ["*." + e.lstrip(".") for e in _ugrep_includes(name, args, {"-O"})]
+            types = _ugrep_includes(name, args, {"-t"})
+        return _either_filter(_Recursive(roots, True, None, _exclusions(args)), filters, types, prefix=name == "ugrep")
     if name in ("ag", "ack"):  # recursive by default; the first positional is the pattern
         lists = "-g" in args or (name == "ack" and "-f" in args)  # file names only, no pattern
         pattern_given = name == "ack" and any(a == "--match" or a.startswith("--match=") for a in args)
-        return _Recursive(plain if lists or pattern_given else plain[1:], not lists)
+        rec = _Recursive(plain if lists or pattern_given else plain[1:], not lists)
+        if name == "ack" and not any(f in ("--type-set", "--type-add") for f, _v in _options(name, args)):
+            # `-T TYPE` and `--type=noTYPE` exclude a type: they widen the search, never bound it.
+            types = [t for t in _values(name, args, {"-t", "--type"}) if not t.lower().startswith("no")]
+            return _either_filter(rec, [], types)
+        return rec
     if name == "fd":  # `fd [pattern] [path...]`: names, or contents when it runs a command on them
-        roots = plain[1:] + _flag_values(args, {"--search-path", "--base-directory"})
-        exts = _flag_values(args, {"-e", "--extension"}) + [
-            a.split("=", 1)[1] for a in args if a.startswith("--extension=")
-        ]
-        globs = ["*." + e.strip("\"'").lstrip(".") for e in exts]
-        return _filtered(_Recursive(roots, runs, _int(_flag_value(args, {"-d", "--max-depth"}))), globs)
+        paths = plain[1:] + _values(name, args, {"--search-path"})
+        base = _values(name, args, {"-C", "--base-directory"})
+        if base:  # the paths are under the base directory, which is the search itself when none is given
+            paths = [p if p.startswith(("/", "~", "$")) else posixpath.join(base[-1], p) for p in paths] or base[-1:]
+        globs = ["*." + e.lstrip(".") for e in _values(name, args, {"-e", "--extension"})]
+        depth = _int(next(iter(_values(name, args, {"-d", "--max-depth"})[-1:]), None))
+        return _filtered(_Recursive(paths, runs, depth), globs)
     if name == "rg":
         if "--files" in args:  # lists the files it would search: names, no pattern
             return _Recursive(plain, False, _int(_flag_value(args, {"--max-depth", "--maxdepth", "-d"})))
-        pattern_given = _pattern_flag(args)
+        pattern_given = _program_given(name, args)
         roots = plain if pattern_given else plain[1:]
         globs = _flag_values(args, {"-g", "--glob", "--iglob"})
         globs += [a.split("=", 1)[1] for a in args if a.startswith(("--glob=", "--iglob="))]
@@ -557,9 +676,76 @@ def _recursive(name: str, args: list[str]) -> _Recursive | None:
     return None
 
 
-def _pattern_flag(args: list[str]) -> bool:
-    """The pattern comes from ``-e``/``-f``, so every positional is a path."""
-    return any(a in ("-e", "-f", "--regexp", "--file") or a.startswith(("--regexp=", "--file=")) for a in args)
+def _fd_without_exec(args: list[str]) -> tuple[list[str], bool]:
+    """fd's own words, and whether it runs a command: ``-x``/``-X`` take the words after them up to a
+    ``;``, and fd reads options and paths again after it (``fd x scripts -X cat ';' .``)."""
+    out: list[str] = []
+    runs = skipping = False
+    for a in args:
+        if skipping:
+            skipping = a not in (";", "\\;")
+        elif _fd_exec_starts(a):
+            runs = skipping = True
+        else:
+            out.append(a)
+    return out, runs
+
+
+def _fd_exec_starts(word: str) -> bool:
+    """``word`` starts fd's exec command: ``-x``, ``--exec=cat``, or a cluster reaching ``x``/``X`` before
+    any flag that takes a value (``-Hx``, ``-xcat``, ``-x=cat``, ``-HX``; ``-ex`` is ``-e x``)."""
+    if word in _FD_EXEC or word.startswith(("--exec=", "--exec-batch=")):
+        return True
+    if not word.startswith("-") or word.startswith("--"):
+        return False
+    for ch in word[1:]:
+        if ch in "xX":
+            return True
+        if not ch.isalnum() or "-" + ch in _FD_VALUES:
+            return False
+    return False
+
+
+def _kb_filter(glob: str) -> bool:
+    """A file filter that may let a KB file through."""
+    return _names_kb(glob) or glob.strip("\"'") in WHOLE_VAULT_GLOBS or _may_match_kb(glob)
+
+
+def _either_filter(rec: _Recursive, filters: list[str], types: list[str], prefix: bool = False) -> _Recursive | None:
+    """For ugrep and ack, where a file passes if it matches any one of the filters (a glob, an
+    extension or a ``-t`` type): None when there are filters and none of them can match a KB file.
+    ugrep takes a type by its first letters (``-t mark`` is markdown): ``prefix`` matches that way."""
+    if not filters and not types:
+        return rec
+
+    def kb_type(t: str) -> bool:
+        t = t.lower().rstrip("+")
+        return any(k.startswith(t) for k in _KB_TOOL_TYPES) if prefix else t in _KB_TOOL_TYPES
+
+    if any(_kb_filter(f) for f in filters) or any(kb_type(t) for t in types):
+        return rec
+    return None
+
+
+def _ugrep_includes(name: str, args: list[str], flags: set[str]) -> list[str]:
+    """The entries of ugrep's comma-separated ``flags`` lists that include files. An entry that starts
+    with ``!`` or ``^`` excludes instead (``-O '^py'``, ``-g '^*.py'``), so it never bounds a search."""
+    entries = [e for v in _values(name, args, flags) for e in _split_list(v)]
+    return [e for e in entries if not e.startswith(("!", "^"))]
+
+
+_GREP_RECURSE = {"-r", "-R", "--recursive", "--dereference-recursive"}
+
+
+def _grep_recursive(name: str, args: list[str]) -> bool:
+    """grep's recursion, read with :func:`_scan` so a cluster counts (``-rnA3``, ``-rC2``, ``-r3``):
+    ``-r``/``-R``, ``-d recurse``; for ugrep also ``-NUM`` and ``--depth``."""
+    for flag, value in _options(name, args):
+        if flag in _GREP_RECURSE or (flag in ("-d", "--directories") and value == "recurse"):
+            return True
+        if name == "ugrep" and (flag == "--depth" or re.fullmatch(r"-\d", flag)):
+            return True
+    return False
 
 
 def _filtered(rec: _Recursive, filters: list[str], types: list[str] | None = None) -> _Recursive | None:
@@ -568,7 +754,7 @@ def _filtered(rec: _Recursive, filters: list[str], types: list[str] | None = Non
     match a KB file (``*people*``, ``*.m?``, ``*.{md,txt}``, ``*.MD`` and ``*.yaml`` all can).
     ripgrep ignores ``-t`` when an include glob is given (``rg -t py -g '*.md'`` searches notes), so
     the types bound the search only when there is no include glob."""
-    if filters and not any(_names_kb(f) or f.strip("\"'") in WHOLE_VAULT_GLOBS or _may_match_kb(f) for f in filters):
+    if filters and not any(_kb_filter(f) for f in filters):
         return None
     if types and not filters and not any(t.strip("\"'") in _KB_RG_TYPES for t in types):
         return None
@@ -841,7 +1027,8 @@ def _judge(command: str, in_kb: bool, cwd: str | None, vault: str | None, env: M
 def _command_name(word: str) -> str:
     """A command word's program: quotes a shell removes (`bash -c 'cat …'`) and a leading backslash
     (`\rg`, which only skips an alias) gone, and its folder (`/usr/bin/grep`) dropped."""
-    return word.strip("\"'").lstrip("\\").rsplit("/", 1)[-1]
+    name = word.strip("\"'").lstrip("\\").rsplit("/", 1)[-1]
+    return _ALIASES.get(name, name)
 
 
 def _du_summary(args: list[str]) -> bool:
