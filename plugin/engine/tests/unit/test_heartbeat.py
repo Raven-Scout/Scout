@@ -174,8 +174,8 @@ def test_research_wanted_for_a_normal_active_thread(tmp_path: Path) -> None:
 
 def test_research_wanted_for_an_unanswered_comment_in_a_private_paused_thread(tmp_path: Path) -> None:
     _five_proposals(tmp_path)
-    shutil.copytree(LAB_FIXTURES / "monitors", paths.thread_dir(tmp_path, "monitors"))
-    front = paths.front_page(tmp_path, "monitors")
+    shutil.copytree(LAB_FIXTURES / "summary-drift", paths.thread_dir(tmp_path, "summary-drift"))
+    front = paths.front_page(tmp_path, "summary-drift")
     text = front.read_text(encoding="utf-8")
     front.write_text(
         text.replace("status: active", "status: paused", 1).replace("visibility: normal", "visibility: private", 1)
