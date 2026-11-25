@@ -316,7 +316,22 @@ Tests: `test_install_writes_only_its_own_key`, `test_install_is_idempotent`, `te
 - `check.evaluate` drops the refusal and keeps `provider_not_consented`. The refusal-matrix test (`test_agent_runtime_check.py`) gains rows for `google` consented and not.
 - `scoutctl privacy consent-provider google` prints the vendor terms summary from findings §1.7 before writing (owner only).
 
-**2D done when:** the privacy scenario's seeds cover a local-only note and a `google` run, and the 50-run replay shows no Claude change.
+### Task 2D.4: The kernel withholds local-only paths from non-Anthropic runs (Jordan, 2026-11-25; findings §7.4.6)
+
+- **Why.** 2D.1 and 2D.2 are hook and CLI gates. They judge a shell command by its text, so a script, a built path or a second conversation can get around them (findings §7.4.1). The boundary is the kernel, as it already is for `~/.scout-secrets`.
+- **What.** When the run's provider isn't `anthropic`, `scout.sandbox.profile` adds `file-read-data` denies for every local-only path. The list is built at launch, outside the sandbox, from `scout.kb.privacy.classify` over the vault.
+  - Folder-level classes become `subpath` rules, and single notes become `literal` rules.
+  - An unknown runtime id counts as non-Anthropic, as in 2D.1.
+- **`scoutctl kb` inside the run** can then fail to read a local-only note. A read it can't do counts as withheld (fail closed), never as an error that prints a path's contents.
+- **Claude runs' profile stays byte-identical.**
+- **Open for the step-level pass:**
+  - a note made local-only during the run;
+  - a vault with many single-note local-only labels, which hits the profile-size limit. That should fail closed and skip the run, never drop rules.
+- **Tests:**
+  - kernel rows `test_a_google_run_cant_read_a_local_only_note` (`cat` by absolute path, a script file, a Python `open`) and `test_a_claude_run_profile_is_unchanged`;
+  - unit tests `test_local_only_read_rules_are_built_at_launch`, `test_an_unreadable_note_counts_as_withheld` and `test_too_many_local_only_rules_skips_the_run`.
+
+**2D done when:** the privacy scenario's seeds cover a local-only note and a `google` run, the kernel row denies all three reads of it, and the 50-run replay shows no Claude change.
 
 ---
 
@@ -420,3 +435,8 @@ Every box below that runs a real model waits for the 7.2 gate (decision 11), and
     - The design must assume a run can reach the server's port. The run profile allows loopback TCP, so a command that prints the environment once and then calls the server with the literal token gets past the text match.
     - It must also cover agy's data-dir transcripts. A run can read and write `~/.gemini/antigravity-cli/{conversations,brain}/`, which in the owner's `HOME` hold the owner's interactive conversations and earlier runs (findings §7.2). That is the same exposure as the server's trajectory reads, without the server. A per-run `HOME` would cover it.
     - **Proposed design: findings §7.4**, awaiting Jordan's OK. It uses a per-run data dir or `HOME`, takes loopback TCP away from agy runs, and adds a kernel read deny on the account home's agy data. Its no-model measurements are still [pending].
+    - **Decided (Jordan, 2026-11-25):**
+      - agy runs get no loopback TCP, so no localhost MCP servers;
+      - the kernel withholds local-only paths from non-Anthropic runs (2D.4);
+      - Jordan files the upstream request himself (findings §7.4.7);
+      - the choice between a per-run data dir and a per-run `HOME`, and where they live, waits for the measurements.

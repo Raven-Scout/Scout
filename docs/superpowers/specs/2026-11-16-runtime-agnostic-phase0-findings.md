@@ -740,7 +740,8 @@ The 7.2 investigation card (plan decision 11), agy 1.5.16, no model and no real 
     `true` in the binary's embedded experiment defaults.
   - agy fetches experiment flags from its server config (`FetchConfigResponse.ExperimentConfig`). So the
     scope can change for an account with no new agy version, and 2E.2's per-version probe wouldn't see it.
-  - A run can't change the flag itself: `SetMendelFlagOverrides` is refused to `run_command` (§7.2).
+  - A run can't change the flag itself: `SetMendelFlagOverrides` is refused to `run_command` (§7.2). It can
+    read the flags, though: `GetMendelFlags` answered 200 with the experiment config in 2A's enumeration.
 - **A discovery file with a token** **[bin]**.
   - While it runs, the server writes a discovery file (`writeDiscoveryFile`, a struct of `pid`, `httpsPort`,
     `httpPort`, `lspPort`, `lsVersion` and `csrfToken`). It deletes the file at exit, which is why 2A's after-run
@@ -943,10 +944,32 @@ deny (decision 5), and extend it to `agentapi`.**
 
 #### 7.4.6 For Jordan
 
-1. **The no-model measurements.** Either a reviewed session gets an allow rule for the harness, or he runs its
-   two commands himself. Both use the fake, a throwaway `HOME` and loopback only.
-2. **a′ or a**, once a′ is measured, and where the per-run homes live.
-3. **No loopback at all for agy runs**, and so no localhost MCP servers in them.
-4. **An upstream request** to Google, as in (c).
-5. **Outside this card:** 2D's local-only withholding is also a hook gate that matches text. It is a boundary
-   only if non-Anthropic runs also get a kernel read deny on local-only paths. Should that be a 2D task?
+1. **The no-model measurements: Jordan runs them himself** (2026-11-25).
+   - The coordinator reviews the scripts first.
+   - A first try stopped at a Google sign-in prompt, because the spike's scripts lacked the gemini-provider
+     `--settings` flag. Nothing was signed in and nothing left loopback.
+   - The scripts now refuse to start without that flag, and fail loudly if agy prints a sign-in URL.
+2. **a′ or a, and where the per-run homes live:** decided after the measurements.
+3. **No loopback at all for agy runs, so no localhost MCP servers in them:** accepted (Jordan, 2026-11-25).
+4. **An upstream request to Google:** drafted in §7.4.7, for Jordan to file himself.
+5. **A kernel read deny on local-only paths for non-Anthropic runs:** yes (Jordan, 2026-11-25). It is plan task
+   2D.4, because 2D's hook and CLI gates match command text and so aren't a boundary.
+
+#### 7.4.7 Draft upstream request (for Jordan to file; generic, no Scout or vault detail)
+
+> **Feature request: an option to keep the local server's credentials out of agent shell commands**
+>
+> When the agent runs a shell command, the command's environment gets the local server's address and a CSRF
+> token (`ANTIGRAVITY_LS_ADDRESS`, `ANTIGRAVITY_CSRF_TOKEN`, and the `agentapi` helper). The token is scoped,
+> but it can still create, message, fork and delete conversations and read other conversations' trajectories.
+> That is useful interactively. But when the CLI runs headless as a sandboxed automation, it lets a command the
+> model wrote start agent work and read history outside the tool-call hooks the operator configured.
+>
+> Please add one of these, as a setting or a flag that `--settings` accepts:
+> 1. an option not to put the server's address, token or `agentapi` into shell commands' environment at all;
+>    or
+> 2. an option to scope the shell token to no server methods.
+>
+> Please also document whether conversations started through the API run their tool calls through the
+> configured `PreToolUse` hooks. Whichever exists, it would ideally be enforced locally, not only through a
+> server-side experiment flag, so that a headless operator can rely on it across versions.
