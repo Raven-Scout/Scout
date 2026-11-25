@@ -173,14 +173,25 @@ def test_a_used_allowance_is_not_a_refusal_of_the_experiment() -> None:
     assert refused.index("exit 5") < refused.index("abandon")
 
 
-def test_a_refusal_never_replans_a_veto_or_abandons_a_hold() -> None:
+def test_a_refusal_never_replans_a_veto() -> None:
     refused = _refused(_flat(EXPERIMENTS))
-    veto = refused.split("vetoed:", 1)[1].split(";", 1)[0]
+    veto = refused.split("a veto (", 1)[1].split("anything else", 1)[0]
+    # The broker's veto wordings, and the two it uses when it can't prove there is none.
+    assert "`vetoed`" in veto and "`a veto can't be ruled out`" in veto
     assert "never re-plan it" in veto and "unless an owner comment invites it" in veto and "Vetoes" in veto
-    hold = refused.split("an unanswered owner comment", 1)[1].split(";", 1)[0]
-    assert "Step 1b" in hold and "retried next run, not abandoned" in hold
     # The re-plan rule is only for what is left.
-    assert refused.index("vetoed:") < refused.index("new EID")
+    assert refused.index("a veto (") < refused.index("new EID")
+
+
+def test_a_held_experiment_runs_only_if_its_comment_doesnt_object() -> None:
+    """A started experiment refused as held stays `running`; the next run's retry must still check the comment."""
+    text = _flat(EXPERIMENTS)
+    hold = _refused(text).split("`held:`", 1)[1].split("a veto (", 1)[0]
+    assert "Step 1b" in hold
+    assert "it runs only if that comment doesn't object" in hold
+    assert "if it objects, `lab experiment abandon` it with the reason" in hold
+    retry = text.split("retry `running` experiments not marked `detached`", 1)[1].split("3. **Then", 1)[0]
+    assert "only if that comment doesn't object" in retry and "`lab experiment abandon`" in retry
 
 
 def test_collect_keeps_broker_side_answers_running() -> None:

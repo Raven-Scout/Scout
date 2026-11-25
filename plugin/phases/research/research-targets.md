@@ -8,7 +8,7 @@ requires: null
 
 # PHASE 1: THE LAB — CHOOSE THIS RUN'S WORK
 
-The **Lab** is a set of research *threads*, each a folder `knowledge-base/lab/<slug>/` (the slug is its short ID) whose front page holds one Question, numbered questions (`Q1`, `Q2` …: the QIDs), experiments (`E1` …: the EIDs), evidence, owner comments and a timeline. Its status is `proposed`, `active`, `paused`, `closed` or `rejected`, and only the owner changes it. The order of work is fixed: owner comments, due experiments, 1–2 threads, proposals.
+The **Lab** is a set of research *threads*, each a folder `knowledge-base/lab/<slug>/` (the slug is its short ID) whose front page holds one Question, numbered questions (`Q1`, `Q2` …: the QIDs), experiments (`E1` …: the EIDs), evidence, owner comments and a timeline. Its status is `proposed`, `active`, `paused`, `closed` or `rejected`, and only the owner changes it. Work goes: owner comments, due experiments, 1–2 threads, proposals.
 
 ## Step 1a: Read the lab block
 
@@ -19,9 +19,9 @@ Start from `.scout-cache/session-context.json` → `lab`. It lists each thread y
 - `experiments`: `due` (planned and past its notice), `held` (due, but an owner comment on it is unanswered) and `running`;
 - `last_run`: when a run last worked it.
 
-Fall back to `scripts/scoutctl lab list --json` (same shape) when the file's `generated_at` isn't today, or `lab` is missing or marked `truncated`.
+Fall back to `scripts/scoutctl lab list --json` when the file's `generated_at` isn't today, or `lab` is missing or marked `truncated`.
 
-Read only the threads you will work, with `scripts/scoutctl lab show <slug> --json`. Never list or open the files in `knowledge-base/lab/` one by one.
+Read only threads you will work, with `scripts/scoutctl lab show <slug> --json`. Never list or open the files in `knowledge-base/lab/` one by one.
 
 Every lab write goes through `scripts/scoutctl lab` (below, `lab <verb>` means that command). It locks the thread for that one write, so an owner comment or pause made mid-run is kept; a hand edit could overwrite it.
 
@@ -34,7 +34,7 @@ First, answer every unanswered owner comment in each `active` or `paused` thread
 - A thread-level comment starting `Q:` raises a question: `lab question add <slug> --text "…" --by <author>`. It prints the new QID; the reply names it.
 - A paused thread's comments are answered; the thread is not researched.
 - Dropping a question the owner raised or commented on needs that comment: `lab question drop <slug> <QID> --reason "…" --owner-comment <n>`.
-- If the budget ends first, the rest wait for the next run. The wrap says how many.
+- If the budget ends first, the rest wait; the wrap says how many.
 
 ## Step 1c: Due experiments
 
@@ -42,7 +42,7 @@ Run due experiments next, per PHASE 2E: EXPERIMENTS.
 
 ## Step 1d: Pick threads
 
-Work 1–2 threads in depth. Only `active` threads are worked. Pick in this order:
+Work 1–2 threads in depth. Only `active` threads are worked. Pick in order:
 
 1. **Owner-prioritised:** a thread with a thread-level owner comment asking for focus, until Scout's reply says it was handled.
 2. **Coverage mandates:** an optional local `scripts/coverage-mandates.py` the plugin doesn't ship. If it is absent, skip this; that is not an error:
@@ -87,8 +87,8 @@ A proposal holds one Question and 2–5 starting questions (`--open`, repeated),
 
 **Privacy:** a proposal built from private material uses `--visibility private`.
 
-**Proposing to close:** `lab propose-close <slug> --reason "…"` for an active thread with no open questions, or one that hasn't moved in `lab.stale_runs` (default 6) runs. The owner decides.
+**Proposing to close:** `lab propose-close <slug> --reason "…"` for an active thread with no open questions, or one that hasn't moved in `lab.stale_runs` (default 6) runs.
 
 ## Step 1g: When a lab write is refused
 
-A `scoutctl lab` write is refused when the owner paused the thread mid-run or its front page no longer parses. Then stop working that thread. Still reply to its comments if that is allowed (replies to a paused thread are). Name the thread and the refusal in the wrap, and never edit a lab file by hand to get around a refusal.
+If a `scoutctl lab` write is refused (the owner paused the thread mid-run, or its front page no longer parses), stop working that thread. Still reply to its comments if that is allowed (replies to a paused thread are). Name the thread and the refusal in the wrap, and never edit a lab file by hand to get around a refusal.

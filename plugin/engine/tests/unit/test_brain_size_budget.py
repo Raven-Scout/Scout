@@ -68,8 +68,9 @@ PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent
 #   never change Scout itself. (Measured against main's phases at 895a11b2: 47,464 / 21,743 / 7,615 / 6,044.)
 # 2026-11-25 (Lab plan 2, task 10): RESEARCH re-pinned to its measure (+~1,926). research-targets.md now chooses the
 # run's work from the lab (owner comments, due experiments, 1–2 threads, proposals, refusals) in place of the
-# research queue (+~217 net), and the new lab-experiments.md (+~1,740) is the only place a run learns to run, collect,
+# research queue (+~109 net), and the new lab-experiments.md (+~1,819) is the only place a run learns to run, collect,
 # finish and plan sandboxed experiments and to read each broker status line. Spec §6, §6.4 and §7 require both.
+# (Measured after review trims: base phases at 4efb64a5 assemble to 8,055, 2 under the old pin; the parts sum to it.)
 PINS = {"SKILL": 48_138, "DREAMING": 23_954, "RESEARCH": 9_983, "RESPOND": 6_147}
 GROWTH = 0.05
 SHRINK = 0.10
