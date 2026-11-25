@@ -205,7 +205,7 @@ def test_the_index_is_kb_through_a_glob_too(home: Path) -> None:
         "grep -n x docs/a.md | cut -d: -f1 | xargs -I{} sed -n '{}p' docs/a.md",
         "echo docs/a.md | xargs -I % cat %",
         # review round 2: a KB folder is no read for a reader that only opens files
-        "grep -n x action-items/*",
+        "/usr/bin/grep -n x action-items/*",  # a run's bare grep is ugrep, which reads context/ (shell shadows)
         "cat action-items/*",
         "head -n 3 action-items/*",
         "ls -d */",

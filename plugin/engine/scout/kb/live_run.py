@@ -1534,12 +1534,14 @@ def _kb_read(words: list[str], reads: list[str], cwd: str, fed: str | None, oldp
     targets = [] if lead == "[[" else [(word, cwd, "file") for word in reads]  # `[[ a < b ]]` compares
     roots: list[tuple[str, str, str]] = []
     stripped = raw_read._strip(words)
-    if stripped.words:
-        name = raw_read._command_name(stripped.words[0])
-        operands = raw_read.read_operands(name, stripped.words[1:]) if name in raw_read._READ_COMMANDS else None
+    name = raw_read._command_name(stripped.words[0]) if stripped.words else ""
+    # A bare `grep`/`find` may be the shell snapshot's ugrep/bfs (raw_read.run_models): its operands count either way.
+    models = raw_read.run_models(stripped.words[0], name, stripped.words[1:]) if name in raw_read._READ_COMMANDS else []
+    for model, args in models:
+        operands = raw_read.read_operands(model, args)
         if operands is not None:
             where = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
-            how = "folder" if raw_read.reads_folders(name, stripped.words[1:]) else "file"
+            how = "folder" if raw_read.reads_folders(model, args) else "file"
             if stripped.fed:
                 names, listed = _fed_sources(fed)
                 roots = [(root, cwd, "covers") for root in listed]
@@ -1691,7 +1693,7 @@ def _fed_sources(fed: str | None) -> tuple[list[str], list[str]]:
         args = args[1:] if args[:1] == ["--"] else args
         text = _printf(args[0], args[1:]) if args and args[0] != "-v" else None
     else:
-        roots = _listed_roots(name, args)
+        roots = _listed_roots(name, args, words[0])
         return ([UNSEEN_INPUT], []) if roots is None else ([], roots)
     return ([UNSEEN_INPUT], []) if text is None else (text.split(), [])
 
@@ -1700,19 +1702,30 @@ def _fed_sources(fed: str | None) -> tuple[list[str], list[str]]:
 _FIND_NOT_PATHS = {"-printf", "-fprintf", "-fprint", "-fprint0", "-exec", "-execdir", "-ok", "-okdir", "-ls", "-fls"}
 
 
-def _listed_roots(name: str, args: list[str]) -> list[str] | None:
+def _listed_roots(name: str, args: list[str], word: str | None = None) -> list[str] | None:
     """The folders (or files) whose files a lister prints the paths of, as they resolve from where it runs;
-    None when it isn't one or may print anything else."""
+    None when it isn't one or may print anything else. ``word`` is the command word as written: a bare
+    ``find``/``grep`` may be the shell snapshot's bfs/ugrep (raw_read.run_models), and every way it lists counts."""
+    from scout.kb import raw_read
+
+    listed = [_lister_roots(model, model_args) for model, model_args in raw_read.run_models(word or name, name, args)]
+    if all(roots is None for roots in listed):
+        return None
+    return list(dict.fromkeys(root for roots in listed if roots is not None for root in roots))
+
+
+def _lister_roots(name: str, args: list[str]) -> list[str] | None:
+    """:func:`_listed_roots` for one program (``bfs`` and ``ugrep`` too)."""
     from scout.kb import raw_read
 
     if name == "git":
         if args[:1] != ["ls-files"] or any(a == "--full-name" or a.startswith("--format") for a in args):
             return None
         return [a for a in args[1:] if not a.startswith("-")] or ["."]
-    if name == "find":
-        if any(a in _FIND_NOT_PATHS for a in args):
+    if name in ("find", "bfs"):
+        if any(a in _FIND_NOT_PATHS or a == "-files0-from" for a in args):
             return None
-        return raw_read.read_operands("find", args) or ["."]
+        return raw_read.read_operands(name, args) or ["."]
     if name in ("grep", "egrep", "fgrep", "rg"):
         flags, _plain = raw_read._split_args(raw_read._operands(name, args))
         short = "l" if name == "rg" else "lL"

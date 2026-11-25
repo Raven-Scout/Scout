@@ -126,6 +126,9 @@ bash_pattern() {
     # -- Recursive reads, which reach the KB from any directory above it.
     alt "$word"'(rg|find|tree|du|ag|ack|ack-grep|fd|fdfind|ugrep|ug)([^A-Za-z0-9_./-]|$)'
     alt "$word"'[ef]?grep[^;&|]* (-[A-Za-z]*[rR]|--(dereference-)?recursive|-d *recurse|--directories=recurse)'
+    # A run's bare grep is Claude Code's ugrep (its shell snapshot's function), which reads a folder it's given
+    # without -r and turns -r on for -NUM, --depth, --index or a glob with a `/`: every grep goes to Python.
+    alt "$word"'[ef]?grep([^A-Za-z0-9_./-]|$)'
     alt 'git[^;&|]* grep'
 
     # -- ... or `scoutctl kb` inside a command substitution.
