@@ -158,6 +158,11 @@ class PrivateNote:
     link_path: str
     pattern: re.Pattern[str] | None
     bare_pattern: re.Pattern[str] | None = None  # the accent-free forms of its longer terms, over bare text
+    # Every match of ``pattern`` (``bare_pattern``) starts with one of these, as written, so :func:`_hits` tries
+    # the pattern only where one occurs (:func:`_matches`). None: no such promise, the whole text is searched. Set
+    # only beside a pattern built from the same words (:func:`_prefixes`), never written by hand.
+    prefixes: tuple[str, ...] | None = None
+    bare_prefixes: tuple[str, ...] | None = None
 
     def linked_by(self, target: str) -> bool:
         """``target`` (already case-folded, heading, display and ``.md`` stripped) names this note."""
@@ -242,9 +247,28 @@ def _alternation(forms: Iterable[str]) -> re.Pattern[str] | None:
     return re.compile(_BEFORE + "(?:" + "|".join(sorted(parts, key=len, reverse=True)) + ")" + _AFTER)
 
 
+def _prefixes(forms: Iterable[str]) -> tuple[str, ...]:
+    """The first word of each alternative :func:`_alternation` builds from ``forms``.
+
+    An alternative is its words, each escaped, joined by separators; the pattern
+    is the alternatives between two zero-width boundary assertions. So every
+    match starts with an alternative's first word, as written.
+    """
+    return tuple(dict.fromkeys(words[0] for f in forms if (words := _words_of(f))))
+
+
+def _term_forms(terms: Iterable[str]) -> list[str]:
+    return [_norm(t) for t in terms]
+
+
 def _term_regex(terms: Iterable[str]) -> re.Pattern[str] | None:
     """One pattern for ``terms`` over folded text (:func:`_fold`; module docstring)."""
-    return _alternation(_norm(t) for t in terms)
+    return _alternation(_term_forms(terms))
+
+
+def _term_prefixes(terms: Iterable[str]) -> tuple[str, ...]:
+    """:func:`_prefixes` of :func:`_term_regex`'s forms (``PrivateNote.prefixes``)."""
+    return _prefixes(_term_forms(terms))
 
 
 def _unaccents(term: str) -> bool:
@@ -253,9 +277,18 @@ def _unaccents(term: str) -> bool:
     return (UNACCENT_MULTI_WORD and len(words) > 1) or len(_norm(term)) >= UNACCENT_MIN_CHARS
 
 
+def _bare_forms(terms: Iterable[str]) -> list[str]:
+    return [_unaccent(_norm(t)) for t in terms if _unaccents(t)]
+
+
 def _bare_regex(terms: Iterable[str]) -> re.Pattern[str] | None:
     """One pattern for the accent-free forms of ``terms`` that ignore accents, over bare text (:func:`_folds`)."""
-    return _alternation(_unaccent(_norm(t)) for t in terms if _unaccents(t))
+    return _alternation(_bare_forms(terms))
+
+
+def _bare_prefixes(terms: Iterable[str]) -> tuple[str, ...]:
+    """:func:`_prefixes` of :func:`_bare_regex`'s forms (``PrivateNote.bare_prefixes``)."""
+    return _prefixes(_bare_forms(terms))
 
 
 def _strings(value: Any) -> list[str]:
@@ -333,6 +366,8 @@ def note_from_text(rel: str, text: str | None) -> PrivateNote:
         link_path=_norm(_strip_md(rel)),
         pattern=_term_regex(terms),
         bare_pattern=_bare_regex(terms),
+        prefixes=_term_prefixes(terms),
+        bare_prefixes=_bare_prefixes(terms),
     )
 
 
@@ -454,8 +489,9 @@ def _with_shared(terms: PrivateTerms, vault: Path) -> PrivateTerms:
         _shared_note(key, group[0].path, next((r.title for r in group if r.title), None))
         for key, group in merged.items()
     ]
-    paths = _term_regex(t for n in shared for t in n.terms)
-    bare_paths = _bare_regex(t for n in shared for t in n.terms)
+    shared_terms = [t for n in shared for t in n.terms]
+    paths = _term_regex(shared_terms)
+    bare_paths = _bare_regex(shared_terms)
     together = PrivateNote(
         path="shared-note-paths",
         slug="shared-note-paths",
@@ -464,6 +500,8 @@ def _with_shared(terms: PrivateTerms, vault: Path) -> PrivateTerms:
         link_path="",
         pattern=paths,
         bare_pattern=bare_paths,
+        prefixes=_term_prefixes(shared_terms),
+        bare_prefixes=_bare_prefixes(shared_terms),
     )
     notes = (*terms.notes, _CITATION, together, *shared)
     patterns = [p.pattern for p in (terms.any_term, _CITATION.pattern, paths) if p is not None]
@@ -551,22 +589,63 @@ def _hits(text: str, terms: PrivateTerms) -> list[tuple[str, int, int]]:
     for n, target in targets:
         if target:
             found += [(note.path, n, n) for note in terms.notes if note.linked_by(target)]
-    for form, where, pre, attr in (
-        (folded, origin, terms.any_term, "pattern"),
-        (bare[0], bare[1], terms.any_bare, "bare_pattern"),  # accents ignored, for the terms that allow it
+    for form, where, pre, attr, prefix_attr in (
+        (folded, origin, terms.any_term, "pattern", "prefixes"),
+        (bare[0], bare[1], terms.any_bare, "bare_pattern", "bare_prefixes"),  # accents ignored, where allowed
     ):
         if pre is None or not pre.search(form):
             continue
+        seen: dict[str, list[int]] = {}
         for note in terms.notes:
             pattern = getattr(note, attr)
             if pattern is not None:
                 found += [
                     (note.path, _line(starts, where, m.start()), _line(starts, where, m.end() - 1))
-                    for m in pattern.finditer(form)
+                    for m in _matches(pattern, getattr(note, prefix_attr), form, seen)
                 ]
     if terms.excerpts is not None:
         found += terms.excerpts.hits(text)
     return found
+
+
+def _occurrences(text: str, literal: str) -> list[int]:
+    """Every index ``literal`` starts at in ``text``, overlapping ones too."""
+    out: list[int] = []
+    i = text.find(literal)
+    while i >= 0:
+        out.append(i)
+        i = text.find(literal, i + 1)
+    return out
+
+
+def _matches(
+    pattern: re.Pattern[str], prefixes: tuple[str, ...] | None, form: str, seen: dict[str, list[int]]
+) -> Iterator[re.Match[str]]:
+    """``pattern.finditer(form)``, trying the pattern only where one of ``prefixes`` starts.
+
+    ``prefixes`` is ``PrivateNote.prefixes``: every match starts with one. So the
+    leftmost match at or after any index starts at one of their occurrences, and
+    ``pattern.match(form, i)`` there is the match finditer finds (its lookbehind
+    still sees ``form`` before ``i``). A match is never empty (it starts with a
+    prefix that isn't), so each search resumes at the last match's end, as
+    finditer does. ``seen`` keeps each prefix's occurrences across notes.
+    """
+    if prefixes is None or "" in prefixes:
+        yield from pattern.finditer(form)
+        return
+    starts: set[int] = set()
+    for p in prefixes:
+        if p not in seen:
+            seen[p] = _occurrences(form, p)
+        starts.update(seen[p])
+    pos = 0
+    for i in sorted(starts):
+        if i < pos:
+            continue
+        m = pattern.match(form, i)
+        if m is not None:
+            yield m
+            pos = m.end()
 
 
 def _spanning(text: str) -> Iterator[tuple[int, int]]:
