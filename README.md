@@ -393,7 +393,8 @@ because they spend model usage. `release.sh prepare` prints each step.
 
 | Where | Best for |
 |---|---|
-| [Issues](https://github.com/Raven-Scout/Scout/issues) | Bugs, feature ideas and questions about setup. |
+| [Discussions](https://github.com/Raven-Scout/Scout/discussions) | Questions about setup ([Q&A](https://github.com/Raven-Scout/Scout/discussions/categories/q-a)), rough ideas, and showing what you built with Scout. |
+| [Issues](https://github.com/Raven-Scout/Scout/issues) | Bugs and concrete feature requests. |
 | [Security policy](https://github.com/Raven-Scout/.github/blob/main/SECURITY.md) | Reporting a vulnerability privately. Please don't open a public issue for one. |
 | [Pull requests](https://github.com/Raven-Scout/Scout/pulls) | Fixes and features. Read [For AI agents and contributors](#for-ai-agents-and-contributors) first. |
 | [Code of conduct](https://github.com/Raven-Scout/.github/blob/main/CODE_OF_CONDUCT.md) | How we work together. |
