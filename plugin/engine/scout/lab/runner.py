@@ -100,6 +100,8 @@ What it holds the script to, and why each piece is where it is:
   never in the script's environment (:func:`script_env` builds it from nothing).
 - **The owner's Python** (``lab.python``, spec §6.4): ``python3`` in a validated argv runs that interpreter
   (:func:`owner_python_argv`); its install prefix, and its venv's folder when it is one, are allowed back to read.
+- **The GPU** (``lab.gpu``, spec §6.4): off unless the caller passes the owner's switch on; off, the profile denies
+  the GPU (:data:`scout.lab.sandbox.GPU_OFF_RULES`), and a run with it on says ``gpu: on`` in its log.
 - **The experiment's status is left alone.** The run finishes or abandons it.
 """
 
@@ -1102,6 +1104,7 @@ def run_experiment(
     weights: Sequence[Fetched] = (),
     weights_root: Path | None = None,
     python: str | None = None,
+    gpu: bool = False,
 ) -> RunOutcome:
     """Run ``argv`` for experiment ``eid`` of thread ``slug`` under the experiment sandbox.
 
@@ -1140,8 +1143,9 @@ def run_experiment(
     ``weights`` are the model files the supervisor fetched into the cache at ``weights_root``
     (:func:`scout.lab.weights.fetch`): each named revision folder is allowed back to read only, the script gets
     ``$SCOUT_LAB_WEIGHTS_DIR`` (``weights_root``) and the run log lists every file. ``python`` is the owner's
-    ``lab.python``: a leading ``python3`` in ``argv`` runs it (:func:`owner_python_argv`). Raises :class:`LabError`
-    when a revision folder isn't a real folder of the cache, or ``python`` isn't an executable file.
+    ``lab.python``: a leading ``python3`` in ``argv`` runs it (:func:`owner_python_argv`). ``gpu`` is the owner's
+    ``lab.gpu``: only ``True`` leaves the GPU open (:func:`scout.lab.sandbox.experiment_profile`). Raises
+    :class:`LabError` when a revision folder isn't a real folder of the cache, or ``python`` isn't an executable file.
     """
     source = os.environ if env is None else env
     if not argv:
@@ -1163,7 +1167,7 @@ def run_experiment(
     if commit is not None and not _SHA_RE.match(commit):
         raise LabError(f"{commit!r} is not a commit id")
     check_owner_python(python)
-    ml = _ML(tuple(weights), weights_dirs(weights, weights_root), python)
+    ml = _ML(tuple(weights), weights_dirs(weights, weights_root), python, gpu is True)
     note, private = _running_note(vault, slug, eid)  # checks the slug and EID the lock file is named by
     with _run_lock(vault, slug, eid, source):
         exp_rel = paths.experiment_dir(note).relative_to(vault).as_posix()
@@ -1208,14 +1212,17 @@ def run_experiment(
 @dataclass(frozen=True)
 class _ML:
     """What an ML experiment adds to a run (spec §6.4): the cached weights, their revision folders (resolved) and
-    the cache's root, and the owner's Python."""
+    the cache's root, the owner's Python, and the owner's GPU switch."""
 
     weights: tuple[Fetched, ...] = ()
     dirs: tuple[tuple[str, ...], str | None] = ((), None)  # (revision folders, root), as weights_dirs returns
     python: str | None = None
+    gpu: bool = False
 
     def log_lines(self) -> list[str]:
         lines = [f"python: {self.python}"] if self.python else []
+        if self.gpu:
+            lines.append("gpu: on")
         folders, root = self.dirs
         if root is not None:
             lines.append(f"weights_dir: {root}")
@@ -1422,6 +1429,7 @@ def _run(
                 deny_read_dirs=deny_dirs,
                 deny_access=committed,
                 weights_dirs=[Path(d) for d in ml.dirs[0]],
+                gpu=ml.gpu,
             )
         except profile.ProfileError as exc:
             raise LabError(f"cannot build the experiment sandbox: {exc}") from None

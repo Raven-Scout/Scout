@@ -169,6 +169,58 @@ def test_committed_files_are_sealed_after_every_allow(tmp_path: Path) -> None:
         assert form > last_allow, op
 
 
+# --- the owner's GPU switch (spec §6.4, §14b; ruling P2-R11) -------------------------------------------------------
+
+# The experiment profile as it was rendered before the GPU switch existed, for the inputs of _fixed_profile, with
+# the test's temp folder spelled <TMP>: the gpu-on profile must still be exactly this.
+TODAYS_PROFILE = h.FIXTURES / "experiment-profile-gpu-on.sb"
+AGX_DENY = '(deny iokit-open-user-client (iokit-user-client-class "AGXDeviceUserClient"))'
+
+
+def _fixed_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **kw: object) -> str:
+    """A profile whose every varying path is under ``tmp_path`` (its HOME and the account's included), with that
+    folder spelled ``<TMP>``."""
+    from scout.kb import hook_paths
+
+    for name in ("home", "account", "exp/.tmp", "kb/private", "vault", "state", "sock"):
+        (tmp_path / name).mkdir(parents=True, exist_ok=True)
+    (tmp_path / "kb" / "p.md").write_text("x")
+    (tmp_path / "probe").write_text("")
+    monkeypatch.setattr(hook_paths, "account_home", lambda: tmp_path / "account")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    exp = tmp_path / "exp"
+    text = sandbox.experiment_profile(
+        exp, exp / ".tmp", tmp_path / "sock" / "m.sock", [tmp_path / "kb" / "p.md", tmp_path / "kb" / "private"], [],
+        env={"HOME": str(tmp_path / "home"), "PATH": "/usr/bin:/bin"}, probe_file=tmp_path / "probe",
+        allow_reads=[tmp_path / "vault"], deny_read_dirs=[tmp_path / "state"], deny_access=[exp / "run.py"],
+        **kw,  # type: ignore[arg-type]
+    )  # fmt: skip
+    return text.replace(os.path.realpath(tmp_path), "<TMP>")
+
+
+def test_gpu_on_profile_is_todays(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the owner's GPU switch on, nothing is added: allow-default already lets PyTorch's Metal backend run."""
+    assert _fixed_profile(tmp_path, monkeypatch, gpu=True) == TODAYS_PROFILE.read_text(encoding="utf-8")
+
+
+def test_gpu_off_adds_only_the_agx_deny(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Off (the engine default, and what a caller that says nothing gets): today's profile and one line, last."""
+    assert sandbox.GPU_OFF_RULES == (AGX_DENY,)
+    today = TODAYS_PROFILE.read_text(encoding="utf-8")
+    assert _fixed_profile(tmp_path, monkeypatch, gpu=False) == today + AGX_DENY + "\n"
+    assert _fixed_profile(tmp_path, monkeypatch) == today + AGX_DENY + "\n"
+
+
+def test_gpu_rules_open_no_files_or_network() -> None:
+    """The switch's rules only ever take away: no allow, and nothing about files, the network, exec or services."""
+    assert sandbox.GPU_OFF_RULES
+    assert not hasattr(sandbox, "GPU_RULES")  # nothing is opened for the GPU (§14b)
+    for rule in sandbox.GPU_OFF_RULES:
+        assert rule.startswith("(deny ") and "(allow" not in rule, rule
+        for op in ("file-", "network", "process-exec", "mach-lookup", "signal", "process-info"):
+            assert op not in rule, (op, rule)
+
+
 # --- against the kernel ------------------------------------------------------------------------
 
 

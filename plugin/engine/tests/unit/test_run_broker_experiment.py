@@ -753,6 +753,15 @@ def test_broker_runs_with_the_plans_budget(vault: Path, fake_run: FakeRun) -> No
     assert (call["disk_free_floor_bytes"], call["max_memory_bytes"]) == (0, 123456)
 
 
+@pytest.mark.parametrize("gpu", [True, False])
+def test_the_owners_gpu_switch_reaches_the_runner_attached(vault: Path, fake_run: FakeRun, gpu: bool) -> None:
+    """lab.gpu reaches the runner (and so the profile) from the run's broker verb and the owner's own session."""
+    _owner_config({"lab": {"gpu": gpu, "disk_free_floor_bytes": 0}})
+    assert _broker(vault).handle(dict(REQ)).exit == 0
+    assert broker.client_experiment(SLUG, EID, ARGV, env=_owner_session_env(vault)) == 0
+    assert [c["gpu"] for c in fake_run.calls] == [gpu, gpu]
+
+
 def test_a_plan_budget_over_the_owners_maximum_is_clamped(vault: Path, fake_run: FakeRun) -> None:
     _owner_config({"lab": {"max_total_bytes": 4096, "disk_free_floor_bytes": 0}})
     _plan_budget(vault, 1 << 30)

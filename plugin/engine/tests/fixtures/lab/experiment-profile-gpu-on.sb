@@ -1,0 +1,76 @@
+(version 1)
+;; Scout lab experiment sandbox (scout.lab.sandbox; spec 2026-11-21 §6.3). Generated: don't edit.
+(allow default)
+(deny file-write*
+  (subpath "/"))
+(allow file-write*
+  (subpath "<TMP>/exp")
+  (subpath "<TMP>/exp/.tmp")
+  (literal "/dev/null")
+  (literal "/dev/tty"))
+(allow file-write-data
+  (literal "<TMP>/probe"))
+(deny file-write*
+  (regex #"/\.git/hooks/")
+  (regex #"/\.git/config$")
+  (regex #"/\.claude/settings\.json$")
+  (regex #"/\.claude/settings\.local\.json$")
+  (regex #"/\.mcp\.json$"))
+(deny file-read*
+  (regex #"^/dev/ttys[0-9]+$")
+  (regex #"^/dev/pty"))
+(deny file-write*
+  (regex #"^/dev/ttys[0-9]+$")
+  (regex #"^/dev/pty"))
+(deny file-read-data
+  (subpath "<TMP>/home")
+  (subpath "<TMP>/account"))
+(allow file-read-data
+  (subpath "<TMP>/vault"))
+(deny file-read-data
+  (literal "<TMP>/kb/p.md")
+  (subpath "<TMP>/kb/private")
+  (subpath "<TMP>/state")
+  (subpath "<TMP>/home/.scout-secrets")
+  (subpath "<TMP>/account/.scout-secrets")
+  (subpath "<TMP>/home/.ssh")
+  (subpath "<TMP>/home/.aws")
+  (subpath "<TMP>/home/.config/gh")
+  (subpath "<TMP>/home/.gnupg")
+  (subpath "<TMP>/home/Library/Keychains")
+  (literal "<TMP>/home/.netrc")
+  (subpath "<TMP>/account/.ssh")
+  (subpath "<TMP>/account/.aws")
+  (subpath "<TMP>/account/.config/gh")
+  (subpath "<TMP>/account/.gnupg")
+  (subpath "<TMP>/account/Library/Keychains")
+  (literal "<TMP>/account/.netrc"))
+(allow file-read-data
+  (subpath "<TMP>/exp")
+  (subpath "<TMP>/exp/.tmp"))
+(deny file-read*
+  (literal "<TMP>/exp/run.py"))
+(deny file-read-data
+  (literal "<TMP>/exp/run.py"))
+(deny file-write*
+  (literal "<TMP>/exp/run.py"))
+(deny network*)
+(allow network-outbound (remote unix-socket (path-literal "<TMP>/sock/m.sock")))
+(deny process-exec
+  (literal "/bin/launchctl")
+  (literal "/usr/bin/open")
+  (literal "/usr/bin/osascript"))
+(deny file-mount)
+(deny job-creation)
+(deny appleevent-send)
+(deny signal)
+(allow signal (target same-sandbox))
+(deny process-info*)
+(allow process-info* (target same-sandbox))
+(deny sysctl-read (sysctl-name-prefix "kern.procargs"))
+(deny mach-lookup
+  (global-name "com.apple.coreservices.launchservicesd")
+  (global-name "com.apple.SecurityServer")
+  (global-name "com.apple.securityd")
+  (global-name "com.apple.pasteboard.1")
+  (global-name "com.apple.nsurlsessiond"))

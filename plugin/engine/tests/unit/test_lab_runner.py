@@ -8,6 +8,7 @@ import functools
 import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -1234,3 +1235,104 @@ def test_sweep_is_not_clean_without_its_probe_files(tmp_path: Path) -> None:
     marker.write_text("")
     Path(runner._decoy(str(marker))).symlink_to(tmp_path)
     assert runner._sweep(probe, str(marker), str(tmp_path)) is False
+
+
+# --- the GPU (spec §6.4, §14b; ruling P2-R11) -----------------------------------------------------
+
+
+@pytest.mark.parametrize("gpu", [True, False, None])
+def test_the_gpu_switch_reaches_the_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gpu: bool | None) -> None:
+    """What the caller passes for the owner's lab.gpu is what the profile is built with; saying nothing is off."""
+    vault = h.make_vault(tmp_path)
+    seen: list[object] = []
+
+    def capture(*_a: object, **kw: object) -> str:
+        seen.append(kw.get("gpu"))
+        raise profile.ProfileError("stop here")
+
+    monkeypatch.setattr(profile, "available", lambda: True)
+    monkeypatch.setattr(runner.sandbox, "experiment_profile", capture)
+    extra = {} if gpu is None else {"gpu": gpu}
+    with pytest.raises(LabError, match="cannot build the experiment sandbox"):
+        runner.run_experiment(
+            vault, h.SLUG, h.EID, ["/bin/sh", "-c", "true"], cap_usd=1.0, env=h.make_env(tmp_path),
+            disk_free_floor_bytes=0, **extra,  # type: ignore[arg-type]
+        )  # fmt: skip
+    assert seen == [gpu is True]
+
+
+# Read at import: the per-test env scrub (tests/conftest.py) removes every SCOUT_* variable before a test runs.
+TORCH_PYTHON = os.environ.get("SCOUT_TEST_TORCH_PYTHON")
+
+
+@functools.cache
+def _has_torch(python: str) -> bool:
+    try:
+        got = subprocess.run([python, "-c", "import torch"], capture_output=True, timeout=120, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return got.returncode == 0
+
+
+torch_kernel = pytest.mark.skipif(
+    not (profile.available() and TORCH_PYTHON and _has_torch(TORCH_PYTHON)),
+    reason="needs sandbox-exec and SCOUT_TEST_TORCH_PYTHON naming an interpreter with torch",
+)
+
+
+def _mps_probe(tmp_path: Path, *, gpu: bool) -> runner.RunOutcome:
+    """The fixture MPS probe, run as an experiment would run it: ``python3`` is the owner's lab.python."""
+    vault = h.make_vault(tmp_path)
+    folder = h.exp_dir(vault)
+    folder.mkdir(parents=True, exist_ok=True)
+    shutil.copy(h.FIXTURES / "mps_probe.py", folder / "mps_probe.py")
+    return runner.run_experiment(
+        vault, h.SLUG, h.EID, ["python3", str(folder / "mps_probe.py")], cap_usd=1.0, timeout_s=300,
+        env=h.make_env(tmp_path), claude_argv=(str(h.FAKE), str(tmp_path / "calls.log")), disk_free_floor_bytes=0,
+        python=TORCH_PYTHON, gpu=gpu,
+    )  # fmt: skip
+
+
+@torch_kernel
+def test_kernel_mps_runs_with_gpu_on(tmp_path: Path) -> None:
+    out = _mps_probe(tmp_path, gpu=True)
+    assert out.exit == 0 and "mps ok" in out.stdout_tail, out.stderr_tail
+
+
+@torch_kernel
+def test_kernel_mps_fails_with_gpu_off(tmp_path: Path) -> None:
+    """The AGX deny is what closes it: the same probe, the switch off, finds no MPS (and doesn't crash)."""
+    out = _mps_probe(tmp_path, gpu=False)
+    assert out.exit == 2 and "mps ok" not in out.stdout_tail, out.stderr_tail
+    assert "MPS isn't available" in out.stderr_tail
+
+
+@kernel
+def test_kernel_denials_hold_with_gpu_on(tmp_path: Path) -> None:
+    """With the owner's GPU switch on: a write outside the folder, a direct TCP connection and a read of a private
+    fixture file are each still refused."""
+    import socket
+
+    vault = h.make_vault(tmp_path)
+    target = vault / "knowledge-base" / "gpu-on.md"
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        connect = f"import socket; socket.create_connection(('127.0.0.1', {port}), timeout=5); print('connected')"
+        script = "; ".join(
+            [
+                f"echo x > '{target}' && echo wrote",
+                f'{h.PY} -c "{connect}"',
+                f"cat '{vault / h.PRIVATE_NOTE}'",
+                "echo done",
+            ]
+        )
+        out = runner.run_experiment(
+            vault, h.SLUG, h.EID, ["/bin/sh", "-c", script], cap_usd=1.0, timeout_s=60, env=h.make_env(tmp_path),
+            claude_argv=(str(h.FAKE), str(tmp_path / "calls.log")), disk_free_floor_bytes=0, gpu=True,
+        )  # fmt: skip
+    assert "done" in out.stdout_tail, out.stderr_tail
+    assert not target.exists() and "wrote" not in out.stdout_tail
+    assert "connected" not in out.stdout_tail and "PermissionError" in out.stderr_tail  # the kernel, not a timeout
+    assert "CANARY-PRIV-LAB" not in out.stdout_tail

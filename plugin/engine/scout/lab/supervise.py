@@ -87,10 +87,12 @@ class Inputs:
     limits: dict[str, int]
     env: dict[str, str]
     claude_argv: list[str]
-    # ML experiments (spec §6.4): the models the plan names, the owner's cap on the weights cache, the owner's Python.
+    # ML experiments (spec §6.4): the models the plan names, the owner's cap on the weights cache, the owner's Python
+    # and the owner's GPU switch (off unless the inputs say exactly true).
     models: list[ModelRef] = field(default_factory=list)
     weights_max_bytes: int = 0
     python: str | None = None
+    gpu: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -107,6 +109,7 @@ class Inputs:
             "models": [{"repo": m.repo, "revision": m.revision} for m in self.models],
             "weights_max_bytes": self.weights_max_bytes,
             "python": self.python,
+            "gpu": self.gpu,
         }
 
     @classmethod
@@ -131,6 +134,7 @@ class Inputs:
                 models=models,
                 weights_max_bytes=int(data.get("weights_max_bytes", 0)),
                 python=None if python is None else str(python),
+                gpu=data.get("gpu") is True,
             )
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise LabError(f"the supervisor's inputs aren't usable ({exc.__class__.__name__})") from None
@@ -251,6 +255,7 @@ def _outcome(inputs: Inputs, path: Path, stopper: Stopper, deadline: datetime) -
             weights=fetched,
             weights_root=weights.cache_root(inputs.env) if fetched else None,
             python=inputs.python,
+            gpu=inputs.gpu,
             **inputs.limits,
         )
     except runner.DiskFloorError:
@@ -373,9 +378,9 @@ def start(
     """Start a supervisor for ``slug`` ``eid`` in a session of its own, outside every sandbox, and return once its
     state record exists (started, deadline, pid). It doesn't wait for the script's gate: a weights fetch comes first.
 
-    ``limits`` are the owner's, with ``max_total_bytes`` already the plan's disk budget; its ``weights_max_bytes``
-    and ``python`` go to the supervisor with ``models`` (the plan's, read at the validated commit). ``command`` is
-    what runs before the inputs file (default: this interpreter, ``-m scout.lab.supervise``). Raises
+    ``limits`` are the owner's, with ``max_total_bytes`` already the plan's disk budget; its ``weights_max_bytes``,
+    ``python`` and ``gpu`` go to the supervisor with ``models`` (the plan's, read at the validated commit).
+    ``command`` is what runs before the inputs file (default: this interpreter, ``-m scout.lab.supervise``). Raises
     :class:`LabError` when an earlier detached run of the experiment is alive or was never collected, when the
     supervisor exits before writing its record (its reason, from its log), or when no record appears within 30 s
     (the supervisor is killed).
@@ -407,6 +412,7 @@ def start(
         models=list(models),
         weights_max_bytes=int(limits.weights_max_bytes),
         python=limits.python,
+        gpu=limits.gpu,
     )
     inputs_file = runs.inputs_path(path)
     log = runs.log_path(path)

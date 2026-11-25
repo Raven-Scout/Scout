@@ -420,13 +420,28 @@ marked "Jordan's" are the values for the maintainer's own config.
   experiment's argv means that interpreter when it is set. Its folder is allowed back to read.
 
 **The GPU.**
-- When the owner sets `lab.gpu: true` (engine default false; Jordan's true), the profile adds the
-  rules PyTorch's MPS backend needs, and no others. The builder finds them by running a fixed
-  probe under the profile and adding one rule at a time: a tensor on `mps`, a matmul and a
-  synchronize. Each rule is recorded in §14b with the reason it is needed. Where Metal wants a
-  cache folder, it is pointed into the experiment's scratch dir rather than opening a shared one.
-- The existing kernel tests (a write outside the folder, a direct connection, a read of a private
-  file) must still be refused with the GPU rules on.
+- **What building it found (2026-11-25, ruling P2-R11).** PyTorch's MPS backend already works
+  under the experiment profile as built. The profile allows by default, and none of its denies
+  touches the GPU. The fixed probe (`tests/fixtures/lab/mps_probe.py`: a tensor on `mps`, a
+  512×512 matmul, a synchronize) printed `mps ok` with no rule added.
+- **So the owner's switch closes the GPU instead of opening it.**
+  - With `lab.gpu` false (the engine default), the profile ends with one deny:
+    `(deny iokit-open-user-client (iokit-user-client-class "AGXDeviceUserClient"))`. That is the
+    GPU's IOKit user client, and torch then reports MPS unavailable.
+  - With `lab.gpu: true` (Jordan's), nothing is added: the profile is the one built before the
+    switch existed, byte for byte.
+- **Metal tries three things the sandbox refuses**, with the switch on or off:
+  - a write to its shared shader cache;
+  - a write to MPSGraph's per-process temp folder;
+  - a read of `~/.CFUserTextEncoding`.
+
+  None of them stops the GPU. No environment variable points either cache into the scratch dir:
+  both ignore `TMPDIR`, and Metal reads no variable that names a cache folder. So all three stay
+  denied, and shaders recompile on each run. §14b records each rule with how it was found.
+- Kernel tests prove it:
+  - the probe prints `mps ok` with the switch on, and finds no MPS with it off;
+  - with the switch on, a write outside the folder, a direct TCP connection and a read of a
+    private file are each still refused.
 - **Memory.** On Apple silicon the GPU shares the Mac's memory, and the sandbox has no memory
   limit today. The supervisor reads each process's physical footprint at every poll (it includes
   GPU allocations) and kills the run past `lab.max_memory_bytes`. The default is half the Mac's
@@ -737,8 +752,26 @@ does.
 
 ## 14b. The GPU rules (filled in while building §6.4)
 
-Each rule the MPS probe needed, the operation and path it opens, and why. Empty until the
-builder runs the probe; a rule not listed here is not in the profile.
+Filled in 2026-11-25 under ruling P2-R11. MPS needed no rule opened: under the profile as built,
+the probe printed `mps ok` with nothing added. Below are the one rule the owner's switch adds, and
+the three accesses Metal tries that stay denied. A rule not listed here is not in the profile.
+
+**How they were found.** The probe (`tests/fixtures/lab/mps_probe.py`) ran through
+`runner.run_experiment` on a fixture vault, with `python3` as the owner's torch venv
+(torch 2.6.0, macOS 26, Apple silicon). Then the sandbox's denial log was read:
+`log show --predicate 'sender == "Sandbox"'`, filtered to the probe's pid. A second run added
+reporting allows (`(allow iokit-open (with report))`, and a reporting mach-lookup allow placed
+before the existing mach denies so they still won). That run showed what the GPU itself uses:
+`iokit-open-user-client AGXDeviceUserClient` and `IOSurfaceRootUserClient`, and
+`mach-lookup com.apple.MTLCompilerService`. None of these is a file, network, exec or denied
+service rule.
+
+| Rule | Operation and filter/path | Why | Found by | Profile |
+|---|---|---|---|---|
+| GPU off | `iokit-open-user-client`, `(iokit-user-client-class "AGXDeviceUserClient")` | The only switch found that turns MPS off cleanly: torch reports MPS unavailable, and the probe exits 2. Denying `mach-lookup` of `com.apple.MTLCompilerService` instead crashes MPS, with an assertion in `MPSKernelDAG.mm`. The class is Apple silicon's; on another Mac the deny matches nothing. | The reporting run showed the GPU opened through this class; the probe was then re-run with the deny. | **Denied** when `lab.gpu` is false (`scout.lab.sandbox.GPU_OFF_RULES`); not added when true. |
+| Metal shader cache | `file-write-data`, `/private/var/folders/<user>/C/com.apple.metal/<id>/{libraries,functions}.list` (`DARWIN_USER_CACHE_DIR`) | Metal caches compiled shaders there, in one folder shared by every Metal app of the owner's. Refused, it recompiles: slower, not failing. No env var moves it (it ignores `TMPDIR`; the only shader-cache variable in the system libraries is `MTL_SHADER_CACHE_SIZE`). | Denial log, `deny(1) file-write-data …/C/com.apple.metal/…` | **Stays denied** (the write deny of `/`). |
+| MPSGraph temp folder | `file-write-create`, `/private/var/folders/<user>/T/com.apple.MetalPerformanceShadersGraph/mpsgraph-<pid>-<date>-<n>` (`DARWIN_USER_TEMP_DIR`) | MPSGraph makes a per-process folder in the shared temp dir. Refused, it prints "Error creating directory" on stderr and carries on. No env var moves it (it ignores `TMPDIR`; the `MPSGRAPH_DUMP_*_PATH` variables are for debug dumps). | Denial log, `deny(1) file-write-create …/T/com.apple.MetalPerformanceShadersGraph/…` | **Stays denied** (the write deny of `/`). |
+| CoreFoundation text encoding | `file-read-data`, `~/.CFUserTextEncoding` | CoreFoundation reads the owner's text-encoding setting there. Refused, it uses the default encoding. | Denial log, `deny(1) file-read-data /Users/<owner>/.CFUserTextEncoding` | **Stays denied** (the home read deny, R32). |
 
 ## 14. Left to the builder
 

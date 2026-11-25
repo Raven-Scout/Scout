@@ -26,6 +26,11 @@ holding its own sandbox: its own children. It can't stop or kill the runner that
 other process of the owner's (an editor, the Scout app), nor read the runner's environment, which holds
 the model-call token. Exec of a setuid program such as ``ps`` is refused by the kernel in any sandbox.
 
+The GPU is the owner's switch (``lab.gpu``, spec §6.4): off, the last rule denies the GPU's IOKit user client
+(:data:`GPU_OFF_RULES`); on, nothing is added, because allow-default already lets PyTorch's Metal backend run. What
+Metal tries and is refused either way (its shared shader cache, MPSGraph's temp folder, ``~/.CFUserTextEncoding``)
+doesn't stop it; spec §14b lists each.
+
 :class:`SandboxProbe` asks the kernel (``sandbox_check``) what another process's sandbox allows; the
 runner uses it to find every process still holding an experiment's profile after the run.
 
@@ -76,6 +81,11 @@ OTHER_TERMINALS: tuple[str, ...] = ("^/dev/ttys[0-9]+$", "^/dev/pty")
 PROCARGS_SYSCTL = "kern.procargs"
 # What is denied on the working-tree copy of a committed file (R34): every read and every write.
 SEALED_OPS: tuple[str, ...] = ("file-read*", "file-read-data", "file-write*")
+# The owner's GPU switch off (lab.gpu false, the engine default; spec §6.4 and §14b, ruling P2-R11). Allow-default
+# already lets PyTorch's Metal (MPS) backend run, so the switch on adds nothing; off, the GPU's IOKit user client is
+# denied, which torch reports as MPS unavailable. (Denying Metal's compiler service instead crashes MPS.) The class
+# is Apple silicon's; on another Mac the deny matches nothing.
+GPU_OFF_RULES: tuple[str, ...] = ('(deny iokit-open-user-client (iokit-user-client-class "AGXDeviceUserClient"))',)
 
 
 def _real(path: Path | str) -> str:
@@ -121,9 +131,11 @@ def experiment_profile(
     deny_read_dirs: Sequence[Path] = (),
     deny_access: Sequence[Path] = (),
     weights_dirs: Sequence[Path] = (),
+    gpu: bool = False,
 ) -> str:
     """The SBPL text for one experiment: :func:`experiment_file_rules`, then the network, exec, signal and service
-    denies. ``deny_execs`` are programs (``literal``), to which the run sandbox's spawn routes are added. Raises
+    denies, and last, unless ``gpu`` (the owner's ``lab.gpu``), :data:`GPU_OFF_RULES`. ``deny_execs`` are programs
+    (``literal``), to which the run sandbox's spawn routes are added. Raises
     :class:`scout.sandbox.profile.ProfileError` on a path SBPL can't carry."""
     sock = _real(meter_sock)
     file_rules = experiment_file_rules(
@@ -161,6 +173,7 @@ def experiment_profile(
         "(allow process-info* (target same-sandbox))",
         f"(deny sysctl-read (sysctl-name-prefix {_quote(PROCARGS_SYSCTL)}))",
         "(deny mach-lookup\n" + "\n".join(f"  (global-name {_quote(n)})" for n in (*SPAWN_MACH, *DENIED_MACH)) + ")",
+        *(() if gpu else GPU_OFF_RULES),
     ]
     return "\n".join(lines) + "\n"
 

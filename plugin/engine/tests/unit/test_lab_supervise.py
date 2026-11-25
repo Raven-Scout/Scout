@@ -367,6 +367,40 @@ def test_the_inputs_hold_no_more_of_the_env_than_the_runner_needs(vault: Path, t
     assert not runs.inputs_path(runs.record_path(vault, SLUG, EID, _env())).exists()
 
 
+@pytest.mark.parametrize("gpu", [True, False])
+def test_the_owners_gpu_switch_reaches_the_runner_detached(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gpu: bool
+) -> None:
+    """lab.gpu goes into the supervisor's inputs file, survives the round trip, and is what it runs the profile with;
+    inputs that don't say (an older supervisor's) are off."""
+    import json
+    from dataclasses import replace
+
+    seen = tmp_path / "seen.json"
+    script = tmp_path / "peek.py"
+    script.write_text(f"import shutil, sys\nshutil.copy(sys.argv[1], {str(seen)!r})\nsys.exit(3)\n", encoding="utf-8")
+    with pytest.raises(LabError, match="stopped before it started"):
+        supervise.start(
+            vault, SLUG, EID, ["./run.sh"], commit=None, cap_usd=1.0, deadline_s=60, limits=replace(LIMITS, gpu=gpu),
+            env=_env(), command=[sys.executable, str(script)],
+        )  # fmt: skip
+    data = json.loads(seen.read_text(encoding="utf-8"))
+    assert data["gpu"] is gpu
+    inputs = supervise.Inputs.from_dict(data)
+    assert inputs.gpu is gpu
+    assert supervise.Inputs.from_dict({k: v for k, v in data.items() if k != "gpu"}).gpu is False
+    assert supervise.Inputs.from_dict({**data, "gpu": "yes"}).gpu is False  # only JSON true turns it on
+    got: dict[str, Any] = {}
+
+    def fake_run(*_a: Any, **kw: Any) -> runner.RunOutcome:
+        got.update(kw)
+        return runner.RunOutcome(0, "", "", 0.0, False)
+
+    monkeypatch.setattr(runner, "run_experiment", fake_run)
+    assert supervise.supervise(inputs)["status"] == "ran"
+    assert got["gpu"] is gpu
+
+
 def test_start_reports_a_supervisor_that_exits_first(vault: Path) -> None:
     command = [sys.executable, "-c", "import sys; print('supervise: no luck here', file=sys.stderr); sys.exit(1)"]
     with pytest.raises(LabError, match="stopped before it started: no luck here"):

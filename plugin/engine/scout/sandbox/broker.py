@@ -1281,6 +1281,7 @@ class Broker:
                 disk_free_floor_bytes=floor,
                 max_memory_bytes=self.lab_limits.max_memory_bytes,
                 python=self.lab_limits.python,
+                gpu=self.lab_limits.gpu,
             )
         except runner.DiskFloorError:  # the free space moved since the check above: not run, allowance kept
             self.experiments_run -= 1
@@ -1939,6 +1940,7 @@ def client_experiment(
             disk_free_floor_bytes=limits.disk_free_floor_bytes,
             max_memory_bytes=limits.max_memory_bytes,
             python=limits.python,
+            gpu=limits.gpu,
         )
     except runner.DiskFloorError:
         print(f"experiment not run: {runner.FLOOR_REASON}", file=sys.stderr)
