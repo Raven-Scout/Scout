@@ -13,11 +13,13 @@ it.
 from __future__ import annotations
 
 import fnmatch
+import os
 import posixpath
 import re
 import shlex
 import unicodedata
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 KB_PATH = re.compile(r"(?:^|[\s'\"=:/<{,])(?:knowledge-base|knowledge_base|action-items/context)(?:/|\b|$)")
@@ -949,7 +951,10 @@ def _archive_reads(name: str, args: list[str]) -> list[str | None]:
 def _archive_in_vault(path: str | None, here: str | None, vault: str | None, env: Mapping[str, str],
                       local: Mapping[str, str]) -> bool:  # fmt: skip
     """Whether an archive may hold notes: it is in the vault, or the gate can't place it (stdin, ``$VAR``, a
-    relative path from an unknown folder, no vault known)."""
+    relative path from an unknown folder, no vault known, a path that won't resolve). Placed as the gate places a
+    ``cat`` operand: by its real path and by file identity, so a link into the vault spelled from outside it
+    (``~/link.zip`` → ``Vault/kb.zip``) and another letter case of the vault's name count as in it. A glob is
+    placed by the folder it expands in, and counts when the vault is below that folder."""
     if path is None or vault is None:
         return True
     word = _expand(path, env, local)
@@ -961,8 +966,16 @@ def _archive_in_vault(path: str | None, here: str | None, vault: str | None, env
             return True
         folder = posixpath.join(here, folder)
     folder = posixpath.normpath(folder)
-    vault = posixpath.normpath(vault)
-    return folder == vault or folder.startswith(vault.rstrip("/") + "/") or vault.startswith(folder.rstrip("/") + "/")
+    norm = posixpath.normpath(vault)
+    if folder == norm or folder.startswith(norm.rstrip("/") + "/") or norm.startswith(folder.rstrip("/") + "/"):
+        return True
+    try:
+        target, root = Path(folder).resolve(), Path(vault).resolve()
+        if target == root or root in target.parents or target in root.parents:
+            return True
+        return any(anc.exists() and os.path.samefile(anc, root) for anc in (target, *target.parents))
+    except (OSError, RuntimeError):  # a link loop, a folder it may not look in: can't place it
+        return True
 
 
 def _bare(word: str) -> str:

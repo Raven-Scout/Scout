@@ -76,6 +76,12 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         z.write(vault / "docs" / "a.md", "docs/a.md")
     with tarfile.open(h / "outside.tgz", "w:gz") as tar:
         tar.add(vault / "docs", arcname="docs")
+    # Links from outside the vault: to its archive, to the vault itself, a loop, and one to an outside archive.
+    (h / "link.zip").symlink_to(vault / "kb.zip")
+    (h / "link.tgz").symlink_to(vault / "kb.tgz")
+    (h / "linkdir").symlink_to(vault)
+    (h / "loop.zip").symlink_to(h / "loop.zip")
+    (h / "out-link.zip").symlink_to(h / "outside.zip")
     monkeypatch.setenv("SCOUT_DATA_DIR", str(vault))
     return h.resolve()
 
@@ -194,6 +200,13 @@ MUST_DENY: list[tuple[str, str, bool | str]] = [
     ("unzip -p $HOME/Vault/kb.zip", "", True),
     ("unzip -p $ARCHIVE", "", False),  # a path the gate can't place
     ("cd backup && unzip -p ../kb.zip", "", True),
+    # placed by its real path: a link into the vault spelled from outside it, and one that won't resolve
+    ("unzip -p ../link.zip", "", True),
+    ("tar -xOf ../link.tgz", "", True),
+    ("bsdtar -xOf ../linkdir/kb.tgz", "", True),
+    ("grep -a -Z TODO ../link.tgz", "", BSD),
+    ("gzcat < ../link.tgz", "", True),
+    ("unzip -p ../loop.zip", "", False),  # a link loop: can't place it
 ]
 
 
@@ -255,6 +268,7 @@ def test_a_ugrep_only_form_is_denied(home: Path, command: str, where: str, plain
         "echo it''s fine",
         # archives outside the vault, compressed files that hold no note, archives written
         "unzip -p ../outside.zip",
+        "unzip -p ../out-link.zip",  # a link that stays outside the vault
         "unzip -l ../outside.zip",
         "tar -xOf ../outside.tgz",
         "bsdtar -xOf ../outside.tgz",
