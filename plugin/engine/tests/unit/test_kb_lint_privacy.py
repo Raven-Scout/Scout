@@ -521,6 +521,42 @@ def test_a_run_may_not_let_a_delegate_mirror_ship_files_unscanned(vault: Path) -
     assert checks(vault, RUN) == [("scout-config.yaml", "privacy-widening", True, None)]
 
 
+@pytest.mark.parametrize("flag", ["include_private", "ignore_sync_only"])
+def test_a_run_may_not_turn_a_delegate_flag_on(vault: Path, flag: str) -> None:
+    text = _read(vault, "scout-config.yaml")
+    stage(vault, "scout-config.yaml", text + f"  delegates:\n    duet:\n      {flag}: true\n")
+    assert checks(vault, RUN) == [("scout-config.yaml", "privacy-widening", True, None)]
+    assert checks(vault) == []  # the owner may
+
+
+def test_a_run_may_not_rename_a_committed_twin_into_the_config(vault: Path) -> None:
+    """With no config at HEAD, the rename's source is not the baseline: HEAD had no privacy block at all."""
+    text = _read(vault, "scout-config.yaml") + "  delegates:\n    duet:\n      include_private: true\n"
+    git(vault, "rm", "-q", "scout-config.yaml")
+    stage(vault, "notes/twin.yaml", text)
+    commit(vault)
+    git(vault, "mv", "notes/twin.yaml", "scout-config.yaml")
+    assert ("scout-config.yaml", "privacy-widening", True, None) in checks(vault, RUN)
+    assert ("scout-config.yaml", "privacy-widening", True, None) not in checks(vault)
+
+
+@pytest.mark.parametrize("flag", ["include_private", "ignore_sync_only"])
+@pytest.mark.parametrize("spelling", ["yes", "True", "on", "TRUE", "Yes"])
+def test_a_run_may_not_respell_a_delegate_flag_as_a_plain_true(vault: Path, flag: str, spelling: str) -> None:
+    """``yes`` loads as True but counts as off, so ``yes`` -> ``true`` changes no loaded data yet turns the flag on."""
+    import yaml
+
+    text = _read(vault, "scout-config.yaml")
+    off = text + f"  delegates:\n    duet:\n      {flag}: {spelling}\n"
+    stage(vault, "scout-config.yaml", off)
+    commit(vault)
+    on = off.replace(f"{flag}: {spelling}", f"{flag}: true")
+    assert yaml.safe_load(off)["privacy"] == yaml.safe_load(on)["privacy"]  # what the old check compared
+    stage(vault, "scout-config.yaml", on)
+    assert checks(vault, RUN) == [("scout-config.yaml", "privacy-widening", True, None)]
+    assert checks(vault) == []
+
+
 def test_a_run_adding_a_private_link_to_a_draft_is_blocked_too(vault: Path) -> None:
     n = append(vault, DRAFT, "See [[sam]].")
     assert checks(vault, RUN) == [(DRAFT, "private-link", True, n)]
