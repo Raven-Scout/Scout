@@ -13,7 +13,10 @@ import pytest
 
 from scout.hooks import kb_read_gate as gate
 from scout.kb import hook_paths
-from tests.unit.test_hooks_kb_read_gate import RUN, _decision, _denied, vault  # noqa: F401
+from tests.unit import test_hooks_kb_read_gate as base
+from tests.unit.test_hooks_kb_read_gate import RUN, _decision, _denied
+
+vault = base.vault  # the read gate's own fixture vault
 
 # Every ANTIGRAVITY_* name a run_command child saw in the 2A.2 spike (agy 1.5.16), names only.
 SEEN_IN_A_SHELL_CHILD = (
