@@ -653,6 +653,15 @@ Run `/scout-status` to see the budget tracking section, or `scoutctl budget show
 **How do I uninstall / start over?**
 See *Manual Reset* at the bottom of [`commands/scout-setup.md`](commands/scout-setup.md): it unloads the launchd agents and removes `~/Scout`. Remove the plugin with `claude plugin uninstall scout@scout-plugin`.
 
+## What Scout runs, reads and sends
+
+- **Runs.** Two launchd agents (`com.scout.schedule-tick`, `com.scout.heartbeat`) start headless `claude` sessions at the times in your schedule, plus extra ones when your budget allows and work is waiting, with `--permission-mode auto`. The plugin's hooks act inside those scheduled runs and inside a Scout folder; anywhere else they exit at once.
+- **Reads.** Your tools, through the connectors you have connected in Claude, with your own authorizations.
+- **Writes.** Files in your Scout folder (`~/Scout/` by default), committed to a local git repository on your machine.
+- **Sends to Claude.** What a session works on goes to Claude under your own Claude Code login, as with any Claude Code session.
+- **Contacts on its own.** GitHub (`github.com`, `api.github.com`, `raw.githubusercontent.com`) for the update check and release notes; `astral.sh` and PyPI when installing the engine. Only if you turn them on, with your own tokens: the Linear API (`api.linear.app`), Slack's search API (`slack.com`) for event triggers, the Telegram Bot API (`api.telegram.org`) for notifications and replies, and an Agnes server you name (see above).
+- **Sends to the Scout maintainers.** Nothing. There is no Scout server, account, analytics or telemetry.
+
 ## License & legal
 
 Scout is open-source under the [MIT License](../LICENSE).

@@ -1,12 +1,28 @@
 {
   "name": "scout",
   "version": "0.18.23",
-  "description": "Autonomous knowledge management and daily briefing system. Monitors your work tools (Slack, Calendar, Linear, GitHub, etc.), synthesizes findings into a persistent knowledge base with a formal ontology, and delivers daily action items — all running unattended via scheduled Claude Code sessions. Six session types: Morning Briefing, Consolidation, Dreaming, Research, interactive Work sessions, and Meta Review. Pre-session hooks pre-compute KB staleness, recent git activity, PR state, and Claude Code session summaries before each run, trading a few seconds of shell work for large token savings inside the session.",
+  "description": "Runs scheduled Claude Code sessions on your own machine that read the tools you connect (Slack, email, calendar, Linear, GitHub, meeting notes), cross-check them, and write a daily action list and a linked Markdown knowledge base into a local git folder. What it writes stays on your machine; there is no Scout server.",
   "author": {
-    "name": "Jordan Burger"
+    "name": "Raven Scout",
+    "url": "https://github.com/Raven-Scout"
   },
   "homepage": "https://github.com/Raven-Scout/Scout",
   "repository": "https://github.com/Raven-Scout/Scout",
+  "license": "MIT",
+  "icon": ".claude-plugin/icon.png",
+  "network": {
+    "hosts": [
+      "github.com",
+      "api.github.com",
+      "raw.githubusercontent.com",
+      "astral.sh",
+      "pypi.org",
+      "files.pythonhosted.org",
+      "api.linear.app",
+      "slack.com",
+      "api.telegram.org"
+    ]
+  },
   "keywords": [
     "knowledge-management",
     "briefing",
