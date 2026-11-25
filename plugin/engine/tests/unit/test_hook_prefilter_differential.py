@@ -25,6 +25,11 @@ rewrites need not spell the KB path it becomes. The pattern must be the old one 
 differ from the old command only by now reaching Python where the old one let it through, for a command those
 alternatives match. And a run's payload over ``MAX_PAYLOAD`` bytes is blocked before either stage (no corpus case
 is that long).
+And because the gates expand ``~`` and ``$HOME`` with the run's own HOME, and a command that points HOME
+elsewhere first names files they never check, the pattern also gained ``ADDED_ALTERNATIVES`` (any mention of
+HOME), and the last, quote-stripped match ``STRIPPED_NAMES`` (HOME, SCOUT_MODE and SCOUT_READER) and
+``STRIPPED_NAMERS`` (a builtin that sets what it names, anywhere), so ``HO''ME=x``, ``SCOUT_MO\\DE=`` or
+``"read" HOM?`` is no way round; a case may differ only by now reaching Python for those too.
 """
 
 from __future__ import annotations
@@ -87,7 +92,6 @@ READER_ALTERNATIVES = (
     r"(^|[^A-Za-z0-9_.-]|\\[nt])g?diff[^;&|]* (-[A-Za-z]*r|--recursive)",
 )
 READER_PATTERN = "|".join(READER_ALTERNATIVES)
-ADDED_PATTERN = f"{EXPANSION_PATTERN}|{READER_PATTERN}"
 # Rules prefilter.sh also applies ignoring letter case, to the command value as is and again with its quotes and
 # backslashes gone: a program fed paths by another, a cd into action-items/ (on macOS's case-insensitive disk
 # ACTION-ITEMS is the folder and XARGS runs xargs), and, on the stripped value only, a KB folder's name.
@@ -97,6 +101,62 @@ LATE_RULES = (
 )
 STRIPPED_RULES = rf"knowledge[-_]base|action-items/context|{LATE_RULES}"
 MAX_PAYLOAD = 32768  # bytes; a run's kb-read-gate payload over this is blocked in the shell
+# Appended after the expansions: any mention of HOME. (Arithmetic, `(( H$v = 1 ))`, and zsh's `${(P)v::=…}` are
+# the expansions' `(` and `$`.)
+ADDED_ALTERNATIVES = ("HOME",)
+ADDED_PATTERN = "|".join(ADDED_ALTERNATIVES)
+ADDED_PATTERN_RE = re.compile(ADDED_PATTERN)
+# Everything appended to the old pattern, in prefilter.sh's order: the expansions, HOME, then the readers.
+NEW_ALTERNATIVES_PATTERN = f"{EXPANSION_PATTERN}|{ADDED_PATTERN}|{READER_PATTERN}"
+# What the last, case-sensitive match finds once quotes and backslashes are removed (\n and \t as spaces): the
+# names a run may not set, and, anywhere in the command, a builtin that sets or unsets what it names, its own name
+# perhaps quoted (`"read"`, `\export`), since its target may be built at run time (`read HOM?`, `export H$v=…`).
+STRIPPED_NAMES = "HOME|SCOUT_(MODE|READER)"
+STRIPPED_NAMERS = re.compile(
+    r"(^|[^A-Za-z0-9_.-])(export|declare|typeset|local|readonly|integer|float|unset|read|select|getopts|vared|mapfile"
+    r"|readarray|let|for|repeat|zstyle|zformat|strftime|getln|zparseopts|zstat|sysread|sysopen|zselect|zpty"
+    r"|zregexparse)([^A-Za-z0-9_.-]|$)|print(f)?[^;&|]* -[A-Za-z]*[v$`]"
+)
+# A run's commands that point HOME elsewhere, or change the run env, and that the old pattern let through: each
+# must now reach Python.
+HOME_CHANGES = (
+    "HOME=x ls",
+    "HOME=/tmp/h ls",
+    "unset HOME",
+    "export HOME",
+    "export HOME=x",
+    "declare -x HOME=x",
+    "readonly HOME=x",
+    "for HOME in a b; do ls; done",
+    "HO''ME=x ls",
+    "H\\OME=x ls",
+    "export HO''ME=x",
+    "typeset H\\OME=x",
+    "unset HO''ME",
+    "read HO''ME <<< x",
+    "export SCOUT_MO''DE=x",
+    "unset SCOUT_REA''DER",
+    "export $v=x",
+    'typeset "$v=x"',
+    "read $v <<< x",
+    'printf -v "$v" %s x',
+    ": ${(P)v::=x}",
+    "read HOM? <<< x",
+    "IFS= read -r H$v <<< x",
+    "for H$v in x; do :; done",
+    "(( H$v = 1 ))",
+    '"read" HOM? <<< x',
+    "r''ead HOM? <<< x",
+    "\\export H$v=x",
+    'X="a b" read HOM? <<< x',
+    "$'\\x72ead' HOM? <<< x",
+    "x=v; print -$x HOM? x",
+    "\\typeset H$v=x",
+    "pr''intf -v HOM? x",
+    "print -v HOM? x",
+    "zstyle -s :x y HOM?",
+    "repeat 1 read HOM? <<< x",
+)
 
 # Deliberate edits to the Bash pattern since the fixture was frozen, as (old text, new text, reason). The
 # pattern checks below compare prefilter.sh against the frozen pattern with these applied, and the
@@ -752,12 +812,21 @@ def _widened(case: Case, old: Outcome, new: Outcome, expansions: set[str]) -> bo
 def _expansion_matches(commands: list[str]) -> set[str]:
     """The commands this change sends to Python, as the hook sees them (the JSON-escaped command value):
     EXPANSION_PATTERN and READER_PATTERN, LATE_RULES in any letter case, and STRIPPED_RULES once quotes and
-    backslashes are gone."""
+    backslashes are gone; and the HOME rules (ADDED_ALTERNATIVES, STRIPPED_NAMES, STRIPPED_NAMERS)."""
     values = ['"command": ' + json.dumps(c) for c in commands]
-    matched = {commands[n - 1] for n in _matching_lines(ADDED_PATTERN, values)}
+    matched = {commands[n - 1] for n in _matching_lines(NEW_ALTERNATIVES_PATTERN, values)}
     for command, value in zip(commands, values, strict=True):
         stripped = re.sub(r"[\"'\\]", "", value)
         if re.search(LATE_RULES, value, re.I) or re.search(STRIPPED_RULES, stripped, re.I):
+            matched.add(command)
+        # The HOME rules: HOME in the value, and, as prefilter.sh strips it for them (an escaped backslash goes,
+        # JSON's \n and \t become spaces, then quotes and \ go), a protected name or a builtin that sets one.
+        home_stripped = re.sub(r"\\[nt]", " ", value.replace("\\\\", "")).translate(str.maketrans("", "", "'\"\\"))
+        if (
+            ADDED_PATTERN_RE.search(value)
+            or re.search(STRIPPED_NAMES, home_stripped)
+            or STRIPPED_NAMERS.search(home_stripped)
+        ):
             matched.add(command)
     return matched
 
@@ -864,7 +933,7 @@ def test_the_bash_pattern_is_the_old_one_minus_its_repeated_block_plus_the_expan
     # The expansions only add whole alternatives at the end, so they can add matches and never remove one.
     assert all(_balanced(a) for a in EXPANSION_ALTERNATIVES)
     assert all(_balanced(a) for a in READER_ALTERNATIVES)
-    assert new == f"{_edited(f'{head}{block}{tail}')}|{ADDED_PATTERN}"
+    assert new == f"{_edited(f'{head}{block}{tail}')}|{NEW_ALTERNATIVES_PATTERN}"
     assert "'" not in new and "\n" not in new
 
 
@@ -912,7 +981,7 @@ def test_bash_corpus_matches_the_old_pattern_plus_the_expansions_exactly() -> No
     old = _matching_lines(_pattern(OLD["kb-read-gate"]), values)
     edited = _matching_lines(_edited(_pattern(OLD["kb-read-gate"])), values)
     new = _matching_lines(_new_pattern(), values)
-    added = _matching_lines(ADDED_PATTERN, values)
+    added = _matching_lines(NEW_ALTERNATIVES_PATTERN, values)
     assert new == edited | added, sorted(corpus[n - 1] for n in new ^ (edited | added))
     assert old < new  # the widening widened
     # The intended edits move a line only towards Python, and only for a command they are about.
@@ -929,9 +998,14 @@ def test_bash_forms_under_every_reader_shell_and_failure(world: World) -> None:
     # This filter asks only "is it a run?"; owner sessions are covered by the entry matrix below.
     readers = ({"SCOUT_READER": "agent:helper"},)
     forms = (
-        *DESCRIBED_FORMS, *(form for form, _ in KNOWN_MISSED_FORMS), *EXPANSION_FORMS, *NOT_EXPANSIONS,
-        *READER_FORMS, *NOT_READERS,
-    )  # fmt: skip
+        *DESCRIBED_FORMS,
+        *(form for form, _ in KNOWN_MISSED_FORMS),
+        *EXPANSION_FORMS,
+        *NOT_EXPANSIONS,
+        *HOME_CHANGES,
+        *READER_FORMS,
+        *NOT_READERS,
+    )
     for i, command in enumerate(forms):
         for j, env in enumerate(readers):
             cases.append(
@@ -1057,6 +1131,15 @@ def test_an_owner_session_never_starts_python_for_the_run_only_hooks(world: Worl
             for payload in (_bash("cat knowledge-base/a.md"), TOOL_PAYLOADS[2], TOOL_PAYLOADS[10]):
                 out = world.run(NEW[entry], Case("owner", entry, payload, env, "vault"))
                 assert out == Outcome(0, "", "", ""), (entry, env, payload)
+
+
+def test_a_run_that_points_home_elsewhere_now_reaches_python(world: World) -> None:
+    """The one widening: the old pattern let these through unjudged; the new one hands each to Python."""
+    for form in HOME_CHANGES:
+        case = Case(form, "kb-read-gate", _bash(form), RUN, "vault")
+        old, new = world.run(OLD["kb-read-gate"], case), world.run(NEW["kb-read-gate"], case)
+        assert not old.python, form
+        assert new == Outcome(0, "", "", f"hook kb-read-gate\n{_bash(form)}"), form
 
 
 def test_known_missed_forms_are_kept_as_they_were_but_for_the_expansions(world: World) -> None:
