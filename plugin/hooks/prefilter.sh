@@ -237,6 +237,12 @@ bash_pattern() {
     # -- A backslash-newline (JSON \\\n): zsh joins the words around it (`gr\<NL>ep`), so no rule above need
     #    match the program or path it spells. Python judges the joined command.
     alt '\\\\\\n'
+
+    # -- A recursive copy, archive or compare from a folder that holds the KB, spelling no path that names
+    #    it: `diff -rN . e`, `pax -w .`, `zip -qr - .`, `ditto . x`, `gzip -rc .`. (cp, rsync, tar, find,
+    #    sed, perl and dd are matched above; any other reader needs a KB name, a glob, a `$` or a cd.)
+    alt "$word"'(pax|zip|cpio|ditto|scp|gzip|zstd|lz4)([^A-Za-z0-9_.-]|$)'
+    alt "$word"'g?diff[^;&|]* (-[A-Za-z]*r|--recursive)'
 }
 
 # Sets $re: the rules bash_needs_python also applies ignoring letter case (grep -i). On a case-insensitive
@@ -264,6 +270,8 @@ case_pattern() {
     alt "$word"'[ef]?grep[^;&|]* (-[A-Za-z]*[zZ]|--decompress)'
     alt "$word"'(unzip|funzip|zipinfo|zipgrep|zip|bsdtar|gtar|7z|7za|7zz|7zr|ditto|cpio|bsdcpio|pax|gzip|gunzip|bzip2|bunzip2|xz|unxz|lzma|unlzma|zstd|unzstd|lz4|unlz4|brotli|lzip|lunzip|compress|uncompress|pigz|unpigz|pbzip2|lbzip2)([^A-Za-z0-9_./-]|$)'
     alt "$word_or_path"'(gstdbuf|xcrun|arch|caffeinate)([^A-Za-z0-9_./-]|$)'
+    alt "$word"'(pax|zip|cpio|ditto|scp|gzip|zstd|lz4)([^A-Za-z0-9_.-]|$)'
+    alt "$word"'g?diff[^;&|]* (-[A-Za-z]*r|--recursive)'
     # -- Any byte outside printable ASCII, or a JSON \u escape. The disk folds case the Unicode way, and grep
     #    cannot: ﬁnd (the ﬁ ligature), xargſ and ſh (long s) and ßh run find, xargs, sh and ssh. Python folds them.
     alt '[^ -~]'

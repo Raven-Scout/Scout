@@ -50,7 +50,10 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from scout.kb.raw_read import _Stripped
 
 LOCK_NAME = ".scout-session.lock"
 RUN_MARKER = LOCK_NAME + ".run"
@@ -533,6 +536,51 @@ _SUBST_NAME = SUBST[1:]
 ANY_NAME = "$__scout_name__"
 # What xargs reads from a command the gate can't follow: unresolved, as SUBST is, but told apart in the audit.
 UNSEEN_INPUT = "$__scout_input__"
+# A file a program's text opens by a path it builds at run time (awk's `getline < ("kn" x)`, perl's
+# `open(F, $f)`): unresolved too (scout.kb.other_reads, OtherReads.built).
+PROGRAM_PATH = "$__scout_program__"
+# What a lister prints (`$(find .)`, `rg --files | while read f`): paths under the folders it lists, so a reader
+# handed one reads below them. `$__scout_list_N__` names entry N of _STATE["lists"] (those folders); anything but
+# a reader's judge (a write, a secret check) sees an unknown variable, as for SUBST.
+_LISTED = re.compile(r"\$__scout_list_(\d+)__")
+
+
+def _listed(roots: list[str]) -> str:
+    _STATE["lists"].append(roots)
+    return f"$__scout_list_{len(_STATE['lists']) - 1}__"
+
+
+def _lister_output(body: str) -> str | None:
+    """A placeholder for what a substitution prints when it is one lister call (``find .``, ``rg --files``,
+    ``git ls-files``, ``grep -l x d``, ``fd``, ``ag -g``, ``ack -f``, ``ugrep -l``: :func:`_listed_roots`) and
+    nothing else; None for any other."""
+    if re.search(r"[;&|<>`\n]|\$\(", body):
+        return None
+    names, roots = _fed_sources(body)
+    return _listed(roots) if not names else None  # a lister prints no names of its own; [] roots: none of the KB
+
+
+def _record_listed_reads(words: list[str], fed: str | None) -> None:
+    """``lister | while read f``: ``f`` holds paths the lister prints (``IFS= read -r f`` too), or the words
+    ``echo`` / ``printf`` print."""
+    from scout.kb import raw_read
+
+    while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS):
+        words = words[1:]
+    if fed is None or not words or words[0] not in ("read", "mapfile", "readarray"):
+        return
+    names, roots = _fed_sources(fed)
+    if not names:  # a lister (its roots are [] when a filter keeps every note out: `fd -e py`)
+        values = [_listed(roots)]
+    elif names != [UNSEEN_INPUT]:  # `printf '%s\n' */*/* | while read f`: each word echo or printf prints
+        values = names[:MAX_CHECKED_PATHS]
+        _STATE["capped"] = _STATE["capped"] or len(names) > MAX_CHECKED_PATHS
+    else:
+        return
+    for name in raw_read._read_names(words[0], words[1:]):
+        _set_var(name, values)
+
+
 # A `date` format whose output has no `/` and no space: digits, the literal characters given, `%z`'s sign.
 _DATE_FORMAT = re.compile(r"\+(?:%[YmdHMSjuwUVGgyCsNIFTRz%]|[A-Za-z0-9_.:,+-])*")
 _DATE_VALUE_FLAGS = {"-d", "-v", "-r", "-f", "--date", "--reference"}
@@ -790,7 +838,8 @@ def _close(s: str, i: int, kind: str) -> int:
             j = s.find("\n", i)
             i = n if j < 0 else j
         elif s.startswith("<<", i) and not s.startswith("<<<", i) and (m := _HEREDOC_AT.match(s, i)):
-            pending.append((m[2] or m[3] or m[4], bool(m[1])))
+            if not _HD_MARK.fullmatch(m[4] or ""):  # a marker's body is cut out already: no lines to skip
+                pending.append((m[2] or m[3] or m[4], bool(m[1])))
             i = m.end()
         elif c == "\n" and pending:
             i = _skip_bodies(s, i + 1, pending)
@@ -904,10 +953,11 @@ def _tokens(segment: str) -> list[str]:
 
 
 def _reads_something(words: list[str], reads: list[str]) -> bool:
-    from scout.kb import raw_read
+    from scout.kb import other_reads, raw_read
 
     stripped = raw_read._strip(words).words
-    return bool(reads) or bool(stripped and raw_read._command_name(stripped[0]) in raw_read._READ_COMMANDS)
+    name = raw_read._command_name(stripped[0]) if stripped else ""
+    return bool(reads) or name in raw_read._READ_COMMANDS or other_reads.other_reads(name, stripped[1:]) is not None
 
 
 # Characters a quote keeps literal (no glob, brace or tilde expansion, and no `$` inside single quotes), marked in
@@ -1291,7 +1341,7 @@ MAX_LITERAL_READS = 4096
 MAX_DEPTH = 6
 _STATE: dict[str, Any] = {
     "checked": 0, "secrets": 0, "reads": 0, "literal": 0, "vars": {}, "bodies": [], "unparsed": False, "capped": False,
-    "parsing": False,
+    "parsing": False, "expanded": set(), "lists": [],
 }  # fmt: skip
 _VAR = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 # An interpreter given its program inline or on stdin.
@@ -1636,7 +1686,8 @@ def _kb_read(words: list[str], reads: list[str], cwd: str, fed: str | None, oldp
                     if listed and any(marker in o and o != marker for o in stripped.words[1:]):
                         operands.append(UNSEEN_INPUT)  # a listed path inside a longer word: not one the gate can judge
             targets += [(word, where, how) for word in operands]
-        elif name in raw_read._ARCHIVERS or name in raw_read._COMPRESSORS:
+        targets += _other_targets(name, stripped, cwd, fed, oldpwd)
+        if (name in raw_read._ARCHIVERS or name in raw_read._COMPRESSORS) and not raw_read._other_models(name):
             # What it archives or compresses, placed as a lister's root (`tar -cf - .`, `zip -r x.zip ~/link`).
             where = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
             inputs, _lists = raw_read._archive_inputs(name, stripped.words[1:])
@@ -1648,9 +1699,74 @@ def _kb_read(words: list[str], reads: list[str], cwd: str, fed: str | None, oldp
     return None
 
 
+def _other_targets(
+    name: str, stripped: _Stripped, cwd: str, fed: str | None, oldpwd: str | None
+) -> list[tuple[str, str, str]]:
+    """What :mod:`scout.kb.other_reads` says the command reads beyond its operands, as ``_kb_read`` targets: a
+    copy's sources (none when it copies into the KB), the files a stdin list names, the paths a program opens
+    as written (no glob or ``~``, and no ``$`` but one the shell fills in before the program sees it:
+    ``sed "r $(…)"``), the environment variables a program opens (awk's ``ENVIRON["F"]``, from a ``F=…`` the
+    command sets or the run's own), and :data:`PROGRAM_PATH` for a path it builds at run time."""
+    from scout.kb.other_reads import into_kb_counts, other_reads
+
+    args = stripped.words[1:]
+    other = other_reads(name, args)  # the words as quoted: a quoted `*` in a copy's source is no glob
+    if other is None:
+        return []
+    program = other_reads(name, [_unshield(w) for w in args]) or other  # a program's text as the shell passes it
+    where = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
+    out: list[tuple[str, str, str]] = []
+    into_kb = any(_judge_read(dest, where, "dest", oldpwd) == KB_READ for dest in other.dests)
+    if not (into_kb and into_kb_counts(other)):
+        out += [(word, where, how) for word, how in other.reads]
+        if other.stdin_list:
+            names, listed = _fed_sources(fed)
+            out += [(n, where, "file") for n in names] + [(root, cwd, "covers") for root in listed]
+    # The quoted parse keeps a `$` the shell fills in (`sed "r $(echo x)"`, `sed "r $D/x"`) apart from one the
+    # program's own quotes keep: judge the path that way when both parses found the same paths.
+    paired = len(other.literal) == len(program.literal)
+    for i, path in enumerate(program.literal):
+        quoted = other.literal[i] if paired else ""
+        live = paired and re.search(r"\$(?=[A-Za-z_{(])", quoted) is not None
+        out.append(("".join(_SHIELD.get(c, c) for c in quoted) if live else _shield_single(path), where, "file"))
+    out += [(_shield_single(folder), where, "folder") for folder in program.folders]  # opendir, @INC, chdir
+    if re.fullmatch(r"perl[0-9.]*", name):  # PERL5LIB / PERLLIB put folders in @INC too
+        assigned = _prefix_assignments(stripped)
+        for var in ("PERL5LIB", "PERLLIB"):
+            for value in [assigned[var]] if var in assigned else _STATE["vars"].get(var, []):
+                folders = [part for part in value.split(":") if part]
+                out += [(folder, where, "folder") for folder in folders]
+                out += [(f"{folder.rstrip('/')}/{_shield_single(f)}", where, "file") for folder in folders
+                        for f in program.requires]  # fmt: skip
+    for env_name in program.environ:
+        value = _prefix_assignments(stripped).get(env_name)
+        out.append((_shield_single(value) if value is not None else f"${{{env_name}}}", where, "file"))
+    if program.built:
+        out.append((PROGRAM_PATH, where, "file"))
+    return out
+
+
+def _prefix_assignments(stripped: _Stripped) -> dict[str, str]:
+    """``NAME=value`` words the command puts in its own environment (``F=x awk …``, ``env F=x awk …``)."""
+    return dict(stripped.assignments)
+
+
+def _other_programs(words: list[str]) -> list[str]:
+    """The shell commands a program in ``words`` runs (awk's ``system()``, perl's backticks, …)."""
+    from scout.kb import raw_read
+    from scout.kb.other_reads import other_reads
+
+    stripped = raw_read._strip(words).words
+    if not stripped:
+        return []
+    other = other_reads(raw_read._command_name(stripped[0]), stripped[1:])
+    return other.programs if other is not None else []
+
+
 # How a reader takes a path it's handed: "file" opens files (a folder only prints an error), "folder" also reads a
-# folder (``ls``, ``grep -r``), "covers" reads every file below it (the root an xargs lister lists).
-KB_READ_HOW = ("file", "folder", "covers")
+# folder (``ls``, ``grep -r``), "covers" reads every file below it (the root an xargs lister lists). "dest" is no
+# read: it asks whether a copy's target is in the KB (KB_READ), and a path the gate can't work out is not.
+KB_READ_HOW = ("file", "folder", "covers", "dest")
 
 
 def _judge_read(word: str, where: str, how: str, oldpwd: str | None = None) -> str | None:
@@ -1663,6 +1779,14 @@ def _judge_read(word: str, where: str, how: str, oldpwd: str | None = None) -> s
         return TOO_MANY
     for alt in expanded:
         for one in _substitute(_tilde_dirs(alt)):
+            listed = [int(m[1]) for m in _LISTED.finditer(one)]
+            if listed:  # a lister's output: every file below the folders it lists (see _LISTED)
+                lists: list[list[str]] = _STATE["lists"]
+                for root in (root for n in listed if n < len(lists) for root in lists[n]):
+                    found = _judge_read(root, where, "covers", oldpwd)
+                    if found is not None:
+                        return found
+                continue
             one = one.replace(ANY_NAME, "*")  # one name, any name: a glob for it is a superset
             key = "reads" if re.search(r"[*?\[$~]", one) else "literal"
             _STATE[key] += 1
@@ -2288,7 +2412,17 @@ def run_escape(
     if outer:
         _PROTECT, _SECRET, _KB_READ = protect, secret, kb_read
         _STATE.update(
-            checked=0, secrets=0, reads=0, literal=0, vars={}, bodies=[], unparsed=False, capped=False, parsing=False
+            checked=0,
+            secrets=0,
+            reads=0,
+            literal=0,
+            vars={},
+            bodies=[],
+            unparsed=False,
+            capped=False,
+            parsing=False,
+            expanded=set(),
+            lists=[],
         )
     try:
         found = _run_escape(command, depth)
@@ -2315,9 +2449,38 @@ def run_escape(
             _PROTECT = _SECRET = _KB_READ = None
 
 
+def _expanding_bodies(text: str, depth: int) -> list[str | None]:
+    """The verdicts on the substitutions of each unquoted here-document whose marker ``text`` names, judged once
+    each: where its command runs, so they see the variables set before it (``X=kn; cat <<EOF`` then
+    ``$(cat ${X}owledge-base/a.md)``)."""
+    out: list[str | None] = []
+    bodies: list[tuple[str, bool]] = _STATE["bodies"]
+    for m in _HD_MARK.finditer(text):
+        number = int(m[1])
+        if number in _STATE["expanded"] or number >= len(bodies):
+            continue
+        _STATE["expanded"].add(number)
+        body, expands = bodies[number]
+        if expands:  # quotes there are text
+            out += [_run_escape(body[a:b], depth + 1) for _s, _e, a, b in _substitutions(body, quotes=False)]
+    return out
+
+
+# `$(cat <<'EOF'` with a one-line body: it prints that line. Only a plain path's characters, so it can stand in the
+# command's text as it is (no glob, `~`, `$`, space or quote).
+_HEREDOC_CAT = re.compile(r"^\s*cat\s+<<-?__scout_hd_(\d+)__\s*$")
+_PLAIN_PATH = re.compile(r"[A-Za-z0-9_./@%+=:,-]+")
+
+
 def _known_output(body: str) -> str | None:
     """What a substitution prints, where the gate can know it: ``$(mktemp …)`` is a new file in the template's
-    folder (``-p DIR``, else the temp folder). Anything else is unknown (None)."""
+    folder (``-p DIR``, else the temp folder), ``$(cat <<'EOF'`` the line its here-document holds. Anything else
+    is unknown (None)."""
+    cat = _HEREDOC_CAT.match(body)
+    if cat is not None and int(cat[1]) < len(_STATE["bodies"]):
+        text, _expands = _STATE["bodies"][int(cat[1])]
+        line = text.removesuffix("\n")
+        return line if _PLAIN_PATH.fullmatch(line) else None
     if _dynamic(body):
         return None
     words = _tokens(body)
@@ -2373,7 +2536,10 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
     for start, end, a, b in spans:
         # A process substitution becomes the pipe the shell hands over (its own command is judged too).
         body = command[a:b]
-        known = (_known_output(body) or _one_name_output(body)) if command[start] not in "<>" else "/dev/fd/63"
+        if command[start] in "<>":
+            known: str | None = "/dev/fd/63"
+        else:
+            known = _known_output(body) or _one_name_output(body) or (_lister_output(body) if _KB_READ else None)
         rebuilt += [command[at:start], known or SUBST]
         pending.append((start - shift, body))
         shift += (end - start) - len(known or SUBST)
@@ -2385,10 +2551,7 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
             at_, body_ = pending.pop(0)
             results.append((at_, _run_escape(body_, depth + 1, split=False)))
 
-    for text, expands in bodies:  # an unquoted here-document runs its substitutions; quotes there are text
-        if expands:
-            for _s, _e, a, b in _substitutions(text, quotes=False):
-                results.append((len(command), _run_escape(text[a:b], depth + 1)))
+    own = range(len(_STATE["bodies"]) - len(bodies), len(_STATE["bodies"]))  # this level's here-documents
     # Both readings of `$$'` (see _quoted_spans): a background under either one is a background.
     detach = any(_backgrounds(_mask_quoted(command, even_dollars_escape=way)) for way in (False, True))
     cwd = ""  # follows each `cd`, so `cd .git/hooks && rm pre-commit` reads as the path it writes
@@ -2400,6 +2563,8 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
         here, position = position, position + len(segment)
         fed = previous if op in ("|", "|&") else None  # the segment piped into this one
         judge_bodies(position)
+        # The here-documents this command takes run their substitutions now, with the variables set so far.
+        results += [(here, found) for found in _expanding_bodies(segment, depth)]
         unparsed, _STATE["unparsed"], _STATE["parsing"] = _STATE["unparsed"], False, True
         clean, targets, reads, strings = _redirects(segment)
         words = _tokens(clean)
@@ -2408,6 +2573,8 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
         # runs): it fails closed only where it may hide a read (a reading command or an input redirect).
         _STATE["unparsed"] = unparsed or (_STATE["unparsed"] and _reads_something(words, reads))
         _record_vars(words)
+        if _KB_READ is not None:
+            _record_listed_reads(words, fed)
         found = _words_escape(words, depth) or _hook_write_form(words, targets, cwd)
         if found is None and _PROTECT is not None:
             for program in _interpreter_programs(words, segment, strings, fed) or []:
@@ -2427,6 +2594,13 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
             found = _secret_read(literal_words, literal_reads, cwd)
             if found is None and _KB_READ is not None:
                 found = _kb_read(literal_words, literal_reads, cwd, fed, oldpwd)
+            if found is None and _KB_READ is not None:
+                for program in _other_programs(words):  # awk's system("…"), perl's backticks: commands too
+                    # It runs in this segment's folder: `cd action-items; awk 'BEGIN{system("cat context/x")}'`.
+                    inner = _run_escape(f"cd {shlex.quote(cwd)} && {program}" if cwd else program, depth + 1)
+                    if inner is not None and inner != "detach":
+                        found = inner
+                        break
         if found == "env":
             return "env"
         results.append((here, found))
@@ -2438,6 +2612,8 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
         elif words[:1] == ["popd"]:
             cwd = ""  # back where the pushd started, as far as a run's `pushd x && …; popd` goes
     judge_bodies(len(command) + 1)
+    for number in own:  # a body no segment named (the walk misread its command): judged as before, at the end
+        results += [(len(command), found) for found in _expanding_bodies(f"__scout_hd_{number}__", depth)]
     return _merge([found for _, found in sorted(results, key=lambda r: r[0])], detach)
 
 

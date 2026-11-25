@@ -22,8 +22,6 @@
     be an archive. A recursive decompressing search of a vault folder, and an archive tool fed by `xargs`, are
     denied. A file filter that lets compressed files or archives through (`grep -rZ --include='*.gz'`) no longer
     keeps a vault-root search out of the KB.
-  - Archives and compressed copies written from notes: `tar -cf - .`, `pax -w .`, `zip -r`, `7z a`, `ditto -c`
-    and the compressors read their inputs, which are judged as a recursive read's roots (`tar -cf - context` from
-    `action-items/`, `zip -qr ~/x.zip .`). A file list on stdin (`| cpio -o`, `| pax -w`, `tar -T -`, `zip -@`)
-    that names notes is a KB read, and one the gate can't see (`tar -T list`) is denied. An archive or compression
-    tool naming a KB path (`tar -czf out.tgz knowledge-base`, `gzip -c knowledge-base/a.md`) is a KB read.
+  - Archives written from notes by the tools the copy and archive readers don't model: `7z a` reads its inputs as
+    a recursive read's roots, and `unzip`, `zipgrep` and `7z` naming a KB path read a note. (tar, zip, pax, cpio,
+    ditto and the compressors are judged as copies and archives are, writes into the KB included.)

@@ -282,7 +282,6 @@ MUST_DENY += [
     ("printf 'knowledge-base/a.md\\n' | pax -w", "", True),
     ("echo knowledge-base/a.md | tar -cf - -T -", "", True),
     ("echo knowledge-base/a.md | zip -q -0 - -@", "", True),  # -0: stored, not deflated
-    ("tar -cf - -T ../list.txt", "", False),  # a file list the gate can't see
 ]
 
 
