@@ -129,6 +129,8 @@ final class LiveAccessibilityTree {
     private let window: NSWindow
     private let host: NSView
     private static let readGap: Duration = .milliseconds(400)
+    /// How many times a read's own duration the main actor stays free after it.
+    private static let idleShare = 3
 
     init<V: View>(_ view: V, size: CGSize = CGSize(width: 1280, height: 860)) async {
         AccessibilityTree.switchOn()
@@ -147,22 +149,30 @@ final class LiveAccessibilityTree {
     /// the main actor between reads so SwiftUI applies pending changes.
     /// Returns the last read either way; the caller checks it.
     ///
-    /// A read walks the whole window's tree on the main actor, so reads are
-    /// spaced well apart: other suites share the main actor, and one with a
-    /// wall-clock wait (`DebouncedFileEventsTests`) starved behind reads every
-    /// 100 ms on CI. The first read waits too, for the change to land.
+    /// A read walks the whole window's tree on the main actor in one
+    /// synchronous burst, so reads are spaced apart by at least `readGap` and
+    /// by `idleShare` times as long as the last read took: other suites share
+    /// the main actor, and one with a wall-clock wait
+    /// (`DebouncedFileEventsTests`, whose debouncer is main-actor isolated)
+    /// starved behind reads every 100 ms, and again behind reads every 400 ms
+    /// on a slow CI runner where one read took most of the gap. Keeping the
+    /// main actor idle three quarters of the time holds however slow a read
+    /// gets. The first read waits too, for the change to land.
     @discardableResult
     func nodes(until condition: ([AccessibilityTree.Node]) -> Bool = { _ in true },
-               timeout: Duration = .seconds(8)) async -> [AccessibilityTree.Node] {
+               timeout: Duration = .seconds(15)) async -> [AccessibilityTree.Node] {
         let clock = ContinuousClock()
         let deadline = clock.now + timeout
         var out: [AccessibilityTree.Node] = []
+        var lastRead: Duration = .zero
         repeat {
-            try? await Task.sleep(for: Self.readGap)
+            try? await Task.sleep(for: max(Self.readGap, lastRead * Self.idleShare))
+            let started = clock.now
             host.layoutSubtreeIfNeeded()
             host.display()
             out = []
             AccessibilityTree.collect(host, into: &out, depth: 0)
+            lastRead = clock.now - started
             if out.count > 1 && condition(out) { return out }
         } while clock.now < deadline
         return out
