@@ -1642,6 +1642,7 @@ def _other_targets(
         quoted = other.literal[i] if paired else ""
         live = paired and re.search(r"\$(?=[A-Za-z_{(])", quoted) is not None
         out.append(("".join(_SHIELD.get(c, c) for c in quoted) if live else _shield_single(path), where, "file"))
+    out += [(_shield_single(folder), where, "folder") for folder in program.folders]  # perl's opendir
     for env_name in program.environ:
         value = _prefix_assignments(stripped).get(env_name)
         out.append((_shield_single(value) if value is not None else f"${{{env_name}}}", where, "file"))

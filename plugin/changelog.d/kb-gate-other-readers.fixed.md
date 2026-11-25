@@ -15,7 +15,14 @@
   program's path is read as written (no glob or `~`, and no `$` but one the shell fills in first, as in
   `sed "r $D/x.md"`); one it builds at run time, and the script a `sed -f` or `awk -f` file holds, is allowed
   and recorded as a `kb_read_gate.unresolved_read` of the new kind `program_path` (`DENY_UNRESOLVED_READS`
-  denies it instead). `printf`/`echo` words read by a `while read` loop are judged as the paths they name. `join`, `expand`, `look`, `shuf` and
+  denies it instead). That holds for every perl and awk construct that opens, lists, reads or runs something
+  (perl's `open`, `sysopen`, `opendir`, `glob` and `<*.md>`, `do`/`require FILE`, `readpipe`, File::Copy,
+  `system`/`exec`/backticks/`qx`, `@ARGV`; awk's `getline <`, `| getline`, `system()`, `print | cmd`,
+  `ARGV[…] =`, `-f`): an argument that isn't literals (a `sprintf`, `join`, a function, `sub()` on the
+  variable, an escape the gate doesn't decode) is recorded, never silent. Each language's escapes are decoded
+  as it decodes them (awk's `\ooo` and `\xHH`; perl's `\x{…}`, `\N{U+…}`, `\o{…}`, `\c`), and perl's `.`
+  joins literals, so `"kn\x6fwledge-base/a.md"` is denied. `printf`/`echo` words read by a `while read` loop
+  are judged as the paths they name. `join`, `expand`, `look`, `shuf` and
   the other text utilities the reader list lacked are readers too. `cat "$(cat <<'EOF'` … `)"` is judged by
   the path its here-document holds (it was refused as naming too many files), and an unquoted
   here-document's `$(…)` sees the variables set before its command (`X=kn; cat <<EOF` with

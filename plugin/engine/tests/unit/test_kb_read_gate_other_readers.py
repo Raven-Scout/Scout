@@ -12,6 +12,7 @@ tests/unit/test_hook_prefilter_differential.py holds the shell pre-filter to sen
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 
 import pytest
@@ -418,10 +419,19 @@ def test_other_reads_finds_nothing_more_for_these(words: list[str]) -> None:
         (["perl", "-e", "open(F, q{a\\}b})"], {"literal": ["a}b"]}),
         (["perl", "-e", "open(F, q{a{b}c})"], {"literal": ["a{b}c"]}),
         (["perl", "-e", "open(F, q/a b/)"], {"literal": ["a b"]}),
-        (["perl", "-e", 'open(F, q{a} . "b")'], {"built": True}),
+        (["perl", "-e", 'open(F, q{a} . "b")'], {"literal": ["ab"], "built": False}),
         (["perl", "-e", '$a=$b; $b=$c; $c=$d; $d=$e; $e="x"; open(F, $a)'], {"built": True}),
         (["perl", "-e", 'open(F, $mode, "x")'], {"built": True}),
         (["perl", "-e", 'open(F, "-"); open(G, ">out")'], {"literal": [], "built": False}),
+        # escapes each language decodes, and those it can't
+        (["perl", "-e", 'open(F, "<", "a\\tb\\cAc")'], {"literal": ["a\tb\x01c"]}),
+        (["perl", "-e", 'open(F, "<", "\\x{110000}")'], {"literal": [], "built": True}),
+        (["perl", "-e", 'open(F, "<", "abc)'], {"built": True}),
+        (["perl", "-e", "@ARGV = qw(a b"], {"built": True}),
+        (["awk", 'BEGIN{y = 1; x = "date" | getline}'], {"programs": ["date"]}),
+        (["awk", 'BEGIN{print "x f = y"; f = "a"; getline < f}'], {"literal": ["a"], "built": False}),
+        (["awk", 'BEGIN{x = "print me"; getline < "a"}'], {"literal": ["a"], "programs": []}),
+        (["awk", "BEGIN{" + "; ".join(f'f = "n{i}"' for i in range(17)) + "; getline < (f f)}"], {"built": True}),
     ],
 )
 def test_other_reads_edges(words: list[str], expected: dict) -> None:
@@ -432,3 +442,121 @@ def test_other_reads_edges(words: list[str], expected: dict) -> None:
 
 def test_perl_with_no_inline_program_reads_nothing_more() -> None:
     assert other_reads("perl", ["-w"]) is None
+
+
+# ----- the rule: a construct that opens, lists, reads or runs is never silent over what it can't resolve ----
+
+# Every perl and awk construct that opens, lists, reads or runs something, with ARG where its file or command
+# goes (%ARG%). Its argument must resolve to literals for the gate to judge it; anything else must be recorded.
+PERL_CONSTRUCTS = [
+    "open(F, '<', %ARG%); print <F>",
+    "open(F, %ARG%); print <F>",
+    "open F => '<', %ARG%; print <F>",
+    "sysopen(F, %ARG%, 0); print <F>",
+    "opendir(D, %ARG%); print readdir D",
+    "print for glob(%ARG%)",
+    "do %ARG%",
+    "require %ARG%",
+    "print readpipe(%ARG%)",
+    "system(%ARG%)",
+    "exec 'cat', %ARG%",
+    "@ARGV = (%ARG%); print <>",
+    "push @ARGV, %ARG%; print <>",
+    "copy(%ARG%, '/tmp/x')",
+]
+PERL_UNRESOLVED = ["$f", "'kn' . $x", "sprintf('%s', $d)", "join('/', $a, 'b')", '"$d/a.md"', "uc($f)", "f()",
+                   '"\\Lx"', "$h{k}", "$x->[0]"]  # fmt: skip
+AWK_CONSTRUCTS = [
+    "getline l < %ARG%",
+    "getline l < (%ARG%)",
+    "%ARG% | getline l",
+    "(%ARG%) | getline l",
+    "system(%ARG%)",
+    'print "x" | %ARG%',
+    'print %ARG% | "sh"',
+    'printf "%s", %ARG% | "sh"',
+    "ARGV[ARGC++] = %ARG%",
+]
+AWK_UNRESOLVED = ["f", 'd "/a.md"', 'sprintf("%s", d)', "toupper(d)", "$1", "x[1]", '"kn\\qx"', "substr(d, 1)"]
+
+
+def _never_silent(home: Path, command: str) -> None:
+    out = _run(home, command)
+    recorded = [r for r in _events(home) if r["kind"] == "kb_read_gate.unresolved_read"]
+    assert out is not None or recorded, f"neither denied nor recorded: {command}"
+
+
+@pytest.mark.parametrize("construct", PERL_CONSTRUCTS)
+@pytest.mark.parametrize("arg", PERL_UNRESOLVED)
+def test_a_perl_construct_over_what_it_cant_resolve_is_never_silent(home: Path, construct: str, arg: str) -> None:
+    program = construct.replace("%ARG%", arg)
+    _never_silent(home, "perl -MFile::Copy -e " + shlex.quote(program))
+
+
+@pytest.mark.parametrize("construct", AWK_CONSTRUCTS)
+@pytest.mark.parametrize("arg", AWK_UNRESOLVED)
+def test_an_awk_construct_over_what_it_cant_resolve_is_never_silent(home: Path, construct: str, arg: str) -> None:
+    program = "BEGIN{" + construct.replace("%ARG%", arg) + "}"
+    _never_silent(home, "awk " + shlex.quote(program))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "perl -e 'print <$d/*>'",
+        "perl -e 'print `cat $f`'",
+        "perl -e 'print qx{cat $f}'",
+        'perl -e \'open(P, "|-", "sh"); print P $cmd\'',
+        'awk \'BEGIN{f = "x"; sub(/x/, "k", f); getline l < f}\'',
+        "awk -f ../prog.awk docs/a.md",
+        "sed -f ../script.sed docs/a.md",
+    ],
+)
+def test_the_other_unresolved_forms_are_never_silent(home: Path, command: str) -> None:
+    _never_silent(home, command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "awk 'BEGIN{getline l < \"kn\\x6fwledge-base/a.md\"; print l}'",
+        "awk 'BEGIN{getline l < \"\\153nowledge-base/a.md\"; print l}'",
+        "awk 'BEGIN{getline l < \"knowledge-base\\/a.md\"; print l}'",
+        'perl -e \'open(F, "<", "kn\\x6fwledge-base/a.md"); print <F>\'',
+        'perl -e \'open(F, "<", "\\153nowledge-base/a.md"); print <F>\'',
+        'perl -e \'open(F, "<", "kn\\x{6f}wledge-base/a.md"); print <F>\'',
+        'perl -e \'open(F, "<", "kn\\o{157}wledge-base/a.md"); print <F>\'',
+        'perl -e \'open(F, "<", "kn\\N{U+6F}wledge-base/a.md"); print <F>\'',
+        "perl -e 'print `cat kn\\x6fwledge-base/a.md`'",
+        "perl -e 'print qx{cat kn\\x6fwledge-base/a.md}'",
+        'perl -e \'open(F, "<", "kn" . "owledge-base/a.md"); print <F>\'',
+        "perl -e 'print for glob(\"knowledge-base/*\")'",
+        "perl -e 'print <knowledge-base/*>'",
+        "perl -e 'sysopen(F, \"knowledge-base/a.md\", 0); print <F>'",
+        "perl -e 'opendir(D, \"knowledge-base\"); print readdir D'",
+        'perl -MFile::Copy -e \'copy("knowledge-base/a.md", "/tmp/x")\'',
+        "perl -e 'do \"knowledge-base/a.md\"'",
+        "perl -e 'require \"knowledge-base/a.md\"'",
+        "perl -e 'print readpipe(\"cat knowledge-base/a.md\")'",
+        "awk 'BEGIN{ARGV[ARGC++] = \"knowledge-base/a.md\"} {print}'",
+        'awk \'BEGIN{printf "cat %s\\n", "knowledge-base/a.md" | "sh"}\'',
+    ],
+)
+def test_an_escaped_or_joined_literal_that_names_the_kb_is_denied(home: Path, command: str) -> None:
+    assert KB_DENY in _denied(_run(home, command)), command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "perl -e 'print \"do it now\"'",
+        "perl -e 'require strict; print 1'",
+        "perl -e 'my @x = do { 1 }; print @x'",
+        "perl -e 'print 1 if 2 < 3 and 4 > 1'",
+        'perl -e \'open(F, "<", "docs/\\x61.md"); print <F>\'',
+        "awk 'BEGIN{getline l < \"docs/\\141.md\"; print l}'",
+    ],
+)
+def test_a_harmless_program_stays_quiet(home: Path, command: str) -> None:
+    assert _run(home, command) is None
+    assert _events(home) == []

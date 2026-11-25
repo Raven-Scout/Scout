@@ -36,6 +36,7 @@ class OtherReads:
 
     reads: list[tuple[str, str]] = field(default_factory=list)  # (word as the shell hands it, FILE | COVERS)
     literal: list[str] = field(default_factory=list)  # paths a program opens exactly as written
+    folders: list[str] = field(default_factory=list)  # folders a program lists exactly as written (opendir)
     dests: list[str] = field(default_factory=list)  # where a copy writes: one in the KB makes ``reads`` none
     built: bool = False  # a program opens a path it builds at run time
     stdin_list: bool = False  # it reads the files named on its stdin (``find . | cpio -o``)
@@ -367,6 +368,7 @@ _GETLINE_FROM = re.compile(r"\bgetline\b\s*(?:\$?[A-Za-z_][A-Za-z0-9_]*(?:\s*\[[
 _AWK_PIPE_GETLINE = re.compile(r"\|&?\s*getline\b")
 _AWK_SYSTEM = re.compile(r"\bsystem\s*\(")
 _AWK_PRINT_PIPE = re.compile(r"\bprintf?\b")
+_AWK_SETS_ARGV = re.compile(r"\bARGV\s*\[(?:[^\[\]]|\[[^\]]*\])*\]\s*=(?!=)\s*")
 # One piece of an awk string expression: a literal, ENVIRON["NAME"], or a variable.
 _AWK_TOKEN = re.compile(rf'\s*(?:({_AWK_STRING})|ENVIRON\s*\[\s*"([A-Za-z_]\w*)"\s*\]|([A-Za-z_][A-Za-z0-9_]*))')
 # What ENVIRON["NAME"] stands for in a value: the shell's `$NAME` (see OtherReads.environ).
@@ -375,8 +377,36 @@ _SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 _AWK_LIMIT = 16  # values an expression may take before it counts as built
 
 
-def _awk_unescape(literal: str) -> str:
-    return re.sub(r"\\(.)", lambda m: {"n": "\n", "t": "\t"}.get(m[1], m[1]), literal[1:-1])
+_AWK_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v", "a": "\a", "\\": "\\", '"': '"',
+                "/": "/"}  # fmt: skip
+
+
+def _awk_unescape(literal: str) -> str | None:
+    """A string literal's text as awk decodes it: ``\\n`` and the other POSIX escapes, ``\\/``, ``\\ooo`` octal,
+    and ``\\xHH`` hex (gawk, and BSD/macOS awk). None for any other escape: awks differ there, and a name the gate
+    can't spell for certain is one it won't guess."""
+    text, out, i = literal[1:-1], [], 0
+    while i < len(text):
+        c = text[i]
+        if c != "\\" or i + 1 == len(text):
+            out.append(c)
+            i += 1
+            continue
+        after = text[i + 1]
+        octal = re.match(r"[0-7]{1,3}", text[i + 1 :])
+        hexa = re.match(r"x([0-9A-Fa-f]{1,2})", text[i + 1 :])
+        if after in _AWK_ESCAPES:
+            out.append(_AWK_ESCAPES[after])
+            i += 2
+        elif octal is not None:
+            out.append(chr(int(octal[0], 8)))
+            i += 1 + len(octal[0])
+        elif hexa is not None:
+            out.append(chr(int(hexa[1], 16)))
+            i += 1 + len(hexa[0])
+        else:
+            return None
+    return "".join(out)
 
 
 def _awk(args: list[str]) -> OtherReads:
@@ -465,7 +495,8 @@ def _awk_eval(expr: str, program: str, given: dict[str, str], depth: int = 0) ->
         if m is None or m.end() == i:
             return None
         if m[1] is not None:
-            part: list[str] | None = [_awk_unescape(m[1])]
+            text = _awk_unescape(m[1])
+            part: list[str] | None = None if text is None else [text]
         elif m[2] is not None:
             part = [f"\0env:{m[2]}\0"]
         else:
@@ -483,7 +514,15 @@ def _awk_eval(expr: str, program: str, given: dict[str, str], depth: int = 0) ->
 
 def _awk_values(program: str, name: str, given: dict[str, str], depth: int = 0) -> list[str] | None:
     """The values variable ``name`` takes in ``program`` (and from ``-v``); None when one is built, or when it
-    is never set (an awk builtin such as ``ARGV``, or a name the gate can't see filled)."""
+    is never set (an awk builtin such as ``ARGV``, or a name the gate can't see filled), or changed in place
+    (``sub(/x/, "k", f)``, ``split(…, f)``, ``getline f``, ``f++``, ``f[…]``)."""
+    n = re.escape(name)
+    changed = (
+        rf"\b(?:g?sub|gensub|split|patsplit|match)\s*\((?:[^()]|\([^()]*\))*\b{n}\b"
+        rf"|\bgetline\s+{n}\b|(?<![\w$]){n}\s*(?:\+\+|--|[-+*/%^]=|\[)|(?:\+\+|--)\s*{n}\b"
+    )
+    if re.search(changed, program):
+        return None
     values = [given[name]] if name in given else []
     layout = _awk_layout(program)
     for m in re.finditer(rf"(?<![\w$.\"]){re.escape(name)}\s*=(?!=)", program):
@@ -541,6 +580,9 @@ def _awk_program(program: str, given: dict[str, str], out: OtherReads) -> None:
                 out.built = True  # `getline < "a" x`: what follows may make the name longer
         else:
             out.built = True
+    for m in _AWK_SETS_ARGV.finditer(program):  # `ARGV[ARGC++] = "x"`: a file it reads as its input
+        if not layout[0][m.start()]:
+            paths(program[m.end() : _awk_forward(program, m.end(), layout)])
     for m in _AWK_PIPE_GETLINE.finditer(program):
         if not layout[0][m.start()]:
             commands(program[_awk_backward(program, m.start(), layout) : m.start()])
@@ -577,6 +619,58 @@ _PERL_ARGV_WORDS = re.compile(r"\$ARGV(?:\[\d+\])?|shift(?:\s*\(?\s*@ARGV\s*\)?)
 _PAIRS = {"(": ")", "{": "}", "[": "]", "<": ">"}
 
 
+_PERL_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "f": "\f", "b": "\b", "a": "\a", "e": "\x1b"}
+
+
+def _perl_unescape(text: str) -> str | None:
+    """A double-quoted Perl string's text as Perl decodes it: ``\\n`` and kin, ``\\e``, ``\\xHH``, ``\\x{…}``,
+    ``\\ooo``, ``\\o{…}``, ``\\N{U+…}``, ``\\cX``, and a backslashed punctuation character as itself. None for any
+    other escape (``\\L``, ``\\u``, ``\\Q``, ``\\N{NAME}``…): the gate won't guess a name it can't spell."""
+    out, i = [], 0
+    try:
+        while i < len(text):
+            c = text[i]
+            if c != "\\" or i + 1 == len(text):
+                out.append(c)
+                i += 1
+                continue
+            after, rest = text[i + 1], text[i + 2 :]
+            braced = re.match(r"\{([^}]*)\}", rest)
+            if after in _PERL_ESCAPES:
+                out.append(_PERL_ESCAPES[after])
+                i += 2
+            elif after == "x" and braced is not None:
+                out.append(chr(int(braced[1].replace("_", "") or "0", 16)))
+                i += 2 + len(braced[0])
+            elif after == "x":
+                digits = re.match(r"[0-9A-Fa-f]{0,2}", rest)
+                assert digits is not None
+                out.append(chr(int(digits[0] or "0", 16)))
+                i += 2 + len(digits[0])
+            elif after == "o" and braced is not None and re.fullmatch(r"[0-7]+", braced[1]):
+                out.append(chr(int(braced[1], 8)))
+                i += 2 + len(braced[0])
+            elif after in "01234567":
+                digits = re.match(r"[0-7]{1,3}", text[i + 1 :])
+                assert digits is not None
+                out.append(chr(int(digits[0], 8)))
+                i += 1 + len(digits[0])
+            elif after == "N" and braced is not None and re.fullmatch(r"U\+[0-9A-Fa-f]+", braced[1]):
+                out.append(chr(int(braced[1][2:], 16)))
+                i += 2 + len(braced[0])
+            elif after == "c" and rest:
+                out.append(chr(ord(rest[0].upper()) ^ 64))
+                i += 3
+            elif after.isalnum():
+                return None
+            else:
+                out.append(after)
+                i += 2
+    except (ValueError, OverflowError):  # a code point past Unicode
+        return None
+    return "".join(out)
+
+
 def _perl_quoted(text: str, at: int, interpolates: bool) -> tuple[int, str, bool] | None:
     """The quote-like string whose delimiter sits at ``text[at]`` (``q{…}``, ``qq(…)``, ``qx/…/``): where it
     ends, its text, and whether it interpolates."""
@@ -588,7 +682,8 @@ def _perl_quoted(text: str, at: int, interpolates: bool) -> tuple[int, str, bool
     while i < len(text):
         c = text[i]
         if c == "\\" and i + 1 < len(text):
-            out.append(text[i + 1] if text[i + 1] in (opener, closer, "\\") else text[i : i + 2])
+            keep = not interpolates and text[i + 1] in (opener, closer, "\\")
+            out.append(text[i + 1] if keep else text[i : i + 2])
             i += 2
             continue
         if c == closer and opener != closer:
@@ -599,21 +694,63 @@ def _perl_quoted(text: str, at: int, interpolates: bool) -> tuple[int, str, bool
             depth = 0
         if depth == 0:
             body = "".join(out)
-            return i + 1, body, interpolates and bool(re.search(r"(?<!\\)[$@]", body))
+            if not interpolates:
+                return i + 1, body, False
+            decoded = _perl_unescape(body)  # an escape it can't decode: as unknown as an interpolation
+            live = decoded is None or bool(re.search(r"(?<!\\)[$@]", body))
+            return i + 1, decoded if decoded is not None else body, live
         out.append(c)
         i += 1
     return None
+
+
+def _perl_string_end(text: str, at: int) -> int:
+    """The index just past the ``'…'`` or ``"…"`` string that starts at ``text[at]``, else ``len(text) + 1``."""
+    quote, i = text[at], at + 1
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+            continue
+        if text[i] == quote:
+            return i + 1
+        i += 1
+    return len(text) + 1
+
+
+def _perl_concatenation(arg: str) -> list[str]:
+    """``arg`` split at its top-level ``.`` operators (outside strings and brackets); one part if it has none."""
+    parts, depth, at, i = [], 0, 0, 0
+    while i < len(arg):
+        c = arg[i]
+        if c in "'\"":
+            i = _perl_string_end(arg, i)
+            continue
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        elif c == "." and depth == 0 and not (arg[i - 1 : i].isdigit() or arg[i + 1 : i + 2].isdigit()):
+            parts.append(arg[at:i].strip())
+            at = i + 1
+        i += 1
+    parts.append(arg[at:].strip())
+    return [p for p in parts if p] if len(parts) > 1 else [arg]
 
 
 def _perl_literal(token: str) -> tuple[str | None, bool]:
     """A Perl string literal's text (``'…'``, ``"…"``, ``q{…}``, ``qq{…}``), and whether it interpolates (``$``
     or ``@`` in a double-quoted one). ``(None, False)`` for anything else."""
     token = token.strip()
+    if token[:1] in ("'", '"') and _perl_string_end(token, 0) != len(token):
+        return None, False  # more after the string (`"kn"."owledge"`): not one literal
     if token.startswith("'") and len(token) > 1 and token.endswith("'"):
         return re.sub(r"\\([\\'])", r"\1", token[1:-1]), False
     if token.startswith('"') and len(token) > 1 and token.endswith('"'):
         text = token[1:-1]
-        return re.sub(r"\\(.)", r"\1", text), bool(re.search(r"(?<!\\)[$@]", text))
+        decoded = _perl_unescape(text)
+        if decoded is None:
+            return None, False  # an escape the gate doesn't decode: no literal it can judge
+        return decoded, bool(re.search(r"(?<!\\)[$@]", text))
     m = re.match(r"(qq|q)\s*(?=[^\w\s,;])", token)
     if m is not None:
         found = _perl_quoted(token, m.end(), m[1] == "qq")
@@ -667,6 +804,15 @@ def _perl_values(arg: str, text: str, depth: int = 0) -> list[str] | None:
     value, live = _perl_literal(arg)
     if value is not None:
         return None if live else [value]
+    parts = _perl_concatenation(arg)
+    if len(parts) > 1:  # `"kn" . "owledge-base/a.md"`: each part one value, joined
+        joined = [""]
+        for part in parts:
+            found = _perl_values(part, text, depth + 1)
+            if found is None or len(found) != 1:
+                return None
+            joined = [joined[0] + found[0]]
+        return joined
     name = re.fullmatch(r"\$([A-Za-z_]\w*)", arg.strip())
     if name is None or name[1] in ("ARGV", "_") or depth > 3:
         return None
@@ -733,6 +879,9 @@ def _perl_command(args: list[str], text: str, out: OtherReads) -> None:
         words.append(found[0])
     if words:
         out.programs.append(words[0] if len(words) == 1 else shlex.join(words))
+        argv = words if len(words) > 1 else words[0].split()
+        if argv and posixpath.basename(argv[0]) in _SHELLS and "-c" not in argv:
+            out.built = True  # `open(P, "|-", "sh")`: what the program writes into it runs, and that isn't here
 
 
 def _perl(args: list[str]) -> OtherReads | None:
@@ -785,17 +934,82 @@ def _perl(args: list[str]) -> OtherReads | None:
         rest = text[m.end() :]
         _perl_command(_perl_args(rest[1:] if rest.startswith("(") else rest), text, out)
     for m in _PERL_BACKTICK.finditer(text):
-        if re.search(r"(?<!\\)[$@]", m[1]):
+        command = _perl_unescape(m[1])
+        if command is None or re.search(r"(?<!\\)[$@]", m[1]):
             out.built = True
         else:
-            out.programs.append(m[1])
+            out.programs.append(command)
     for m in _PERL_QX.finditer(text):
         found = _perl_quoted(text, m.end(), text[m.end()] != "'")
         if found is None or found[2]:
             out.built = True
         else:
             out.programs.append(found[1])
+    _perl_rest(text, any("File::Copy" in a for a in args), out)
     return out
+
+
+# Every other construct that opens, lists, reads or runs something: each is judged by its argument, which must be
+# one literal (or a scalar set to one) to be read; anything else is built. So a form the handlers above don't
+# know is recorded, never silent: `open FH => …`, `sysopen`, `opendir`, `glob`, `<*.md>`, `do FILE`,
+# `require FILE`, `readpipe`, File::Copy's `copy`/`move`.
+_PERL_TRIGGER = re.compile(
+    r"\b(open|sysopen|opendir|glob|do|require|readpipe|copy|move|syscopy)\b|<(?![\s=<>]|\$?\w+>|>)([^<>\n]+)>"
+)
+
+
+def _perl_string_spans(text: str) -> list[tuple[int, int]]:
+    spans, i = [], 0
+    while i < len(text):
+        if text[i] in "'\"":
+            quote, j = text[i], i + 1
+            while j < len(text) and text[j] != quote:
+                j += 2 if text[j] == "\\" else 1
+            spans.append((i, j))
+            i = j + 1
+        else:
+            i += 1
+    return spans
+
+
+def _perl_rest(text: str, file_copy: bool, out: OtherReads) -> None:
+    spans = _perl_string_spans(text)
+    for m in _PERL_TRIGGER.finditer(text):
+        if any(a < m.start() <= b for a, b in spans):
+            continue  # a word inside a string
+        word, rest = m[1], text[m.end() :]
+        args = _perl_args(rest.lstrip()[1:] if rest.lstrip().startswith("(") else rest)
+        if word is None:  # `<*.md>`, `<$dir/*>`: a glob
+            if re.search(r"(?<!\\)[$@]", m[2]):
+                out.built = True
+            else:
+                out.reads.append((m[2], FILE))
+        elif word == "open":
+            if _PERL_OPEN.match(text, m.start()) is None:
+                out.built = True  # a form `_PERL_OPEN` doesn't parse (`open FH => …`, `open(FH)`)
+        elif word in ("do", "require"):
+            head = rest.lstrip()
+            if not head or head[0] in "{;" or re.match(r"[A-Za-z_][\w:]*(?:\s|;|$)|v?\d", head):
+                continue  # a block, a module name or a version: no file
+            _perl_path(args[0] if args else "", text, out)
+        elif word == "glob":
+            found = _perl_values(args[0], text) if args else None
+            if found is None:
+                out.built = True
+            else:
+                out.reads += [(pattern, FILE) for pattern in found]
+        elif word == "sysopen":
+            _perl_path(args[1] if len(args) > 1 else "", text, out)
+        elif word == "opendir":
+            found = _perl_values(args[1], text) if len(args) > 1 else None
+            if found is None:
+                out.built = True
+            else:
+                out.folders += found
+        elif word == "readpipe":
+            _perl_command(args[:1], text, out)
+        elif file_copy:  # File::Copy's copy, move, syscopy: the source is read
+            _perl_path(args[0] if args else "", text, out)
 
 
 # ----- the table -------------------------------------------------------------------------------------------
