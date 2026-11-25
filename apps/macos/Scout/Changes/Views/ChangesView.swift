@@ -114,6 +114,9 @@ struct ChangesView: View {
 
     @ViewBuilder
     private func loaded(_ snapshot: ChangesSnapshot) -> some View {
+        if let problem = service.refreshProblem {
+            DSBanner(tone: .warning, title: Self.refreshBanner(problem))
+        }
         ForEach(Self.bannerTitles(for: snapshot.changes), id: \.self) { title in
             DSBanner(tone: title == Self.unverifiedBanner ? .warning : .info, title: title)
         }
@@ -151,6 +154,11 @@ struct ChangesView: View {
     }
 
     // MARK: - Pure rules
+
+    /// The banner over a snapshot a later refresh couldn't replace.
+    static func refreshBanner(_ problem: String) -> String {
+        "Couldn't refresh this page: \(problem) Showing what Scout read last."
+    }
 
     /// The banners, in the order they show: unverified first, then calibrating.
     static func bannerTitles(for changes: ChangesDocument) -> [String] {

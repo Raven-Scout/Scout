@@ -571,7 +571,9 @@ final class AppState: ObservableObject {
             _ = try? await connectorHealth.loadInitial()
             _ = try? await logs.loadInitial()
             await runLedger.refresh()
-            await changesService.refresh()
+            // The Changes reads can take a while on a big vault: they run on their own, so the scheduler,
+            // the run ledger and run notifications never wait on them.
+            Task { await changesService.refresh() }
             await MainActor.run {
                 runLedger.start()
                 changesService.start()

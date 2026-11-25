@@ -87,6 +87,36 @@ struct ChangesServiceTests {
         #expect(svc.state == .failed("Scout's engine isn't set up yet."))
     }
 
+    /// m-b: once loaded, a failed refresh (a bad read, a spawn failure, the engine gone) keeps the snapshot and
+    /// reports why in `refreshProblem`; the next good read clears it.
+    @Test func aFailureAfterAGoodReadKeepsTheSnapshot() async throws {
+        let runner = RuleBasedRunner()
+        try answering(runner)
+        var engine: URL? = Self.exe
+        let svc = ChangesService(
+            scoutctl: { engine }, runner: runner,
+            logsDirectory: URL(fileURLWithPath: "/tmp/none-\(UUID().uuidString)"),
+            pendingDirectory: URL(fileURLWithPath: "/tmp/none-\(UUID().uuidString)"), fileEvents: NoopFS())
+        await svc.refresh()
+        let good = try #require(svc.snapshot)
+        #expect(svc.refreshProblem == nil)
+        engine = nil
+        await svc.refresh()
+        #expect(svc.snapshot == good && svc.refreshProblem == "Scout's engine isn't set up yet.")
+        engine = URL(fileURLWithPath: "/usr/bin/not-scoutctl")   // no rule answers it: the spawn fails
+        await svc.refresh()
+        #expect(svc.snapshot == good && svc.refreshProblem == "Couldn't run Scout's engine.")
+        engine = Self.exe
+        await svc.refresh()
+        #expect(svc.snapshot == good && svc.refreshProblem == nil)
+    }
+
+    @Test func aFailureBeforeAnyGoodReadIsTheState() async {
+        let svc = service(RuleBasedRunner())
+        await svc.refresh()
+        #expect(svc.state == .failed("Couldn't run Scout's engine.") && svc.refreshProblem == nil)
+    }
+
     @Test func aLaterGoodReadReplacesAnEarlierFailure() async throws {
         let runner = RuleBasedRunner()
         let svc = service(runner)

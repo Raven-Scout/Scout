@@ -27,6 +27,9 @@ final class ChangesService: ObservableObject {
 
     @Published private(set) var state: State = .idle
     @Published private(set) var lastChecked: Date?
+    /// Why the last refresh failed while an earlier one had loaded: the tab keeps that snapshot (an open
+    /// review sheet hangs off it) and shows this as a banner. Nil once a refresh succeeds. Never content.
+    @Published private(set) var refreshProblem: String?
 
     /// The three reads, in the order `refresh` runs them.
     nonisolated static let changesArguments = ["changes", "--json", "--since", "365d", "--limit", "5000"]
@@ -68,7 +71,7 @@ final class ChangesService: ObservableObject {
         generation += 1
         let mine = generation
         guard let exe = scoutctl() else {
-            state = .failed("Scout's engine isn't set up yet.")
+            settle(.failed("Scout's engine isn't set up yet."))
             return
         }
         if snapshot == nil { state = .loading }
@@ -84,13 +87,24 @@ final class ChangesService: ObservableObject {
             results = try await [changes, engagement, digest]
         } catch {
             guard mine == generation else { return }
-            state = .failed("Couldn't run Scout's engine.")
             lastChecked = clock.now()
+            settle(.failed("Couldn't run Scout's engine."))
             return
         }
         guard mine == generation else { return }
         lastChecked = clock.now()
-        state = Self.state(changes: results[0], engagement: results[1], digest: results[2])
+        settle(Self.state(changes: results[0], engagement: results[1], digest: results[2]))
+    }
+
+    /// A failure after a good read keeps the good snapshot and says why in `refreshProblem`; anything else
+    /// replaces the state.
+    private func settle(_ next: State) {
+        if case .failed(let why) = next, snapshot != nil {
+            refreshProblem = why
+            return
+        }
+        refreshProblem = nil
+        state = next
     }
 
     /// Pure: what the three results mean together. Any `unsupported` wins over a failure, because

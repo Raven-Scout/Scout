@@ -13,6 +13,8 @@ final class GovernanceReviewModel: ObservableObject {
     static let goneMessage = "This change is no longer waiting for your OK."
     /// What the engine says when the file changed after the owner saw it (`scoutctl changes approve`).
     nonisolated static let staleMarker = "changed since you saw it"
+    /// What the engine says when the file is no longer pending (`scoutctl changes approve|reject`).
+    nonisolated static let goneMarker = "no pending governance change"
 
     @Published private(set) var item: NeedsOKItem
     /// The one fenced diff block of the pending file, or nil when it couldn't be read.
@@ -74,6 +76,11 @@ final class GovernanceReviewModel: ObservableObject {
             await service.refresh()
             reload()
             message = Self.editedMessage
+        case .refused(let text) where text.contains(Self.goneMarker):
+            // Applied, discarded or decided elsewhere since the sheet opened: say so in the sheet's own words.
+            await service.refresh()
+            gone = true
+            diff = nil
         case .refused(let text):
             message = text
         case .invalid:
@@ -169,9 +176,15 @@ struct GovernanceReviewSheet: View {
                 .dsFont(.headline, .serif, weight: .semibold)
                 .foregroundStyle(DS.Ink.p1)
                 .fixedSize(horizontal: false, vertical: true)
-            if !model.item.why.isEmpty {
-                Text(verbatim: model.item.why)
+            if let why = model.item.whyLine {
+                Text(verbatim: why)
                     .font(DS.font(.body))
+                    .foregroundStyle(DS.Ink.p2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let context = model.item.contextLine {
+                Text(verbatim: context)
+                    .font(DS.font(.label))
                     .foregroundStyle(DS.Ink.p2)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -211,6 +224,12 @@ struct GovernanceReviewSheet: View {
 
     static let goneLine = GovernanceReviewModel.goneMessage
 
+    /// "It changes: …", each target by its plain name; nil when it names none.
+    static func targetsLine(_ item: NeedsOKItem) -> String? {
+        let names = item.targetNames
+        return names.isEmpty ? nil : "It changes: " + names.joined(separator: ", ")
+    }
+
     static func governanceLine(_ governance: Bool) -> String {
         governance
             ? "Applying this is a governance change: it changes what Scout may do on its own."
@@ -222,8 +241,8 @@ struct GovernanceReviewSheet: View {
             Text(Self.governanceLine(model.item.governance))
                 .font(DS.font(.label, weight: .semibold))
                 .foregroundStyle(model.item.governance ? DS.Attention.you : DS.Ink.p2)
-            if !model.item.targets.isEmpty {
-                Text(verbatim: "It changes: " + model.item.targets.joined(separator: ", "))
+            if let targets = Self.targetsLine(model.item) {
+                Text(verbatim: targets)
                     .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p3)
                     .fixedSize(horizontal: false, vertical: true)

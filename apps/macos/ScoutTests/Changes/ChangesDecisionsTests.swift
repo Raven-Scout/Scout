@@ -82,7 +82,17 @@ struct ChangesDecisionsTests {
         let runner = RuleBasedRunner()
         runner.on(tool: "scoutctl", stderr: "\nscoutctl changes wrong: no such change\nsecond line\n", exit: 2)
         let outcome = await decisions(runner).perform(.wrong(changeID: "chg-0123456789ab"))
-        #expect(outcome == .refused("scoutctl changes wrong: no such change"))
+        #expect(outcome == .refused("no such change"))   // m-d: the command prefix never reaches the owner
+    }
+
+    @Test func onlyALeadingScoutctlCommandPrefixIsTakenOff() {
+        #expect(ChangesDecisions.withoutCommandPrefix("scoutctl changes undo: Scout can't undo this change.")
+                == "Scout can't undo this change.")
+        #expect(ChangesDecisions.withoutCommandPrefix("scoutctl auto-rollback: off only") == "off only")
+        for line in ["Scout can't: keep me", "scoutctl changes Undo: Mixed case", "scoutctl changes undo:",
+                     "scoutctl changes undo: ", "scoutctl's note: keep", "no colon here"] {
+            #expect(ChangesDecisions.withoutCommandPrefix(line) == line, "\(line)")
+        }
     }
 
     @Test func aSilentRefusalStillSaysSomething() async {

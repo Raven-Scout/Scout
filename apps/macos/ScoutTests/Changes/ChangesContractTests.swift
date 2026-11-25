@@ -26,6 +26,14 @@ struct ChangesContractTests {
         #expect(doc.autoRollback == "off")
         #expect(doc.generatedAt == RunLedgerTime.parse("2026-11-16T12:00:00Z"))
         #expect(doc.needsOK[0].diffHash.count == 64)
+        // The engine glosses the needs-OK why and targets, and passes the file's own explanation.
+        let waiting = doc.needsOK[0], fallback = doc.needsOK[1]
+        #expect(waiting.whyGloss == nil && waiting.whyLine == "The same red item was carried for six days with no reply.")
+        #expect(waiting.targets == ["briefing", "pattern-249"] && waiting.targetsGloss == [nil, "Red items carried with no reply"])
+        #expect(waiting.targetNames == ["briefing", "Red items carried with no reply"])
+        #expect(waiting.contextLine == "A red item nobody answers for six days is noise, not a reminder.")
+        #expect(fallback.why == "pattern-288" && fallback.whyLine == "A mistake that kept recurring")
+        #expect(fallback.contextLine == nil && fallback.governance == false)
         #expect(Set(doc.changes.map(\.kind)) == ["rollback", "brain-edit", "driver", "kb-structure", "phase", "upgrade", "wishlist-done"])
 
         let tested = try #require(doc.changes.first { $0.id == "chg-000000000000" })

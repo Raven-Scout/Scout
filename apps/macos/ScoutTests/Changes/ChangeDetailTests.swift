@@ -226,13 +226,29 @@ struct ChangeDetailTests {
         // Asking sent nothing.
         #expect(r.runner.calls(to: "scoutctl").filter { $0.prefix(2) == ["changes", "undo"] }.isEmpty)
 
-        let id = try #require(model.confirmUndo())
+        let id = model.confirmUndo(presented: try #require(model.confirmingUndoID))
         await model.performUndo(id: id, decisions: r.decisions, service: r.service)
         let undos = r.runner.calls(to: "scoutctl").filter { $0.prefix(2) == ["changes", "undo"] }
         #expect(undos == [["changes", "undo", Self.undoID, "--surface", "app"]])
         // The service is refreshed once after the decision, which is why this isn't `calls.last`.
         #expect(refreshCount(r.runner) == 2)   // the first load, then the one after the decision
-        #expect(model.confirmUndo() == nil)
+        #expect(model.confirmingUndoID == nil)
+    }
+
+    /// I6: SwiftUI may reset the dialog's binding (clearing `confirmingUndoID`) before the Undo action runs.
+    /// The id the dialog was presented with still reaches the engine.
+    @Test func theUndoReachesTheEngineEvenWhenTheDialogClearedItsBindingFirst() async throws {
+        let r = try await rig()
+        let model = ChangeDetailModel()
+        model.askToUndo(try changeRow(Self.undoID, in: r.service), verified: true, pending: r.decisions.pendingUndos)
+        let presented = try #require(model.confirmingUndoID)   // what `presenting:` captured
+        model.cancelUndo()                                    // the binding's setter ran first
+        #expect(model.confirmingUndoID == nil)
+        let id = model.confirmUndo(presented: presented)
+        await model.performUndo(id: id, decisions: r.decisions, service: r.service)
+        #expect(r.runner.calls(to: "scoutctl").filter { $0.prefix(2) == ["changes", "undo"] }
+                == [["changes", "undo", Self.undoID, "--surface", "app"]])
+        #expect(r.decisions.pendingUndos == [Self.undoID])
     }
 
     @Test func cancellingTheQuestionSendsNothing() async throws {
@@ -240,7 +256,7 @@ struct ChangeDetailTests {
         let model = ChangeDetailModel()
         model.askToUndo(try changeRow(Self.undoID, in: r.service), verified: true, pending: r.decisions.pendingUndos)
         model.cancelUndo()
-        #expect(model.confirmUndo() == nil)
+        #expect(model.confirmingUndoID == nil)
         #expect(r.runner.calls(to: "scoutctl").filter { $0.prefix(2) == ["changes", "undo"] }.isEmpty)
     }
 
@@ -259,7 +275,7 @@ struct ChangeDetailTests {
         let before = try changeRow(Self.undoID, in: r.service)
         #expect(model.canUndo(before, verified: true, pending: r.decisions.pendingUndos))
         model.askToUndo(before, verified: true, pending: r.decisions.pendingUndos)
-        await model.performUndo(id: try #require(model.confirmUndo()), decisions: r.decisions, service: r.service)
+        await model.performUndo(id: model.confirmUndo(presented: try #require(model.confirmingUndoID)), decisions: r.decisions, service: r.service)
 
         #expect(model.message == "Undo queued: the next dreaming run takes back the lines this change made.")
         #expect(!(model.message ?? "").lowercased().contains("undone"))
@@ -286,7 +302,7 @@ struct ChangeDetailTests {
         let model = ChangeDetailModel()
         let row = try changeRow(Self.undoID, in: r.service)
         model.askToUndo(row, verified: true, pending: r.decisions.pendingUndos)
-        await model.performUndo(id: try #require(model.confirmUndo()), decisions: r.decisions, service: r.service)
+        await model.performUndo(id: model.confirmUndo(presented: try #require(model.confirmingUndoID)), decisions: r.decisions, service: r.service)
         #expect(model.message == "Scout is running right now. Try again when the run finishes.")
         #expect(r.decisions.pendingUndos.isEmpty)
         #expect(model.canUndo(row, verified: true, pending: r.decisions.pendingUndos))
@@ -329,7 +345,7 @@ struct ChangeDetailTests {
         let first = ChangeDetailModel()
         let row = try changeRow(Self.undoID, in: r.service)
         first.askToUndo(row, verified: true, pending: r.decisions.pendingUndos)
-        await first.performUndo(id: try #require(first.confirmUndo()), decisions: r.decisions, service: r.service)
+        await first.performUndo(id: first.confirmUndo(presented: try #require(first.confirmingUndoID)), decisions: r.decisions, service: r.service)
         // The tab is left and reopened: a fresh model over the same decisions still has Undo off.
         let second = ChangeDetailModel()
         #expect(!second.canUndo(row, verified: true, pending: r.decisions.pendingUndos))
@@ -358,7 +374,7 @@ struct ChangeDetailTests {
         model.open(Self.undoID)
         let a = try changeRow(Self.undoID, in: r.service)
         model.askToUndo(a, verified: true, pending: r.decisions.pendingUndos)
-        let id = try #require(model.confirmUndo())
+        let id = model.confirmUndo(presented: try #require(model.confirmingUndoID))
         let run = Task { await model.performUndo(id: id, decisions: r.decisions, service: r.service) }
         while !model.busy { await Task.yield() }
         model.open(Self.wrongID)

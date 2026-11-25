@@ -159,12 +159,24 @@ final class ChangesDecisions: ObservableObject {
         (b >= UInt8(ascii: "0") && b <= UInt8(ascii: "9")) || (b >= UInt8(ascii: "a") && b <= UInt8(ascii: "z"))
     }
 
-    /// The engine's first stderr line, or the owner's wording for the live-run refusal.
+    /// The engine's first stderr line without its command prefix, or the owner's wording for the live-run refusal.
     private nonisolated static func refusal(_ result: ProcessResult) -> String {
         let err = String(decoding: result.stderr, as: UTF8.self)
         if err.contains("a scheduled run may not") { return liveRunMessage }
         let first = err.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
             .first { !$0.isEmpty }
-        return first.map { String($0.prefix(200)) } ?? "The engine said no (exit \(result.exitCode))."
+        return first.map { String(withoutCommandPrefix($0).prefix(200)) } ?? "The engine said no (exit \(result.exitCode))."
+    }
+
+    /// `scoutctl changes undo: <reason>` → `<reason>`: the owner reads the reason, not the command that gave it.
+    /// Only a leading `scoutctl` and lowercase command words before the first colon are taken off.
+    nonisolated static func withoutCommandPrefix(_ line: String) -> String {
+        guard line.hasPrefix("scoutctl "), let colon = line.range(of: ": ") else { return line }
+        let command = line[..<colon.lowerBound]
+        let isCommand = command.unicodeScalars.allSatisfy {
+            ($0.value >= 97 && $0.value <= 122) || $0.value == 32 || $0.value == 45
+        }
+        let rest = line[colon.upperBound...].trimmingCharacters(in: .whitespaces)
+        return isCommand && !rest.isEmpty ? rest : line
     }
 }

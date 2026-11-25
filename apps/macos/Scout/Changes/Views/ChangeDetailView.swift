@@ -108,12 +108,27 @@ nonisolated enum DetailModel {
         return nil
     }
 
-    /// Why the verdict is what it is: each reason as a plain phrase. Anything shaped like an id is left out.
+    /// The engine's verdict reasons (`scout/changes/verdicts.py`, `judge`) in the owner's words, worded as the
+    /// dreaming wrap words them.
+    static let reasonPhrases: [String: String] = [
+        "away": "You were away for much of the test, so it can't tell",
+        "noise-up": "More ignored DMs or stale 🔴s while engagement didn't rise",
+        "recurrence-up": "The mistake it targeted happened more",
+        "named-negative": "You replied negatively about it",
+        "recurrence-zero": "The mistake it targeted stopped happening",
+        "engagement-up": "You used Scout more, with no more noise",
+    ]
+    /// A reason this build doesn't know (a newer engine's): said once, never as the engine's token.
+    static let otherReason = "Another reason the test recorded"
+
+    /// Why the verdict is what it is: each reason as a plain phrase, in the engine's order, once each.
     static func reasonWords(_ reasons: [String]) -> [String] {
-        reasons.filter { !$0.contains("chg-") && !$0.isEmpty }.map { reason in
-            let words = reason.replacingOccurrences(of: "-", with: " ").replacingOccurrences(of: "_", with: " ")
-            return words.prefix(1).uppercased() + words.dropFirst()
+        var out: [String] = []
+        for reason in reasons where !reason.isEmpty {
+            let phrase = reasonPhrases[reason] ?? otherReason
+            if !out.contains(phrase) { out.append(phrase) }
         }
+        return out
     }
 
     // MARK: Small multiples
@@ -236,16 +251,17 @@ final class ChangeDetailModel: ObservableObject {
 
     func cancelUndo() { confirmingUndoID = nil }
 
-    /// The owner confirmed. Undo is queued, not done: the engine records the decision and a later dreaming
-    /// run applies it or declines it.
-    /// The owner pressed Undo in the confirmation: takes the id they were asked about (nil when nothing
-    /// was asked) and closes the question. Synchronous, because the dialog's own dismissal clears it.
-    func confirmUndo() -> String? {
-        defer { confirmingUndoID = nil }
-        return confirmingUndoID
+    /// The owner pressed Undo in the confirmation. `presented` is the id the dialog was shown for (its
+    /// `presenting:` value, captured when it appeared), so the answer reaches `performUndo` even when the
+    /// dialog's own dismissal has already cleared `confirmingUndoID`. Closes the question.
+    func confirmUndo(presented id: String) -> String {
+        confirmingUndoID = nil
+        return id
     }
 
-    /// Runs the undo for an id `confirmUndo()` returned.
+    /// Runs the undo for an id `confirmUndo(presented:)` returned. Undo is queued, not done: the engine records
+    /// the decision and a later dreaming run applies it. One the engine can see the run would decline, it refuses
+    /// in words, and nothing is queued.
     func performUndo(id: String, decisions: ChangesDecisions, service: ChangesService) async {
         guard let snapshot = service.snapshot, let row = snapshot.changes.changes.first(where: { $0.id == id }),
               canUndo(row, verified: snapshot.changes.verified, pending: decisions.pendingUndos) else { return }
@@ -289,7 +305,8 @@ final class ChangeDetailModel: ObservableObject {
         guard isCurrent(row.id) else { return }
         switch result {
         case .done(let text):
-            diff = .loaded(text)
+            // A change with no own files prints nothing (an older engine, a bare newline): that is no diff.
+            diff = .loaded(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : text)
         case .refused(let words):
             diff = .failed(words)
         case .invalid:
@@ -510,14 +527,15 @@ struct ChangeDetailView: View {
         }
         .confirmationDialog(Self.undoQuestion, isPresented: Binding(
             get: { model.confirmingUndoID != nil }, set: { if !$0 { model.cancelUndo() } }
-        ), titleVisibility: .visible) {
+        ), titleVisibility: .visible, presenting: model.confirmingUndoID) { presented in
+            // The id comes in with the dialog, not from the model: SwiftUI may reset the binding (clearing
+            // `confirmingUndoID`) before this action runs.
             Button("Undo", role: .destructive) {
-                if let id = model.confirmUndo() {
-                    Task { await model.performUndo(id: id, decisions: decisions, service: service) }
-                }
+                let id = model.confirmUndo(presented: presented)
+                Task { await model.performUndo(id: id, decisions: decisions, service: service) }
             }
             Button("Cancel", role: .cancel) { model.cancelUndo() }
-        } message: {
+        } message: { _ in
             Text(Self.undoDetail)
         }
     }

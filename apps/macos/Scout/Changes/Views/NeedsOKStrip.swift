@@ -48,8 +48,8 @@ struct NeedsOKStrip: View {
                     .font(DS.font(.label, weight: .semibold))
                     .foregroundStyle(DS.Ink.p1)
                     .fixedSize(horizontal: false, vertical: true)
-                if !item.why.isEmpty {
-                    Text(verbatim: item.why)
+                if let why = item.whyLine {
+                    Text(verbatim: why)
                         .font(DS.font(.caption))
                         .foregroundStyle(DS.Ink.p3)
                         .fixedSize(horizontal: false, vertical: true)

@@ -240,10 +240,19 @@ nonisolated struct NeedsOKItem: Equatable, Sendable, Decodable, Identifiable {
     /// The 64-hex hash an approval must quote.
     let diffHash: String
     let targets: [String]
+    /// Whether applying it changes what Scout may do on its own. Missing means true, the engine's own
+    /// default, so the sheet never calls a governance change ordinary by accident.
     let governance: Bool
+    /// The engine's plain words for `why` (`pattern-288` → that pattern's title); nil when it has none.
+    let whyGloss: String?
+    /// One entry per target, nil where the engine has no plain words for it.
+    let targetsGloss: [String?]
+    /// The pending file's own explanation, the prose around its diff; nil when it has none.
+    let context: String?
 
     private enum CodingKeys: String, CodingKey {
         case id, summary, why, path, state, diffHash = "diff_hash", targets, governance
+        case whyGloss = "why_gloss", targetsGloss = "targets_gloss", context
     }
 
     init(from decoder: Decoder) throws {
@@ -255,6 +264,34 @@ nonisolated struct NeedsOKItem: Equatable, Sendable, Decodable, Identifiable {
         state = try c.decode(String.self, forKey: .state)
         diffHash = try c.decode(String.self, forKey: .diffHash)
         targets = try c.decodeIfPresent([String].self, forKey: .targets) ?? []
-        governance = try c.decodeIfPresent(Bool.self, forKey: .governance) ?? false
+        governance = try c.decodeIfPresent(Bool.self, forKey: .governance) ?? true
+        whyGloss = try c.decodeIfPresent(String.self, forKey: .whyGloss)
+        targetsGloss = (try? c.decodeIfPresent([String?].self, forKey: .targetsGloss)) ?? []
+        context = try c.decodeIfPresent(String.self, forKey: .context)
+    }
+
+    /// Why it is waiting, in plain words: the engine's gloss, else the file's own `why` when that is prose.
+    /// A bare reference (`pattern-288`, `owner-ask:…`) is never shown; nil then.
+    var whyLine: String? {
+        if let gloss = Self.nonEmpty(whyGloss) { return gloss }
+        guard let raw = Self.nonEmpty(why), raw.contains(where: \.isWhitespace) else { return nil }
+        return raw
+    }
+
+    /// What it changes, each target by its plain name: the engine's gloss, else the target itself unless it is a
+    /// pattern reference, which reads "a recurring mistake".
+    var targetNames: [String] {
+        targets.enumerated().map { index, target in
+            if index < targetsGloss.count, let gloss = Self.nonEmpty(targetsGloss[index]) { return gloss }
+            return target.hasPrefix("pattern-") ? "a recurring mistake" : target
+        }
+    }
+
+    /// The context paragraph to show, when there is one.
+    var contextLine: String? { Self.nonEmpty(context) }
+
+    private static func nonEmpty(_ text: String?) -> String? {
+        guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return text
     }
 }
