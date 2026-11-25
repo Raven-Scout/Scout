@@ -235,11 +235,18 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     /// seconds+PID name (a later run in the same minute). A minute-named log
     /// keeps the id it always had, so feedback files' `run_id` still match.
     static func makeId(type: RunType, startedAt: Date, pid: Int? = nil) -> String {
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime]
-        let base = "\(type.rawValue)-\(iso.string(from: startedAt))"
+        let base = "\(type.rawValue)-\(runIdFormatter.string(from: startedAt))"
         return pid.map { "\(base)-\($0)" } ?? base
     }
+
+    /// Built once: a new `ISO8601DateFormatter` per id went into ICU for every
+    /// run log at launch and on every log change. Never mutated after setup,
+    /// so it is shared (thread-safe once configured; `UsageTimestampFormatters`).
+    nonisolated(unsafe) private static let runIdFormatter: ISO8601DateFormatter = {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime]
+        return iso
+    }()
 
     /// The run's name on every page that lists or details runs. The run
     /// ledger's word wins (`ledgerName`, from the row's slot or mode), since
