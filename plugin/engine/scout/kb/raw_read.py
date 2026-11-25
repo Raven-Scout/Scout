@@ -29,6 +29,15 @@ _READ_COMMANDS = {
     "iconv", "jq", "yq", "view", "vi", "vim", "nano", "most", "pg", "ag", "ack", "fd", "ugrep",
     "ug", "ug+", "ugrep+", "fdfind", "ack-grep",  # aliases: _command_name reads them as ugrep, fd, ack
 }  # fmt: skip
+# More plain readers from the BSD and GNU text utilities: each prints what is in the files it is given (or their
+# lines, shuffled, joined, side by side, converted). The readers that take files another way (copies, archives,
+# sed's `r`, awk's `getline <`, perl, dd, source) are scout.kb.other_reads'.
+_READ_COMMANDS |= {
+    "join", "expand", "unexpand", "shuf", "tsort", "ptx", "nawk", "sdiff", "diff3", "lam", "ul", "vis", "hd",
+    "base32", "basenc", "uuencode", "zless", "zmore", "zgrep", "zegrep", "zfgrep", "gzcat", "bzcat", "bzgrep",
+    "bzless", "bzmore", "xzcat", "xzgrep", "xzless", "zstdcat", "lz4cat", "ed", "ex", "nvim", "textutil", "glow",
+    "mdcat", "pandoc",
+}  # fmt: skip
 _PREFIX_WORDS = {
     "xargs", "sudo", "command", "builtin", "env", "nice", "time", "exec", "timeout", "gtimeout", "stdbuf",
     "caffeinate", "unbuffer", "parallel", "sh", "bash", "zsh", "dash", "ksh", "eval",
@@ -93,10 +102,13 @@ _KB_RG_TYPES = {"all", "md", "markdown", "yaml", "csv", "json", "txt", "html"}
 class _Stripped:
     """A segment's command words after its prefixes, and what the prefixes said."""
 
-    def __init__(self, words: list[str], fed: bool, chdir: str | None) -> None:
+    def __init__(
+        self, words: list[str], fed: bool, chdir: str | None, assignments: list[tuple[str, str]] | None = None
+    ) -> None:
         self.words = words
         self.fed = fed  # `xargs`/`parallel` gives the command its arguments from stdin
         self.chdir = chdir  # `env -C <dir>` runs it in another folder
+        self.assignments = assignments or []  # `F=x cmd`, `env F=x cmd`: what it puts in the command's environment
 
 
 def _strip(words: list[str]) -> _Stripped:
@@ -105,6 +117,7 @@ def _strip(words: list[str]) -> _Stripped:
     keywords (``do``, ``then``, ``!``). ``command -v x`` runs nothing."""
     fed = False
     chdir: str | None = None
+    assignments: list[tuple[str, str]] = []
     words = list(words)
     prefix: str | None = None
     pending = 0  # positionals the prefix still takes before the command (`timeout 10 …`)
@@ -133,10 +146,13 @@ def _strip(words: list[str]) -> _Stripped:
             pending -= 1
             words.pop(0)
         elif _ASSIGNMENT.match(word) or word in _KEYWORDS:
+            if word not in _KEYWORDS:
+                name, _eq, value = word.partition("=")
+                assignments.append((name, value))
             words.pop(0)
         else:
             break
-    return _Stripped(words, fed, chdir)
+    return _Stripped(words, fed, chdir, assignments)
 
 
 def _unquoted(text: str) -> str:
@@ -962,10 +978,11 @@ def raw_kb_read(
     runs it (``cat $(scoutctl kb files)``); one ``xargs`` feeds from a pipe that carries KB paths;
     ``git show|diff|grep|blame|log -p`` with a KB path, past git's own options; an input
     redirection from a KB path (``wc -c <knowledge-base/x``); ``sh -c``/``eval`` of a program
-    that does any of this. With ``cwd`` and ``vault`` (absolute, as the gate knows them), a
-    recursive read that gets to a KB note (``rg x``, ``grep -r x action-items``, ``git grep x``,
-    ``find .``) counts too; ``env`` puts in ``~`` and ``$VAR``. ``scoutctl …`` segments and
-    quoted commit messages never count.
+    that does any of this; and the readers :mod:`scout.kb.other_reads` knows (a copy or an archive out
+    of the KB, ``diff -r``, ``dd if=``, ``source``, sed's ``r``, awk's ``getline <``, perl's ``open``).
+    With ``cwd`` and ``vault`` (absolute, as the gate knows them), a recursive read that gets to a KB
+    note (``rg x``, ``grep -r x action-items``, ``git grep x``, ``find .``, ``tar cf - .``) counts too;
+    ``env`` puts in ``~`` and ``$VAR``. ``scoutctl …`` segments and quoted commit messages never count.
 
     Known gaps, none of which main denied: ``xargs`` fed by a command that prints no KB path
     (``ls | xargs rg x`` from the vault); ``cd action-items && cat context/x.md`` (the shell
@@ -978,7 +995,7 @@ def raw_kb_read(
     expanded = _with_kb_paths(command)
     if expanded != command and _judge(expanded, in_kb, cwd, vault, env):
         return True
-    return _judge_recursive(command, in_kb, cwd, vault, env)
+    return _judge_recursive(command, in_kb, cwd, vault, env) or _judge_other(command, in_kb, cwd, vault, env)
 
 
 def _judge(command: str, in_kb: bool, cwd: str | None, vault: str | None, env: Mapping[str, str]) -> bool:
@@ -1303,6 +1320,84 @@ def _judge_recursive(
                 paths = plain if any(a in ("-e", "-f") for a in sub_args) else plain[1:]
                 if not (stripped.fed and not paths) and reaches(_Recursive(paths, True), where):
                     return True
+    return False
+
+
+def _judge_other(
+    command: str, in_kb: bool, cwd: str | None, vault: str | None, env: Mapping[str, str], depth: int = 0
+) -> bool:
+    """The readers :mod:`scout.kb.other_reads` knows (copies and archives, ``diff -r``, ``dd``, ``source``, the
+    files a sed, awk or perl program names), on the split that keeps quotes whole: a path they read that spells
+    the KB, or any relative one run from inside it; a recursive one rooted where it reaches a KB note (``cwd``
+    and ``vault`` given); a stdin list from a pipe that carries KB paths (``find knowledge-base | cpio -o``); and
+    the shell commands such a program runs. A copy into the KB reads nothing out of it."""
+    from scout.kb.other_reads import into_kb_counts, other_reads
+
+    if depth > 4:
+        return False
+    statements, substitutions = _shell_split(command)
+    if any(_judge_other(s, in_kb, cwd, vault, env, depth + 1) for s in substitutions):
+        return True
+    local = _local_values(command)
+    here = posixpath.normpath(cwd) if cwd else None
+    for pieces in statements:
+        previous = ""
+        for piece in pieces:
+            stripped = _strip(_shell_words(piece))
+            words, upstream, previous = stripped.words, previous, piece
+            if not words:
+                continue
+            if any(c.isspace() for c in words[0]):  # a program a shell prefix runs: `bash -c 'tar cf - .'`
+                if _judge_other(" ".join(words), in_kb, here, vault, env, depth + 1):
+                    return True
+                continue
+            name, args = _command_name(words[0]), words[1:]
+            if name in ("cd", "pushd"):
+                in_kb = _names_kb(" ".join(args))
+                here = _cd(here, args[0] if args else "~", env, local)
+                continue
+            other = other_reads(name, args)
+            if other is None:
+                continue
+            seg_in_kb = in_kb if stripped.chdir is None else _names_kb(stripped.chdir)
+            where = here if stripped.chdir is None else _cd(here, stripped.chdir, env, local)
+            relative = [d for d in other.dests if not d.startswith(("/", "~"))]
+            into_kb = into_kb_counts(other) and (
+                any(_names_kb(d) for d in other.dests) or (seg_in_kb and bool(relative))
+            )
+            reads = [] if into_kb else other.reads
+            if any(_names_kb(w) or _glob_names_kb(w) for w, _how in reads) or any(
+                _names_kb(p) for p in [*other.literal, *other.folders]
+            ):
+                return True
+            if seg_in_kb and any(not w.startswith(("/", "~")) for w in [*(w for w, _ in reads), *other.literal]):
+                return True
+            if other.stdin_list and not into_kb and _KB_SOURCE.search(upstream):
+                return True
+            if vault is not None and where is not None and _covers(reads, where, vault, env, local):
+                return True
+            for program in other.programs:
+                if raw_kb_read(program, in_kb=seg_in_kb, cwd=where, vault=vault, env=env):
+                    return True
+    return False
+
+
+def _covers(
+    reads: list[tuple[str, str]], where: str, vault: str, env: Mapping[str, str], local: Mapping[str, str]
+) -> bool:
+    """Whether a recursive copy or ``diff -r`` rooted at one of ``reads`` gets to a KB note, as a recursive search
+    does (:func:`_reaches_kb`). A root the gate can't place is the path judge's to record, not a deny here."""
+    from scout.kb.other_reads import COVERS
+
+    for word, how in reads:
+        root = _expand(word, env, local)
+        if how != COVERS or root == _UNKNOWN or _SUBST in root:
+            continue
+        folder = _root_folder(root)
+        if _reaches_kb(
+            folder if folder.startswith("/") else posixpath.join(where, folder), vault, _Recursive([], True)
+        ):
+            return True
     return False
 
 
