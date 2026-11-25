@@ -419,3 +419,18 @@ def test_partially_staged_front_page_is_judged_by_its_staged_text(kb_repo) -> No
     kb_repo.stage(FRONT, front.replace("- **Q5** ", "- **Q6** "))
     kb_repo.write(FRONT, front)
     assert any("Q5" in f.message for f in _lab_findings(kb_repo))
+
+
+@pytest.mark.parametrize(
+    ("extra", "field"),
+    [
+        ("models:\n  - repo: org/m\n    revision: main\n", "revision"),
+        (f"models:\n  - repo: ../x\n    revision: {'a' * 40}\n", "repo"),
+        ("timeout_hours: 0\n", "timeout_hours"),
+        ("disk_budget_bytes: -1\n", "disk_budget_bytes"),
+    ],
+)
+def test_lint_flags_bad_ml_fields(vault: Path, extra: str, field: str) -> None:
+    text = _text(vault, E2).replace("visibility: normal\n", f"visibility: normal\n{extra}", 1)
+    found = _lint(vault, E2, text)
+    assert len(found) == 1 and field in found[0].message and found[0].blocking

@@ -172,7 +172,7 @@ def test_the_status_line_shows_already_running_as_refused(
 ) -> None:
     """Through the owner's own client path (its validation replaced: the vault here has no git), the runner's
     refusal is the run's last line, ``experiment refused: …``."""
-    validated = (SLUG, EID, ["./run.sh"], 1.0, "0" * 40)
+    validated = (SLUG, EID, ["./run.sh"], 1.0, "0" * 40, broker.ExperimentPlan(None, [], 512 << 20))
     monkeypatch.setattr(broker, "validate_experiment", lambda *_a, **_k: validated)
     env = {"SCOUT_DATA_DIR": str(vault), "HOME": str(home), "PATH": os.environ.get("PATH", "")}
     assert broker.client_experiment(SLUG, EID, ["./run.sh"], env=env) == LabError.exit_code

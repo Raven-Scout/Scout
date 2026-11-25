@@ -6,6 +6,7 @@ import pytest
 
 from scout.errors import LabError
 from scout.lab import paths
+from scout.lab.model import ModelRef
 from scout.lab.parser import load_thread, parse_experiment, parse_front_page, parse_timeline
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "lab"
@@ -158,3 +159,19 @@ def test_load_thread(tmp_path: Path) -> None:
     assert load_thread(tmp_path, "summary-drift").slug == "summary-drift"
     with pytest.raises(LabError):
         load_thread(tmp_path, "missing")
+
+
+def test_experiment_ml_fields_parse() -> None:
+    sha1, sha2 = "1" * 40, "2" * 40
+    extra = (
+        "timeout_hours: 6\ndisk_budget_bytes: 8589934592\n"
+        f'models:\n  - repo: org/model-a\n    revision: "{sha1}"\n  - repo: org/model-b.v2\n    revision: "{sha2}"\n'
+    )
+    path = THREAD_DIR / "experiments" / "summary-drift-E2-section-hash.md"
+    text = path.read_text(encoding="utf-8").replace("visibility: normal\n", f"visibility: normal\n{extra}", 1)
+    e = parse_experiment("summary-drift", text)
+    assert e.timeout_hours == 6.0
+    assert e.disk_budget_bytes == 8589934592
+    assert e.models == [ModelRef("org/model-a", sha1), ModelRef("org/model-b.v2", sha2)]
+    plain = parse_experiment("summary-drift", path.read_text(encoding="utf-8"))
+    assert (plain.timeout_hours, plain.models, plain.disk_budget_bytes) == (None, [], None)

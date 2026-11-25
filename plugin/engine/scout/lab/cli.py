@@ -438,11 +438,19 @@ def cli_experiment_plan(
     question: list[str] = typer.Option(..., "--question", help="A question ID this answers (repeatable)."),
     file: Path = typer.Option(..., "--file", help="UTF-8 markdown body (## Hypothesis, ## Method, ## Data)."),
     cap: float | None = typer.Option(None, "--cap", help="Cost cap in USD."),
+    timeout_hours: float | None = typer.Option(None, "--timeout-hours", help="Longest the run may take, in hours."),
+    model: list[str] = typer.Option([], "--model", help="A model to fetch, as REPO@REVISION (repeatable)."),
+    disk_budget: int | None = typer.Option(None, "--disk-budget", help="Disk the run may use, in bytes."),
 ) -> None:
     """Plan an experiment; prints 'ok <slug> plan <EID>'."""
     from scout.lab import experiments
 
-    exp = experiments.plan(_vault(ctx), slug, short, title, list(question), _read_text(file), cap)
+    exp = experiments.plan(
+        _vault(ctx), slug, short, title, list(question), _read_text(file), cap,
+        timeout_hours=timeout_hours,
+        models=[experiments.parse_model_flag(m) for m in model],
+        disk_budget_bytes=disk_budget,
+    )  # fmt: skip
     _ok(slug, f"plan {exp.eid}")
 
 

@@ -24,10 +24,15 @@ from scout.lab.model import (
     EvidenceRef,
     Experiment,
     ExperimentRef,
+    ModelRef,
     Problem,
     Question,
     Thread,
     TimelineEntry,
+    disk_budget_of,
+    model_repo_ok,
+    model_revision_ok,
+    timeout_hours_of,
 )
 
 # "<text> · <status> · <when>[ — <note>]". Text is greedy, so it keeps any
@@ -371,6 +376,12 @@ def parse_experiment(slug: str, text: str) -> Experiment:
         problems.append(Problem(1, f"experiment id '{eid}' is not E<n>"))
     raw_q = fm.get("questions") or []
     questions = [str(q) for q in raw_q] if isinstance(raw_q, list) else [str(raw_q)]
+    raw_models = fm.get("models")
+    models = [
+        ModelRef(m["repo"], m["revision"])
+        for m in (raw_models if isinstance(raw_models, list) else [])
+        if isinstance(m, dict) and model_repo_ok(m.get("repo")) and model_revision_ok(m.get("revision"))
+    ]  # a malformed entry is dropped here; lint names it
     return Experiment(
         slug=slug,
         eid=eid,
@@ -380,6 +391,9 @@ def parse_experiment(slug: str, text: str) -> Experiment:
         sections={name: _prose(lines) for name, (_, lines) in sections.items()},
         problems=problems,
         visibility=own_visibility(text),
+        timeout_hours=timeout_hours_of(fm.get("timeout_hours")),
+        models=models,
+        disk_budget_bytes=disk_budget_of(fm.get("disk_budget_bytes")),
     )
 
 

@@ -25,6 +25,7 @@ from typer.testing import CliRunner
 from scout import cli
 from scout.errors import LabError
 from scout.lab import paths, runner
+from scout.lab.model import ModelRef
 from scout.sandbox import broker, profile
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "lab"
@@ -910,7 +911,7 @@ def test_a_script_rewritten_after_the_check_is_not_what_runs(vault: Path, tmp_pa
     """I7 / R30: the broker validates the committed plan; a run rewriting the script in the worktree afterwards
     (it may write the experiment folder) changes nothing: the runner runs the committed copy, read-only."""
     folder = _commit_probe(vault)
-    slug, eid, argv, cap, commit = broker.validate_experiment(
+    slug, eid, argv, cap, commit, _plan_fields = broker.validate_experiment(
         {**REQ, "argv": ["python3", "probe.py"]}, vault, broker.LabLimits(), AFTER_NOTICE
     )
     (folder / "probe.py").write_text("print('REWRITTEN COPY')\n", encoding="utf-8")  # after validation
@@ -1436,3 +1437,69 @@ def test_the_owners_own_session_isnt_gated_by_the_switch(
     assert broker.client_experiment(SLUG, EID, ARGV, env=_owner_session_env(vault)) == 0
     assert capsys.readouterr().err.splitlines()[-1] == "experiment ran: exit 0"
     assert len(fake_run.calls) == 1
+
+
+# -- ML experiments, part 1: owner limits and note fields (spec §6.4) ----------------------------------------------
+
+SHA_A = "a" * 40
+
+
+def test_lab_limits_read_the_ml_keys(tmp_path: Path) -> None:
+    python = tmp_path / "py"
+    python.write_text("#!/bin/sh\n", encoding="utf-8")
+    python.chmod(0o755)
+    env = {"HOME": str(tmp_path / "home")}
+    folder = broker.owner_dir(env)
+    folder.mkdir(parents=True)
+    config = folder / broker.CONFIG_NAME
+    ml = {
+        "detached_max_hours": 12,
+        "max_detached": 1,
+        "gpu": True,
+        "max_memory_bytes": 1 << 34,
+        "disk_free_floor_bytes": 0,
+        "weights_max_bytes": 40 << 30,
+        "python": str(python),
+    }
+    config.write_text(json.dumps({"lab": ml}), encoding="utf-8")
+    got = broker.load_lab_limits(env)
+    assert (got.detached_max_hours, got.max_detached, got.gpu) == (12.0, 1, True)
+    assert (got.max_memory_bytes, got.disk_free_floor_bytes, got.weights_max_bytes) == (1 << 34, 0, 40 << 30)
+    assert got.python == str(python)
+    bad = '{"lab": {"gpu": 1, "max_detached": -1, "python": "relative/py", "detached_max_hours": 1e400}}'
+    config.write_text(bad, encoding="utf-8")
+    assert broker.load_lab_limits(env) == broker.LabLimits()
+    config.write_text(json.dumps({"lab": {"python": str(tmp_path / "missing")}}), encoding="utf-8")
+    assert broker.load_lab_limits(env).python is None
+
+
+def _commit_fields(vault: Path, extra: str) -> None:
+    """Commit E2's note with ``extra`` frontmatter lines added, then leave it ``running`` in the worktree."""
+    note = _note(vault)
+    text = note.read_text(encoding="utf-8").replace("visibility: normal\n", f"visibility: normal\n{extra}", 1)
+    note.write_text(text, encoding="utf-8")
+    _set(vault, "status", "planned")
+    _commit(vault, T, "lab: E2 ML fields")
+    _set(vault, "status", "running")
+
+
+def _plan(vault: Path, limits: broker.LabLimits | None = None) -> broker.ExperimentPlan:
+    return broker.validate_experiment(dict(REQ), vault, limits or broker.LabLimits(), AFTER_NOTICE)[5]
+
+
+def test_broker_reads_the_plan_at_the_commit(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    models = f'models:\n  - repo: org/m\n    revision: "{SHA_A}"\n'
+    _commit_fields(vault, f"timeout_hours: 6\ndisk_budget_bytes: 1000\n{models}")
+    _set(vault, "disk_budget_bytes", "999999")  # after the commit: the worktree's copy must not count
+    # The uncommitted-change refusal would stop the run first; with it out of the way, the plan's source is pinned.
+    monkeypatch.setattr(broker, "_uncommitted", lambda *_a, **_k: [])
+    assert _plan(vault) == broker.ExperimentPlan(6.0, [ModelRef("org/m", SHA_A)], 1000)
+
+
+def test_disk_budget_is_clamped(vault: Path) -> None:
+    _commit_fields(vault, f"disk_budget_bytes: {20 << 30}\n")
+    assert _plan(vault, broker.LabLimits(max_total_bytes=10 << 30)).disk_budget_bytes == 10 << 30
+
+
+def test_no_disk_budget_means_512_mib(vault: Path) -> None:
+    assert _plan(vault, broker.LabLimits(max_total_bytes=10 << 30)) == broker.ExperimentPlan(None, [], 512 << 20)

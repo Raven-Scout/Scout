@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime as _dt
 import re
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import yaml
 
@@ -25,7 +25,16 @@ from scout.kb.frontmatter import frontmatter_block
 from scout.kb.lint import Finding
 from scout.kb.privacy import visibility_value
 from scout.lab import paths
-from scout.lab.model import EID_RE, QID_RE, TIMELINE_TAGS, Thread
+from scout.lab.model import (
+    EID_RE,
+    QID_RE,
+    TIMELINE_TAGS,
+    Thread,
+    disk_budget_of,
+    model_repo_ok,
+    model_revision_ok,
+    timeout_hours_of,
+)
 from scout.lab.parser import fenced, parse_experiment, parse_front_page, split_lines
 
 CHECK = "lab-format"
@@ -315,6 +324,7 @@ def _experiment(rel: str, slug: str, name: str, text: str) -> list[Finding]:
     named = _EXPERIMENT_NAME.match(name)
     if named and "id" in fm and str(fm["id"]) != named.group("eid"):
         out.append(_bad(rel, f"frontmatter id is '{fm['id']}', but the file name says {named.group('eid')}", 1))
+    out += _ml_fields(rel, text, fm)
     if "planned" in fm and "not_before" in fm:
         line = _line_of(text, "not_before:")
         try:
@@ -327,6 +337,46 @@ def _experiment(rel: str, slug: str, name: str, text: str) -> list[Finding]:
                 out.append(
                     _bad(rel, f"not_before ({fm['not_before']}) is earlier than planned ({fm['planned']})", line)
                 )
+    return out
+
+
+def _ml_fields(rel: str, text: str, fm: dict[str, Any]) -> list[Finding]:
+    """The optional ML fields (spec §6.4), each present one checked: a bad one is one finding naming the field."""
+    out: list[Finding] = []
+    if "timeout_hours" in fm and timeout_hours_of(fm["timeout_hours"]) is None:
+        out.append(
+            _bad(
+                rel,
+                f"timeout_hours is {fm['timeout_hours']!r}; it must be a number above 0",
+                _line_of(text, "timeout_hours:"),
+            )
+        )
+    if "disk_budget_bytes" in fm and disk_budget_of(fm["disk_budget_bytes"]) is None:
+        out.append(
+            _bad(
+                rel,
+                f"disk_budget_bytes is {fm['disk_budget_bytes']!r}; it must be a whole number above 0",
+                _line_of(text, "disk_budget_bytes:"),
+            )
+        )
+    if "models" not in fm:
+        return out
+    line = _line_of(text, "models:")
+    models = fm["models"]
+    if not isinstance(models, list):
+        return [*out, _bad(rel, f"models is {models!r}; it must be a list of repo and revision pairs", line)]
+    for entry in models:
+        entry = entry if isinstance(entry, dict) else {}
+        if not model_repo_ok(entry.get("repo")):
+            out.append(_bad(rel, f"models repo is {entry.get('repo')!r}; it must be owner/name", line))
+        if not model_revision_ok(entry.get("revision")):
+            out.append(
+                _bad(
+                    rel,
+                    f"models revision is {entry.get('revision')!r}; it must be a quoted 40-character commit hash",
+                    line,
+                )
+            )
     return out
 
 

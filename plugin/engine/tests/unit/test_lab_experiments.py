@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from scout.errors import LabError
 from scout.lab import experiments, ops, paths
+from scout.lab.experiments import parse_model_flag
+from scout.lab.model import ModelRef
 from scout.lab.parser import load_thread, parse_experiment, parse_front_page, parse_timeline
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "lab"
@@ -309,3 +313,37 @@ def test_failed_write_restores_files(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert _front(vault) == before_front
     assert paths.experiment_note(vault, "summary-drift", "E3") is None
     assert parse_front_page("summary-drift", _front(vault)).frontmatter["next_e"] == 3
+
+
+def test_plan_writes_the_ml_fields(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    sha = "c" * 40
+    exp = experiments.plan(
+        vault, "summary-drift", "ml", "T", ["Q5"], BODY, now=PLAN_NOW,
+        timeout_hours=6, models=[ModelRef("org/m", sha)], disk_budget_bytes=8 << 30,
+    )  # fmt: skip
+    assert (exp.timeout_hours, exp.models, exp.disk_budget_bytes) == (6.0, [ModelRef("org/m", sha)], 8 << 30)
+    assert exp.problems == []
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"timeout_hours": 0}, "timeout"),
+        ({"timeout_hours": float("inf")}, "timeout"),
+        ({"disk_budget_bytes": -1}, "disk budget"),
+        ({"disk_budget_bytes": True}, "disk budget"),
+        ({"models": [ModelRef("../x", "a" * 40)]}, r"\.\./x"),
+        ({"models": [ModelRef("org/m", "main")]}, "main"),
+    ],
+)
+def test_plan_refuses_bad_ml_arguments(tmp_path: Path, kwargs: dict[str, Any], match: str) -> None:
+    _assert_refused(_vault(tmp_path), match, **kwargs)
+
+
+def test_parse_model_flag() -> None:
+    sha = "d" * 40
+    assert parse_model_flag(f"org/m@{sha}") == ModelRef("org/m", sha)
+    for bad in ("org/m", f"org@{sha}", "org/m@main", f"@{sha}"):
+        with pytest.raises(LabError, match=re.escape(bad)):
+            parse_model_flag(bad)

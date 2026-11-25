@@ -48,6 +48,7 @@ from typing import Any
 
 from scout import plural, safe_write
 from scout.kb import hook_paths
+from scout.lab.model import ModelRef
 
 PROTOCOL = 1
 ENV_SOCKET = "SCOUT_RUN_BROKER"
@@ -229,6 +230,28 @@ class LabLimits:
     max_total_bytes: int = 512 * 1024 * 1024
     # Descriptors the script may hold open (the gate's `ulimit -n`): dataset loaders and the like need hundreds.
     max_open_files: int = 1024
+    # ML experiments (spec §6.4); each is off or unset until the owner sets it.
+    detached_max_hours: float = 0  # the longest a detached run may take; 0 = detached runs are off
+    max_detached: int = 0  # detached runs at once; 0 = off
+    gpu: bool = False  # only JSON `true` turns the GPU on
+    max_memory_bytes: int = 0  # 0 = half of the Mac's memory (resolved where it is used)
+    disk_free_floor_bytes: int = 15_000_000_000  # free space below which a run is stopped; may be 0
+    weights_max_bytes: int = 0  # the most model weights one run may fetch; 0 = no fetching
+    python: str | None = None  # the interpreter experiments run under: an absolute path to an executable file
+
+
+# What an experiment's note asks for besides its command (spec §6.4), when it names no disk budget.
+DEFAULT_DISK_BUDGET_BYTES = 512 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class ExperimentPlan:
+    """What the committed note asks for: its timeout in hours, the models to fetch (each pinned to a commit) and
+    its disk budget in bytes, already clamped to the owner's ``max_total_bytes``."""
+
+    timeout_hours: float | None
+    models: list[ModelRef]
+    disk_budget_bytes: int
 
 
 def _finite(value: float) -> bool:
@@ -244,8 +267,10 @@ def load_lab_limits(env: Mapping[str, str]) -> LabLimits:
     missing or malformed file, or a value out of bounds, means the default. ``experiments_per_run`` is a positive
     integer; the others are finite positive numbers, except ``notice_hours``, which may be 0. ``max_processes``,
     ``max_total_bytes`` and ``max_open_files`` are positive integers too, the bytes up to 1 TiB and the files up to
-    65536.
-    ``experiments_enabled`` is on only when it is exactly ``true``."""
+    65536. The ML keys (spec §6.4) are numbers from 0: ``detached_max_hours`` up to 168, ``max_detached`` an
+    integer up to 8, and ``max_memory_bytes``, ``disk_free_floor_bytes`` and ``weights_max_bytes`` integers up to
+    1 TiB; ``python`` is an absolute path to an existing executable file, else None.
+    ``experiments_enabled`` and ``gpu`` are on only when exactly ``true``."""
     defaults = LabLimits()
     try:
         data = json.loads((owner_dir(env) / CONFIG_NAME).read_text(encoding="utf-8"))
@@ -272,7 +297,21 @@ def load_lab_limits(env: Mapping[str, str]) -> LabLimits:
         max_processes=number("max_processes", integer=True),
         max_total_bytes=number("max_total_bytes", integer=True, most=1 << 40),
         max_open_files=number("max_open_files", integer=True, most=65536),
+        detached_max_hours=float(number("detached_max_hours", zero=True, most=168)),
+        max_detached=number("max_detached", integer=True, zero=True, most=8),
+        gpu=block.get("gpu") is True,
+        max_memory_bytes=number("max_memory_bytes", integer=True, zero=True, most=1 << 40),
+        disk_free_floor_bytes=number("disk_free_floor_bytes", integer=True, zero=True, most=1 << 40),
+        weights_max_bytes=number("weights_max_bytes", integer=True, zero=True, most=1 << 40),
+        python=_executable(block.get("python")),
     )
+
+
+def _executable(value: object) -> str | None:
+    """``value`` when it is an absolute path to an existing executable file, else None."""
+    if isinstance(value, str) and os.path.isabs(value) and os.path.isfile(value) and os.access(value, os.X_OK):
+        return value
+    return None
 
 
 # The owner's vetoes, one JSON row each ({"slug", "eid", "at", "vault"}), in the owner folder, which a run can't
@@ -675,8 +714,8 @@ def validate_experiment(
     limits: LabLimits,
     now: datetime,
     env: Mapping[str, str] | None = None,
-) -> tuple[str, str, list[str], float, str]:
-    """(slug, EID, argv, cap, commit) for an experiment request, or :class:`Refused` (exit 2).
+) -> tuple[str, str, list[str], float, str, ExperimentPlan]:
+    """(slug, EID, argv, cap, commit, plan) for an experiment request, or :class:`Refused` (exit 2).
 
     The experiment's note is read as committed at HEAD, never from the worktree (a run can rewrite that), and
     HEAD is resolved once, to the ``commit`` every check reads and the runner runs the scripts from (ruling R30:
@@ -693,7 +732,8 @@ def validate_experiment(
     - ``argv`` doesn't run a committed file of the experiment's folder (:func:`_committed_command`, R26)
 
     The argv returned is the one to run (a script run directly as ``./<path>``). The cap is the committed note's,
-    clamped to the owner's maximum.
+    clamped to the owner's maximum. The plan (:class:`ExperimentPlan`) is read from the same committed note: its
+    disk budget is clamped to the owner's ``max_total_bytes`` and defaults to 512 MiB.
     """
     from scout.lab import paths as lab_paths
     from scout.lab import runner as lab_runner
@@ -805,7 +845,9 @@ def validate_experiment(
     raw = head.frontmatter.get("cost_cap_usd")
     if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not _finite(raw) or raw <= 0:
         raise Refused(EXIT_REFUSED, f"{note.name} at HEAD has cost_cap_usd {raw!r}; it must be a number above 0")
-    return slug, eid, argv, min(float(raw), limits.max_cost_cap_usd), commit
+    budget = min(head.disk_budget_bytes or DEFAULT_DISK_BUDGET_BYTES, limits.max_total_bytes)
+    plan = ExperimentPlan(head.timeout_hours, list(head.models), budget)
+    return slug, eid, argv, min(float(raw), limits.max_cost_cap_usd), commit, plan
 
 
 # -- carrying it out -----------------------------------------------------------------------------------------------
@@ -1098,7 +1140,9 @@ class Broker:
             return Reply(EXIT_LIMIT, f"experiment refused: this run has run its {ran}\n", kind=RUN_LIMIT)
         try:
             requested = _requested_timeout(req)
-            slug, eid, argv, cap, commit = validate_experiment(req, self.vault, self.lab_limits, self.clock(), self.env)
+            slug, eid, argv, cap, commit, _plan = validate_experiment(
+                req, self.vault, self.lab_limits, self.clock(), self.env
+            )  # the plan is used from Task 6 on
         except Refused as r:
             # A refused request ran nothing, so it keeps the run's allowance; the notice bounds its retries.
             return Reply(r.exit_code, f"experiment refused: {_one_line(r.reason)}\n", kind=REFUSED)
@@ -1541,7 +1585,7 @@ def client_experiment(
 
     vault = _vault(env)
     try:
-        slug, eid, args, cap, commit = validate_experiment(
+        slug, eid, args, cap, commit, _plan = validate_experiment(
             {"slug": slug, "eid": eid, "argv": list(argv)}, vault, limits, datetime.now(UTC), env
         )
     except Refused as r:
