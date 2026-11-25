@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from scout.agent_runtimes.base import (
     ProcessMarkers,
     RunRequest,
     RuntimeAuth,
+    SandboxPaths,
 )
 
 # Copied from claude-with-retry.sh.tmpl (grep -E there; the same text is a valid
@@ -72,6 +74,8 @@ FULL_CAPABILITIES: frozenset[Capability] = frozenset(
         Capability.CONTEXT_FILE,
     }
 )
+# What Claude Code does whatever its hooks do: everything above but what the gate probe has to prove.
+DECLARED_CAPABILITIES: frozenset[Capability] = FULL_CAPABILITIES - HOOK_CAPABILITIES
 
 # The argv words live_run.py and kb/hook.py look for in a run's claude process (#595).
 MARKER_WORDS: tuple[str, ...] = ("--name", "-p", "--max-budget-usd")
@@ -83,7 +87,8 @@ class ClaudeCode:
     id = "claude-code"
     display_name = "Claude Code"
     provider = "anthropic"
-    caps_own_spend = True  # --max-budget-usd
+    declared_capabilities = DECLARED_CAPABILITIES  # includes budget_cap: --max-budget-usd
+    interactive_host = True  # the skills run inside the session already running, under its own hooks
 
     # -- the binary ---------------------------------------------------------
 
@@ -120,10 +125,14 @@ class ClaudeCode:
         try:
             result = gate_probe.cached_probe(vault, binary, plugin_root=gate_probe.default_plugin_root())
         except Exception:  # noqa: BLE001 - a probe that can't run proves nothing
-            return FULL_CAPABILITIES - HOOK_CAPABILITIES
+            return DECLARED_CAPABILITIES
         if result.ok and (version is None or result.claude_version == version):
             return FULL_CAPABILITIES
-        return FULL_CAPABILITIES - HOOK_CAPABILITIES
+        return DECLARED_CAPABILITIES
+
+    def sandbox_paths(self, env: Mapping[str, str]) -> SandboxPaths:
+        """Nothing extra: ~/.claude and the vault's .claude/ are in the sandbox's own list (``kernel_trees``)."""
+        return SandboxPaths()
 
     # -- models -------------------------------------------------------------
 
@@ -174,6 +183,7 @@ class ClaudeCode:
 __all__ = [
     "AUTH_PATTERNS",
     "BUDGET_PATTERN",
+    "DECLARED_CAPABILITIES",
     "FULL_CAPABILITIES",
     "MARKER_ENV",
     "MARKER_WORDS",

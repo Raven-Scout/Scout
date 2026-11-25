@@ -1,0 +1,1 @@
+- **Research Lab experiments: the account's home is protected even when HOME points elsewhere.** An experiment script started with a HOME of its own still can't read the account's home folder or its credential stores, and a veto recorded under either home now stops the experiment.

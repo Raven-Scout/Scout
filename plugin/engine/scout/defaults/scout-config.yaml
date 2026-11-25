@@ -134,6 +134,21 @@ action_items:
     hard_open: 100
     prose_sub_bullets: 1
 
+# The Lab — long-running research threads (knowledge-base/lab/, `scoutctl lab`).
+# target_threads: how many active threads research aims to keep going.
+# max_proposals_per_run: new thread proposals one research run may make.
+# max_open_proposals: proposed threads awaiting the owner; `lab` refuses more.
+# stale_runs: research runs without progress before a thread is flagged stale.
+# experiment_notice_hours / experiment_cost_cap_usd: default notice before an
+# experiment runs and the default model-call cost cap for one.
+lab:
+  target_threads: 5
+  max_proposals_per_run: 2
+  max_open_proposals: 5
+  stale_runs: 6
+  experiment_notice_hours: 6
+  experiment_cost_cap_usd: 1.00
+
 # KB lint — `scoutctl kb lint`, run by the vault's git pre-commit hook.
 # Budgets: the first matching glob wins; `bytes: null` = no size budget.
 # Per-vault extra budgets go in a top-level `kb_budgets: {glob: bytes}` map,

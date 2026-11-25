@@ -29,6 +29,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from scout.agent_runtimes.base import SandboxPaths
 from scout.kb import hook_paths
 
 SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
@@ -104,6 +105,20 @@ ANYWHERE_SUFFIXES: tuple[str, ...] = (
     r"/\.claude/settings\.local\.json$",
     r"/\.mcp\.json$",
 )
+# Another agent CLI's home folder (hook_paths.AGENT_DIRS) is protected whole and holds its hooks and config. A
+# runtime may carve out only these exact data folders there, by its registered id, each relative to every home
+# (review of #806): its adapter can't choose, or a carve-out could re-open ~/.codex/hooks or ~/.gemini/settings.json.
+AGENT_DATA_DIRS: Mapping[str, tuple[str, ...]] = {"antigravity": (".gemini/antigravity-cli",)}
+# Under such a carve-out but still denied, at any depth below an agent CLI's home folder: its hook and config files.
+# Only what a case-insensitive match widens (spec §5.4): `[^/]` stays `[^/]`.
+AGENT_CONFIG_REDENY: tuple[str, ...] = (
+    r"settings[^/]*\.json$",
+    r"config\.toml$",
+    r"hooks\.json$",
+    r"mcp[^/]*\.json$",
+    r"hooks/",
+    r"hooks$",
+)
 # ~/.ssh is protected (hook_paths); ssh itself records a new host's key here.
 SSH_WRITABLE: tuple[str, ...] = ("known_hosts", "known_hosts.old")
 
@@ -150,11 +165,8 @@ def _git_dirs(vault: Path) -> list[Path]:
 
 
 def _claude_dirs(env: Mapping[str, str]) -> list[Path]:
-    home = Path(env.get("HOME") or Path.home())
-    dirs = [home / ".claude"]
-    if env.get("CLAUDE_CONFIG_DIR"):
-        dirs.append(Path(env["CLAUDE_CONFIG_DIR"]))
-    return dirs
+    """~/.claude under $HOME and the account's home (:func:`scout.kb.hook_paths.homes`), and ``$CLAUDE_CONFIG_DIR``."""
+    return hook_paths.claude_dirs(env)
 
 
 def secrets_dirs(env: Mapping[str, str]) -> list[Path]:
@@ -190,14 +202,94 @@ def carve_outs(vault: Path | None, env: Mapping[str, str]) -> list[tuple[str, st
     for base in _claude_dirs(env):
         for name in CLAUDE_HOME_CARVE_DIRS:
             out.append(("subpath", str(base / name)))
-    for name in SSH_WRITABLE:
-        out.append(("literal", str(hook_paths.ssh_dir(env) / name)))
+    for ssh in hook_paths.ssh_dirs(env):
+        for name in SSH_WRITABLE:
+            out.append(("literal", str(ssh / name)))
     return out
 
 
-def build_rules(vault: Path | None, env: Mapping[str, str] | None = None) -> list[Rule]:
-    """The file rules, in profile order (last match wins). Raises :class:`ProfileError`."""
+def _agent_homes(env: Mapping[str, str]) -> list[str]:
+    """Every form of each other agent CLI's home folder (``hook_paths.AGENT_DIRS`` under each of ``homes``)."""
+    return [
+        form
+        for home in hook_paths.homes(env)
+        for name in hook_paths.AGENT_DIRS
+        for form in _forms(str(home / name), env)
+    ]
+
+
+def _agent_data_dirs(runtime_id: str | None, env: Mapping[str, str]) -> set[str]:
+    """The runtime's :data:`AGENT_DATA_DIRS`, under each form of each home. Only the home is resolved: a data dir
+    that is itself a symlink resolves elsewhere, so it matches none of these and is refused."""
+    rels = AGENT_DATA_DIRS.get(runtime_id or "", ())
+    return {
+        os.path.join(home, rel).casefold()
+        for h in hook_paths.homes(env)
+        for home in _forms(str(h), env)
+        for rel in rels
+    }
+
+
+def _check_runtime_paths(
+    extra: SandboxPaths, base: Sequence[str], env: Mapping[str, str], runtime_id: str | None = None
+) -> None:
+    """Refuse (:class:`ProfileError`) a runtime's paths that could re-open what Scout protects (review of #806).
+
+    Every path must be absolute and normalised, and a writable one must not be a file. Inside another agent
+    CLI's home folder (``hook_paths.AGENT_DIRS``) a writable folder must be exactly one of the runtime's
+    :data:`AGENT_DATA_DIRS`, whatever the adapter says. Anywhere else it must lie strictly under one of the
+    runtime's own protected trees and outside Scout's protected paths. No writable folder may hold (or be) one
+    of Scout's protected paths or secrets dirs. Each check holds for the path both as spelled and resolved.
+    """
+    for path in (*extra.protected, *extra.writable):
+        text = str(path)
+        if not os.path.isabs(text) or os.path.normpath(text) != text:
+            raise ProfileError(f"the runtime's sandbox path {text!r} isn't absolute and normalised")
+    agent_homes = _agent_homes(env)
+    data_dirs = _agent_data_dirs(runtime_id, env)
+    owned = _owned(extra, env)
+    for path in extra.writable:
+        for form in _forms(str(path), env):
+            if os.path.lexists(form) and not os.path.isdir(form):
+                raise ProfileError(f"the runtime's writable path {form!r} is a file, not a folder")
+            for root in base:
+                if _under(root, form):
+                    raise ProfileError(f"the runtime's writable path {form!r} would re-open {root!r}")
+            if any(_under(form, a) for a in agent_homes):
+                if form.casefold() not in data_dirs:
+                    raise ProfileError(
+                        f"the runtime's writable path {form!r} is inside another agent CLI's home folder and isn't "
+                        f"one of the {runtime_id or 'claude-code'!r} runtime's data folders (profile.AGENT_DATA_DIRS)"
+                    )
+                continue
+            if not any(_under(form, own) and form.casefold() != own.casefold() for own in owned):
+                raise ProfileError(f"the runtime's writable path {form!r} isn't under one of its own protected trees")
+            for root in base:
+                if _under(form, root):
+                    raise ProfileError(f"the runtime's writable path {form!r} is inside Scout's protected {root!r}")
+
+
+def _owned(extra: SandboxPaths, env: Mapping[str, str]) -> list[str]:
+    return [form for tree in extra.protected for form in _forms(str(tree), env)]
+
+
+def build_rules(
+    vault: Path | None,
+    env: Mapping[str, str] | None = None,
+    *,
+    runtime_paths: SandboxPaths | None = None,
+    runtime_id: str | None = None,
+) -> list[Rule]:
+    """The file rules, in profile order (last match wins). Raises :class:`ProfileError`.
+
+    ``runtime_paths`` is what the run's agent runtime adds (its adapter's ``sandbox_paths``, #652 S6): its
+    protected trees join the kernel's own, and its writable folders join the carve-outs, so a protected tree
+    of either kind under one of them is denied again. :func:`_check_runtime_paths` refuses any that could
+    re-open one of Scout's own, judging a carve-out in another agent CLI's home folder by ``runtime_id`` (the
+    registered id the run asked for, never the adapter's own). With any carve-out, every agent CLI's hook and
+    config files (:data:`AGENT_CONFIG_REDENY`) are denied again after it."""
     env = os.environ if env is None else env
+    extra = runtime_paths or SandboxPaths()
     try:
         specs = hook_paths.protected_specs(vault, env)
     except Exception as e:  # noqa: BLE001 - no list, no profile: the run is skipped, never run unprotected
@@ -231,10 +323,14 @@ def build_rules(vault: Path | None, env: Mapping[str, str] | None = None) -> lis
         # already denied above (hook_paths.AGENT_TEXT is a protected tree); this adds the kernel's read deny.
         for form in _forms(str(vault.joinpath(*hook_paths.AGENT_TEXT_DIR)), env):
             secrets.append(Rule("deny", "file-read-data", "subpath", form))
+    _check_runtime_paths(extra, [r.path for r in (*protected, *secrets)], env, runtime_id)
+    for tree in extra.protected:
+        for form in _forms(str(tree), env):
+            protected.append(Rule("deny", "file-write*", "subpath", form))
     rules += protected + secrets
     # 2. the carve-outs
     allows: list[Rule] = []
-    for kind, path in carve_outs(vault, env):
+    for kind, path in [*carve_outs(vault, env), *(("subpath", str(p)) for p in extra.writable)]:
         for form in [path] if kind == "regex" else _forms(path, env):
             allows.append(Rule("allow", "file-write*", kind, form))
     rules += allows
@@ -249,6 +345,12 @@ def build_rules(vault: Path | None, env: Mapping[str, str] | None = None) -> lis
             for form in _forms(str(gitdir / "objects" / "info"), env):
                 redeny.append(Rule("deny", "file-write-unlink", "literal", form))
     redeny += [Rule("deny", "file-write*", "regex", rx) for rx in ANYWHERE_SUFFIXES]
+    if extra.writable:
+        redeny += [
+            Rule("deny", "file-write*", "regex", f"^{_rx_escape(home)}/(.*/)?{rx}")
+            for home in _agent_homes(env)
+            for rx in AGENT_CONFIG_REDENY
+        ]
     for rule in protected:
         if any(
             a.kind != "regex"
@@ -350,8 +452,15 @@ def render(rules: Sequence[Rule], *, network: str = "") -> str:
     return "\n".join(lines) + "\n"
 
 
-def build_profile(vault: Path | None, env: Mapping[str, str] | None = None, *, network: str = "") -> str:
-    return render(build_rules(vault, env), network=network)
+def build_profile(
+    vault: Path | None,
+    env: Mapping[str, str] | None = None,
+    *,
+    network: str = "",
+    runtime_paths: SandboxPaths | None = None,
+    runtime_id: str | None = None,
+) -> str:
+    return render(build_rules(vault, env, runtime_paths=runtime_paths, runtime_id=runtime_id), network=network)
 
 
 def broker_rules(vault: Path, broker_dir: Path, env: Mapping[str, str] | None = None) -> list[Rule]:

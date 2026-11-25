@@ -26,6 +26,27 @@ from _pytest.runner import runtestprotocol
 # starts failing more often stays visible. Remove the marker when the issue is
 # fixed; never add one without an issue.
 
+# ---- SCOUT_TEST_NO_KERNEL: the ubuntu legs' view of the macOS sandbox, on a Mac --------
+#
+# The kernel tests (the lab's and the run sandbox's) are gated on
+# ``scout.sandbox.profile.available()``, which is False off macOS; the gate
+# probe's sandbox tests on ``sys.platform == "darwin"`` and
+# ``gate_probe.SANDBOX_EXEC`` existing. With SCOUT_TEST_NO_KERNEL=1 both say no
+# here too, before any test module is imported, so a Mac runs the suite as the
+# ubuntu coverage leg does: every sandbox-exec test skips, and the code under
+# test sees no sandbox-exec. Read once at import; the per-test SCOUT_* scrub
+# below doesn't undo it. Not covered: tests gated on other macOS facts (a
+# case-insensitive disk, /dev/ttys*, launchd's branch, Homebrew git), which still
+# run on a Mac.
+if os.environ.get("SCOUT_TEST_NO_KERNEL") == "1":
+    from pathlib import Path as _Path
+
+    from scout.agent_runtimes import gate_probe as _gate_probe
+    from scout.sandbox import profile as _sandbox_profile
+
+    _sandbox_profile.available = lambda: False
+    _gate_probe.SANDBOX_EXEC = _Path("/nonexistent/sandbox-exec")
+
 _FLAKY_RERUN_PROPERTY = "quarantined-flaky-rerun"
 # This session's rerun lines. pytest_runtest_logreport gets no config to stash
 # them on, so they're module state, reset per session so an in-process pytest
@@ -120,12 +141,14 @@ def _hermetic_env(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.
 @pytest.fixture(autouse=True)
 def _owner_store_follows_home(monkeypatch: pytest.MonkeyPatch) -> Callable[[], Path]:
     """The changes map's owner store lives under the account's home from the account database, never ``$HOME``
-    (a run sets its own environment). Tests keep it under the per-test HOME, read when it is used, so a test that
-    re-points HOME moves the store with it. Returns the real lookup for the tests that exercise it."""
-    from scout.changes import store
+    (a run sets its own environment), and the run sandbox protects every per-user path under both
+    (hook_paths.homes). Tests keep the account's home at the per-test HOME, read when it is used, so a test that
+    re-points HOME moves the store with it and no protected list names the real home. Returns the real lookup
+    (hook_paths.account_home) for the tests that exercise it."""
+    from scout.kb import hook_paths
 
-    real = store._account_home
-    monkeypatch.setattr(store, "_account_home", lambda: Path(os.environ["HOME"]))
+    real = hook_paths.account_home
+    monkeypatch.setattr(hook_paths, "account_home", lambda: Path(os.environ["HOME"]))
     return real
 
 

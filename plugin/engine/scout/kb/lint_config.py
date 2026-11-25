@@ -68,6 +68,10 @@ PRIVACY_BLOCKING = frozenset(
         "delegate-source-private",
     }
 )
+# Block in every mode, but unlike PRIVACY_BLOCKING SCOUT_LINT_OVERRIDE still overrides them: a broken
+# lab thread would otherwise reach the app and the runs that parse it, and a vault on `mode: report`
+# (or a `path_modes` rule saying so) is not a reason to let one in. `mode_for` answers `block` for them.
+ALWAYS_BLOCKING = frozenset({"lab-format"})
 # Warnings: never block, whatever the mode.
 WARNING_CHECKS = frozenset(
     {
@@ -80,10 +84,13 @@ WARNING_CHECKS = frozenset(
         "frontmatter-unparseable",
         "privacy-overlay-unreadable",
         "local-only-unchecked",
+        "link-leaves-scope",
+        "settings-file-replaced",
         "page-config",
+        "lab-understanding-size",
     }
 )
-KNOWN_CHECKS = MODE_CHECKS | PRIVACY_BLOCKING | WARNING_CHECKS
+KNOWN_CHECKS = MODE_CHECKS | PRIVACY_BLOCKING | ALWAYS_BLOCKING | WARNING_CHECKS
 
 
 @dataclass(frozen=True)
@@ -295,8 +302,9 @@ class LintConfig:
         """The mode a finding of ``check`` on ``rel`` is enforced in: the first
         matching ``path_modes`` rule's, else the global ``mode``. A
         :data:`REPORT_UNTIL_NAMED` check matches only a rule that names it, and
-        otherwise reports. ``block`` for every check while the config doesn't load."""
-        if self.config_problem is not None:
+        otherwise reports. ``block`` for every check while the config doesn't load,
+        and for an :data:`ALWAYS_BLOCKING` check whatever the rules say."""
+        if self.config_problem is not None or check in ALWAYS_BLOCKING:
             return "block"
         named_only = check in REPORT_UNTIL_NAMED
         for r in self.path_modes:
@@ -317,7 +325,10 @@ class LintConfig:
         return f"{self.mode}, per path" if self.path_modes else self.mode
 
     def in_scope(self, rel: str) -> bool:
-        return rel.endswith(".md") and rel.startswith(_SCOPE_PREFIXES) and not any_match(self.exclude_globs, rel)
+        # Any case of `.md`, as in_privacy_scope and the classifier read it (#605): `x.MD` is a note too.
+        return (
+            rel.lower().endswith(".md") and rel.startswith(_SCOPE_PREFIXES) and not any_match(self.exclude_globs, rel)
+        )
 
     def budget_for(self, rel: str) -> int | None:
         for b in self.budgets:
@@ -393,6 +404,8 @@ def _rule_checks(value: Any, where: str, warn: Warn) -> frozenset[str] | None:
     for check in checks:
         if check not in KNOWN_CHECKS:
             warn(f"{where} names unknown check {check!r}, which it can never match; known: {sorted(MODE_CHECKS)}")
+        elif check in ALWAYS_BLOCKING:
+            warn(f"{where} names {check!r}, which blocks in every mode, so the rule changes nothing for it")
         elif check not in MODE_CHECKS:
             warn(f"{where} names {check!r}, which no mode changes: privacy always blocks, warnings never do")
     return frozenset(checks)

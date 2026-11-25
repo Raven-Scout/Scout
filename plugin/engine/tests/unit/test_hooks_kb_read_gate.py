@@ -12,6 +12,7 @@ import pytest
 
 from scout.hooks import kb_read_gate as gate
 from scout.kb.raw_read import raw_kb_read, search_reads_kb
+from tests.unit._prefilter_root import with_prefilter
 
 PLUGIN = Path(__file__).parent.parent.parent.parent
 RUN = {"SCOUT_MODE": "morning-briefing", "SCOUT_READER": "autonomous"}
@@ -372,7 +373,7 @@ def _sh(
     env: dict, payload: str, cwd: Path, root: Path = PLUGIN, matcher: str = "Grep|Glob|Bash"
 ) -> subprocess.CompletedProcess[str]:
     clean = {k: v for k, v in os.environ.items() if k not in ("SCOUT_MODE", "SCOUT_READER", "SCOUT_DATA_DIR")}
-    full = {**clean, **env, "CLAUDE_PLUGIN_ROOT": str(root)}
+    full = {**clean, **env, "CLAUDE_PLUGIN_ROOT": str(with_prefilter(root))}
     cmd = _entry(matcher)["hooks"][0]["command"]
     return subprocess.run(
         ["sh", "-c", cmd], env=full, cwd=cwd, input=payload, capture_output=True, text=True, timeout=60
@@ -725,7 +726,8 @@ def test_a_glob_too_wide_to_judge_is_refused_fast(vault: Path, command: str) -> 
     started = time.monotonic()
     reason = _denied(_decision(vault, "Bash", {"command": command}))
     assert time.monotonic() - started < 5  # the hook's own timeout is 15 s
-    assert "more files than Scout's gate checks" in reason
+    # The first form in the text names the deny: a KB read before the wide glob is denied as one.
+    assert "more files than Scout's gate checks" in reason or "knowledge-base/" in reason
 
 
 def test_a_glob_with_too_many_matches_is_refused(vault: Path) -> None:
@@ -742,7 +744,7 @@ def test_a_slow_glob_is_refused_not_waited_for(vault: Path, monkeypatch: pytest.
 
     monkeypatch.setattr(gate, "GLOB_BUDGET_S", 0.2)
 
-    def slow(pattern: str) -> object:
+    def slow(pattern: str, **_kw: object) -> object:
         time.sleep(1)
         yield pattern
 

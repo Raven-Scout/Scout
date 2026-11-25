@@ -87,9 +87,9 @@ def evaluate(
     tier: Tier | None = None
     found: Path | None = None
     try:
-        # The skills' preamble runs inside the host CLI. For Claude Code that host is
-        # the session already running, and its hooks are its own (hooks.json, G4).
-        if interactive and runtime.id == "claude-code":
+        # The skills' preamble runs inside the host CLI. For a runtime that hosts them (Claude Code)
+        # that is the session already running, and its hooks are its own (hooks.json, G4).
+        if interactive and runtime.interactive_host:
             return CheckReport(runtime.id, runtime.provider, None, None, None, None)
 
         found = runtime.locate(binary)

@@ -125,7 +125,7 @@ nonisolated struct RunProtectionModel: Equatable, Sendable {
             switch run.integrity {
             case "clean": return ("Clean", "", .ok)
             case "restored": return ("Files put back", " It changed a protected file; Scout put it back in a new commit.", .bad)
-            case "unrestored": return ("Change still held", " It changed a protected file; a tag or the stash still holds the change.", .bad)
+            case "unrestored": return ("Change still held", " It changed a protected file Scout couldn't put back: another session has that branch checked out, so Scout left it alone, or a tag or the stash holds it. The run's log says which.", .bad)
             case "error": return ("Couldn't run", " The check couldn't run after this run.", .warn)
             default: return ("Not checked", " This run wasn't checked.", .neutral)
             }

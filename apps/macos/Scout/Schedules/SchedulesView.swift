@@ -188,18 +188,13 @@ struct SchedulesView: View {
             emptyState
         case .slots:
             switch viewMode {
-            case .table:
+            case .table, .cards:
+                // One list around both, so the picker keeps its focus.
+                // Observing redraws only the list when the run ledger changes
+                // (slot warnings), not the whole page.
                 Observing(appState.runLedgerService) {
-                    SchedulesMasterTable(
-                        slots: filteredSlots,
-                        newDraftSlot: newDraftSlot,
-                        selectedSlotKey: $selectedSlotKey,
-                        warnings: slotWarnings
-                    )
-                }
-            case .cards:
-                Observing(appState.runLedgerService) {
-                    SchedulesMasterCards(
+                    SchedulesMasterList(
+                        cards: viewMode == .cards,
                         slots: filteredSlots,
                         newDraftSlot: newDraftSlot,
                         selectedSlotKey: $selectedSlotKey,

@@ -210,7 +210,8 @@ struct RunDetailView: View {
 
 /// The red block on a run whose post-run integrity check found a protected file
 /// it had changed in git (card C9, from the run ledger's `integrity`): Scout put
-/// it back in a new commit (`restored`), or couldn't (`unrestored`: a tag or the
+/// it back in a new commit (`restored`), or couldn't (`unrestored`: another
+/// session has the branch checked out, so Scout left it alone, or a tag or the
 /// stash still holds the change).
 struct ProtectedFileBlock: View {
     let restored: Bool
@@ -241,8 +242,10 @@ struct ProtectedFileBlock: View {
 
     var message: String {
         if !restored {
-            return "This run changed a file Scout protects, and a tag or the stash still holds the change. "
-                + "The run's log names the file; put it back by hand."
+            return "This run changed a file Scout protects, and Scout couldn't put it back everywhere. "
+                + "Another session has the branch checked out, so Scout left that branch alone, or a tag or the stash holds the change. "
+                + "The run's log names the branch, the worktree and the file. Revert the commit that changed it "
+                + "in that worktree by hand: git reset --hard or git stash there keeps the bad file."
         }
         guard let first = commits.first else {
             return "This run changed a file Scout protects, and the check after the run put it back in a new commit. "

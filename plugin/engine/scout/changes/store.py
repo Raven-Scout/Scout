@@ -30,21 +30,15 @@ _SCAN_MARK_SCHEMA = 1
 _SHA_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
-# Where the owner store goes when the account database has no home for this user: a root-owned folder no run can
-# create files in, so writes fail (exit 2) and reads find nothing. Never a path taken from the environment.
-_NO_ACCOUNT_HOME = Path("/var/empty")
+# Where the owner store goes when the account database has no home for this user (writes fail, exit 2).
+_NO_ACCOUNT_HOME = hook_paths.NO_ACCOUNT_HOME
 
 
 def _account_home() -> Path:
-    """This user's home from the account database (``pwd``), never ``$HOME``: a run sets its own environment, and an
-    owner store found through ``HOME`` would let it plant the owner's decisions and settings."""
-    try:
-        import pwd
-
-        home = pwd.getpwuid(os.getuid()).pw_dir
-    except (ImportError, KeyError, OSError):
-        return _NO_ACCOUNT_HOME
-    return Path(home) if home else _NO_ACCOUNT_HOME
+    """This user's home from the account database (:func:`scout.kb.hook_paths.account_home`), never ``$HOME``: a
+    run sets its own environment, and an owner store found through ``HOME`` would let it plant the owner's decisions
+    and settings. Both layers of the run sandbox protect the store under this home and ``$HOME`` alike."""
+    return hook_paths.account_home()
 
 
 def owner_dir(env: Mapping[str, str]) -> Path:

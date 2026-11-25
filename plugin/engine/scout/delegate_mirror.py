@@ -13,7 +13,8 @@ when :func:`scout.kb.privacy.visible_to` shows it to this delegate (the V1
 rules: never a local-only path, the phone inbox, a #553 provenance note or a
 note whose frontmatter can't be read; a private note only with
 ``include_private``), and only when it isn't a secret carrier or outside
-``privacy.sync_only``. Then every kept file is checked against the files this
+``privacy.sync_only`` (unless the delegate is set to ``ignore_sync_only: true``,
+in both the live and the committed config). Then every kept file is checked against the files this
 delegate can't see (:class:`Scanner`): ``kb check-outbound``'s matchers
 (:mod:`scout.kb.outbound`: names, aliases and titles, wikilinks, the citing
 form of a shared note, quotes of notes shared with the owner), plus a hidden
@@ -860,8 +861,9 @@ def delegate_policy(vault: Path, head: str, delegate: str, blobs: BlobReader) ->
     The stricter of the live ``scout-config.yaml`` and the one committed at
     ``head``. The delegate must be listed in both, and sees private notes only
     when both say ``include_private: true`` (written exactly so), and takes a
-    file unscanned only under an ``allow_unscanned`` glob both list. Its
-    ``delegates`` names this delegate alone.
+    file unscanned only under an ``allow_unscanned`` glob both list, and sees
+    past ``privacy.sync_only`` only when both say ``ignore_sync_only: true``.
+    Its ``delegates`` names this delegate alone.
     """
     reader = f"delegate:{delegate}"
     live = load_policy(vault)
@@ -886,8 +888,11 @@ def delegate_policy(vault: Path, head: str, delegate: str, blobs: BlobReader) ->
     assert live_rule is not None and committed_rule is not None
     # A file ships unscanned only under a glob both configs list, written the same.
     unscanned = tuple(g for g in live_rule.allow_unscanned if g in committed_rule.allow_unscanned)
+    ignore_sync_only = live_rule.ignore_sync_only and committed_rule.ignore_sync_only
     base = live if live == committed else _stricter_policy(live, committed)
-    rule = DelegateRule(id=delegate, include_private=include_private, allow_unscanned=unscanned)
+    rule = DelegateRule(
+        id=delegate, include_private=include_private, allow_unscanned=unscanned, ignore_sync_only=ignore_sync_only
+    )
     policy = dataclasses.replace(base, delegates=(rule,))
     return policy, [live, committed]
 
@@ -1422,6 +1427,8 @@ def _privacy_only(rules: LocalOnlyRules) -> bool:
 def visibility(vault: Path, head: str, delegate: str, blobs: BlobReader) -> Visibility:
     policy, policies = delegate_policy(vault, head, delegate, blobs)
     rules = LocalOnlyRules.build(policies, ())
+    if policy.delegates[0].ignore_sync_only:  # the upload allowlist is for Agnes: this agent sees past it
+        rules = dataclasses.replace(rules, sync_only=())
     reader = f"delegate:{delegate}"
     generated = {fold(p) for p in GENERATED}
     entries = [e for e in ls_tree(vault, head) if e.kind == "blob"]
