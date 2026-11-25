@@ -1131,13 +1131,25 @@ def test_a_dollar_quote_is_read_as_the_text_it_spells(command: str, form: str) -
         (": ${XDG_CONFIG_HOME:=/x}; git commit -m m", "XDG_CONFIG_HOME"),
         (": ${SCOUT_MODE::=}", "env"),
         ("exec {HOME}>/dev/null", "HOME"),
-        ("eval $$'; \\x72ead HOME <<< /x'", "HOME"),  # zsh reads a `$`, then $'…'; bash a pid and a plain quote
-        ("echo $$'a\\tb'", "HOME"),  # either reading: not worth telling apart
         ("exec {XDG_CONFIG_HOME}< f", "XDG_CONFIG_HOME"),
     ],
 )
 def test_an_expansion_that_assigns_a_name_that_matters_or_a_built_one_is_named(command: str, form: str) -> None:
     assert live_run.expansion_escape(command) == form
+
+
+@pytest.mark.parametrize(
+    ("command", "form"),
+    [
+        ("eval $$'; \\x72ead HOME <<< /x'", "HOME"),  # zsh reads a `$`, then $'…'; bash a pid and a plain quote
+        ("echo $$'a\\tb'", "HOME"),  # either reading: not worth telling apart
+        ("echo \\$$'a\\tb'", None),  # `\$`: a character, then one `$` and $'…', read the same by both shells
+        ("echo $$ 'a\\tb'", None),
+        ("echo $'a\\tb'", None),
+    ],
+)
+def test_an_even_dollar_run_before_an_escaped_quote_is_denied(command: str, form: str | None) -> None:
+    assert live_run.even_dollar_escape(command) == form
 
 
 @pytest.mark.parametrize(

@@ -409,7 +409,15 @@ def decide(
         if not isinstance(command, str):
             raise ValueError("Bash call without a command")
         from scout.kb import hook_paths
-        from scout.kb.live_run import DELEGATE_FORM, HOME_FORM, KB_READ, UNRESOLVED_READ, expansion_escape, run_escape
+        from scout.kb.live_run import (
+            DELEGATE_FORM,
+            HOME_FORM,
+            KB_READ,
+            UNRESOLVED_READ,
+            even_dollar_escape,
+            expansion_escape,
+            run_escape,
+        )
 
         def resolve(raw: str) -> str | None:
             """The path a word names, with the environment's variables put in; None when the shell fills in
@@ -490,7 +498,11 @@ def decide(
                 memo[target] = _literal_globs(target)
             return memo[target]
 
-        escape = expansion_escape(command) or run_escape(command, protect=protect, secret=secret, kb_read=kb_read)
+        escape = (
+            expansion_escape(command)
+            or run_escape(command, protect=protect, secret=secret, kb_read=kb_read)
+            or even_dollar_escape(command)
+        )
         if escape == "env":
             return _deny_run_env()
         if escape == HOME_FORM:

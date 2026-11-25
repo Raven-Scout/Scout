@@ -2032,12 +2032,7 @@ def _hook_write_form(words: list[str], targets: list[str], cwd: str) -> str | No
 def expansion_escape(command: str) -> str | None:
     """The form of a parameter expansion in ``command`` that assigns a name that matters (HOME, XDG_CONFIG_HOME, the
     run's own variables) or one built at run time: ``${HOME:=…}``, ``${HOME::=…}``, ``${(P)v::=…}``. Read on the
-    whole text, since the parser splits segments at ``(``, and a nested ``sh -c`` or ``eval`` is a substring of it.
-    An even run of ``$`` before a quote that holds a backslash (``eval $$'; \\x72ead HOME'``) is HOME_FORM too: bash
-    reads ``$$`` and a plain quote, zsh a ``$`` and then ``$'…'`` (:func:`_ansi_c` keeps bash's), so the command zsh
-    runs is unread. No scheduled run in the replay has one."""
-    if _EVEN_DOLLAR_QUOTE.search(command):
-        return HOME_FORM
+    whole text, since the parser splits segments at ``(``, and a nested ``sh -c`` or ``eval`` is a substring of it."""
     fd = _NAMED_FD.search(command)
     if fd is not None:
         return _name_form(fd[1])
@@ -2045,6 +2040,14 @@ def expansion_escape(command: str) -> str | None:
     if m is None:
         return None
     return _name_form(m[1]) if m[1] else HOME_FORM
+
+
+def even_dollar_escape(command: str) -> str | None:
+    """HOME_FORM when ``command`` has an even run of ``$`` before a quote that holds a backslash (``eval $$'; \\x72ead
+    HOME'``): bash reads ``$$`` and a plain quote, zsh a ``$`` and then ``$'…'``, and :func:`_ansi_c` keeps bash's
+    reading, so the command zsh runs may set HOME unread. The gate asks it last, after :func:`run_escape`, whose own
+    reasons (a KB read, a background, either reading) say more. No scheduled run in the replay has one."""
+    return HOME_FORM if _EVEN_DOLLAR_QUOTE.search(command) else None
 
 
 def _name_form(name: str) -> str | None:

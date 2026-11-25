@@ -277,6 +277,12 @@ def test_run_denies_a_command_that_points_home_elsewhere(vault, command):
     assert not (vault / ".scout-logs").exists() or not _events(vault), "a HOME change isn't a hook skip"
 
 
+def test_run_denies_an_even_dollar_run_before_an_escaped_quote(vault):
+    # zsh reads a `$` and then $'…', so this runs `read HOME`; bash reads `$$` and a plain quote. Either the read gate
+    # (which can't judge it) or the HOME rule after it denies.
+    _denied(_decision(vault, "Bash", {"command": "eval $$'; \\x72ead HOME <<< /p/h'; git commit -qm m"}))
+
+
 @pytest.mark.parametrize(
     "command",
     [
