@@ -67,6 +67,29 @@ def test_its_data_dir_is_writable_and_its_config_dir_isnt(world: tuple[Path, Pat
     assert sbx.decide(rules, str(home / ".gemini/antigravity-cli/settings.json")) == "deny"
 
 
+def test_a_run_cant_write_agys_builtin_skills_or_plugins(world: tuple[Path, Path, dict[str, str]]) -> None:
+    """Jordan, 2026-11-25 (findings §7.1): agy loads builtin/ into every later session's prompt, so a run can't
+    write it, while the rest of the data dir (transcripts, the agentapi shim) stays writable."""
+    home, vault, env = world
+    rules = sbx.build_rules(vault, env, runtime_paths=Antigravity().sandbox_paths(env), runtime_id="antigravity")
+    data = home / ".gemini" / "antigravity-cli"
+    for rel in (
+        "builtin",
+        "builtin/skills/agy-customizations/SKILL.md",
+        "builtin/skills/new/SKILL.md",
+        "builtin/plugins/swarm/plugin.json",
+        "builtin/plugins/swarm/sidecars/board/main.mjs",
+        "builtin/.manifest",
+        "Builtin/Skills/x/SKILL.md",
+    ):
+        assert sbx.decide(rules, str(data / rel)) == "deny", rel
+        assert sbx.decide(rules, str(data / rel), "unlink") == "deny", rel
+    for rel in ("bin/agentapi", "brain/c1/x.jsonl", "conversations/c1.db", "cli.log", "builtin-notes.txt"):
+        assert sbx.decide(rules, str(data / rel)) == "allow", rel
+    (rel,) = sbx.AGENT_DATA_REDENY["antigravity"]
+    assert rel.startswith(sbx.AGENT_DATA_DIRS["antigravity"][0] + "/")
+
+
 def test_its_data_dir_is_the_profiles_listed_one(world: tuple[Path, Path, dict[str, str]]) -> None:
     home, _vault, env = world
     (rel,) = sbx.AGENT_DATA_DIRS["antigravity"]

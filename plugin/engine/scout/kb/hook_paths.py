@@ -665,6 +665,19 @@ def removes_protected(target: str | Path, vault: Path | None, env: Mapping[str, 
     return None
 
 
+# agy's local server (runtime-agnostic Phase 2A, spec §8.5): every shell child of an agy session gets the server's
+# address, its CSRF token and the agentapi shim, plus seven more ANTIGRAVITY_* names (findings §1.8, §7.2). Until a
+# reviewed PR shows that server can't start tool calls around the hooks, a run's command that names any of them is
+# denied, by the shared prefix. For every runtime: a Claude run has none of them, so it costs it nothing.
+AGY_SERVER_ENV: tuple[str, ...] = ("ANTIGRAVITY_LS_ADDRESS", "ANTIGRAVITY_CSRF_TOKEN", "ANTIGRAVITY_AGENTAPI_EXE")
+AGY_SERVER_ENV_PREFIX = "ANTIGRAVITY_"
+
+
+def names_agy_server_env(command: str) -> bool:
+    """The command's text names an ``ANTIGRAVITY_*`` variable, in any case (``env | grep -i antigravity_`` too)."""
+    return AGY_SERVER_ENV_PREFIX.casefold() in command.casefold()
+
+
 # The two secrets a run reads itself (`scoutctl notify telegram`, and the run prompts' Telegram steps), unless its
 # send-only broker runs (scout.sandbox.broker sets SCOUT_RUN_BROKER): then the broker reads them, not the run.
 TELEGRAM_SECRETS = ("telegram-bot-token", "telegram-chat-id")
