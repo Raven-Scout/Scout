@@ -94,7 +94,7 @@ CASE_RULES = (
     r"(cd|pushd|-C|--directory|--git-dir|--work-tree)[^;&|]*action-items",
     _W + r"scoutctl kb .*(xargs|while |mapfile|readarray)",
     r"(for [A-Za-z_][A-Za-z0-9_]* in |mapfile|readarray).*scoutctl kb ",
-    _W + r"(rg|find|tree|du|ag|ack|fd|ugrep)([^A-Za-z0-9_./-]|$)",
+    _W + r"(rg|find|tree|du|ag|ack|ack-grep|fd|fdfind|ugrep|ug)([^A-Za-z0-9_./-]|$)",
     _W + r"[ef]?grep[^;&|]* (-[A-Za-z]*[rR]|--(dereference-)?recursive|-d *recurse|--directories=recurse)",
     _W + r"ls[^;&|]* -[A-Za-z]*R",
     r"(^|[^A-Za-z0-9_./-]|\\[nt])(env|nohup|setsid|disown|launchctl|osascript|open|tmux|screen|script|at|batch|ssh"
@@ -108,6 +108,28 @@ CASE_RULES = (
 LATE_RULES = "|".join(CASE_RULES)
 STRIPPED_RULES = rf"knowledge[-_]base|action-items/context|{LATE_RULES}"
 MAX_PAYLOAD = 32768  # bytes; a run's kb-read-gate payload over this is blocked in the shell
+
+# Deliberate edits to the Bash pattern since the fixture was frozen, as (old text, new text, reason). The
+# pattern checks below compare prefilter.sh against the frozen pattern with these applied, and the
+# end-to-end runs accept a difference only on a command the edit is about.
+ALIAS_REASON = "the search tools' other names (ug, fdfind, ack-grep) are recursive reads too (#791)"
+PATTERN_EDITS: tuple[tuple[str, str, str], ...] = (
+    (
+        "(rg|find|tree|du|ag|ack|fd|ugrep)",
+        "(rg|find|tree|du|ag|ack|ack-grep|fd|fdfind|ugrep|ug)",
+        ALIAS_REASON,
+    ),
+)
+# A command that names one of those aliases where the word list looks for a program.
+ALIAS_WORD = re.compile(r"(^|[^A-Za-z0-9_.-]|\\[nt])(ack-grep|fdfind|ug)([^A-Za-z0-9_./-]|$)")
+
+
+def _edited(pattern: str) -> str:
+    for old, new, _reason in PATTERN_EDITS:
+        assert pattern.count(old) == 1, old
+        pattern = pattern.replace(old, new)
+    return pattern
+
 
 # The filters that find the session's vault from the payload's cwd, as their Python hooks do (#803
 # follow-up 1). The old commands walked up from their own $PWD, so for these the world puts the
@@ -123,6 +145,8 @@ NO_CWD_TO_READ = "no cwd in the payload: the filter now starts Python, which dec
 def _intended(case: Case) -> str | None:
     if case.id in INTENDED_DIFFERENCES:
         return INTENDED_DIFFERENCES[case.id]
+    if case.entry == "kb-read-gate" and ALIAS_WORD.search(case.payload):
+        return ALIAS_REASON
     if case.entry in PAYLOAD_CWD and not case.payload.lstrip().startswith("{"):
         return NO_CWD_TO_READ
     return None
@@ -238,6 +262,14 @@ DESCRIBED_FORMS = (
     "ugrep -r widgets . --include='*.yaml'",
     "ag widgets knowledge-base",
     "ls\nfd md",
+    # #791: the same tools under their other names, and words that only contain them
+    "ug -r widgets .",
+    "ug+ -r widgets .",
+    "fdfind md",
+    "ack-grep widgets",
+    "debug widgets",
+    "ugh",
+    "fdfinder",
     "agent ls",
     "fdisk -l",
     "tree",
@@ -766,7 +798,7 @@ def test_the_bash_pattern_is_the_old_one_minus_its_repeated_block_plus_the_expan
     assert _balanced(head[:-1]) and _balanced(block) and _balanced(tail[1:])
     # The expansions only add whole alternatives at the end, so they can add matches and never remove one.
     assert all(_balanced(a) for a in EXPANSION_ALTERNATIVES)
-    assert new == f"{head}{block}{tail}|{EXPANSION_PATTERN}"
+    assert new == f"{_edited(f'{head}{block}{tail}')}|{EXPANSION_PATTERN}"
     assert "'" not in new and "\n" not in new
 
 
@@ -811,10 +843,15 @@ def test_bash_corpus_matches_the_old_pattern_plus_the_expansions_exactly() -> No
     assert all("\n" not in v for v in values)
 
     old = _matching_lines(_pattern(OLD["kb-read-gate"]), values)
+    edited = _matching_lines(_edited(_pattern(OLD["kb-read-gate"])), values)
     new = _matching_lines(_new_pattern(), values)
     added = _matching_lines(EXPANSION_PATTERN, values)
-    assert new == old | added, sorted(corpus[n - 1] for n in new ^ (old | added))
+    assert new == edited | added, sorted(corpus[n - 1] for n in new ^ (edited | added))
     assert old < new  # the widening widened
+    # The intended edits move a line only towards Python, and only for a command they are about.
+    assert old <= edited, sorted(corpus[n - 1] for n in old - edited)
+    assert [corpus[n - 1] for n in edited - old if not ALIAS_WORD.search(values[n - 1])] == []
+    assert edited - old  # the corpus does hold the aliases
     # The corpus exercises both answers, or the comparison above proves little.
     assert len(old) > 300 and len(values) - len(new) > 300
 
@@ -1027,6 +1064,7 @@ def test_the_owner_still_never_starts_python_for_an_expansion(world: World) -> N
 # already; CASE_FOLD_FORMS spells the program upper case, capitalised, alternating, and split by '' or \.
 PROGRAM_FORMS = (
     "{rg} x", "{find} notes", "{tree} notes", "{du} notes", "{ag} x", "{ack} x", "{fd} x", "{ugrep} x",
+    "{ug} x", "{fdfind} x", "{ack-grep} x",
     "{grep} -r x notes", "{egrep} -r x notes", "{fgrep} -r x notes", "{ls} -R notes",
     "{git} grep x", "{git} -c a.b=c commit -m x", "{git} commit -n -m x", "{git} am -n x.patch",
     "{env} FOO=1 ls", "{nohup} sleep 9", "{setsid} sleep 9", "sleep 9; {disown}", "{launchctl} list",

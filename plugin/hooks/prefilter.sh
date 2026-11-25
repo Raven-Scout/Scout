@@ -124,7 +124,7 @@ bash_pattern() {
     alt '(for [A-Za-z_][A-Za-z0-9_]* in |mapfile|readarray).*scoutctl kb '
 
     # -- Recursive reads, which reach the KB from any directory above it.
-    alt "$word"'(rg|find|tree|du|ag|ack|fd|ugrep)([^A-Za-z0-9_./-]|$)'
+    alt "$word"'(rg|find|tree|du|ag|ack|ack-grep|fd|fdfind|ugrep|ug)([^A-Za-z0-9_./-]|$)'
     alt "$word"'[ef]?grep[^;&|]* (-[A-Za-z]*[rR]|--(dereference-)?recursive|-d *recurse|--directories=recurse)'
     alt 'git[^;&|]* grep'
 
@@ -227,7 +227,7 @@ case_pattern() {
     alt '(cd|pushd|-C|--directory|--git-dir|--work-tree)[^;&|]*action-items'
     alt "$word"'scoutctl kb .*(xargs|while |mapfile|readarray)'
     alt '(for [A-Za-z_][A-Za-z0-9_]* in |mapfile|readarray).*scoutctl kb '
-    alt "$word"'(rg|find|tree|du|ag|ack|fd|ugrep)([^A-Za-z0-9_./-]|$)'
+    alt "$word"'(rg|find|tree|du|ag|ack|ack-grep|fd|fdfind|ugrep|ug)([^A-Za-z0-9_./-]|$)'
     alt "$word"'[ef]?grep[^;&|]* (-[A-Za-z]*[rR]|--(dereference-)?recursive|-d *recurse|--directories=recurse)'
     alt "$word"'ls[^;&|]* -[A-Za-z]*R'
     alt "$word_or_path"'(env|nohup|setsid|disown|launchctl|osascript|open|tmux|screen|script|at|batch|ssh|mosh|systemd-run)([^A-Za-z0-9_./-]|$)'
