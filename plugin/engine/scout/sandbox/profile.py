@@ -109,6 +109,12 @@ ANYWHERE_SUFFIXES: tuple[str, ...] = (
 # runtime may carve out only these exact data folders there, by its registered id, each relative to every home
 # (review of #806): its adapter can't choose, or a carve-out could re-open ~/.codex/hooks or ~/.gemini/settings.json.
 AGENT_DATA_DIRS: Mapping[str, tuple[str, ...]] = {"antigravity": (".gemini/antigravity-cli",)}
+# Folders inside a runtime's data dir that a run still can't write, by registered id, each relative to every home.
+# agy unpacks its built-in skills and plugins into builtin/ at first start and loads them into every later session's
+# prompt (findings §7.1), so a run's edit there would reach the owner's own sessions. That is vendor content outside
+# review: Scout's skills reach agy through the vault and the plugin's reviewed path, generated at install time
+# outside any run (Jordan, 2026-11-25). A warm start writes nothing there.
+AGENT_DATA_REDENY: Mapping[str, tuple[str, ...]] = {"antigravity": (".gemini/antigravity-cli/builtin",)}
 # Under such a carve-out but still denied, at any depth below an agent CLI's home folder: its hook and config files.
 # Only what a case-insensitive match widens (spec §5.4): `[^/]` stays `[^/]`.
 AGENT_CONFIG_REDENY: tuple[str, ...] = (
@@ -287,7 +293,8 @@ def build_rules(
     of either kind under one of them is denied again. :func:`_check_runtime_paths` refuses any that could
     re-open one of Scout's own, judging a carve-out in another agent CLI's home folder by ``runtime_id`` (the
     registered id the run asked for, never the adapter's own). With any carve-out, every agent CLI's hook and
-    config files (:data:`AGENT_CONFIG_REDENY`) are denied again after it."""
+    config files (:data:`AGENT_CONFIG_REDENY`) and the runtime's :data:`AGENT_DATA_REDENY` folders are denied
+    again after it."""
     env = os.environ if env is None else env
     extra = runtime_paths or SandboxPaths()
     try:
@@ -350,6 +357,12 @@ def build_rules(
             Rule("deny", "file-write*", "regex", f"^{_rx_escape(home)}/(.*/)?{rx}")
             for home in _agent_homes(env)
             for rx in AGENT_CONFIG_REDENY
+        ]
+        redeny += [
+            Rule("deny", "file-write*", "subpath", form)
+            for h in hook_paths.homes(env)
+            for rel in AGENT_DATA_REDENY.get(runtime_id or "", ())
+            for form in _forms(str(h / rel), env)
         ]
     for rule in protected:
         if any(
