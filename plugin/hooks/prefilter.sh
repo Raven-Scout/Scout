@@ -229,6 +229,12 @@ bash_pattern() {
     #    A quoted or escaped name (`HO''ME=x`, `H\OME=x`) is matched below, once quotes are removed;
     #    arithmetic (`(( H$v = 1 ))`) and zsh's `${(P)v::=…}` are the `(` and `$` alternatives above.
     alt 'HOME'
+
+    # -- A recursive copy, archive or compare from a folder that holds the KB, spelling no path that names
+    #    it: `diff -rN . e`, `pax -w .`, `zip -qr - .`, `ditto . x`, `gzip -rc .`. (cp, rsync, tar, find,
+    #    sed, perl and dd are matched above; any other reader needs a KB name, a glob, a `$` or a cd.)
+    alt "$word"'(pax|zip|cpio|ditto|scp|gzip|zstd|lz4)([^A-Za-z0-9_.-]|$)'
+    alt "$word"'g?diff[^;&|]* (-[A-Za-z]*r|--recursive)'
 }
 
 # Sets $re: the rules bash_needs_python also applies ignoring letter case (grep -i). On a case-insensitive
@@ -252,6 +258,8 @@ case_pattern() {
     alt "$word"'((ba|z|da|k)?sh)([^A-Za-z0-9_.-]|$)'
     alt "$word"'git[^;&|]* (grep|-c )'
     alt "$word"'git[^;&|]*(commit|am).*([^A-Za-z0-9_-]|\\[nt])-[A-Za-z]*n'
+    alt "$word"'(pax|zip|cpio|ditto|scp|gzip|zstd|lz4)([^A-Za-z0-9_.-]|$)'
+    alt "$word"'g?diff[^;&|]* (-[A-Za-z]*r|--recursive)'
     # -- Any byte outside printable ASCII, or a JSON \u escape. The disk folds case the Unicode way, and grep
     #    cannot: ﬁnd (the ﬁ ligature), xargſ and ſh (long s) and ßh run find, xargs, sh and ssh. Python folds them.
     alt '[^ -~]'

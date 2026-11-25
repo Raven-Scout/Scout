@@ -265,14 +265,19 @@ DENY_UNRESOLVED_GIT_READS = False
 # event's `git_whole_repo` list. A call that prints names only (`--stat`, `--name-only`, `status`) is never counted.
 DENY_GIT_WHOLE_REPO_READS = False
 # What made a read unresolved, by the placeholder live_run left in its word; and the two git kinds above.
-UNRESOLVED_CATEGORIES = ("xargs_input", "command_output", "unset_variable", "git_unresolved", "git_whole_repo")
+# program_path: a file a program's text opens by a path it builds at run time (awk, perl; scout.kb.other_reads).
+UNRESOLVED_CATEGORIES = (
+    "xargs_input", "command_output", "unset_variable", "program_path", "git_unresolved", "git_whole_repo",
+)  # fmt: skip
 
 
 def _unresolved_category(raw: str) -> str:
-    from scout.kb.live_run import SUBST, UNSEEN_INPUT
+    from scout.kb.live_run import PROGRAM_PATH, SUBST, UNSEEN_INPUT
 
     if UNSEEN_INPUT in raw:
         return "xargs_input"
+    if PROGRAM_PATH in raw:
+        return "program_path"
     if SUBST in raw or "`" in raw:
         return "command_output"  # a substitution, a backtick, `read`/`mapfile`, `$OLDPWD`
     return "unset_variable"
@@ -482,8 +487,14 @@ def _decide_bash(
         the gate can't work out (a substitution, a variable the command doesn't set, unseen xargs input).
         ``how`` (live_run.KB_READ_HOW): a "file" reader never reads a KB folder it's given (``cat action-items/*``
         only prints an error for ``context/``), a "folder" reader does, and for "covers" (an xargs lister's root)
-        a folder holding the KB counts too."""
+        a folder holding the KB counts too. "dest" is no read: KB_READ when a copy's target is in the KB, and
+        None for one outside it or one the gate can't work out (nothing is recorded)."""
         target = resolve(raw)
+        if how == "dest":
+            if target is None:
+                return None
+            rels = (_vault_rel(vault, paths.resolve_path(one)) for one in globs(target) or [target])
+            return KB_READ if any(rel is not None and rel != "." and is_kb_path(rel) for rel in rels) else None
         if target is None:
             if DENY_UNRESOLVED_READS:
                 return UNRESOLVED_READ
