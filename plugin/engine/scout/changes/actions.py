@@ -62,6 +62,15 @@ _AUTO_KEYS = {"targeted": "targeted", "one-at-a-time": "one_at_a_time"}
 AUTO_ROLLBACK_LIVE = False
 
 
+def auto_eligible(sha: str, ledger: Any = None) -> bool:
+    """Whether an automatic rollback may act on the commit: only one the run broker recorded as a run's
+    (scout.changes.run_commits), never one attributed from git's state, which a run without its broker can steer,
+    nor one classified by its subject. The owner's own undo requests don't go through this."""
+    from scout.changes import run_commits
+
+    return run_commits.is_broker_recorded(sha, ledger)
+
+
 class ActionRefused(Exception):  # noqa: N818 - the name the run instructions and the CLI use
     """The action may not run; nothing was written (or, refused mid-write, what was written was put back). ``reason``
     is the short why the CLI prints."""
@@ -819,12 +828,16 @@ def _compute(
             candidates.setdefault(cid, "owner-undo")
     mode = doc.get("auto_rollback", "off")
     if AUTO_ROLLBACK_LIVE and mode in _AUTO_KEYS and not doc.get("calibrating", True):
+        from scout.changes import run_commits
+
+        ledger = run_commits.read()
         for r in sorted(rows, key=lambda r: (r["ts"], r["id"])):
             test = r["test"]
             if (
                 test.get("would_have_done", {}).get(_AUTO_KEYS[mode])
                 and not test.get("rolled_back_by")
                 and not test.get("marked_wrong")
+                and auto_eligible(r["commit"], ledger)
             ):
                 candidates.setdefault(r["id"], f"auto-{mode}")
     # A blocked undo is reported once (the wrap runs `changes announced --blocked <id>`), never re-listed every run.

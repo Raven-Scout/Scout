@@ -48,9 +48,14 @@ read-only mount, and its commits are pushed *into* a scratch repo there.
   from the scratch repo and from per-host release JSON. That works for any `--from`
   version, with no seam needed in the engine. An `offline` file simulates an outage.
 - **The clock.** No time is faked. The harness picks real IANA zones whose local time is
-  03:xx (off-peak, far from any default slot) or 21:20–21:55 (within 45 min of the 22:00
-  dreaming slot). It sets both `TZ` and `SCOUT_LOCALTIME`, because the slot lookahead and
-  the off-peak window read the zone in different ways
+  02:30–04:30 (off-peak, far from any default slot) or shortly before a default slot that
+  fires every day: 21:18–21:57 (the 22:00 dreaming slot) or 17:48–18:27 (the 18:30 one).
+  It needs both slot windows: zone offsets are whole hours or :30/:45, so one window alone
+  leaves part of every hour with no matching zone
+  ([Raven-Scout/Scout#530](https://github.com/Raven-Scout/Scout/issues/530)). The slot zone
+  is picked right before the check that uses it. `SCOUT_LOCALTIME` names a zone link, not a
+  time, so it cannot pin the clock. The harness sets it and `TZ` to the same zone, because
+  the slot lookahead and the off-peak window read the zone in different ways
   ([Raven-Scout/Scout#451](https://github.com/Raven-Scout/Scout/issues/451)).
 - **Notifications.** The vault's `notify.command` is `bin/notify-sink`, which records each
   push. `notify-send` is a stub that only logs.
@@ -71,7 +76,8 @@ read-only mount, and its commits are pushed *into* a scratch repo there.
 - The scheduled run outside off-peak is "not now".
 - Then `applied`: the venv is built in the new root and the old root is kept. The pointer,
   shim and crontab are re-pointed, and every cron command is executable. The vault is
-  stamped, the fixture content is untouched, and the doctor is not red. `scoutctl health`
+  stamped, the fixture content is untouched, every brain file the new engine assembles
+  (`BRAIN_KINDS`) is live, and the doctor is not red. `scoutctl health`
   shows `update.last`. There are "updated itself" and "recovered" pushes, and the daily
   marker is written.
 - Finally the 24 h apply spacing, and `up_to_date`.

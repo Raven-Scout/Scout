@@ -28,6 +28,7 @@ ENGINE_DIR = Path(__file__).resolve().parents[2]
 LAUNCHER = ENGINE_DIR / "bin" / "scoutctl"
 SHIM_TEMPLATE = ENGINE_DIR.parent / "templates" / "scripts" / "scoutctl.sh.tmpl"
 HOOKS_JSON = ENGINE_DIR.parent / "hooks" / "hooks.json"
+PREFILTER = ENGINE_DIR.parent / "hooks" / "prefilter.sh"
 
 # Everything a launcher here looks up by name, and the interpreters it might try.
 PLANTED = (
@@ -409,7 +410,8 @@ def test_vault_shim_and_pre_commit_hook_read_a_leading_tilde_as_home(tmp_path: P
 
 # --- plugin/hooks/hooks.json -------------------------------------------------------------------
 #
-# Claude Code runs these inline in every session's cwd, on every matching tool call, in any repo.
+# Claude Code runs these in every session's cwd, on every matching tool call, in any repo. Each entry
+# starts hooks/prefilter.sh with /bin/sh by absolute path; the script filters PATH before anything else.
 
 
 def _tool_hooks() -> list[tuple[str, str]]:
@@ -422,17 +424,56 @@ def _tool_hooks() -> list[tuple[str, str]]:
     ]
 
 
+def _script_code() -> list[str]:
+    """prefilter.sh without its comment and blank lines."""
+    lines = PREFILTER.read_text(encoding="utf-8").splitlines()
+    return [line for line in lines[1:] if line.strip() and not line.lstrip().startswith("#")]
+
+
 def _filter_prefix() -> str:
-    command = _tool_hooks()[0][1]
-    return command[: command.index("export PATH; ") + len("export PATH; ")]
+    text = PREFILTER.read_text(encoding="utf-8")
+    block = text[text.index("# >>> path-filter\n") : text.index("# <<< path-filter\n")]
+    (code,) = [line for line in block.splitlines() if not line.startswith("#")]
+    return code + "; "
+
+
+def _plugin_with_prefilter(plugin: Path) -> Path:
+    """Adds the real prefilter.sh to a stand-in plugin root."""
+    (plugin / "hooks").mkdir(parents=True)
+    (plugin / "hooks" / "prefilter.sh").symlink_to(PREFILTER)
+    return plugin
 
 
 def test_every_tool_hook_filters_path_first_and_none_calls_dirname() -> None:
     prefix = _filter_prefix()
-    assert prefix.startswith("sp=; ")
+    assert prefix.startswith("sp=; ") and prefix.endswith("export PATH; ")
+    # The filter is the script's first command, and each entry reaches the script by absolute path
+    # through /bin/sh, with nothing before it that a PATH search could answer.
+    # Line 1 opens the brace group that holds the whole file; the PATH filter is its first command.
+    assert PREFILTER.read_text(encoding="utf-8").startswith("{ #")
+    assert _script_code()[0] + "; " == prefix
+    # Shell builtins and keywords, the two assignments, and the two programs an entry starts, both by
+    # absolute path: /bin/sh and scoutctl (which filters PATH itself).
+    allowed = {"[", "{", "}", "if", "then", "else", "fi", "exit", "exec", "echo", "/bin/sh", '"$c"', "s=0", "s=$?", "!"}
+    # mcp-tool-gate's fallback walks up from $PWD to a vault, as find_vault does: a loop and three assignments.
+    allowed |= {"while", "do", "done", 'd="$PWD"', "d=", 'd="${d%/*}"', 'd="${d:-/}"'}
     for name, command in _tool_hooks():
-        assert command.startswith(prefix), name
+        assert (
+            'h="${CLAUDE_PLUGIN_ROOT}/hooks/prefilter.sh"; c="${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl"; ' in command
+        )
+        words = command.replace("$(", " ").replace("`", " ")
+        for sep in ("&&", "||", ";", "then ", "else ", "exec "):
+            words = words.replace(sep, "\n")
+        firsts = {part.split()[0] for part in words.split("\n") if part.split()}
+        assert firsts - allowed <= {
+            'h="${CLAUDE_PLUGIN_ROOT}/hooks/prefilter.sh"',
+            'c="${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl"',
+        }, (
+            name,
+            firsts - allowed,
+        )
     assert "dirname" not in HOOKS_JSON.read_text(encoding="utf-8")
+    assert not any("dirname" in line for line in _script_code())
 
 
 @pytest.mark.parametrize("shell", ["/bin/sh", "/bin/bash"])
@@ -479,7 +520,7 @@ def test_tool_hooks_never_run_a_planted_program(
     (vault / "connectors.custom.yaml").write_text("y: 1\n")  # no restrict_tools: grep, tr, cmp all run
     repo = vault / "projects" / "cloned-repo"
     marker = _plant(repo)
-    plugin = tmp_path / "plugin"
+    plugin = _plugin_with_prefilter(tmp_path / "plugin")
     (plugin / "engine" / "bin").mkdir(parents=True)
     calls = tmp_path / "scoutctl.log"
     (plugin / "engine" / "bin" / "scoutctl").write_text(f'#!/bin/sh\necho "$*" >>"{calls}"\nexit 0\n')
@@ -513,7 +554,7 @@ def test_mcp_tool_gate_walk_still_finds_the_vault_from_a_deep_cwd(tmp_path: Path
     deep.mkdir(parents=True)
     (vault / "scout-config.yaml").write_text("x: 1\n")
     (vault / "connectors.custom.yaml").write_text("restrict_tools: {}\n")
-    plugin = tmp_path / "plugin"
+    plugin = _plugin_with_prefilter(tmp_path / "plugin")
     (plugin / "engine" / "bin").mkdir(parents=True)
     (plugin / "engine" / "bin" / "scoutctl").write_text('#!/bin/sh\necho "gate $*"\n')
     (plugin / "engine" / "bin" / "scoutctl").chmod(0o755)

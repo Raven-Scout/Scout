@@ -27,6 +27,13 @@ visibility_defaults:
   - {glob: "knowledge-base/personal/**", visibility: private}
   - {glob: ".scout-inbox/**",            visibility: private}
 
+# Paths that are private whatever a file's own frontmatter says (label source `forced`). The overlay can't
+# remove or narrow these. A lab experiment's folder: its scripts, their outputs and the runner's run logs are
+# written by a sandboxed script, which could otherwise label an output `visibility: normal` itself. The
+# experiment's note beside the folder (<slug>-E<n>-<short>.md) keeps its own label.
+visibility_forced_private:
+  - "knowledge-base/lab/*/experiments/*/**"
+
 # Where output may go (§4.2). Ids are the ones phases and send commands use.
 surfaces:
   owner_only: [vault, app, telegram_private_chat, agnes_owner_conversation, agnes_personal_memory, vault_sync]

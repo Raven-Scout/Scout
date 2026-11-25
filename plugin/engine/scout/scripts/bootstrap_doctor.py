@@ -94,6 +94,40 @@ _REQUIRED_CAT1_FILES = (
 _MACOS_TCC_PROTECTED_DIRS = ("Documents", "Desktop", "Downloads")
 
 
+def _git_deleted_in(vault: Path, rel: str) -> str | None:
+    """The short SHA of the vault commit that last deleted ``rel``, or None (no git, never deleted)."""
+    if not (vault / ".git").exists():
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(vault), "log", "-1", "--diff-filter=D", "--format=%h", "--", rel],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def _missing_brain_warning(vault: Path, name: str) -> str:
+    """A live brain file is missing. Upgrades write it from the assembly, so say so, and say
+    when the vault's git history shows someone deleted it (a deletion doesn't switch a run off)."""
+    fix = "`/scout-update` (or `scoutctl bootstrap upgrade`) installs it"
+    sha = _git_deleted_in(vault, name)
+    if sha is None:
+        return f"brain file missing: {name} — runs that use it go without their instructions; {fix}"
+    return (
+        f"brain file missing: {name} — deleted in vault commit {sha}. Deleting a brain file doesn't switch its "
+        f"run off, the run goes without its instructions; turn the run off in `.scout-state/schedule.yaml` "
+        f"(Telegram replies: `.scout-state/triggers.yaml`) instead. {fix} again"
+    )
+
+
 def _check_macos_plist_scoutctl_bin(*, home: Path, vault: Path | None = None) -> tuple[list[str], list[str]]:
     """Inspect the installed schedule-tick plist's scoutctl path.
 
@@ -1048,6 +1082,30 @@ def _check_custom_connectors(*, vault: Path) -> list[str]:
     return warnings
 
 
+def _check_wrap_channels(*, vault: Path) -> list[str]:
+    """A warning when notify.wrap_channels names no enabled connector, so runs send no wrap (#559).
+
+    Until now only a stderr line of whichever command loaded the config said so. A missing,
+    unreadable or malformed scout-config.yaml, and a bad wrap_channels value, are not this
+    check's to report: `bootstrap upgrade` fails on those by name.
+    """
+    from scout.scripts.phase_assembly import parse_wrap_channels, wrap_channels_problem
+
+    try:
+        cfg = load_yaml((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+        wrap_channels = parse_wrap_channels(cfg["notify"]["wrap_channels"])
+        enabled = cfg.get("connectors", {}).get("enabled") or []
+        problem = wrap_channels_problem(wrap_channels, {k for k in enabled if isinstance(k, str)})
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, KeyError, TypeError, AttributeError, ValueError):
+        return []
+    if problem is None:
+        return []
+    return [
+        f"{problem}. Add the channel's connector to connectors.enabled or change notify.wrap_channels, "
+        "then run `scoutctl bootstrap upgrade`"
+    ]
+
+
 def _check_heartbeat_config(*, vault: Path) -> list[str]:
     """One warning per bad value or unknown key in the heartbeat's config (#231).
 
@@ -1462,6 +1520,12 @@ def run_doctor(
         snap = snapshot_dir / f"{name}.md"
         if not snap.exists():
             warnings.append(f"snapshot missing: {snap.relative_to(vault)}")
+    # A live brain file missing (yellow): the runs it drives go without their
+    # instructions. Engines up to v0.18.22 recorded a brain kind new to the vault
+    # (RESPOND.md) as installed without writing it; the next upgrade installs it.
+    for name in BRAIN_KINDS:
+        if not (vault / f"{name}.md").exists():
+            warnings.append(_missing_brain_warning(vault, f"{name}.md"))
 
     # Pending brain-file sidecars (yellow): upgrades skip that file, so it is
     # not receiving plugin changes until the sidecar is resolved.
@@ -1520,6 +1584,7 @@ def run_doctor(
         warnings.append(f"runner backup present: {bak.name} (hand-edit detected on prior update)")
 
     warnings.extend(_check_custom_connectors(vault=vault))
+    warnings.extend(_check_wrap_channels(vault=vault))
     warnings.extend(_check_heartbeat_config(vault=vault))
     warnings.extend(_check_action_items_size(vault=vault))
     warnings.extend(_check_backlog_lint(vault=vault))

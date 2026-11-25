@@ -876,6 +876,8 @@ def ledger_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> li
     findings.extend(sandbox_findings(rows, vault=vault))
     findings.extend(integrity_findings(rows, vault=vault, now=now))
     findings.extend(broker_findings(rows, vault=vault))
+    findings.extend(unbrokered_attribution_findings(vault=vault, now=now))
+    findings.extend(shallow_vault_findings(vault=vault))
     lock_skips = [r for r in rows if r.outcome == "skipped_lock" and r.finished_at >= cutoff]
     if len(lock_skips) >= LOCK_SKIP_THRESHOLD:
         findings.append(
@@ -1119,12 +1121,26 @@ def integrity_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) ->
                 summary=(
                     f"{count(len(recent), 'scheduled run')} in the last {INTEGRITY_WINDOW.days} days changed a "
                     "protected file (a runner script, agent settings or Scout's schedule) in git. Scout put it "
-                    "back in a new commit" + ("; a tag or the stash still holds the change." if still else ".")
+                    "back in a new commit"
+                    + (
+                        " where it could, but the change is still there on a branch another session has checked out "
+                        "(Scout leaves that branch alone so it never rewrites it under that session), a tag or the "
+                        "stash."
+                        if still
+                        else "."
+                    )
                 ),
                 fix=(
                     "Read that run's log (the `integrity check:` lines name the files and the restoring commit) and "
                     "its session, to see what made it change them."
-                    + (" Then delete the tag or drop the stash entry it names." if still else "")
+                    + (
+                        " Then, for each `still holds the change` line: for a branch checked out in a worktree, in "
+                        "that worktree run `git log -p -n 5 <branch> -- <file>` to find the commit and `git revert` "
+                        "it if nobody approved it. `git reset --hard` or `git stash` there keeps the bad file, "
+                        "because the change is committed. For a tag, delete it; for the stash, drop the entry."
+                        if still
+                        else ""
+                    )
                 ),
                 source="ledger",
                 log=str(log) if log else None,
@@ -1145,6 +1161,75 @@ def integrity_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) ->
             )
         ]
     return []
+
+
+def shallow_vault_findings(*, vault: Path) -> list[Finding]:
+    """A shallow vault (a `git clone --depth` checkout): the changes map's and integrity check's history walks
+    ignore `.git/shallow` so a run can't hide commits with it, and on a shallow vault those walks fail. Say so,
+    rather than let attribution stop quietly. A planted `.git/shallow` only makes this show, never hides anything."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(vault), "rev-parse", "--is-shallow-repository"],
+            capture_output=True, text=True, check=False, timeout=10,
+        )  # fmt: skip
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0 or proc.stdout.strip() != "true":
+        return []
+    return [
+        Finding(
+            id="changes.shallow_vault",
+            severity="yellow",
+            since=None,
+            summary=(
+                "This vault is a shallow git clone, so the changes map can't walk its history: it can't work out "
+                "which commits were Scout's runs', and those changes aren't tested or offered for undo."
+            ),
+            fix="In the vault, run `git fetch --unshallow` (or clone it again without --depth).",
+            source="git",
+        )
+    ]
+
+
+def unbrokered_attribution_findings(*, vault: Path, now: datetime) -> list[Finding]:
+    """Runs in the last week whose commits the changes map had to work out from git, without the run broker's exact
+    record (scout.changes.run_commits): best effort, not sound against a run that rewrites the vault's git dir.
+    A run whose broker was on but couldn't name a commit (usually an old git-safe-commit.sh) is told apart."""
+    from scout.changes import run_commits
+
+    rows = run_commits.unbrokered_since(vault, now - INTEGRITY_WINDOW)
+    if not rows:
+        return []
+    days = INTEGRITY_WINDOW.days
+    gap = [ts for ts, why in rows if why == "broker-gap"]
+    if len(gap) == len(rows):
+        summary = (
+            f"{count(len(gap), 'run')} in the last {days} days had the commit broker on, but it couldn't name every "
+            "commit it made, so the changes map worked out which commits were Scout's from git instead (best "
+            "effort). Automatic rollback never acts on those."
+        )
+        fix = "Run /scout-update: an old scripts/git-safe-commit.sh doesn't name the commits it makes."
+    else:
+        summary = (
+            f"{count(len(rows), 'run')} in the last {days} days committed without the commit broker, so the "
+            "changes map worked out which commits were Scout's from git. A run that can write the git dir can "
+            "hide its own commits there, so those runs' changes may not all be tested, and automatic rollback "
+            "never acts on them."
+        )
+        fix = (
+            "See `runs.broker_unavailable` (or why the sandbox was off) for why the broker didn't run; "
+            "/scout-update brings an old git-safe-commit.sh up to date."
+        )
+    return [
+        Finding(
+            id="changes.unbrokered_attribution",
+            severity="yellow",
+            since=rows[0][0],
+            summary=summary,
+            fix=fix,
+            source="state",
+        )
+    ]
 
 
 def broker_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:

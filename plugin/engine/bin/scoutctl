@@ -70,13 +70,14 @@ PLUGIN_ROOT="${ENGINE_DIR%/engine}"
 
 CACHE_FILE="${PLUGIN_ROOT}/.scoutctl-py-cache"
 
-# The privacy hooks run on tool calls (kb-read-label on every Read of a KB
-# note), so `scoutctl hook <one of them>` goes to the thin entry
+# The privacy hooks and the restrict_tools gate run on tool calls (kb-read-label
+# on every Read of a KB note, mcp-tool-gate on every MCP call in a vault that
+# uses restrict_tools), so `scoutctl hook <one of them>` goes to the thin entry
 # `python -m scout.hooks <name>`, which skips scout.cli and typer (~0.7 s).
 MODULE=scout.cli
 if [ "${1:-}" = hook ]; then
     case "${2:-}" in
-        kb-read-gate | kb-write-gate | kb-read-label | front-page-reads | outbound-gate | shared-read-record)
+        mcp-tool-gate | kb-read-gate | kb-write-gate | kb-read-label | front-page-reads | outbound-gate | shared-read-record)
             MODULE=scout.hooks
             shift
             ;;

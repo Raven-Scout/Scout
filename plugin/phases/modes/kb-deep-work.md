@@ -18,7 +18,7 @@ Before doing anything else, read the caches that the runner script generated bef
 
 | Cache file | What's in it | Replaces |
 |---|---|---|
-| `.scout-cache/kb-filter.md` | Per-file staleness: which KB files are stale, fresh, or undated, with ages | Walking every KB file to check "Last updated" headers |
+| `.scout-cache/kb-filter.md` | Per-file staleness: which KB files are stale, fresh, or undated, with ages | Reading every KB file's `last_verified:` / `last_updated:` frontmatter |
 | `.scout-cache/vault-freshness.md` | The same files ranked by their last git commit against their freshness budget, plus files whose claimed "Last verified" date disagrees with git | Walking the vault's history per file to see what actually changed |
 | `.scout-cache/session-context.json` | Recent vault commits (labelled rows, as `scripts/scoutctl kb delta` prints them), open PRs, PR review requests, KB file dates, open personal tasks (each labelled), each active project's knowledge/ notes with `as_of` (`project_knowledge`), leave states and manager relations (`people_context`), the open research queue (`research_queue`), `fact_check_targets` | Running `scripts/scoutctl kb delta`, `gh pr list`, `gh search prs`, `scripts/scoutctl kb query` |
 | `.scout-cache/cc-sessions.md` | Non-{{INSTANCE_NAME}} Claude Code sessions from the last 24h: project paths, first prompts, files touched | Manually discovering + parsing `~/.claude/projects/*/**.jsonl` |
@@ -32,7 +32,7 @@ Prefer these caches over live tool calls during scoring. Fall back to live queri
 Before scoring files, search all `.md` files under `{{SCOUT_DIR}}` for {{USER_NAME}}'s inline comment markers:
 
 ```bash
-cd {{SCOUT_DIR}} && scripts/scoutctl kb search --fixed '//==<<' --glob '**/*.md'
+cd {{SCOUT_DIR}} && scripts/scoutctl kb search --all --fixed '//==<<' --glob '**/*.md'
 ```
 
 **Comment format:** `//==<< comment >>==//`
@@ -169,7 +169,7 @@ Rebuild **one** project page a night to [[docs/kb-page-standard]] §"Restructuri
 4. **Count the baseline:** over-budget rows in `kb lint --report` and `scripts/scoutctl kb validate` errors.
 5. **Rebuild it, in this order,** with the printed `commit:` summary on every commit, the 5.2 moves included:
    1. **Archive the page verbatim**, once, on its first night, to `projects/<name>/archive/<name>-YYYY-MM-DD-pre-restructure.md` (a copy).
-   2. **Move its knowledge into `knowledge/` topic notes** (cited, ≤ 10 KB each), its dated decisions into `knowledge/<name>-decisions.md` (an old `decision-log.md` merges in), and meetings, docs, PRs and decision threads into source notes. `mv` other loose files into `documents/`, `research/` or `archive/`, repointing path links (`scripts/scoutctl kb search --fixed 'projects/<name>/'`) and naming both paths of each move to `git-safe-commit.sh`. Leave any loose file `kb classify` labels private, shared or local-only where it is. Drop no facts: superseded ones go in a topic's History or stay in the archive.
+   2. **Move its knowledge into `knowledge/` topic notes** (cited, ≤ 10 KB each), its dated decisions into `knowledge/<name>-decisions.md` (an old `decision-log.md` merges in), and meetings, docs, PRs and decision threads into source notes. `mv` other loose files into `documents/`, `research/` or `archive/`, repointing path links (`scripts/scoutctl kb search --all --fixed 'projects/<name>/'`) and naming both paths of each move to `git-safe-commit.sh`. Leave any loose file `kb classify` labels private, shared or local-only where it is. Drop no facts: superseded ones go in a topic's History or stay in the archive.
    3. **Re-verify the current state live.** The old page is a lead, not a fact. Query the connectors for its status, next dates, open questions and people.
    4. **Rewrite the page in place** to the standard's template, keeping any heading other notes link to (`[[<name>#<heading>]]`). Keep "Where it stands" to 6 bullets of ≤ ~300 chars: the detail goes in the topic note each links to. Splitting a paragraph into more bullets still fails `page-bullet`.
    5. **Check nothing got worse:** neither count may rise, and you fix any dangling-link warning the commit's lint prints. The page's `kb structure` row comes clear on the night you rewrite it, apart from a loose file you had to leave or an odd subfolder; a partial night only has to shrink it. Run `scripts/scoutctl kb lint --lossless-rev HEAD --lossless-path <page>`, which doesn't count the archive copy: restore each token it reports, or name it in the commit message as deliberately dropped.

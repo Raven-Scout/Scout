@@ -128,10 +128,7 @@ def load_registry(data_dir: Path | None = None) -> ConnectorRegistry:
     no writer for the overlay; respecting it keeps v0.8's discover/enable
     flow a small additive change.
     """
-    seed_path = Path(__file__).parent / "connectors.yaml"
-    seed = _load_yaml(seed_path)
-
-    merged = dict(seed.get("connectors", {}))
+    merged = _seed_rows()
     overlay_data_dir = data_dir if data_dir is not None else paths.data_dir()
     overlay_path = overlay_data_dir / ".scout-state" / "connectors.local.yaml"
     if overlay_path.exists():
@@ -149,6 +146,22 @@ def load_registry(data_dir: Path | None = None) -> ConnectorRegistry:
     for key, raw in merged.items():
         connectors[key] = _build_connector(key, raw)
     return ConnectorRegistry(connectors)
+
+
+def load_seed_registry() -> ConnectorRegistry:
+    """The packaged connectors.yaml alone: no vault overlay, no custom rows.
+
+    For anything that must be a pure function of what ships, whichever vault the
+    process happens to run in — the contract snapshot above all (#543). It never
+    resolves or reads a data dir.
+    """
+    return ConnectorRegistry({key: _build_connector(key, raw) for key, raw in _seed_rows().items()})
+
+
+def _seed_rows() -> dict[str, dict[str, Any]]:
+    """Raw rows of the packaged connectors.yaml, in file order."""
+    seed = _load_yaml(Path(__file__).parent / "connectors.yaml")
+    return dict(seed.get("connectors", {}))
 
 
 def _custom_roster_entries(data_dir: Path) -> dict[str, dict[str, Any]]:

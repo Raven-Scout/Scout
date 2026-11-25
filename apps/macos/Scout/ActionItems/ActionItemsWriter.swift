@@ -4,7 +4,8 @@ import Foundation
 enum CommentSelector: Sendable, Equatable {
     /// 1-based index as `scoutctl --index` counts: user-authored sub-bullets
     /// and the `/scout-plan` markers (the `snoozed-until` marker is filtered).
-    /// A card builds it with `ActionTask.commentSelector(at:)`.
+    /// A card builds it with `ActionTask.commentSelector(at:)`, which has
+    /// none for a comment the engine can't reach.
     case index(Int)
     /// Case-insensitive substring of the comment body.
     case text(String)

@@ -56,11 +56,26 @@ case-folded.
   isn't text and is left out is listed, with why, in the sync's and the
   preview's notes (``left_out_files`` in ``--json``); the mirror itself holds
   only counts.
-- ``scout-config.yaml`` is rewritten (:func:`mirror_config`): ``privacy``
-  keeps only known keys, and of their path entries only those that match a
-  mirrored file, so no local-only or hidden folder is named; ``delegates``
-  lists only this delegate; any other top-level key that names a hidden note
-  is dropped.
+- ``scout-config.yaml`` is rebuilt from an allowlist (:func:`mirror_config`),
+  never copied: it holds only what an engine in the clone reads (``delegate
+  init``, the ``kb`` commands, ``pre-session data``), so the owner's
+  connectors, tokens, addresses and every other setting stay home, at every
+  level. ``privacy`` keeps only the keys and fields a delegate's labels read,
+  each in its canonical form (:func:`scout.kb.privacy.overlay_for_mirror`),
+  and of their path entries only those that match a mirrored file, so no
+  local-only or hidden folder is named. ``sync_only`` never goes: it is an
+  upload allowlist no label depends on. ``surfaces`` and the ``federation*``
+  keys never go either: no delegate's label or read depends on them (surfaces
+  class the laptop's outbound checks, federation is for ``agent:*`` readers),
+  and they name chat ids and email addresses. ``delegates`` lists only this
+  delegate. ``user`` keeps ``timezone`` (a real zone), ``name`` and
+  ``display_name``; ``kb_structure`` keeps ``projects_dir`` and
+  ``skip_projects`` when they point at mirrored folders. A string that names a
+  hidden note is dropped. It is the one file ``privacy.sync_only`` can't keep home, since
+  the clone needs it to show the delegate anything (as ``repo_sync``'s policy
+  file is for Agnes); when the allowlist doesn't list it, the mirror's copy
+  holds the ``privacy`` block alone. Its path is Scout's own fixed name, so it
+  is never taken as naming a hidden note (one titled "Scout", say).
 - A symlink is kept only when it points at a folder in the mirror, checked
   after every other file is settled.
 
@@ -138,7 +153,7 @@ import unicodedata
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import unquote
 
@@ -172,6 +187,7 @@ from scout.kb.privacy import (
     load_policy,
     load_yaml,
     note_facts,
+    overlay_for_mirror,
     policy_from_config_text,
     visible_to,
 )
@@ -261,17 +277,6 @@ def _agent_config(rel: str) -> bool:
 
 ENGINE_INSTALL = (
     'uv tool install "scoutctl @ git+https://github.com/Raven-Scout/Scout@stable#subdirectory=plugin/engine"'
-)
-# The privacy keys a mirror's config keeps (overlay keys; see scout.kb.privacy.load_policy).
-PRIVACY_KEYS = (
-    "local_only_add",
-    "visibility_defaults",
-    "shared_files_add",
-    "surfaces",
-    "federation",
-    "federation_ceilings",
-    "federation_defaults",
-    "sync_only",
 )
 
 _GITHUB = re.compile(
@@ -1057,48 +1062,89 @@ def _same_label(a: Label, b: Label) -> bool:
     return key(a) == key(b)
 
 
-def _scoped(value: Any, mirrored: Sequence[str]) -> Any:
-    """A privacy list without the entries whose glob matches no mirrored file; other values as they are."""
-    if not isinstance(value, list):
-        return value
+def _mirror_user(data: Mapping[str, Any], clean: Callable[[Any], str | None]) -> dict[str, str]:
+    """The ``user`` fields an engine in the mirror reads (module docstring), each a plain string.
 
-    def glob_of(entry: Any) -> str | None:
-        if isinstance(entry, str):
-            return entry
-        if isinstance(entry, dict) and isinstance(entry.get("glob"), str):
-            return str(entry["glob"])
-        return None
+    ``timezone`` (the day boundary of every date ``kb`` and ``pre-session data`` print) only when it names a real
+    zone, and from the legacy top-level ``timezone`` when ``user`` has none, as :func:`scout.config.load_config`
+    reads it. ``name`` and ``display_name`` find the owner's person note (``pre-session data``'s
+    ``owner_managers``). Never ``email``, Slack or GitHub ids, or anything else the owner keeps under ``user``.
+    """
+    from zoneinfo import ZoneInfo
 
-    out = []
-    for entry in value:
-        g = glob_of(entry)
-        if g is not None and any(glob_match(g, rel) for rel in mirrored):
-            out.append(entry)
+    raw = data.get("user")
+    user: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+    out: dict[str, str] = {}
+    zone = clean(user.get("timezone")) or clean(data.get("timezone"))
+    if zone:
+        with contextlib.suppress(Exception):  # ValueError, ZoneInfoNotFoundError: not a zone, so it doesn't go
+            ZoneInfo(zone)
+            out["timezone"] = zone
+    for key in ("name", "display_name"):
+        if value := clean(user.get(key)):
+            out[key] = value
     return out
 
 
-def mirror_config(text: str, delegate: str, include_private: bool, mirrored: Sequence[str], scan: Scanner) -> bytes:
-    """``scout-config.yaml`` for the mirror (module docstring): nothing in it names what the mirror leaves out."""
+def _mirror_kb_structure(raw: Any, mirrored: Sequence[str], clean: Callable[[Any], str | None]) -> dict[str, Any]:
+    """The ``kb_structure`` fields ``pre-session data`` reads for its project rows: ``projects_dir``, when a
+    mirrored file is under it, and the ``skip_projects`` that name a mirrored folder of it. The page and lint
+    settings are the laptop's runs' alone. A ``projects_dir`` the mirror holds nothing from goes too, so its name
+    stays home: the clone then looks in the default folder, among notes the delegate may read anyway."""
+    if not isinstance(raw, Mapping):
+        return {}
+    out: dict[str, Any] = {}
+    root = "knowledge-base/projects"
+    if "projects_dir" in raw:
+        given = clean(raw["projects_dir"])
+        parts = PurePosixPath(given.strip("/")).parts if given else ()
+        if not parts or ".." in parts:
+            return {}  # the engine refuses it and uses its default: so does the mirror
+        root = "/".join(parts)
+        if not any(rel.startswith(root + "/") for rel in mirrored):
+            return {}
+        out["projects_dir"] = root
+    skip = raw.get("skip_projects")
+    if isinstance(skip, list):
+        names = [n for n in map(clean, skip) if n and "/" not in n]
+        if names := [n for n in names if any(rel.startswith(f"{root}/{n}/") for rel in mirrored)]:
+            out["skip_projects"] = names
+    return out
+
+
+def mirror_config(
+    text: str,
+    delegate: str,
+    include_private: bool,
+    mirrored: Sequence[str],
+    scan: Scanner,
+    *,
+    privacy_only: bool = False,
+) -> bytes:
+    """``scout-config.yaml`` for the mirror (module docstring): nothing in it names what the mirror leaves out.
+
+    Built from an allowlist, never copied: the ``privacy`` block (:func:`overlay_for_mirror`, this delegate's
+    entry), ``user`` (:func:`_mirror_user`) and ``kb_structure`` (:func:`_mirror_kb_structure`), the only keys an
+    engine in the clone reads. Every other key, at every level, stays home. With ``privacy_only``
+    (``privacy.sync_only`` keeps the config home) it holds the ``privacy`` block alone.
+    """
     data = load_yaml(text)
     if not isinstance(data, dict):  # pragma: no cover - delegate_policy refused a broken config
         raise RepoSyncError("privacy_overlay_unreadable", f"refused: {paths.VAULT_MARKER} can't be read")
     raw = data.get("privacy")
     source: dict[str, Any] = raw if isinstance(raw, dict) else {}
-    privacy: dict[str, Any] = {}
-    for key in PRIVACY_KEYS:
-        if key in source:
-            privacy[key] = _scoped(source[key], mirrored)
+    privacy = overlay_for_mirror(source, lambda g: any(glob_match(g, rel) for rel in mirrored))
     privacy["delegates"] = {delegate: {"include_private": True} if include_private else {}}
-    out: dict[str, Any] = {}
-    for key, value in data.items():
-        if key == "privacy":
-            out[key] = privacy
-            continue
-        if not isinstance(key, str) or scan.names(key):
-            continue
-        dumped = yaml.safe_dump({key: value}, allow_unicode=True)
-        if not scan.lines(dumped):
-            out[key] = value
+    out: dict[str, Any] = {"privacy": privacy}
+    if not privacy_only:
+
+        def clean(value: Any) -> str | None:
+            return value.strip() if isinstance(value, str) and value.strip() and not scan.lines(value) else None
+
+        if user := _mirror_user(data, clean):
+            out["user"] = user
+        if structure := _mirror_kb_structure(data.get("kb_structure"), mirrored, clean):
+            out["kb_structure"] = structure
     rendered = yaml.safe_dump(out, sort_keys=False, allow_unicode=True)
     if scan.lines(rendered):
         raise RepoSyncError("config_names_hidden", f"refused: {paths.VAULT_MARKER}'s privacy block names a hidden file")
@@ -1361,6 +1407,18 @@ class Visibility:
     agent_files: list[str] = field(default_factory=list)  # visible, but agents' instructions: left out, no term
 
 
+def _refused(rules: LocalOnlyRules, rel: str) -> bool:
+    """:meth:`LocalOnlyRules.refused`, but the vault's config passes ``privacy.sync_only`` (module docstring)."""
+    if rel == paths.VAULT_MARKER:
+        return dataclasses.replace(rules, sync_only=()).refused(rel)
+    return rules.refused(rel)
+
+
+def _privacy_only(rules: LocalOnlyRules) -> bool:
+    """Whether ``privacy.sync_only`` keeps the config home, so the mirror's holds only its ``privacy`` block."""
+    return rules.outside_sync_only(paths.VAULT_MARKER)
+
+
 def visibility(vault: Path, head: str, delegate: str, blobs: BlobReader) -> Visibility:
     policy, policies = delegate_policy(vault, head, delegate, blobs)
     rules = LocalOnlyRules.build(policies, ())
@@ -1373,7 +1431,7 @@ def visibility(vault: Path, head: str, delegate: str, blobs: BlobReader) -> Visi
         # classified first: one this delegate may not see is hidden like any other, so its name and links stay
         # redaction terms (a private people/claude.md); only a visible one is left out without being a term.
         skip = fold(e.path) in generated or _agent_config(e.path)
-        if rules.refused(e.path):
+        if _refused(rules, e.path):
             out.hidden.add(e.path)
         elif e.mode == SYMLINK_MODE:
             if not skip:
@@ -1518,7 +1576,7 @@ def plan(
     kept: list[tuple[MirrorFile, Label, str | None]] = []  # file, label, its text when it is text
     config: TreeEntry | None = None
     for e, label in seen.visible:
-        if e.path == paths.VAULT_MARKER and not scan.names(e.path):
+        if e.path == paths.VAULT_MARKER:  # Scout's own name for it, so it names no note
             config = e
             continue
         hit = memo.get(out.fingerprint, e.path, e.sha) if memo is not None else None
@@ -1564,7 +1622,9 @@ def plan(
         mirrored = [f.path for f, _, _ in kept] + ([paths.VAULT_MARKER] if config is not None else [])
         candidates = list(kept)
         if config is not None and config_text is not None:
-            data = mirror_config(config_text, delegate, include_private, mirrored, scan)
+            data = mirror_config(
+                config_text, delegate, include_private, mirrored, scan, privacy_only=_privacy_only(rules)
+            )
             config_file = MirrorFile(config.path, config.mode, data, "")
             candidates.append((config_file, _classify(config.path, None, policy), None))
             out.mirror_policy = policy_from_config_text(data.decode("utf-8"))
@@ -1752,12 +1812,24 @@ def _derives(mirror: bytes, source: bytes) -> bool:
 
 
 def _config_regenerates(
-    mirror: bytes, source: bytes, delegate: str, policy: Policy, tree_paths: Collection[str], scan: Scanner
+    mirror: bytes,
+    source: bytes,
+    delegate: str,
+    policy: Policy,
+    tree_paths: Collection[str],
+    scan: Scanner,
+    *,
+    privacy_only: bool,
 ) -> bool:
     """Whether the mirror's ``scout-config.yaml`` is exactly :func:`mirror_config` of HEAD's for this tree."""
     try:
         expected = mirror_config(
-            source.decode("utf-8", "replace"), delegate, policy.delegates[0].include_private, list(tree_paths), scan
+            source.decode("utf-8", "replace"),
+            delegate,
+            policy.delegates[0].include_private,
+            list(tree_paths),
+            scan,
+            privacy_only=privacy_only,
         )
     except RepoSyncError:
         return False
@@ -1772,7 +1844,8 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
     own ``scout-config.yaml``. Every path must be one ``HEAD`` shows the
     delegate and must name no hidden file; every file must be HEAD's blob at
     that path, or (redacted) that blob with lines removed, or for the config
-    nothing HEAD's config doesn't hold, so no file can carry another file's
+    exactly :func:`mirror_config` of HEAD's (always regenerated, so HEAD's own
+    config, unchanged, is refused too), so no file can carry another file's
     content; every file must be visible under both
     policies with the same label; every text file, the config included, must
     name no hidden file; a file that isn't text must pass :func:`binary_verdict`
@@ -1819,24 +1892,32 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
             if e.path in GENERATED:
                 continue
             data = blobs.read(e.sha) if e.kind == "blob" else b""
-            if e.kind != "blob" or e.path not in allowed or seen.rules.refused(e.path) or scan.names(e.path):
+            named = e.path != paths.VAULT_MARKER and scan.names(e.path)
+            if e.kind != "blob" or e.path not in allowed or _refused(seen.rules, e.path) or named:
                 bad += 1
                 continue
             source = at_head[e.path]
             if e.mode != source.mode:
                 bad += 1
                 continue
-            if e.sha != source.sha:  # a changed blob must come from HEAD's at this path
+            if e.path == paths.VAULT_MARKER:  # always regenerated, so HEAD's own config, unchanged, is refused too
+                if not _config_regenerates(
+                    data,
+                    blobs.read(source.sha),
+                    delegate,
+                    seen.policy,
+                    tree_paths,
+                    scan,
+                    privacy_only=_privacy_only(seen.rules),
+                ):
+                    bad += 1
+                    continue
+            elif e.sha != source.sha:  # a changed blob must come from HEAD's at this path
                 if e.mode == SYMLINK_MODE:
                     bad += 1
                     continue
                 at_source = blobs.read(source.sha)
-                derived = (
-                    _config_regenerates(data, at_source, delegate, seen.policy, tree_paths, scan)
-                    if e.path == paths.VAULT_MARKER
-                    else _content(e.path, at_source)[0] == "text" and _derives(data, at_source)
-                )
-                if not derived:
+                if not (_content(e.path, at_source)[0] == "text" and _derives(data, at_source)):
                     bad += 1
                     continue
             if e.mode == SYMLINK_MODE:

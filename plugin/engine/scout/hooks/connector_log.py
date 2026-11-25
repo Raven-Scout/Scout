@@ -174,6 +174,11 @@ def run(*, stdin: IO[str] | None = None) -> Event | None:
     }
     if err_snippet:
         record["err"] = err_snippet
+    # The call's tool_use id, so the Stop hook's transcript replay
+    # (session_tool_log) can tell this call is already logged.
+    tool_use_id = data.get("tool_use_id")
+    if isinstance(tool_use_id, str) and tool_use_id:
+        record["id"] = tool_use_id
 
     et_date = _local_date()
     log_dir = paths.data_dir() / ".scout-logs"

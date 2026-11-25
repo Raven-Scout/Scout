@@ -324,6 +324,29 @@ def run_without_ps(vault: Path) -> tuple[int, str | None] | None:
     return held, marker_mode
 
 
+def _backgrounds(text: str) -> bool:
+    """Whether ``text`` (quotes masked) holds a lone "&": a background.
+
+    Not the second half of "&&", ">&" (`2>&1`), "<&" (`cat <&3`, #618) or "|&".
+    A backslash before that first character makes it a letter of a word, so
+    the "&" after `x\\<` or `x\\>` does background.
+    """
+    for match in _AMPERSAND.finditer(text):
+        if _backslashes(text, match.start()) % 2:
+            continue  # an escaped "&" is a letter
+        before = match.start() - 1
+        if before < 0 or text[before] not in "&><|":
+            return True
+        if _backslashes(text, before) % 2:
+            return True
+    return False
+
+
+def _backslashes(text: str, at: int) -> int:
+    """How many backslashes come directly before ``text[at]``."""
+    return at - len(text[:at].rstrip("\\"))
+
+
 def _alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -338,9 +361,8 @@ def _alive(pid: int) -> bool:
 
 RUN_VARS = ("SCOUT_MODE", "SCOUT_READER")
 _SEGMENTS = re.compile(r"&&|\|\||[;\n`]|(?<!>)\||\$\(|\(|\)")  # ">|" is a redirect, not a pipe
-# A lone "&" (background), not "&&", "&>", ">&", "|&" or "2>&1".
-_BACKGROUND = re.compile(r"(?<![&>|])&(?![&>])")
-_QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
+# An "&" that isn't the first half of "&&" or "&>". Whether it backgrounds is _backgrounds' call.
+_AMPERSAND = re.compile(r"&(?![&>])")
 _HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)\s*(?:'([^']+)'|\"([^\"]+)\"|\\?([A-Za-z_][\w.-]*))")
 _ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
 _DETACH = {
@@ -453,46 +475,191 @@ _SUBST_NAME = SUBST[1:]
 _HEREDOC_AT = re.compile(r"<<(-?)\s*(?:'([^']+)'|\"([^\"]+)\"|\\?([A-Za-z_][\w.-]*))")
 
 
+def _quoted_spans(text: str, *, even_dollars_escape: bool = False) -> list[tuple[int, int]]:
+    """Where the quoted strings of ``text`` sit, as the shell reads them (each span includes its quotes).
+
+    A backslash outside quotes escapes the next character, so ``\\'`` and ``\\"`` open nothing. Single
+    quotes take no escapes; double quotes and ``$'…'`` do. A quote in a comment opens nothing (the
+    comment's text is left as it is). A quote that is never closed is no span.
+
+    Shells disagree on ``$$'``: bash reads the process id and then a plain single quote, zsh and sh read
+    a ``$`` and then ``$'…'``. ``even_dollars_escape`` picks the second reading for an even run of ``$``.
+    """
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(text)
+    dollars = 0  # how many unescaped "$" come directly before text[i]
+    while i < n:
+        c = text[i]
+        if c == "#" and (i == 0 or text[i - 1] in " \t\n;&|("):
+            end = text.find("\n", i)
+            i, dollars = (n if end < 0 else end), 0
+            continue
+        if c not in "'\"":
+            dollars = dollars + 1 if c == "$" else 0
+            i += 2 if c == "\\" else 1
+            continue
+        escapes = c == '"' or dollars % 2 == 1 or (dollars > 0 and even_dollars_escape)
+        dollars = 0
+        j = i + 1
+        while j < n and text[j] != c:
+            j += 2 if escapes and text[j] == "\\" else 1
+        if j < n:
+            spans.append((i, j + 1))
+            i = j + 1
+        else:
+            i += 1
+    return spans
+
+
+def _mask_quoted(text: str, *, even_dollars_escape: bool = False) -> str:
+    """``text`` with every quoted string blanked to NULs, so no operator inside one is read as one."""
+    out, at = [], 0
+    for a, b in _quoted_spans(text, even_dollars_escape=even_dollars_escape):
+        out += [text[at:a], "\0" * (b - a)]
+        at = b
+    out.append(text[at:])
+    return "".join(out)
+
+
+_Pending = list[tuple[int, str, bool]]  # here-document operators waiting for their line to end
+# A here-document: its operator's start and end, whether its body expands, and the body's start, its end and
+# the index after its delimiter line (all -1 when it has no body).
+_HereDoc = tuple[int, int, bool, int, int, int]
+
+
 def _split_heredocs(command: str, start: int = 0) -> tuple[str, list[tuple[str, bool]]]:
     """``command`` with each here-document's body cut out and its operator marked, and the bodies in order as
-    ``(text, expands)``: ``expands`` when the delimiter is unquoted (the shell runs its substitutions)."""
-    lines = command.split("\n")
-    out: list[str] = []
+    ``(text, expands)``: ``expands`` when the delimiter is unquoted (the shell runs its substitutions).
+
+    The command is read once from the start, the way the shell reads it (see :func:`_heredocs`). Shells
+    disagree on ``$$'`` (see :func:`_quoted_spans`), so it is read both ways and a body is cut only where
+    both readings find the same one: otherwise its lines stay in the text, still scanned as commands.
+    """
+    docs = _heredocs(command, even_dollars_escape=False)
+    if "$" in command and "'" in command:
+        agreed = set(_heredocs(command, even_dollars_escape=True))
+        docs = [doc if doc in agreed else (doc[0], doc[1], doc[2], -1, -1, -1) for doc in docs]
+    edits: list[tuple[int, int, str]] = []
     bodies: list[tuple[str, bool]] = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        i += 1
-        quoted = [m.span() for m in _QUOTED.finditer(line)]
-        pieces: list[str] = []
-        found: list[tuple[str, bool, bool]] = []
-        at = 0
-        for m in _HEREDOC.finditer(line):
-            if any(a <= m.start() < b for a, b in quoted):
-                continue  # "<<" inside a quoted argument
-            pieces += [line[at : m.start()], f"<<__scout_hd_{start + len(bodies) + len(found)}__"]
-            at = m.end()
-            found.append((m[2] or m[3] or m[4], bool(m[1]), m[4] is not None and "\\" + m[4] not in m[0]))
-        out.append("".join([*pieces, line[at:]]))
-        for word, strip_tabs, expands in found:
-            body: list[str] = []
-            for j in range(i, len(lines)):
-                if (lines[j].lstrip("\t") if strip_tabs else lines[j]) == word:
-                    i = j + 1
-                    break
-                body.append(lines[j])
+    for number, (at, end, expands, body, body_end, after) in enumerate(docs):
+        edits.append((at, end, f"<<__scout_hd_{start + number}__"))
+        bodies.append((command[body:body_end] if body >= 0 else "", expands))
+        if body >= 0:
+            edits.append((body, after, ""))
+    text, kept = "", 0
+    for at, end, put in sorted(edits):
+        text += command[kept:at] + put
+        if not put and command[end - 1] != "\n" and text.endswith("\n"):
+            text = text[:-1]  # the last line was the delimiter: its operator's line ends the text
+        kept = end
+    return text + command[kept:], bodies
+
+
+def _heredocs(command: str, *, even_dollars_escape: bool) -> list[_HereDoc]:
+    """The here-documents of ``command``, in the order of their operators.
+
+    A ``<<`` in a comment or inside a quoted string (one that runs over several lines too) opens nothing. A
+    body starts after the end of its operator's line, which a string spanning lines pushes down. A
+    here-document inside ``$(…)`` or backticks is one all the same, but its body has to start inside them:
+    when they close on the operator's own line the lines below are commands. Read a line at a time,
+    `true # <<EOF` hid the commands below it as a body.
+    """
+    ops: list[tuple[int, int, bool]] = []
+    cuts: dict[int, tuple[int, int, int]] = {}
+
+    def take_bodies(i: int, end: int, pending: _Pending) -> int:
+        """At the line end ``command[i]``: find the pending bodies below it; where to read on."""
+        j = i + 1
+        for number, word, strip_tabs in pending:
+            body = _heredoc_body(command, j, end, word, strip_tabs)
+            if body is not None:  # else unterminated: the rest stays in the text, still scanned as commands
+                cuts[number] = (j, *body)
+                j = body[1]
+        pending.clear()
+        return j
+
+    def scan(i: int, end: int, kind: str, pending: _Pending) -> int:
+        """Read ``command[i:end]`` as commands (``kind`` "" or ")") or as a double-quoted string (``kind`` '"');
+        the index after what closes it, else ``end``. A ``$(…)`` or backtick body gets a ``pending`` of its
+        own: a here-document still open when it ends has no body."""
+        dollars = 0  # how many unescaped "$" come directly before command[i]
+        last = ""  # the plain character directly before command[i], if there is one
+        while i < end:
+            c = command[i]
+            before, dollars = dollars, 0
+            previous, last = last, ""
+            if c == "\\":
+                i += 2
+            elif c == "`":
+                close = min(_close(command, i + 1, "`"), end)
+                scan(i + 1, close, "", [])
+                i = close + 1
+            elif kind == '"':
+                if c == '"':
+                    return i + 1
+                i = scan(i + 2, end, ")", []) if command.startswith("$(", i) else i + 1
+            elif c == kind:
+                return i + 1
+            elif c == "\n" and pending:
+                i = take_bodies(i, end, pending)
+            elif c == "'":
+                escapes = before % 2 == 1 or (before > 0 and even_dollars_escape)  # $'…' takes escapes
+                j = i + 1
+                while j < end and command[j] != "'":
+                    j += 2 if escapes and command[j] == "\\" else 1
+                i = j + 1 if j < end else i + 1  # never closed: no string
+            elif c == '"':
+                close = _close(command, i + 1, '"')
+                if close < end:
+                    scan(i + 1, close, '"', pending)
+                    i = close + 1
+                else:
+                    i += 1  # never closed: no string
+            elif c == "(":
+                # A subshell's here-documents take their bodies below its line, like any command's.
+                i = scan(i + 1, end, ")", [] if previous and previous in "$<>" else pending)
+            elif c == "#" and (i == 0 or command[i - 1] in " \t\n;&|("):
+                j = command.find("\n", i, end)
+                i = end if j < 0 else j
+            elif c == "<" and (m := _HEREDOC.match(command, i)) and m.end() <= end:
+                pending.append((len(ops), m[2] or m[3] or m[4], bool(m[1])))
+                ops.append((i, m.end(), m[4] is not None and "\\" + m[4] not in m[0]))
+                i = m.end()
             else:
-                body = []  # unterminated: the rest stays in the text, still scanned as commands
-            bodies.append(("\n".join(body), expands))
-    return "\n".join(out), bodies
+                dollars = before + 1 if c == "$" else 0
+                last = c
+                i += 1
+        return end
+
+    scan(0, len(command), "", [])
+    return [(*op, *cuts.get(number, (-1, -1, -1))) for number, op in enumerate(ops)]
+
+
+def _heredoc_body(s: str, i: int, end: int, word: str, strip_tabs: bool) -> tuple[int, int] | None:
+    """Where the here-document body that starts at ``i`` ends, and the index after its delimiter line; None
+    when no line before ``end`` is the delimiter."""
+    at = i
+    while at < end:
+        nl = s.find("\n", at, end)
+        stop = end if nl < 0 else nl
+        line = s[at:stop]
+        if (line.lstrip("\t") if strip_tabs else line) == word:
+            return max(i, at - 1), stop if nl < 0 else nl + 1
+        at = stop + 1
+    return None
 
 
 def _close(s: str, i: int, kind: str) -> int:
     """The index of what closes a ``kind`` (``)``, a backtick or ``"``) opened just before ``i``, else ``len(s)``.
 
     Quotes, nested substitutions, comments and here-documents inside it are skipped the way the shell does.
+    A backtick substitution is the exception: nothing inside it hides the backtick that ends it.
     """
     n = len(s)
+    if kind == "`":  # the shell ends it at the next backtick with no backslash before it, inside quotes or not
+        while i < n and s[i] != "`":
+            i += 2 if s[i] == "\\" else 1
+        return min(i, n)
     pending: list[tuple[str, bool]] = []
     while i < n:
         c = s[i]
@@ -596,7 +763,7 @@ def _substitutions(s: str, *, quotes: bool = True) -> list[tuple[int, int, int, 
 
 def _segments_with_ops(command: str) -> list[tuple[str, str]]:
     """Each segment of ``command`` (see :func:`_segments`) with the operator before it ("" for the first)."""
-    masked = _QUOTED.sub(lambda m: "\0" * len(m[0]), command)
+    masked = _mask_quoted(command)
     out: list[tuple[str, str]] = []
     at, op = 0, ""
     for m in _SEGMENTS.finditer(masked):
@@ -608,7 +775,7 @@ def _segments_with_ops(command: str) -> list[tuple[str, str]]:
 
 def _redirects(segment: str) -> tuple[str, list[str], list[str], list[str]]:
     """``segment`` without its unquoted redirects; the files they write, the files they read, and here-strings."""
-    masked = _QUOTED.sub(lambda m: "\0" * len(m[0]), segment)
+    masked = _mask_quoted(segment)
     kept: list[str] = []
     writes: list[str] = []
     reads: list[str] = []
@@ -1407,7 +1574,8 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
         if expands:
             for _s, _e, a, b in _substitutions(text, quotes=False):
                 results.append((len(command), _run_escape(text[a:b], depth + 1)))
-    detach = _BACKGROUND.search(_QUOTED.sub("''", command)) is not None
+    # Both readings of `$$'` (see _quoted_spans): a background under either one is a background.
+    detach = any(_backgrounds(_mask_quoted(command, even_dollars_escape=way)) for way in (False, True))
     cwd = ""  # follows each `cd`, so `cd .git/hooks && rm pre-commit` reads as the path it writes
     previous: str | None = None
     position = 0

@@ -187,10 +187,12 @@ def test_a_real_rollback_commit_clears_the_undo(repo, env):
 
 @pytest.fixture
 def auto_live(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The automatic rollback modes acting, as they will once Plan 3 lets them (actions.AUTO_ROLLBACK_LIVE)."""
+    """The automatic rollback modes acting, as they will once Plan 3 lets them (actions.AUTO_ROLLBACK_LIVE). These
+    tests' run commits stand in for broker-recorded ones; test_changes_run_commits covers that check itself."""
     from scout.changes import actions
 
     monkeypatch.setattr(actions, "AUTO_ROLLBACK_LIVE", True)
+    monkeypatch.setattr(actions, "auto_eligible", lambda sha, ledger=None: True)
 
 
 def test_auto_modes_are_inert_for_now_whatever_the_settings_say(repo, env):

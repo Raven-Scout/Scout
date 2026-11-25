@@ -142,6 +142,11 @@ first.** The two have different languages, test runners, and release flows.
   `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_changes_contract.py`.
   The app's byte copies (`apps/macos/ScoutTests/Fixtures/`, read by `ChangesContractTests`) and the
   `contract.yml` comparison have landed.
+- **The lab has two canonical copies:**
+  `plugin/engine/tests/fixtures/contract/lab-list.json` and `lab-thread.json`, the output of
+  `scoutctl lab list --json` and `scoutctl lab show --json` (`scout/lab/summary.py`, versioned by
+  `schema_version`). Generate them from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_lab_contract.py`.
 - **The delegate status has one canonical copy too:**
   `plugin/engine/tests/fixtures/contract/delegate-status.json`, the output of
   `scoutctl delegate status --json` (`scout/delegate_status.py`, #550), which

@@ -152,6 +152,75 @@ as the run ledger (`scoutctl runs --json`, #661).
   so drift is visible rather than hidden.
 - **Interactive commits** (owner sessions) are recorded with `author_lane: interactive`.
   They are shown on the map but not tested or rolled back by Scout.
+- **Who made a commit is recorded outside the run, not read from its subject.** Nothing
+  enforces a run's subject prefix, so the run-commit ledger, `run-commits.jsonl` in the owner
+  store (a protected engine root a sandboxed run can't write; `scout/changes/run_commits.py`),
+  says which commits were a run's. The scanner looks a commit up there first. A run's commit is
+  in the run's lane whatever its subject: the lane the run's mode names, else its prefix's run
+  lane, else the generic tested `run` lane. A commit with no row is classified by subject
+  prefix: history from before the ledger, and the owner's own commits.
+  - *The broker's record (exact, Phase 1d).* While a run's brokers are up it can't write the
+    vault's git dirs; its only way to commit is the commit broker, outside the sandbox.
+    `Broker.commit` writes a `begin` row before `git-safe-commit.sh` runs and an `end` row after,
+    each with the broker's run id and the run's mode. The helper commits with
+    `GIT_REFLOG_ACTION` set to a nonce of its own and names the commit whose reflog entry
+    carries it, git's own record of the commit it just made, so an owner commit landing
+    around it is never taken for the run's, even when git fails after HEAD moved. A begin with
+    no end, one the helper was stopped in, or any end with no sha that doesn't show no commit
+    was made (exit 2–4, which the helper gives only before it commits, or its
+    `scout-commit none`: the commit failed and HEAD didn't move, judged by HEAD itself as well
+    as the reflog, which `core.logAllRefUpdates=false` leaves empty) is a *gap*. Every sha a
+    row names outright (end rows, and rows of any `by`), whatever its grade, is
+    `recorded_shas()`, the integrity check's blame set (#786); the git windows are left out,
+    since their members are a best-effort walk that can take in the owner's commits.
+    `scoutctl broker profile` writes a
+    `profile` row for the broker's run, tightened or not; the tightened row only once the
+    profile is printed, and the wrapper adds an untightened one (`--unapplied`) whenever it
+    keeps the 1c profile after all, so a tightened row never sits over a 1c run. An end row's sha is exact only
+    when its run's profile was tightened: a broker that kept the 1c profile, or the periodic
+    tick's drain (no run of its own; never a queued entry's claimed run; no mode, so the
+    generic `run` lane), runs where a run can still write `.git/logs`, so its sha is best
+    effort. The helper names only a reflog entry added since its commit started. `sandbox verify` records nothing from git for a run when at least one
+    broker profile was decided after its snapshot, all of them tightened, and nothing since is
+    a gap; otherwise it records the git window too. Every history walk here reads git with
+    `GIT_SHALLOW_FILE=/dev/null`, so a run can't hide commits behind a planted `.git/shallow`;
+    on a genuinely shallow vault (`git clone --depth`) those walks fail, and run health says so
+    (`changes.shallow_vault`, yellow; the fix is `git fetch --unshallow`). The owner's commits never go through the
+    broker, so they stay interactive, in a linked worktree or the vault's own checkout.
+    Automatic rollback acts only on broker-recorded commits (a code-level check in
+    `scout/changes/actions.py`).
+  - *The git window (best effort, NOT SOUND, runs without a broker).* A Phase 1c run (or one
+    with the sandbox off) can write the vault's objects, refs, logs, index and `shallow`, so
+    nothing read from git's state is sound against it. `sandbox verify` (outside the sandbox,
+    after claude exits, before any integrity restore commit) still records what it can, to
+    catch a run that just used the wrong prefix, failing closed where it can tell: every ref
+    in any namespace that moved or appeared, and a HEAD that moved (symbolic or not), is a
+    tip; every commit a ref or HEAD held at the snapshot is known, and a known commit gone by
+    the end is refused (exit 12), never dropped from the exclusion; git reads ignore replace
+    refs, grafts and `.git/shallow`; past 2,000 commits on a tip, or when git can't list
+    them, the row records the window and all of it is the run's (a known commit gone since
+    bounds a window by its snapshot time, never by nothing); an owner worktree vouches, by
+    the integrity check's rule and under an enforced sandbox only, for exactly one new
+    commit on its snapshot tip. Run health says when a run was attributed this way
+    (`changes.unbrokered_attribution`, yellow).
+  - *Both.* A run whose commits couldn't be recorded at all makes `sandbox verify` exit 12
+    when it would have been clean, which run health shows (yellow, for the last run) as an
+    integrity check that couldn't run. The scan also reads back the ledger's run commits from
+    the last 14 days that are in HEAD's history, so a run that moves the run-writable scan
+    mark or empties `changes.jsonl` still has them judged.
+  - *Cutover.* The ledger starts with the first run after the release that adds it. The
+    broker's exact record starts once `/scout-update` re-renders `scripts/git-safe-commit.sh`;
+    until then the helper names no sha, every broker commit is a gap, and verify records the
+    git window as for a broker-less run.
+  - *Known limits.* Under the git window (no broker): a run can still hide commits by git
+    surgery the hardening doesn't cover; an owner commit in the vault's own checkout during
+    the run, and an owner fetch that moves a remote-tracking ref, are counted as the run's
+    (fail closed, never auto-rolled back). Either way: a commit made after `sandbox verify` by
+    a process the run left behind is recorded by neither (the runner doesn't reap the run's
+    process group; the integrity check has the same gap); a corrupt `.git/index` a run leaves
+    breaks the next run's start snapshot, so that run falls back to subject prefixes behind
+    the same yellow; rows older than the 14-day read-back that a run deletes from
+    `changes.jsonl` stay gone; `run-commits.jsonl` is append-only and nothing compacts it yet.
 - **Must work under the run brokers and write sandbox** (Phase 1c/1d, v0.18.14–15): runs
   commit through `git-safe-commit` / the commit broker, so the detector hooks in there, not in
   a path a sandboxed run can't write.

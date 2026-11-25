@@ -69,7 +69,10 @@ _INTEGRITY_CHANGED_RE = re.compile(
 _INTEGRITY_RESTORED_RE = re.compile(
     r"^integrity check: restored them on " + _REF_RE + r" in commit (?P<sha>[0-9a-f]{7,40})$"
 )
-_INTEGRITY_HELD_RE = re.compile(r"^integrity check: " + _REF_RE + r" still holds the change")
+_INTEGRITY_HELD_RE = re.compile(
+    r"^integrity check: " + _REF_RE + r" still holds the change"
+    r"(?:: it is checked out in worktree '(?P<worktree>[A-Za-z0-9._ -]{1,200})')?"
+)
 _PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9._-][A-Za-z0-9._/-]{0,200}")
 
 
@@ -236,6 +239,8 @@ class _Integrity:
     changed: list[tuple[str, list[str]]]
     restored: list[tuple[str, str]]
     held: list[str]
+    # A held branch another worktree has checked out -> that worktree's name (from the log's held line).
+    held_in: dict[str, str] = field(default_factory=dict)
 
 
 def _read_tail(path: Path) -> str:
@@ -263,6 +268,8 @@ def _integrity_lines(log: Path | None) -> _Integrity:
             found.restored.append((m["ref"], m["sha"]))
         elif m := _INTEGRITY_HELD_RE.match(line):
             found.held.append(m["ref"])
+            if m["worktree"]:
+                found.held_in[m["ref"]] = m["worktree"]
     return found
 
 
@@ -318,11 +325,30 @@ def _integrity(ctx: _Ctx) -> Guide:
     for ref, sha in lines.restored:
         evidence.append(f"Restoring commit `{sha}` on `{ref}`")
     for ref in lines.held:
-        evidence.append(f"`{ref}` still holds the change (Scout didn't rewrite it)")
+        if ref in lines.held_in:
+            evidence.append(
+                f"`{ref}` still holds the change: it is checked out in worktree `{lines.held_in[ref]}`, so Scout "
+                "left it alone rather than rewrite it under that session"
+            )
+        else:
+            evidence.append(f"`{ref}` still holds the change (Scout didn't rewrite it)")
     commands = ["git worktree list --porcelain"]
     scope = " -- " + " ".join(paths) if paths else ""
     for _ref, sha in lines.restored:
         commands += [f"git show --stat {sha}", f"git log --format='%H %an %ad %s' -n 5 {sha}^{scope}"]
+    held_branches = [ref for ref in lines.held if ref in lines.held_in]
+    for ref in held_branches:
+        commands += [f"git log --format='%H %an %ad %s' -n 10 {ref}{scope}", f"git log -p -n 3 {ref}{scope}"]
+    held_steps = (
+        [
+            "For each branch Scout left alone because a worktree has it checked out, find that worktree's path in "
+            "`git worktree list --porcelain`, then find the commit on the branch that changed the file (`git log` on "
+            "the branch, limited to the paths). If nobody approved it, `git revert` it there, after asking the owner. "
+            "`git reset --hard` or `git stash` in that worktree keeps the bad file, because the change is committed."
+        ]
+        if held_branches
+        else []
+    )
     return Guide(
         title="Investigate: a scheduled run changed a protected file",
         evidence=evidence,
@@ -335,6 +361,7 @@ def _integrity(ctx: _Ctx) -> Guide:
             "Run `git show --stat` on the changing commit and on the restoring commit.",
             "Decide which session made the change, whether it was the run, and whether the restore was right. If "
             "the restore was wrong, say how to undo it, and ask before doing it.",
+            *held_steps,
         ],
         commands=commands,
         done=(

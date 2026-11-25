@@ -322,7 +322,8 @@ def test_overlay_visibility_defaults_go_first(tmp_path: Path) -> None:
         )
     )
     assert pol.visibility_defaults[0] == ("knowledge-base/topics/billing/**", "private")
-    assert pol.visibility_defaults[-2:] == privacy.load_policy(None).visibility_defaults
+    engine = privacy.load_policy(None).visibility_defaults
+    assert pol.visibility_defaults[-len(engine) :] == engine
     rollout = classify("knowledge-base/topics/billing/rollout.md", _fm("name: Rollout"), pol)
     assert (rollout.visibility, rollout.visibility_source) == ("private", "path_default")
     shared = classify("knowledge-base/personal/shared/list.md", None, pol)
@@ -629,6 +630,7 @@ def test_engine_default_policy_matches_spec(policy: Policy) -> None:
         ("knowledge-base/personal/**", "private"),
         (".scout-inbox/**", "private"),
     )
+    assert policy.visibility_forced_private == ("knowledge-base/lab/*/experiments/*/**",)
     assert policy.owner_only_surfaces == frozenset(
         {"vault", "app", "telegram_private_chat", "agnes_owner_conversation", "agnes_personal_memory", "vault_sync"}
     )
@@ -873,3 +875,70 @@ def test_label_file_matches_classify(tmp_path: Path, policy: Policy) -> None:
     assert privacy.label_file(tmp_path, "knowledge-base/personal/gone.md", policy).visibility_source == "path_default"
     (tmp_path / "x.md").mkdir()
     assert privacy.label_file(tmp_path, "x.md", policy).warnings == ("file-unreadable",)
+
+
+# ----- overlay_for_mirror (#550: a delegate mirror's privacy block) ----------------------------
+
+
+_MESSY_OVERLAY = {
+    "local_only_add": ["a/**", "elsewhere/**"],
+    "shared_files_add": ["a/shared/**", 3],  # a non-string entry: the policy ignores the whole list
+    "visibility_defaults": [
+        {"glob": "a/p/**", "visibility": "private", "note": "token-ABC123"},
+        {"glob": "a/n/**", "visibility": "loud"},  # kept fail-closed as private
+        {"visibility": "private"},
+        "a/x/**",
+    ],
+    "surfaces": {"owner_only": ["slack"], "shared": ["mail"], "comment": "ops@example.com"},
+    "federation": {"enabled": "yes", "note": "token-ABC123 ops@example.com"},  # not a bool: false
+    "federation_ceilings": [{"glob": "a/**", "ceiling": "huge", "kinds": "person", "why": "secret"}],
+    "federation_defaults": [{"glob": "a/**", "scope": ["group:abc"], "owner": "ops@example.com"}, {"x": 1}],
+    "sync_only": ["a/**"],
+    "delegates": {"other": {"include_private": True}},
+    "shared_edits": "refuse",
+    "notes": "token-ABC123",
+}
+
+
+def test_overlay_for_mirror_keeps_only_what_the_policy_reads_in_canonical_form() -> None:
+    out = privacy.overlay_for_mirror(_MESSY_OVERLAY, lambda g: g.startswith("a/"))
+    assert out == {
+        "local_only_add": ["a/**"],
+        "visibility_defaults": [
+            {"glob": "a/p/**", "visibility": "private"},
+            {"glob": "a/n/**", "visibility": "private"},
+        ],
+    }
+    assert "token" not in yaml.safe_dump(out) and "example.com" not in yaml.safe_dump(out)
+    assert privacy.overlay_for_mirror("not a mapping", lambda g: True) == {}
+    assert privacy.overlay_for_mirror({"surfaces": {"owner_only": [1]}, "federation": {}}, lambda g: True) == {}
+
+
+_NOT_FOR_DELEGATES = (
+    "sync_only",
+    "delegates",
+    "warnings",
+    "surfaces",
+    "federation",
+    "federation_ceilings",
+    "federation_ceilings_overlay",
+    "federation_defaults",
+)
+
+
+def test_overlay_for_mirror_builds_the_same_policy_bar_what_no_delegate_reads() -> None:
+    """Every key a delegate's labels read comes through; surfaces and federation take the engine defaults."""
+
+    def shape(p: Policy) -> dict[str, object]:
+        out = p.to_json()
+        for key in _NOT_FOR_DELEGATES:
+            out.pop(key, None)
+        return out
+
+    default = privacy.policy_from_overlay({}).to_json()
+    for overlay in (_MESSY_OVERLAY, {"federation": {"enabled": True}}, {}):
+        mirrored = privacy.overlay_for_mirror(overlay, lambda g: True)
+        assert shape(privacy.policy_from_overlay(mirrored)) == shape(privacy.policy_from_overlay(overlay))
+        got = privacy.policy_from_overlay(mirrored)
+        assert got.sync_only is None
+        assert {k: got.to_json()[k] for k in _NOT_FOR_DELEGATES[3:]} == {k: default[k] for k in _NOT_FOR_DELEGATES[3:]}

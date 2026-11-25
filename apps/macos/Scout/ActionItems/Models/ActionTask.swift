@@ -163,11 +163,15 @@ nonisolated struct ActionTask: Identifiable, Equatable, Hashable, Sendable {
         )
     }
 
-    /// The selector for the comment the card shows at 1-based `index`.
-    /// `scoutctl`'s `--index` counts the plan markers this app hides, so the
-    /// ones above the comment are added back in (see `TaskPlan`).
-    func commentSelector(at index: Int) -> CommentSelector {
-        .index(plan.engineCommentIndex(index))
+    /// The selector for the comment the card shows at 1-based `index`, or nil
+    /// when `scoutctl` can't reach that comment (see
+    /// `TaskComment.engineIndex`). `scoutctl`'s `--index` is not the card's:
+    /// it counts the plan markers this app hides and skips the comment forms
+    /// the engine doesn't list.
+    func commentSelector(at index: Int) -> CommentSelector? {
+        guard comments.indices.contains(index - 1),
+              let engineIndex = comments[index - 1].engineIndex else { return nil }
+        return .index(engineIndex)
     }
 
     /// Search filter. `lowercasedNeedle` must already be lowercased; an empty

@@ -102,6 +102,7 @@ def test_build_manifest_enumerates_subcommands_from_typer_app(
     # Existing baseline commands must remain.
     assert "version" in m.subcommands
     assert "manifest" in m.subcommands
+    assert "lab" in m.subcommands  # added by the root group on first listing, not at import
 
 
 def test_build_manifest_subcommands_sorted_for_stability() -> None:

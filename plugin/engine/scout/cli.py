@@ -11,9 +11,10 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import typer
+from typer.core import TyperGroup
 
 from scout import __version__
 from scout.errors import ConfigError, ScoutError
@@ -31,12 +32,35 @@ if TYPE_CHECKING:
 # crashed in an unexpected way" as its own failure mode.
 INTERNAL_ERROR_EXIT_CODE = 70
 
+
+class _ScoutGroup(TyperGroup):
+    """The root command group. ``lab`` is added the first time it is looked up (a ``scoutctl lab ...`` call, or
+    ``--help`` listing the commands), so every other command starts without importing the Lab
+    (``tests/perf/test_startup.py`` counts the modules ``scoutctl version`` loads)."""
+
+    def _add_lab(self) -> None:
+        if "lab" not in self.commands:
+            from scout.lab.cli import app as lab_app
+
+            self.add_command(typer.main.get_group(lab_app), "lab")
+
+    def list_commands(self, ctx: Any) -> list[str]:
+        self._add_lab()
+        return super().list_commands(ctx)
+
+    def get_command(self, ctx: Any, cmd_name: str) -> Any:
+        if cmd_name == "lab":
+            self._add_lab()
+        return super().get_command(ctx, cmd_name)
+
+
 app = typer.Typer(
     name="scoutctl",
     help="Scout engine control CLI.",
     no_args_is_help=True,
     add_completion=False,
     rich_markup_mode=None,  # avoid importing rich at startup
+    cls=_ScoutGroup,
 )
 
 
@@ -273,10 +297,14 @@ def cli_sandbox_snapshot(
     `scoutctl sandbox verify` after claude exits. Exit 12 (and nothing on stdout) when it can't be taken.
     """
     from scout import paths
+    from scout.changes import run_commits
     from scout.sandbox import integrity
 
+    data_dir = paths.data_dir(vault)
     try:
-        snap = integrity.snapshot(paths.data_dir(vault))
+        snap = integrity.snapshot(data_dir)
+        # What the changes map's run-commit ledger needs (scout.changes.run_commits): when, and every ref.
+        snap["changes"] = run_commits.snapshot_extra(data_dir)
     except integrity.IntegrityError as e:
         typer.echo(f"[scout:integrity] couldn't take the start snapshot: {e}", err=True)
         raise typer.Exit(integrity.STATUS_EXIT["error"]) from None
@@ -305,7 +333,42 @@ def cli_sandbox_verify(
     except integrity.IntegrityError as e:
         result = integrity.Result("error", reason=str(e))
     else:
+        from scout.changes import run_commits
+
+        # A brokered run's commits were recorded by its broker, exactly; a broker-less run's are worked out from git
+        # (best effort, not sound: scout.changes.run_commits), before the check makes its restore commits, so those
+        # are never counted as the run's.
+        state = run_commits.broker_state(data_dir, start)
+        if state == "on":
+            recorded: run_commits.Recorded | None = run_commits.Recorded(0, 0, brokered=True)
+        else:
+            why = "broker-gap" if state == "gap" else "no-broker"
+            recorded = run_commits.record(data_dir, start, label=label, why=why)
         result = integrity.verify(data_dir, start, label=label)
+        if recorded is None:
+            # The changes map would judge this run's commits by their subjects, which the run chose. Run health shows
+            # it as a check that couldn't run, unless the integrity check found worse.
+            missed = "this run's commits couldn't be recorded for the changes map"
+            if result.status == "clean":
+                result = integrity.Result("error", reason=f"protected files unchanged, but {missed}")
+            else:
+                typer.echo(f"integrity check: {missed}")
+        elif recorded.brokered:
+            typer.echo("changes map: this run's commits were recorded by its commit broker")
+        else:
+            made = count(recorded.commits, "commit")
+            extra = f", and {count(recorded.windows, 'window')} too big to list" if recorded.windows else ""
+            if state == "gap":
+                cause = (
+                    "the commit broker was on but couldn't name every commit it made (usually an old "
+                    "scripts/git-safe-commit.sh: run /scout-update)"
+                )
+            else:
+                cause = "no commit broker"
+            typer.echo(
+                f"changes map: {cause}, so {made} this run made {agree(recorded.commits, 'was', 'were')} "
+                f"worked out from git (best effort){extra}"
+            )
     for line in result.lines():
         typer.echo(line)
     raise typer.Exit(result.exit_code)
@@ -357,26 +420,44 @@ def cli_broker_serve(
 def cli_broker_profile(
     vault: str = typer.Option(..., "--vault", help="The run's vault."),
     broker_dir: str = typer.Option(..., "--dir", help="The run's broker folder."),
+    unapplied: bool = typer.Option(
+        False, "--unapplied", help="The wrapper's record that the run keeps the 1c profile after all."
+    ),
 ) -> None:
     """Read the run's 1c profile on stdin; print it tightened for a run whose brokers answer (exit 0).
 
     Exit 1 (reason on stderr, `.scout-logs/.run-broker.json` says unavailable) when the broker doesn't answer, the
-    vault's git-safe-commit.sh predates it, or the tightened profile fails its self-test: the run keeps the 1c
-    profile then.
+    vault's git-safe-commit.sh predates it, the tightened profile fails its self-test, or it can't be printed: the
+    run keeps the 1c profile then. The tightened row is written only once the profile is printed, and the wrapper
+    passes ``--unapplied`` whenever it doesn't apply it, so a row that says tightened never sits over a 1c run.
     """
     import sys
 
+    from scout.changes import run_commits
     from scout.sandbox import broker
 
     data_dir = Path(vault)
+    run = Path(broker_dir).name
+    if unapplied:
+        # A later untightened row turns broker_state off for this run: its commits are attributed from git.
+        run_commits.mark_broker_profile(data_dir, run, tightened=False)
+        return
     try:
         text = broker.build_profile(data_dir, Path(broker_dir), sys.stdin.read())
     except broker.BrokerError as e:
+        # Outside the sandbox, before claude starts: the run can't write these (scout.changes.run_commits).
+        run_commits.mark_broker_profile(data_dir, run, tightened=False)
         broker.write_status(data_dir, "unavailable", str(e))
         typer.echo(f"[scout:broker] unavailable: {e}", err=True)
         raise typer.Exit(1) from None
+    try:
+        typer.echo(text, nl=False)  # click flushes: once this returns, the wrapper has the profile
+    except OSError as e:
+        run_commits.mark_broker_profile(data_dir, run, tightened=False)
+        broker.write_status(data_dir, "unavailable", f"the tightened profile couldn't be handed over: {e}")
+        raise typer.Exit(1) from None
     broker.write_status(data_dir, "on", "commits and Telegram go through the run's broker")
-    typer.echo(text, nl=False)
+    run_commits.mark_broker_profile(data_dir, run, tightened=True)
 
 
 @broker_app.command("commit", context_settings={"ignore_unknown_options": True, "allow_interspersed_args": False})
@@ -1592,7 +1673,6 @@ def kb_shares(
     args = _kb_args("shares", dict(locals()))
 
     def body(who: str, root: Path) -> object:
-        from typing import Any
 
         from scout.kb import share_stops
         from scout.kb.privacy import FULL_READERS
@@ -1779,17 +1859,48 @@ def kb_search(
     glob: list[str] | None = typer.Option(None, "--glob", help="Vault-relative glob; repeat to OR them."),
     fixed: bool = typer.Option(False, "--fixed", help="Treat the pattern as a literal string."),
     ignore_case: bool = typer.Option(False, "-i", "--ignore-case", help="Case-insensitive."),
+    max_matches: int | None = typer.Option(
+        None, "--max-matches", help="Matching lines printed in all. Default 200; 0 = no limit."
+    ),
+    max_per_file: int | None = typer.Option(
+        None, "--max-per-file", help="Matching lines printed per file. Default 20; 0 = no limit."
+    ),
+    max_line: int | None = typer.Option(
+        None, "--max-line", help="Characters printed per line, around the match. Default 400; 0 = whole lines."
+    ),
+    everything: bool = typer.Option(
+        False, "--all", help="Print every matching line: the same as --max-matches 0 --max-per-file 0."
+    ),
     reader: str | None = _R,
     as_json: bool = _J,
     repo: Path | None = _REPO,
 ) -> None:
-    """Search the reader's visible files only. Each match carries its file's label. Exit 2 = bad pattern."""
-    args = _kb_args("search", dict(locals()))
-    from scout.kb.read import cmd_search
+    """Search the reader's visible files only. Each match carries its file's label. Exit 2 = bad pattern.
 
-    _kb_run(
-        args, reader, repo, as_json, lambda who, vault: cmd_search(vault, who, pattern, glob or (), fixed, ignore_case)
-    )
+    With no --glob it searches every listed file, not only knowledge-base/. The text output is bounded:
+    closing lines in parentheses say how many matches were left out, per top-level folder, and how
+    to narrow. --json prints every match whole unless a --max-* option is given (then they go to stderr).
+    """
+    params = dict(locals())
+    given = {k: params.pop(k) for k in ("max_matches", "max_per_file", "max_line")}
+    given = {k: v for k, v in given.items() if v is not None}
+    if not params["everything"]:
+        del params["everything"]
+    # a search at the default caps keeps the audit arguments it had before the caps existed
+    args = _kb_args("search", params | given)
+    from scout.kb.read import Output, cmd_search
+
+    lifted = dict.fromkeys(("max_matches", "max_per_file"), 0) if everything or as_json else {}
+    caps = lifted | ({"max_line": 0} if as_json else {}) | given
+
+    def body(who: str, vault: Path) -> Output:
+        out = cmd_search(vault, who, pattern, glob or (), fixed, ignore_case, **caps)
+        if as_json:  # the JSON form stays a list of matches: what was left out goes to stderr
+            for line in out.notice:
+                print(line, file=sys.stderr)
+        return out
+
+    _kb_run(args, reader, repo, as_json, body)
 
 
 @kb_app.command("read")
@@ -2659,7 +2770,6 @@ def _register_connectors() -> None:
         so custom connector probes survive plugin updates (#97).
         """
         import json as _json
-        from typing import Any
 
         from scout.scripts.connector_probes import ProbeKind, resolve_registry
 
@@ -4756,6 +4866,8 @@ def _register_bootstrap() -> None:
                 f"unfinished merge. Remove them (then `scoutctl bootstrap resolve {held}` if a sidecar was behind it)",
                 err=True,
             )
+        for name in payload.get("installed", []):
+            typer.echo(f"  installed (was missing): {name} — written from this release's assembly", err=True)
         # migrate-legacy prints these on stdout (its pre-E3 quirk), upgrade on stderr.
         to_err = action != "migrate-legacy"
         edits = payload.get("vault_edits") or []
