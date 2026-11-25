@@ -19,13 +19,13 @@ cannot change a match, and that nothing else in the pattern moved.
 A deliberate change to a filter belongs in ``INTENDED_DIFFERENCES`` with the reason; until then any
 difference fails.
 
-One deliberate change so far: the Bash pattern gained ``ADDED_ALTERNATIVES`` (any mention of HOME, and a builtin
-that sets what it names, in command position, since its target may be built at run time), because the gates
-expand ``~`` and ``$HOME`` with the run's own HOME, and a command that points HOME elsewhere first names files
-they never check; and the last, quote-stripped match gained
-``STRIPPED_NAMES`` (HOME, SCOUT_MODE and SCOUT_READER), so ``HO''ME=x`` or ``SCOUT_MO\\DE=`` is no way round. The
-pattern must be the old one plus exactly those, and a case may differ from the old command only by now reaching
-Python where the old one let it through, for a command one of them matches.
+One deliberate change so far, because the gates expand ``~`` and ``$HOME`` with the run's own HOME, and a command
+that points HOME elsewhere first names files they never check: the Bash pattern gained ``ADDED_ALTERNATIVES`` (any
+mention of HOME, arithmetic, zsh's ``${(P)…}``), and the last, quote-stripped match gained ``STRIPPED_NAMES``
+(HOME, SCOUT_MODE and SCOUT_READER) and ``STRIPPED_NAMERS`` (a builtin that sets what it names, anywhere), so
+``HO''ME=x``, ``SCOUT_MO\\DE=`` or ``"read" HOM?`` is no way round. The pattern must be the old one plus exactly
+those, and a case may differ from the old command only by now reaching Python where the old one let it through,
+for a command one of them matches.
 """
 
 from __future__ import annotations
@@ -63,25 +63,19 @@ ENTRIES: dict[str, tuple[str, str]] = {
 INTENDED_DIFFERENCES: dict[str, str] = {}
 
 # The alternatives appended to the Bash pattern after the move, as prefilter.sh assembles them: any mention of
-# HOME; a builtin that sets or unsets what it names, in command position (its target may be built at run time:
-# `export $v=…`, `read HOM?`); `printf -v`; arithmetic; and zsh's `${(P)v::=…}`.
-COMMAND_POSITION = (
-    r'(^"command": *"|[;&|({]|\\[nt]|(^|[^A-Za-z0-9_.-])(do|then|else|elif|if|while|until|time|command|builtin|exec'
-    r"|noglob|nocorrect|sudo|nice|-|!) )[[:space:]]*([A-Za-z_][A-Za-z0-9_]*\+?=[^[:space:];&|]*[[:space:]]+)*"
-)
-ADDED_ALTERNATIVES = (
-    "HOME",
-    COMMAND_POSITION + r"(export|declare|typeset|local|readonly|integer|float|unset|read|select|getopts|vared|mapfile"
-    r"|readarray|let|for)([^A-Za-z0-9_.-]|$)",
-    r"printf[^;&|]* -v",
-    r"\(\(",
-    r"\$\{\([^)]*P",
-)
+# HOME, arithmetic (which assigns), and zsh's `${(P)v::=…}`.
+ADDED_ALTERNATIVES = ("HOME", r"\(\(", r"\$\{\([^)]*P")
 ADDED_PATTERN = "|".join(ADDED_ALTERNATIVES)
-# The same for Python's re, which has no POSIX classes.
-ADDED_PATTERN_RE = re.compile(ADDED_PATTERN.replace("[^[:space:];&|]", r"[^\s;&|]").replace("[[:space:]]", r"\s"))
-# Names the last match finds once quotes and backslashes are removed, beside the KB's own.
+ADDED_PATTERN_RE = re.compile(ADDED_PATTERN)
+# What the last match finds once quotes and backslashes are removed, beside the KB's own: the names a run may not
+# set, and, anywhere in the command, a builtin that sets or unsets what it names, its own name perhaps quoted
+# (`"read"`, `\export`), since its target may be built at run time (`read HOM?`, `export H$v=…`).
 STRIPPED_NAMES = "HOME|SCOUT_(MODE|READER)"
+STRIPPED_NAMERS = re.compile(
+    r"(^|[^A-Za-z0-9_.-])(export|declare|typeset|local|readonly|integer|float|unset|read|select|getopts|vared|mapfile"
+    r"|readarray|let|for|repeat|zstyle|zformat|strftime|getln|zparseopts|zstat|sysread|sysopen|zselect|zpty"
+    r"|zregexparse)([^A-Za-z0-9_.-]|$)|print(f)?[^;&|]* -[A-Za-z]*v"
+)
 # A run's commands that point HOME elsewhere, or change the run env, and that the old pattern let through: each
 # must now reach Python.
 HOME_CHANGES = (
@@ -110,6 +104,15 @@ HOME_CHANGES = (
     "IFS= read -r H$v <<< x",
     "for H$v in x; do :; done",
     "(( H$v = 1 ))",
+    '"read" HOM? <<< x',
+    "r''ead HOM? <<< x",
+    "\\export H$v=x",
+    'X="a b" read HOM? <<< x',
+    "\\typeset H$v=x",
+    "pr''intf -v HOM? x",
+    "print -v HOM? x",
+    "zstyle -s :x y HOM?",
+    "repeat 1 read HOM? <<< x",
 )
 
 # The gate tests whose string literals make up the Bash corpus.
@@ -458,8 +461,13 @@ def _widened(case: Case, old: Outcome, new: Outcome) -> bool:
     if found is None:
         return False
     value = found[0]
-    stripped = value.translate(str.maketrans("", "", "'\"\\"))
-    added = ADDED_PATTERN_RE.search(value) is not None or re.search(STRIPPED_NAMES, stripped) is not None
+    # As prefilter.sh strips it: an escaped backslash goes, JSON's \n and \t become spaces, then quotes and \ go.
+    stripped = re.sub(r"\\[nt]", " ", value.replace("\\\\", "")).translate(str.maketrans("", "", "'\"\\"))
+    added = (
+        ADDED_PATTERN_RE.search(value) is not None
+        or re.search(STRIPPED_NAMES, stripped) is not None
+        or STRIPPED_NAMERS.search(stripped) is not None
+    )
     return added and new.python == f"hook kb-read-gate\n{case.payload}"
 
 

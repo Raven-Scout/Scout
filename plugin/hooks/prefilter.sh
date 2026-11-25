@@ -177,16 +177,8 @@ bash_pattern() {
     #    Every mention goes to Python, which denies a change and lets `HOME=$HOME` or a read through.
     #    A quoted or escaped name (`HO''ME=x`, `H\OME=x`) is matched below, once quotes are removed.
     alt 'HOME'
-    # -- A builtin that sets or unsets the variables it names, and arithmetic, which assigns: its target
-    #    need not spell HOME (`export $v=…`, `read H$v`, `read HOM?` with a file named HOME, `printf -v
-    #    "$v"`), so Python reads every one, and denies a target it can't read for certain. And zsh's
-    #    `${(P)v::=…}`, whose name is v's value.
-    #    Only in command position (so `scoutctl kb read` is not one): the command's start, after `;`, `&`,
-    #    `|`, `(`, `{` or a newline, after a keyword or precommand modifier, past any `NAME=` words.
-    cmd='(^"command": *"|[;&|({]|\\[nt]|(^|[^A-Za-z0-9_.-])(do|then|else|elif|if|while|until|time|command|builtin|exec|noglob|nocorrect|sudo|nice|-|!) )'
-    cmd="$cmd"'[[:space:]]*([A-Za-z_][A-Za-z0-9_]*\+?=[^[:space:];&|]*[[:space:]]+)*'
-    alt "$cmd"'(export|declare|typeset|local|readonly|integer|float|unset|read|select|getopts|vared|mapfile|readarray|let|for)([^A-Za-z0-9_.-]|$)'
-    alt 'printf[^;&|]* -v'
+    # -- Arithmetic, which assigns (`(( H$v = 1 ))`), and zsh's `${(P)v::=…}`, whose name is v's value.
+    #    The builtins that set what they name are matched below, on the quote-stripped value.
     alt '\(\('
     alt '\$\{\([^)]*P'
 }
@@ -237,10 +229,21 @@ bash_needs_python() {
     fi
     tool tr
     # shellcheck disable=SC1003 # the set is ', " and \ (one backslash after the shell's escaping)
-    v=$(printf '%s' "$v" | "$t" -d "'\"\\\\") || return 0
+    tr=$t
+    tool sed
+    # JSON's \n and \t become spaces first, so a word after them still starts a word once \ is gone; an
+    # escaped backslash (\\, as in `\\typeset`) goes before that, so its second half doesn't read as \t.
+    v=$(printf '%s' "$v" | "$t" -e 's/\\\\//g' -e 's/\\[nt]/ /g' | "$tr" -d "'\"\\\\") || return 0
     # A KB path, and the names a run may not set, spelled with quotes or backslashes (`HO''ME=x`,
     # `export SCOUT_MO\DE=x`).
     matches 'knowledge-base|knowledge_base|action-items/context|HOME|SCOUT_(MODE|READER)'
+    [ "$?" -ne 1 ] && return 0
+    # A builtin that sets or unsets the variables it names, anywhere in the command, its own name perhaps
+    # quoted or escaped (`"read" HOM?`, `\export`, `r''ead`): its target need not spell HOME (`export
+    # $v=…`, `read H$v`, `read HOM?` with a file named HOME), so Python reads every one, and denies a
+    # target it can't read for certain. zsh's own setters too (`print -v`, `zstyle -s`, `zformat -f`,
+    # `strftime -s`, `getln`, the module builtins), and `repeat N`, a keyword the command follows.
+    matches '(^|[^A-Za-z0-9_.-])(export|declare|typeset|local|readonly|integer|float|unset|read|select|getopts|vared|mapfile|readarray|let|for|repeat|zstyle|zformat|strftime|getln|zparseopts|zstat|sysread|sysopen|zselect|zpty|zregexparse)([^A-Za-z0-9_.-]|$)|print(f)?[^;&|]* -[A-Za-z]*v'
     [ "$?" -ne 1 ]
 }
 

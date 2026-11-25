@@ -253,6 +253,17 @@ def _owner_state() -> str:
         'v=OME; eval "H${{v}}=/x"; echo x >> ~/settings.json',
         "v=HOME; : ${{(P)${{v}}::=/x}}; echo x >> ~/settings.json",
         "read -d '' HOME <<< /x",
+        # review 3 of #800: verified to skip the commit hook in zsh
+        "\\read HOM? <<< h; git commit -qm m1",
+        "print -v HOM? h; git commit -qm m2",
+        "print -v HOME /p/h; git commit -m m",
+        "zstyle :x y /p/h; zstyle -s :x y HOM?; git commit -m m",
+        "zformat -f HOM? /p/h; git commit -m m",
+        "strftime -s HOM? %s; git commit -m m",
+        "repeat 1 read HOM? <<< /p/h; git commit -m m",
+        "pr''intf -v HOM? /p/h; git commit -m m",
+        "\\typeset H$v=/p/h; git commit -m m",
+        "exec {{HOME}}>/dev/null; echo x >> ~/settings.json",
     ],
 )
 def test_run_denies_a_command_that_points_home_elsewhere(vault, command):
@@ -570,11 +581,32 @@ def test_a_run_env_change_or_detach_reaches_python_from_the_shell(vault, tmp_pat
         "read $v <<< /tmp/x; git commit -m msg",
         'printf -v "$v" %s x',
         ": ${(P)v::=/tmp/x}",
-        # a name built by a glob or in part: only the namer word in command position sends it on
+        # a name built by a glob or in part: the builtin's name, anywhere in the command, sends it on
         "read HOM? <<< /tmp/x; git commit -m msg",
         "IFS= read -r H$v <<< /tmp/x",
         "v=OME; for H$v in /x; do :; done",
         "(( H$v = 1 ))",
+        # the builtin's own name quoted or escaped, or behind a quoted prefix value (review 3 of #800)
+        '"read" HOM? <<< /tmp/x; git commit -m msg',
+        "r''ead HOM? <<< /tmp/x",
+        "\\read HOM? <<< /tmp/x",
+        'ex""port H$v=/tmp/x',
+        'X="a b" read HOM? <<< /tmp/x',
+        "ls\n'read' HOM? <<< /tmp/x",
+        "\\typeset H$v=/tmp/x",
+        "e''xport HOM?=x",
+        "pr''intf -v HOM? /tmp/x",
+        "print -v HOM? h; git commit -qm m2",
+        "zstyle -s :x y HOM?",
+        "zformat -f HOM? /tmp/x",
+        "strftime -s HOM? %s",
+        "repeat 1 read HOM? <<< /tmp/x",
+        "zparseopts -A HOM? a",
+        # the shell stage doesn't look for command position, so a builtin's name used as a plain word goes on too;
+        # Python allows these (about 1.8% of replayed run calls newly reach it)
+        "scripts/scoutctl kb read projects/widgets/widgets.md",
+        "git log --format=export -1",
+        'echo "read the notes"',
     ],
 )
 def test_a_home_change_reaches_python_from_the_shell(vault, tmp_path, command):
@@ -606,8 +638,9 @@ def test_a_run_env_change_is_denied_through_the_real_cli(vault):
         "git add notes/a.md && git commit -m x 2>&1",
         "scripts/git-safe-commit.sh msg notes/a.md >&2",
         "ls notes",
-        "scripts/scoutctl kb read projects/widgets/widgets.md",  # `read` as a subcommand is no namer
-        "git log --format=export -1",
+        "git status --short",
+        'echo "reading the notes"',  # a builtin's name only as part of a word
+        "scripts/scoutctl health --json",
     ],
 )
 def test_ordinary_run_commands_still_exit_in_the_shell(vault, tmp_path, command):

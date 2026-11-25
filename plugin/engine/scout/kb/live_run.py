@@ -378,6 +378,8 @@ _PLAIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # name is v's value), and bash's `${!v:=…}`.
 _PROTECTED_NAMES = "HOME|XDG_CONFIG_HOME|SCOUT_MODE|SCOUT_READER"
 _PARAM_ASSIGN = re.compile(rf"\$\{{(?:({_PROTECTED_NAMES})(?:::=|:?=(?!\}}))|\([^)]*P[^)]*\).*?=|!.*?=)")
+# A named file descriptor (`exec {HOME}>/dev/null`): the shell sets the name to the new descriptor's number.
+_NAMED_FD = re.compile(rf"\{{({_PROTECTED_NAMES})\}}\s*(?:[<>]|&>)")
 # Builtins that set or unset the variables they name, and the options whose value is the next word (not a name).
 _DECLARERS = ("export", "declare", "typeset", "local", "readonly", "integer", "float")
 _NAMER_VALUE_OPTIONS = {
@@ -386,7 +388,21 @@ _NAMER_VALUE_OPTIONS = {
     "readarray": "dnOsuCc",
     "vared": "Mmprif",
 }
-_NAMERS = {*_DECLARERS, "unset", "for", "select", "getopts", "printf", "let", *_NAMER_VALUE_OPTIONS}
+# zsh builtins that set a variable they're given (zsh/zutil, zsh/datetime): `print -v`, `zstyle -s/-a/-b/-g`,
+# `zformat -f/-a`, `strftime -s`, `getln`.
+_ZSH_SETTERS = {"print", "zstyle", "zformat", "strftime", "getln"}
+# Module builtins that set what they're given in ways not worth modelling (`zparseopts -A name`, `h=name` specs,
+# `zstat -A`, `sysread`, `sysopen -u`, `zselect -a`, `zpty -r`): any argument that spells a name that matters, or
+# could build one, is denied.
+_STRICT_SETTERS = {"zparseopts", "zstat", "sysread", "sysopen", "zselect", "zpty", "zregexparse"}
+_NAMERS = {
+    *_DECLARERS, "unset", "for", "select", "getopts", "printf", "let", *_NAMER_VALUE_OPTIONS, *_ZSH_SETTERS,
+    *_STRICT_SETTERS,
+}  # fmt: skip
+# Declarer options whose value is a number: zsh's `typeset -i 10 x`, `-Z 3`, `-L 5`, `-R 5`, `-E 2`, `-F 2`.
+_NUMBER_OPTIONS = "iZLREF"
+_PROTECTED_WORD = re.compile(rf"(?<![A-Za-z0-9_])(?:{_PROTECTED_NAMES})(?![A-Za-z0-9_])")
+_BUILDS_A_NAME = re.compile(r"[$`?*\[{]")
 # An arithmetic assignment (`let`, `(( … ))`): a left side, then `=`, `+=`, `<<=` and the like (not `==`).
 _ARITH_ASSIGN = re.compile(r"([^\s=+\-*/%&|^<>!(),]+)\s*(?:\*\*|<<|>>|[-+*/%&|^])?=(?!=)")
 # A command word whose left side is a name built at run time from name characters, `$…`, `${…}` or a backtick
@@ -1389,6 +1405,9 @@ def expansion_escape(command: str) -> str | None:
     """The form of a parameter expansion in ``command`` that assigns a name that matters (HOME, XDG_CONFIG_HOME, the
     run's own variables) or one built at run time: ``${HOME:=…}``, ``${HOME::=…}``, ``${(P)v::=…}``. Read on the
     whole text, since the parser splits segments at ``(``, and a nested ``sh -c`` or ``eval`` is a substring of it."""
+    fd = _NAMED_FD.search(command)
+    if fd is not None:
+        return _name_form(fd[1])
     m = _PARAM_ASSIGN.search(command)
     if m is None:
         return None
@@ -1432,8 +1451,12 @@ def _name_escape(words: list[str]) -> str | None:
     if recorded is not None and recorded not in ([v] for v in _SAME_HOME):
         return HOME_FORM
     i = 0
-    while i < len(words) and (_ASSIGN_ANY.match(words[i]) or words[i] in _KEYWORDS or words[i] in _PREFIX):
-        if _ASSIGN_ANY.match(words[i]):
+    while i < len(words) and (
+        _ASSIGN_ANY.match(words[i]) or words[i] in _KEYWORDS or words[i] in _PREFIX or words[i] == "repeat"
+    ):
+        if words[i] == "repeat":
+            i += 1  # zsh's `repeat N cmd`: skip the count too
+        elif _ASSIGN_ANY.match(words[i]):
             form = _target_form(re.sub(r"\[[^\]]*\]", "", words[i], count=1), assigns=False)
             if form is not None:
                 return form
@@ -1447,6 +1470,11 @@ def _name_escape(words: list[str]) -> str | None:
         return _target_form(f"{head}=x", assigns=False, value_matters=False)  # `(( HOME = 0 ))`
     name = _basename(head)
     if name not in _NAMERS:
+        return None
+    if name in _STRICT_SETTERS:
+        for arg in args:
+            if _PROTECTED_WORD.search(arg) or (not arg.startswith("-") and _BUILDS_A_NAME.search(arg)):
+                return HOME_FORM
         return None
     if name == "let":
         for arg in args:
@@ -1475,16 +1503,23 @@ def _targets(name: str, args: list[str]) -> list[str]:
     if name in ("for", "select"):
         return args[:1]
     if name == "getopts":
-        return args[1:2]
-    if name == "printf":
+        return (args[1:] if args[:1] == ["--"] else args)[1:2]
+    if name in ("printf", "print"):
         for i, a in enumerate(args):
-            if a == "-v":
-                return args[i + 1 : i + 2]
-            if a.startswith("-v"):
-                return [a[2:]]
-            if a == "--" or not a.startswith("-"):
+            if a == "--" or not a.startswith("-") or len(a) == 1:
                 break
+            if "v" in a[1:]:  # `-v NAME`, zsh's `-rv NAME`, `-vNAME`
+                rest = a[a.index("v", 1) + 1 :]
+                return [rest] if rest else args[i + 1 : i + 2]
         return []
+    if name == "zstyle":
+        if args[:1] in (["-s"], ["-a"], ["-b"]):
+            return args[3:4]
+        return args[1:2] if args[:1] == ["-g"] else []
+    if name == "zformat":
+        return args[1:2] if args[:1] in (["-f"], ["-a"]) else []
+    if name == "strftime":
+        return args[1:2] if args[:1] and args[0].startswith("-") and "s" in args[0] else []
     takes = _NAMER_VALUE_OPTIONS.get(name, "")
     out: list[str] = []
     i = 0
@@ -1495,6 +1530,10 @@ def _targets(name: str, args: list[str]) -> list[str]:
             first = next((k for k, c in enumerate(letters) if c in takes), None)
             if first is not None and first == len(letters) - 1:
                 i += 1  # its value is the next word: `-t $T`, `-p "$prompt"`, `-d ''`
+            elif (
+                name in _DECLARERS and letters[-1] in _NUMBER_OPTIONS and args[i + 1 : i + 2] and args[i + 1].isdigit()
+            ):  # noqa: E501
+                i += 1  # `typeset -i 10 x`: a base or width
             i += 1
             continue
         if a != "--":
