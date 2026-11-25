@@ -304,6 +304,8 @@ Tests: `test_install_writes_only_its_own_key`, `test_install_is_idempotent`, `te
 - The Tier L rule: for a runtime without `post_tool_context`, a raw `read` of a `knowledge-base/` note is denied in favour of `scoutctl kb read` (spec §8.3 Tier L). The adapter's verified capabilities decide this, not its id.
 - Tests: `test_local_only_is_denied_to_a_google_run`, `test_local_only_stays_readable_to_claude_runs` (unchanged verdicts on the replay), `test_tier_l_denies_raw_kb_reads`, `test_an_unknown_runtime_counts_as_non_anthropic`.
 
+- **agy's other transcripts (review of #814; findings §7.2).** A run can read and write `~/.gemini/antigravity-cli/conversations/` and `brain/`. In the owner's `HOME`, those hold the owner's interactive agy conversations and earlier runs' transcripts, and nothing gates them today. 2C's hook translation and this task must handle it, in whichever form the 7.2 design takes: either a run's `HOME` holds no other conversations (a per-run `HOME`), or the gates deny a run's read and write of any conversation but its own. Test: `test_a_run_cant_read_or_write_another_agy_conversation`.
+
 ### Task 2D.2: `scoutctl kb` leaves local-only paths out
 
 - `scout/kb/reader.py` resolves `provider` the same way, from the process env. Because a run's shell child can set its own env, the read gate also denies a shell command that sets `SCOUT_AGENT_RUNTIME`, `SCOUT_READER` or `SCOUT_DATA_DIR` for a child (extend the existing `run_escape` handling).
@@ -415,3 +417,5 @@ Every box below that runs a real model waits for the 7.2 gate (decision 11), and
 11. **Real runs are blocked on the 7.2 isolation design** (Jordan, 2026-11-25). A run's shell child gets a token that still reaches agy's conversation methods and other conversations' transcripts (findings §7.2). It is still open whether a conversation started that way runs its tool calls through the hook. So no agy run that calls a real model happens (2E.3, 2H, 2K, any scheduled slot) until Jordan OKs a design that stops a run's shell commands from reaching agy's API.
     - Candidates: a per-run `HOME` with no owner conversations; the sandbox denying shell children the language server's port or socket; an agy option that keeps the token out of children's environment.
     - Building and testing against the fake endpoint goes on. The text-matching deny from 2A stays on either way.
+    - The design must assume a run can reach the server's port. The run profile allows loopback TCP, so a command that prints the environment once and then calls the server with the literal token gets past the text match.
+    - It must also cover agy's data-dir transcripts. A run can read and write `~/.gemini/antigravity-cli/{conversations,brain}/`, which in the owner's `HOME` hold the owner's interactive conversations and earlier runs (findings §7.2). That is the same exposure as the server's trajectory reads, without the server. A per-run `HOME` would cover it.

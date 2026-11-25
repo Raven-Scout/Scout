@@ -667,6 +667,13 @@ runtime_id="antigravity")`. Its only carve-out under `~/.gemini` is `~/.gemini/a
   - Test: `tests/unit/test_kb_read_gate_agy_server.py`.
   - **It is a speed bump, not a boundary.** A command that builds the name at run time, or dumps the whole
     environment, isn't matched by its text.
+  - **The same exposure, without the server.** The run profile leaves agy's data dir writable (§7.1), and
+    nothing gates reads there. So a run can read **and write** `conversations/` and `brain/`. In the owner's
+    real `HOME`, those hold the owner's interactive conversations and earlier runs' transcripts. The
+    isolation design must cover this too; a per-run `HOME` would.
+  - **Loopback is open.** The run profile allows loopback TCP. A command that prints the environment once,
+    and then calls the server with the literal token it saw, gets past the text match. The isolation design
+    has to assume a run can reach the server's port.
   - **Decided (Jordan, 2026-11-25): real runs are blocked** until he OKs a design that stops a run's shell
     commands from reaching agy's API (plan decision 11, the 7.2 gate). No-model work goes on, and the design
     comes from its own investigation card.
