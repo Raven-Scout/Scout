@@ -148,11 +148,10 @@ struct UsageRailCard: View {
         todayRuns.map(\.id).joined(separator: "|")
     }
 
+    /// The host calendar's today, its bounds worked out once rather than a
+    /// calendar call per run on every render (see `NowStripView.todayRuns`).
     private var todayRuns: [Run] {
-        let cal = Calendar.current
-        return state.sessionLogService.runs.filter {
-            cal.isDateInToday($0.startedAt)
-        }
+        NowStripView.todayRuns(state.sessionLogService.runs, today: nil)
     }
 
     private func loadStats() async {

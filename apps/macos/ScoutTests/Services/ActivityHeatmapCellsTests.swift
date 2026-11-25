@@ -53,6 +53,20 @@ struct ActivityHeatmapCellsTests {
         #expect(cells[0].failures == 3)   // timeout + rateLimited + failure
     }
 
+    /// Runs before the first shown day are dropped before any calendar call; the first day's
+    /// midnight is still in, the minute before it is not.
+    @Test func theFirstShownDayKeepsItsMidnightRun() {
+        let today = cal.startOfDay(for: Date())
+        let firstDay = daysAgo(6)
+        let runs = [
+            Run.make(startedAt: firstDay, status: .success),
+            Run.make(startedAt: firstDay.addingTimeInterval(-60), status: .success),
+        ]
+        let cells = ActivityHeatmapView.heatmapCells(runs: runs, dayCount: 7, calendar: cal, today: today)
+        #expect(cells.first?.successes == 1)
+        #expect(cells.reduce(0) { $0 + $1.successes } == 1)
+    }
+
     @Test func runsOutsideWindowAreExcluded() {
         let today = cal.startOfDay(for: Date())
         let runs = [Run.make(startedAt: daysAgo(100), status: .success)]

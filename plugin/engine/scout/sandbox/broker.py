@@ -283,16 +283,23 @@ LAB_VETOES_NAME = "lab-vetoes.jsonl"
 
 
 def record_veto(env: Mapping[str, str], vault: Path, slug: str, eid: str, at: datetime) -> None:
-    """Append ``slug`` ``eid`` to the owner's veto store, synced to disk (``lab veto``, the owner's verb). Raises
-    :class:`OSError` when it can't be written, as it can't from inside a run's sandbox.
+    """Append ``slug`` ``eid`` to the owner's veto store under each of :func:`scout.kb.hook_paths.homes` (``HOME``'s,
+    then the account's when ``HOME`` is another folder), synced to disk (``lab veto``, the owner's verb): a broker
+    with either HOME finds it, a scheduled run's (the account's) included. Raises :class:`OSError` when any store
+    can't be written, as none can from inside a run's sandbox; the stores written before it keep the row, which
+    only ever adds a veto (:func:`owner_veto` is additive).
 
-    Under an exclusive ``flock`` on the store, so two vetoes never interleave. A store whose last line has no
+    Under an exclusive ``flock`` on each store, so two vetoes never interleave. A store whose last line has no
     newline (a write cut short, or a hand edit that dropped it) gets one first, so the new row starts a line of
     its own instead of joining the torn tail."""
-    folder = owner_dir(env)
-    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path = folder / LAB_VETOES_NAME
     row = {"slug": slug, "eid": eid, "at": at.isoformat(), "vault": os.path.realpath(vault)}
+    for path in veto_stores(env):
+        _append_veto(path, row)
+
+
+def _append_veto(path: Path, row: Mapping[str, str]) -> None:
+    """Append ``row`` to the veto store at ``path`` (see :func:`record_veto`)."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with safe_write.open_append(path, mode=0o600) as fh:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         try:
@@ -332,20 +339,29 @@ def _json_objects(line: str) -> Iterator[dict[str, Any]]:
         at = end
 
 
+def veto_stores(env: Mapping[str, str]) -> list[Path]:
+    """The owner's veto store under each of :func:`scout.kb.hook_paths.homes` (``HOME`` and, when it is another
+    folder, the account's): a veto recorded under either home is in force whatever HOME the broker runs with."""
+    return [owner_dir({**env, "HOME": str(home)}) / LAB_VETOES_NAME for home in hook_paths.homes(env)]
+
+
 def owner_veto(env: Mapping[str, str], slug: str, eid: str) -> str | None:
-    """When the owner's store says ``slug`` ``eid`` was vetoed (the row's ``at``), or None. A missing store has no
-    vetoes; one that exists but can't be read is :class:`Refused`, since a veto can't be ruled out. Damage doesn't
-    hide a row: every complete JSON object in the file is read (:func:`_json_objects`), wherever it sits."""
-    try:
-        data = (owner_dir(env) / LAB_VETOES_NAME).read_bytes()
-    except FileNotFoundError:
-        return None
-    except OSError:
-        raise Refused(EXIT_REFUSED, "the owner's veto store can't be read; a veto can't be ruled out") from None
-    for line in data.decode("utf-8", errors="replace").splitlines():
-        for row in _json_objects(line):
-            if row.get("slug") == slug and row.get("eid") == eid:
-                return str(row.get("at") or "an unrecorded time")
+    """When an owner's store (:func:`veto_stores`) says ``slug`` ``eid`` was vetoed (the row's ``at``), or None.
+    Strictly additive: a veto in any store counts, and nothing in one store can cancel another's. A missing store
+    has no vetoes; one that exists but can't be read is :class:`Refused`, since a veto can't be ruled
+    out. Damage doesn't hide a row: every complete JSON object in the file is read (:func:`_json_objects`), wherever
+    it sits."""
+    for store in veto_stores(env):
+        try:
+            data = store.read_bytes()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            raise Refused(EXIT_REFUSED, "the owner's veto store can't be read; a veto can't be ruled out") from None
+        for line in data.decode("utf-8", errors="replace").splitlines():
+            for row in _json_objects(line):
+                if row.get("slug") == slug and row.get("eid") == eid:
+                    return str(row.get("at") or "an unrecorded time")
     return None
 
 

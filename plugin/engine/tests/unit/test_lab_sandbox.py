@@ -26,6 +26,27 @@ from tests.unit import lab_runner_helpers as h
 kernel = pytest.mark.skipif(not profile.available(), reason="needs sandbox-exec")
 
 
+def test_the_account_home_is_denied_when_home_is_elsewhere(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A script started with a HOME of its own still can't read the account's home or its credential stores."""
+    from scout.kb import hook_paths
+
+    account, elsewhere = tmp_path / "account", tmp_path / "elsewhere"
+    for home in (account, elsewhere):
+        home.mkdir()
+    monkeypatch.setattr(hook_paths, "account_home", lambda: account)
+    monkeypatch.setenv("HOME", str(elsewhere))
+    real = os.path.realpath
+    assert sandbox.homes(None) == [real(elsewhere), real(account)]
+    exp = tmp_path / "exp"
+    (exp / ".tmp").mkdir(parents=True)
+    text = sandbox.experiment_profile(exp, exp / ".tmp", Path("/tmp/scout-lab-x/m.sock"), [], [], env=None)
+    for home in (account, elsewhere):
+        assert f'(subpath "{real(home)}")' in text, home
+        for path in (".ssh", ".aws", ".gnupg"):
+            assert f'(subpath "{real(home / path)}")' in text, (home, path)
+        assert f'(literal "{real(home / ".netrc")}")' in text, home
+
+
 def test_profile_text_orders_deny_before_allow(tmp_path: Path) -> None:
     exp = tmp_path / "exp"
     (exp / ".tmp").mkdir(parents=True)
