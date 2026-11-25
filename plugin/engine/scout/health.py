@@ -197,6 +197,8 @@ class OutcomeRow:
     awake_s: int | None = None
     # The agent runtime that ran the session (spec 2026-11-13 §8.2), e.g. "claude-code".
     agent_runtime: str | None = None
+    # Why the run is on claude-code instead of the runtime it was set to: "resolve_failed"; None when it isn't.
+    agent_runtime_fallback: str | None = None
     # The model the runner passed to the agent (scoutctl model resolve).
     model: str | None = None
     # Which runner wrote the row (scout | dreaming | research) and what started it
@@ -334,6 +336,9 @@ def _parse_row(obj: object) -> OutcomeRow | None:
         duration_s=_opt_nonneg(obj.get("duration_s")),
         awake_s=_opt_nonneg(obj.get("awake_s")),
         agent_runtime=_opt_token(obj.get("agent_runtime"), _RUNTIME_RE),
+        agent_runtime_fallback=obj["agent_runtime_fallback"]
+        if obj.get("agent_runtime_fallback") in _RUNTIME_FALLBACKS
+        else None,
         model=_opt_token(obj.get("model"), _MODEL_RE),
         runner=obj["runner"] if obj.get("runner") in _RUNNERS else None,
         trigger=obj["trigger"] if obj.get("trigger") in _TRIGGERS else None,
@@ -342,6 +347,7 @@ def _parse_row(obj: object) -> OutcomeRow | None:
 
 # The same shapes run-outcome.sh writes, so a hand-edited row can't carry free text into a client.
 _RUNTIME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
+_RUNTIME_FALLBACKS = ("resolve_failed",)
 _MODEL_RE = re.compile(r"[a-z0-9][a-z0-9.\-]{0,80}")
 _RUNNERS = frozenset({"scout", "dreaming", "research", "respond"})
 _TRIGGERS = frozenset({"schedule", "heartbeat", "manual", "event"})
@@ -985,7 +991,46 @@ def gates_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
 
 
 def runtime_findings(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
-    """Runs skipped because their agent runtime was refused (spec 2026-11-13 §8.3 rule 5: agent_runtime.refused)."""
+    """Runs skipped because their agent runtime was refused (spec 2026-11-13 §8.3 rule 5: agent_runtime.refused),
+    and slots whose newest run fell back to claude-code (agent_runtime.fallback)."""
+    return [*_refused_runtime(rows, vault=vault), *_fallback_runtime(rows, vault=vault)]
+
+
+def _fallback_runtime(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
+    """Slots whose newest run is on claude-code because the runner couldn't resolve the runtime set for them
+    (#652 S7). Before this, only the run's log said so. Only rows that name a runtime count: a run skipped
+    before the runner resolved one says nothing either way."""
+    newest: dict[str, OutcomeRow] = {}
+    for r in rows:
+        if r.agent_runtime is not None:
+            newest[r.slot] = r
+    fell = sorted((r for r in newest.values() if r.agent_runtime_fallback), key=lambda r: r.finished_at)
+    if not fell:
+        return []
+    slots = ", ".join(sorted({r.slot for r in fell}))
+    which = f"slot {slots}'s last run" if len(fell) == 1 else f"the last run of slots {slots}"
+    log = _run_log(vault, fell[-1])
+    return [
+        Finding(
+            id="agent_runtime.fallback",
+            severity="yellow",
+            since=fell[0].finished_at,
+            summary=(
+                f"{which[0].upper()}{which[1:]} ran on Claude Code, because Scout couldn't work out the agent "
+                "runtime set for it (an id it doesn't know, or a settings file it couldn't read)."
+            ),
+            fix=(
+                "Run `scoutctl agent-runtime resolve --slot <slot>` to see the error. Then fix the slot's "
+                "`agent_runtime:` in .scout-state/schedule.yaml, `agent_runtimes.default` in scout-config.yaml, "
+                "or SCOUT_AGENT_RUNTIME."
+            ),
+            source="ledger",
+            log=str(log) if log else None,
+        )
+    ]
+
+
+def _refused_runtime(rows: list[OutcomeRow], *, vault: Path) -> list[Finding]:
     streak: list[OutcomeRow] = []
     for r in reversed(rows):
         if r.outcome in SKIP_OUTCOMES and r.outcome != RUNTIME_SKIP:

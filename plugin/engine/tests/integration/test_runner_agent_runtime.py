@@ -163,14 +163,44 @@ def test_runner_launches_through_exec(tmp_path: Path, name: str, slot_key: str) 
     log_calls = calls.read_text(encoding="utf-8")
     assert f"agent-runtime resolve --slot {slot_key}" in log_calls
     assert f"agent-runtime check --slot {slot_key} --runtime claude-code --bin /opt/claude/bin/claude" in log_calls
-    # The runtime is checked after the gate probe, and the model for claude-code is resolved as before.
+    # The runtime is resolved before the gate probe and checked after it, and the model for claude-code is
+    # resolved as before. Claude Code's probe is the same call as before #652 (no --runtime).
+    assert log_calls.index("agent-runtime resolve") < log_calls.index("gates probe")
     assert log_calls.index("gates probe") < log_calls.index("agent-runtime check")
+    assert f"gates probe --cached --vault {scout_dir} --claude-bin /opt/claude/bin/claude\n" in log_calls
     assert f"model resolve --slot {slot_key}\n" in log_calls
     assert "=== agent runtime: claude-code ===" in _log(scout_dir)
     # The run-outcome row names the runtime and the run's awake length (spec §8.2, §8.6).
     row = _outcomes(scout_dir)[-1]
     assert row["agent_runtime"] == "claude-code"
+    assert "agent_runtime_fallback" not in row
     assert isinstance(row["awake_s"], int) and 0 <= row["awake_s"] < 120
+
+
+@pytest.mark.parametrize(("name", "slot_key"), [*RUNNERS, ("run-respond.sh.tmpl", "respond")])
+def test_runner_names_another_runtime_to_the_gate_probe_and_the_sandbox(
+    tmp_path: Path, name: str, slot_key: str
+) -> None:
+    """#652 S6: the probe and the sandbox profile are the run's runtime's, not claude's."""
+    scout_dir, script, calls, _argv = _setup(tmp_path, name, resolve="antigravity")
+    env = _env(slot_key)
+    env.pop("SCOUT_RUN_SANDBOX")  # so the runner asks for a profile (the stub's empty one is then a skip)
+    result = subprocess.run([str(script)], env=env, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    log_calls = calls.read_text(encoding="utf-8")
+    probe = f"gates probe --cached --vault {scout_dir} --claude-bin /opt/claude/bin/claude --runtime antigravity\n"
+    assert probe in log_calls, log_calls
+    assert f"sandbox profile --vault {scout_dir} --runtime antigravity\n" in log_calls, log_calls
+
+
+@pytest.mark.parametrize(("name", "slot_key"), [*RUNNERS, ("run-respond.sh.tmpl", "respond")])
+def test_runner_asks_for_claude_codes_sandbox_as_before(tmp_path: Path, name: str, slot_key: str) -> None:
+    scout_dir, script, calls, _argv = _setup(tmp_path, name)
+    env = _env(slot_key)
+    env.pop("SCOUT_RUN_SANDBOX")
+    result = subprocess.run([str(script)], env=env, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert f"sandbox profile --vault {scout_dir}\n" in calls.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(("name", "slot_key"), RUNNERS)
@@ -183,6 +213,9 @@ def test_runner_resolve_failure_falls_back_to_claude_code(tmp_path: Path, name: 
     assert "error: bad config" in log
     assert "--runtime claude-code" in calls.read_text(encoding="utf-8")
     assert argv_file.exists()
+    # #652 S7: the row says so, for run health, not only the log.
+    row = _outcomes(scout_dir)[-1]
+    assert (row["agent_runtime"], row["agent_runtime_fallback"]) == ("claude-code", "resolve_failed")
 
 
 def test_a_resolve_answer_that_isnt_a_runtime_id_falls_back_to_claude_code(tmp_path: Path) -> None:
@@ -192,6 +225,7 @@ def test_a_resolve_answer_that_isnt_a_runtime_id_falls_back_to_claude_code(tmp_p
     assert "gave no runtime id" in _log(scout_dir)
     assert "--runtime claude-code --bin" in calls.read_text(encoding="utf-8")
     assert argv_file.exists()
+    assert _outcomes(scout_dir)[-1]["agent_runtime_fallback"] == "resolve_failed"
 
 
 @pytest.mark.parametrize(("name", "slot_key"), RUNNERS)
@@ -326,8 +360,12 @@ def test_live_run_still_matches_exec_launched_claude(tmp_path: Path, name: str, 
     assert x_argv == d_argv
     assert d_argv[:2] == ["--permission-mode", "auto"]  # bash's "$@": argv[0] is the stub itself
     assert x_cwd == d_cwd == str(scout_dir)
+    # An engine without `agent-runtime` can't resolve one either, so that run records the fallback (#652 S7).
+    assert (x_env["SCOUT_AGENT_RUNTIME_FALLBACK"], d_env["SCOUT_AGENT_RUNTIME_FALLBACK"]) == ("", "resolve_failed")
     for env in (x_env, d_env):
-        for noise in ("_", "SCOUT_RUN_STARTED", "SCOUT_RUN_AWAKE_STARTED", "SCOUT_TEST_OLD_ENGINE"):
+        for noise in (
+            "_", "SCOUT_RUN_STARTED", "SCOUT_RUN_AWAKE_STARTED", "SCOUT_TEST_OLD_ENGINE", "SCOUT_AGENT_RUNTIME_FALLBACK"
+        ):  # fmt: skip
             env.pop(noise, None)
         env.pop("CLAUDE_OUT")
     assert x_env == d_env

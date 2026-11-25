@@ -313,7 +313,7 @@ def test_the_reviews_are_protected_in_both_layers(tmp_path: Path) -> None:
     hook_paths._ROOTS_CACHE.clear()
     record = doctor_triage.reviews_path(env=env)
     assert record.name == hook_paths.REVIEWED_WARNINGS_NAME
-    assert hook_paths.protected_write(record, v, env) == hook_paths.ENGINE
+    assert hook_paths.protected_write(record, v, env) == hook_paths.OWNER_STATE
     assert sbx.decide(sbx.build_rules(v, env), str(record)) == "deny"
     assert hook_paths.protected_token(f"open('{record}', 'w')") is not None
     hook_paths._ROOTS_CACHE.clear()

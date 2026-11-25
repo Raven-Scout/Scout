@@ -246,6 +246,10 @@ if awake_s.isdigit():
 agent_runtime = os.environ.get("SCOUT_AGENT_RUNTIME", "")
 if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", agent_runtime):
     row["agent_runtime"] = agent_runtime
+# Why the run is on claude-code instead of the runtime it was set to: "resolve_failed" (the runner couldn't
+# resolve one, #652 S7); left out when it ran where it was set to, and for rows from older runners.
+if os.environ.get("SCOUT_AGENT_RUNTIME_FALLBACK", "") == "resolve_failed":
+    row["agent_runtime_fallback"] = "resolve_failed"
 runner = os.environ.get("SCOUT_RUNNER_KIND")
 if runner in ("scout", "dreaming", "research", "respond"):
     row["runner"] = runner

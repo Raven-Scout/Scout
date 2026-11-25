@@ -61,7 +61,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from scout import paths
-from scout.agent_runtimes.base import AgentRuntime
+from scout.agent_runtimes.base import AgentRuntime, caps_own_spend
+from scout.agent_runtimes.registry import BUILTIN_DEFAULT
 
 DEFAULT_RUN_TIMEOUT_MINUTES = 45
 # A slot kind whose runs usually take longer starts higher (spec §8.6, Q6 as amended 2026-11-16: Claude research runs'
@@ -150,7 +151,7 @@ def default_daily_token_ceiling(data_dir: Path | None, runtime_id: str, *, now: 
                 if ts is None or ts < since or ts > now + CLOCK_SKEW:
                     continue
                 kind = kind_of(row.get("type"))
-                if row.get("agent_runtime") == runtime_id and runtime_id != "claude-code":
+                if row.get("agent_runtime") == runtime_id and runtime_id != BUILTIN_DEFAULT:
                     if (n := _row_tokens(row)) > 0:
                         own.setdefault(kind, []).append(float(n))
                         oldest_own = ts if oldest_own is None or ts < oldest_own else oldest_own
@@ -382,7 +383,7 @@ def _limits_for(
     env: Mapping[str, str] | None,
     use_config: bool,
 ) -> RuntimeLimits:
-    self_capped = adapter.caps_own_spend
+    self_capped = caps_own_spend(adapter)
     owner = owner_limits(data_dir, adapter.id, env=env)
     config = _block(data_dir, adapter.id) if use_config else {}
     ignored: list[str] = []
@@ -479,7 +480,7 @@ def tokens_used(data_dir: Path | None, runtime_id: str, *, now: datetime | None 
     since, until = now - CEILING_WINDOW, now + CLOCK_SKEW
     total = 0
     for row in iter_tracker_rows(tracker):
-        if not isinstance(row, dict) or (row.get("agent_runtime") or "claude-code") != runtime_id:
+        if not isinstance(row, dict) or (row.get("agent_runtime") or BUILTIN_DEFAULT) != runtime_id:
             continue
         ts = row_ts(row)
         if ts is None or ts < since or ts > until:  # a future-dated row would never age out
