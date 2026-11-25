@@ -412,3 +412,48 @@ def test_the_doctor_says_when_it_cannot_read_the_snapshot(tmp_path: Path, monkey
     (tmp_path / ".claude" / "shell-snapshots" / "snapshot-zsh-1-a.sh").mkdir(parents=True)
     (warning,) = shell_shadows.check(tmp_path)[0]
     assert "could not read" in warning
+
+
+# --- decide() never raises on tricky shell text (an IndexError once denied real runs' calls) ---------
+
+_INNER = [
+    "cat $(find .)",
+    "echo x=$?",
+    'grep -n "a (b) c" docs/a.md',
+    "echo `date` $(ls docs)",
+    "cat $(echo $(find docs))",
+    "echo '$(not a substitution)' \"$(find docs)\"",
+    "echo \x015\x01 \x01",  # marker bytes the command spells itself
+]
+_WRAPS = [
+    "{}",
+    'bash -c "{}"',
+    "sh -c '{}'",
+    'eval "{}"',
+    "cd docs && {}",
+    "cd docs; ({}); cd ..",
+    "({}) | head -3",
+    "python3 - <<'EOF'\nprint(\"x (y) $(z)\")\n{}\nEOF\n",
+    "python3 - <<EOF | head -3\nimport os; print(os.getcwd(), '(a)')\nEOF\n{}",
+    "{}; scripts/scoutctl kb files; echo x=$?",
+    "for f in $(find docs); do {}; done",
+    'x=$({}); echo "$x"',
+    "`{}`",
+]
+TRICKY = [w.format(i) for w in _WRAPS for i in _INNER] + [
+    "echo $(",
+    "echo `unterminated",
+    "( ( cd docs ) ) ) )",
+    "cat <<'A'\n$(find .)\n`find .`\nA",
+]
+
+
+def test_decide_never_raises_on_tricky_shell_text(home: Path) -> None:
+    env = {**RUN, "HOME": str(home), "SCOUT_DATA_DIR": str(home / "Vault")}
+    for where in ("", "docs", "action-items"):
+        for command in TRICKY:
+            payload = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(home / "Vault" / where)}
+            try:
+                gate.decide(payload, reader="autonomous", mode="morning-briefing", env=env)
+            except Exception as e:  # noqa: BLE001 - the failure names what raised
+                pytest.fail(f"decide() raised {type(e).__name__}: {e} on {command!r} from {where or 'the vault'}")

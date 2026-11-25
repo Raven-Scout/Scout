@@ -1199,6 +1199,18 @@ def _risky_substitution(inner: str) -> bool:
     return bool(_names_kb(inner) or _RISKY_SUBSTITUTION.search(inner))
 
 
+def _restored(text: str, substitutions: list[str]) -> str:
+    """``text`` with each :data:`_SUBST` marker put back as the substitution it stands for, so a program judged
+    again on its own (``bash -c "cat $(find .)"``) splits its own substitutions: a marker indexes only the list
+    of the split that made it. A marker that list doesn't hold (the command spelled one itself) stays as it is."""
+
+    def put(m: re.Match[str]) -> str:
+        i = int(m.group(1))
+        return f"$({substitutions[i]})" if i < len(substitutions) else m.group(0)
+
+    return _SUBST_INDEX.sub(put, text)
+
+
 _SUBSHELL_OPEN, _SUBSHELL_CLOSE = "\x02(", "\x02)"  # a `(` and a `)` of the command, each a statement of its own
 
 
@@ -1349,6 +1361,8 @@ def _judge_recursive(
         words = _strip(_shell_words(piece)).words
         reader = bool(words) and _command_name(words[0]) in _READ_COMMANDS
         for i in map(int, _SUBST_INDEX.findall(piece)):
+            if i >= len(substitutions):
+                continue  # a marker the command spelled itself: no substitution of this split
             judged.add(i)
             fed = reader and any(f"{_SUBST}{i}{_SUBST}" in w for w in words[1:])
             if _judge_recursive(substitutions[i], in_kb, folder, vault, env, depth + 1, fed):
@@ -1365,7 +1379,8 @@ def _judge_recursive(
                 continue
             if _SUBST in root:
                 # Files a command prints are not a folder to walk, unless it prints where the vault is.
-                if rec.content and any(_risky_substitution(substitutions[int(i)]) for i in _SUBST_INDEX.findall(root)):
+                found = [int(i) for i in _SUBST_INDEX.findall(root)]
+                if rec.content and any(i >= len(substitutions) or _risky_substitution(substitutions[i]) for i in found):
                     return True
                 continue
             word = _expand(root, env, local)
@@ -1403,7 +1418,7 @@ def _judge_recursive(
             if not words:
                 continue
             if any(c.isspace() for c in words[0]):  # a program a shell prefix runs: `bash -c 'rg x'`
-                if _judge_recursive(" ".join(words), in_kb, here, vault, env, depth + 1):
+                if _judge_recursive(_restored(" ".join(words), substitutions), in_kb, here, vault, env, depth + 1):
                     return True
                 continue
             name, args = _command_name(words[0]), words[1:]
