@@ -553,8 +553,10 @@ def cli_experiment_stop(
 
     from scout.lab import runs
 
-    runs.request_stop(_vault(ctx), slug, eid, os.environ, _handle(author))
+    signalled = runs.request_stop(_vault(ctx), slug, eid, os.environ, _handle(author))
     _ok(slug, f"stop {eid}")
+    if not signalled:
+        typer.echo(runs.STOP_PENDING, err=True)
 
 
 @experiment_app.command("call")

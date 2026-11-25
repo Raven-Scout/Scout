@@ -114,6 +114,31 @@ def test_live_counts_only_records_whose_supervisor_holds_the_lock(vault: Path) -
     assert not runs.lock_held(runs.lock_path(vault, SLUG, "E1", env))
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="needs macOS libproc")
+def test_process_start_and_open_files(vault: Path, tmp_path: Path) -> None:
+    """The two facts an overrun kill needs about a pid: when it started, and whether it has a file open."""
+    before = time.time()
+    held = tmp_path / "held"
+    held.write_text("", encoding="utf-8")
+    code = "import sys, time\nf = open(sys.argv[1])\nopen(sys.argv[2], 'w').write('ready')\ntime.sleep(60)\n"
+    ready = tmp_path / "ready"
+    proc = subprocess.Popen([sys.executable, "-I", "-c", code, str(held), str(ready)])
+    try:
+        _wait(ready.exists, 30, "the child")
+        start = sandbox.process_start(proc.pid)
+        assert start is not None and before - 1 <= start <= time.time()
+        st = held.stat()
+        files = sandbox.OpenFiles(max_fds=65536)
+        assert files.holds(proc.pid, st.st_dev, st.st_ino) is True
+        other = tmp_path / "other"
+        other.write_text("", encoding="utf-8")
+        assert files.holds(proc.pid, other.stat().st_dev, other.stat().st_ino) is False
+    finally:
+        proc.kill()
+        proc.wait()
+    assert sandbox.process_start(proc.pid) is None  # gone
+
+
 def test_hhmm() -> None:
     assert [runs.hhmm(s) for s in (0, 59, 3900, 43200, -5)] == ["0h00m", "0h00m", "1h05m", "12h00m", "0h00m"]
 
@@ -226,6 +251,37 @@ def test_veto_stops_a_running_experiment(vault: Path, tmp_path: Path) -> None:
     assert should_stop() is None
     broker.record_veto(_env(), vault, SLUG, EID, NOW)
     assert should_stop() == "stopped by the owner"
+
+
+def test_each_poll_refreshes_the_marker(vault: Path, tmp_path: Path) -> None:
+    """Ruling P2-R9: macOS's /tmp cleanup removes files untouched for 3 days, so each poll touches the sweep's
+    probe file and its decoy, and a long run's marker is never cleaned away under it."""
+    marker = tmp_path / "probe"
+    decoy = tmp_path / "probe-denied"
+    for f in (marker, decoy):
+        f.write_text("", encoding="utf-8")
+        os.utime(f, (1_000_000, 1_000_000))
+    should_stop = _stopper(vault, tmp_path)
+    should_stop()  # before the gate opens: nothing to touch yet
+    assert marker.stat().st_mtime == 1_000_000
+    should_stop.marker = str(marker)
+    begun = time.time()
+    assert should_stop() is None
+    for f in (marker, decoy):
+        assert f.stat().st_mtime >= begun - 1 and f.stat().st_atime >= begun - 1
+
+
+def test_on_started_hands_the_marker_to_the_poll(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_run(*_a: Any, **kw: Any) -> runner.RunOutcome:
+        kw["on_started"]("/private/tmp/scout-lab-x/probe", "/outside")
+        seen["marker"] = kw["should_stop"].marker
+        return runner.RunOutcome(0, "", "", 0.0, False)
+
+    monkeypatch.setattr(runner, "run_experiment", fake_run)
+    supervise.supervise(_inputs(vault))
+    assert seen["marker"] == "/private/tmp/scout-lab-x/probe"
 
 
 def test_what_else_stops_it(vault: Path, tmp_path: Path) -> None:

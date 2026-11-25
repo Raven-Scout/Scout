@@ -305,6 +305,27 @@ class _VnodeFdInfo(ctypes.Structure):  # struct vnode_fdinfo: a proc_fileinfo, t
 
 
 UnlinkedFile = tuple[int, int, int]  # (dev, ino, bytes)
+_PROC_PIDTBSDINFO = 3
+_BSDINFO_BYTES = 136  # struct proc_bsdinfo
+_START_TVSEC_OFFSET = 120  # pbi_start_tvsec: after the flags, ids, comm[16], name[32], five counts and pbi_nice
+
+
+def process_start(pid: int) -> int | None:  # pragma: no cover - loads a macOS library, like SandboxProbe
+    """When process ``pid`` started, in whole seconds since the epoch (libproc's ``PROC_PIDTBSDINFO``,
+    ``pbi_start_tvsec``); None when it is gone or the kernel won't say."""
+    try:
+        lib = ctypes.CDLL(_LIBPROC, use_errno=True)
+    except OSError:
+        return None
+    fn = lib.proc_pidinfo
+    fn.restype = ctypes.c_int
+    fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+    buf = ctypes.create_string_buffer(_BSDINFO_BYTES)
+    if fn(pid, _PROC_PIDTBSDINFO, 0, buf, _BSDINFO_BYTES) != _BSDINFO_BYTES:
+        return None
+    if int.from_bytes(buf.raw[12:16], "little") != pid:  # pbi_pid: the struct is the one this reads
+        return None
+    return int.from_bytes(buf.raw[_START_TVSEC_OFFSET : _START_TVSEC_OFFSET + 8], "little")
 
 
 class OpenFiles:
@@ -336,7 +357,26 @@ class OpenFiles:
         filled its buffer."""
         return self._unlinked(pid, self.max_fds + 1)
 
+    def holds(self, pid: int, dev: int, ino: int) -> bool | None:
+        """Whether ``pid`` holds the file ``(dev, ino)`` open; None when ``pid`` is gone. :class:`OSError` when the
+        kernel won't list it."""
+        found = self._vnodes(pid, self.max_fds + 1)
+        if found is None:
+            return None
+        return any(st.vst_dev == dev and st.vst_ino == ino for st in found)
+
     def _unlinked(self, pid: int, capacity: int) -> list[UnlinkedFile] | None:
+        found = self._vnodes(pid, capacity)
+        if found is None:
+            return None
+        return [
+            (st.vst_dev, st.vst_ino, max(st.vst_size, st.vst_blocks * 512))
+            for st in found
+            if stat.S_ISREG(st.vst_mode) and st.vst_nlink == 0
+        ]
+
+    def _vnodes(self, pid: int, capacity: int) -> list[_VinfoStat] | None:
+        """The ``vinfo_stat`` of every vnode ``pid`` holds open; None when it is gone (the module docstring)."""
         fds = (_ProcFdInfo * capacity)()
         ctypes.set_errno(0)
         got = self._pidinfo(pid, _PROC_PIDLISTFDS, 0, fds, ctypes.sizeof(fds))
@@ -349,7 +389,7 @@ class OpenFiles:
             raise OSError(err or errno.EIO, f"proc_pidinfo couldn't list the open files of process {pid}")
         if got >= ctypes.sizeof(fds):
             raise OSError(errno.EOVERFLOW, f"process {pid} has more descriptors open than {capacity - 1}")
-        out: list[UnlinkedFile] = []
+        out: list[_VinfoStat] = []
         info = _VnodeFdInfo()
         for entry in fds[: got // ctypes.sizeof(_ProcFdInfo)]:
             if entry.proc_fdtype != _PROX_FDTYPE_VNODE:
@@ -363,9 +403,7 @@ class OpenFiles:
                 if err == errno.ESRCH:  # exited partway through
                     return None
                 raise OSError(err or errno.EIO, f"proc_pidfdinfo couldn't read descriptor {entry.proc_fd} of {pid}")
-            st = info.vi_stat
-            if stat.S_ISREG(st.vst_mode) and st.vst_nlink == 0:
-                out.append((st.vst_dev, st.vst_ino, max(st.vst_size, st.vst_blocks * 512)))
+            out.append(_VinfoStat.from_buffer_copy(info.vi_stat))
         return out
 
     def works(self) -> bool:

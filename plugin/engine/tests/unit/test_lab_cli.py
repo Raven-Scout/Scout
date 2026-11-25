@@ -320,6 +320,29 @@ def test_stop_that_cant_write_its_request_is_refused_cleanly(
     assert all(sig == 0 for _, sig in sent)  # nothing was stopped
 
 
+def test_a_stop_whose_signal_fails_is_pending(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The stop request is written, so the supervisor stops at its next poll even when SIGTERM can't reach it."""
+    import os
+
+    from scout.lab import runner as lab_runner
+    from scout.lab import runs
+
+    def kill(pid: int, sig: int) -> None:
+        if sig:
+            raise PermissionError("not permitted")
+
+    monkeypatch.setattr(runs, "_kill", kill)
+    path = _detached_record(vault)
+    with lab_runner._run_lock(vault, "summary-drift", "E2", os.environ):
+        code, out, err = _main(monkeypatch, capsys, "experiment", "stop", "summary-drift", "E2", "--author", "alex")
+    assert code == 0, err
+    assert out.strip() == "ok summary-drift stop E2"
+    assert "the stop is pending: the supervisor will stop at its next check" in err
+    assert runs.stop_path(path).is_file()
+
+
 def test_run_detach_reaches_the_client(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from scout.sandbox import broker
 

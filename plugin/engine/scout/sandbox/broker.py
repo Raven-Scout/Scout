@@ -1750,7 +1750,10 @@ def _uncollected(vault: Path, slug: str, eid: str, env: Mapping[str, str]) -> Re
     record = runs.read(runs.record_path(vault, slug, eid, env))
     if record is None or record.outcome is not None:
         return None
-    why = f"an earlier detached run of {eid} hasn't been collected; collect it first"
+    if runs.alive(vault, slug, eid, record, env):
+        why = f"a detached run of {eid} is still running"
+    else:
+        why = f"an earlier detached run of {eid} hasn't been collected; collect it first"
     return Reply(EXIT_NOT_RUN, f"experiment not run: {why}\n", kind=REFUSED)
 
 
@@ -1767,9 +1770,9 @@ def _settle_gone(
     hold = contextlib.ExitStack()
     try:
         hold.enter_context(runner._run_lock(vault, slug, eid, env))
+    except runner.RunLockBusy:  # busy when tried, whatever it is a moment later
+        return Reply(0, f"experiment running: another run of {eid} holds it\n")
     except LabError as e:
-        if runs.lock_held(runs.lock_path(vault, slug, eid, env)):
-            return Reply(0, f"experiment running: another run of {eid} holds it\n")
         return Reply(EXIT_NOT_RUN, f"experiment not run: {_one_line(e)}\n", kind=REFUSED)
     with hold:
         fresh = runs.read(path) or record
@@ -1783,17 +1786,21 @@ def _settle_gone(
     return _recorded_reply(outcome)
 
 
-def _stop_overrun(vault: Path, slug: str, eid: str, env: Mapping[str, str], record: Any) -> None:
-    """SIGKILL a supervisor that is alive past its deadline and its grace (it holds the run lock and the record names
-    its pid, so the pid is ours), then wait for its lock to go."""
+def _stop_overrun(vault: Path, slug: str, eid: str, env: Mapping[str, str], record: Any) -> bool:
+    """SIGKILL a supervisor that is alive past its deadline and its grace, then wait for its lock to go. Only once the
+    pid is proven the record's supervisor (:func:`scout.lab.runs.is_supervisor`: it has the run-lock file open and
+    started no later than the record); else nothing is signalled and False is returned."""
     from scout.lab import runs
 
+    if not runs.is_supervisor(vault, slug, eid, record, env):
+        return False
     with contextlib.suppress(OSError):
         runs._kill(record.pid, signal.SIGKILL)
     lock = runs.lock_path(vault, slug, eid, env)
     deadline = time.monotonic() + SUPERVISOR_KILL_WAIT_S
     while runs.lock_held(lock) and time.monotonic() < deadline:
         time.sleep(0.05)
+    return True
 
 
 def experiment_status(vault: Path, slug: str, eid: str, env: Mapping[str, str], now: datetime) -> Reply:
@@ -1801,8 +1808,9 @@ def experiment_status(vault: Path, slug: str, eid: str, env: Mapping[str, str], 
 
     - the recorded outcome: ``experiment ran: exit <n>`` (the reply is the script's) or ``experiment not run: …``;
     - a live supervisor: ``experiment running: <elapsed> of <deadline>`` (``HhMm``); one still alive more than
-      :data:`OVERRUN_GRACE` past its deadline is SIGKILLed and settled as gone, ``not run: the supervisor ran past
-      its deadline``;
+      :data:`OVERRUN_GRACE` past its deadline is SIGKILLed, only once its pid is proven the supervisor's
+      (:func:`scout.lab.runs.is_supervisor`), and settled as gone, ``not run: the supervisor ran past its deadline``.
+      A pid that can't be proven is never signalled: the record is settled as a gone supervisor's;
     - a supervisor that is gone with no outcome (:func:`_settle_gone`): the runner's sweep when the gate had opened,
       then ``experiment not run: the supervisor stopped without a result``, recorded as the outcome, so a second
       collect gives the same answer without sweeping again. A sweep that can't confirm nothing is left records
@@ -1825,8 +1833,10 @@ def experiment_status(vault: Path, slug: str, eid: str, env: Mapping[str, str], 
                 return Reply(0, "experiment running: 0h00m of 0h00m\n")
             elapsed, total = (now - started).total_seconds(), (deadline - started).total_seconds()
             return Reply(0, f"experiment running: {runs.hhmm(elapsed)} of {runs.hhmm(total)}\n")
-        _stop_overrun(vault, slug, eid, env, record)
-        return _settle_gone(vault, slug, eid, env, record, now, OVERRAN)
+        if _stop_overrun(vault, slug, eid, env, record):
+            return _settle_gone(vault, slug, eid, env, record, now, OVERRAN)
+        # Not provably its supervisor (a reused pid): treated as gone, and nothing is signalled.
+        return _settle_gone(vault, slug, eid, env, record, now, SUPERVISOR_GONE)
     return _settle_gone(vault, slug, eid, env, record, now, SUPERVISOR_GONE)
 
 

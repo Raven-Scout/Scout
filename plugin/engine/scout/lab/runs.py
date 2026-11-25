@@ -44,8 +44,11 @@ LEDGER_DIR = "lab-meter"  # the runner's folder for the ledger and the run lock 
 STOP_SUFFIX = ".stop"
 INPUTS_SUFFIX = ".in.json"
 LOG_SUFFIX = ".log"
-# Signals sent to a supervisor go through here, so a test can stand in for it.
-_kill = os.kill
+
+
+def _kill(pid: int, sig: int) -> None:
+    """Every signal this module and the broker send a supervisor (``os.kill``, looked up when called)."""
+    os.kill(pid, sig)
 
 
 @dataclass(frozen=True)
@@ -189,6 +192,27 @@ def alive(vault: Path, slug: str, eid: str, record: RunRecord, env: Mapping[str,
     return lock_held(lock_path(vault, slug, eid, env)) and _pid_exists(record.pid)
 
 
+def is_supervisor(vault: Path, slug: str, eid: str, record: RunRecord, env: Mapping[str, str]) -> bool:
+    """Proof that ``record.pid`` is the record's supervisor, before anything kills it: the process has the
+    experiment's run-lock file open (libproc's descriptor list, compared by device and inode) and it started no
+    later than the record says the supervisor did. A pid the system reused for another process fails one or the
+    other. False whenever either can't be shown."""
+    from scout.lab import sandbox
+
+    started = parse_time(record.started)
+    if started is None:
+        return False
+    try:
+        st = os.stat(lock_path(vault, slug, eid, env), follow_symlinks=False)
+        holds = sandbox.OpenFiles(max_fds=65536).holds(record.pid, st.st_dev, st.st_ino)
+    except (OSError, AttributeError):
+        return False
+    if holds is not True:
+        return False
+    begun = sandbox.process_start(record.pid)
+    return begun is not None and begun <= started.timestamp()
+
+
 def _experiments(vault: Path, env: Mapping[str, str]) -> list[tuple[str, str, Path]]:
     """(slug, EID, record path) for every record of this vault's."""
     prefix = vault_key(vault) + "-"
@@ -216,10 +240,15 @@ def live(vault: Path, env: Mapping[str, str]) -> list[RunRecord]:
     return out
 
 
-def request_stop(vault: Path, slug: str, eid: str, env: Mapping[str, str], author: str) -> int:
+STOP_PENDING = "the stop is pending: the supervisor will stop at its next check"
+
+
+def request_stop(vault: Path, slug: str, eid: str, env: Mapping[str, str], author: str) -> bool:
     """The owner's stop (``lab experiment stop``): write the stop request beside the record, then SIGTERM the
-    supervisor, which kills the script and records ``stopped by the owner``. Returns the supervisor's pid. Raises
-    :class:`LabError` when no detached run of the experiment is alive."""
+    supervisor, which kills the script and records ``stopped by the owner``. True when the SIGTERM was sent; False
+    when it couldn't be, though the request is written and the supervisor stops at its next poll
+    (:data:`STOP_PENDING`). Raises :class:`LabError` when no detached run of the experiment is alive, or the request
+    can't be written."""
     path = record_path(vault, slug, eid, env)
     rec = read(path)
     if rec is None:
@@ -238,9 +267,9 @@ def request_stop(vault: Path, slug: str, eid: str, env: Mapping[str, str], autho
         raise LabError(f"cannot write the stop request {stop} ({why}); nothing was stopped") from None
     try:
         _kill(rec.pid, signal.SIGTERM)
-    except OSError as exc:
-        raise LabError(f"cannot signal the supervisor of {slug} {eid} ({exc.__class__.__name__})") from None
-    return rec.pid
+    except OSError:
+        return False
+    return True
 
 
 def hhmm(seconds: float) -> str:

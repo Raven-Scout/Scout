@@ -14,7 +14,9 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import threading
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1911,12 +1913,7 @@ class _HeldLock:
             self.fd = None
 
 
-@pytest.mark.parametrize(("late", "killed"), [(timedelta(minutes=5), False), (timedelta(minutes=11), True)])
-def test_a_supervisor_past_its_deadline_is_stopped_by_collect(
-    vault: Path, monkeypatch: pytest.MonkeyPatch, late: timedelta, killed: bool
-) -> None:
-    """A supervisor alive more than 10 minutes past its deadline (a fetch that ignores should_stop) is SIGKILLed,
-    swept as a gone one, and recorded ``not run``; it no longer holds a ``max_detached`` slot."""
+def test_a_supervisor_not_yet_past_its_grace_is_left_running(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from scout.lab import runs
 
     fake_pid = 999_999_991
@@ -1924,20 +1921,155 @@ def test_a_supervisor_past_its_deadline_is_stopped_by_collect(
     held = _HeldLock(vault)
     monkeypatch.setattr(runs, "_kill", held.kill)
     try:
-        reply = _broker(vault, now=T + timedelta(hours=12) + late).handle(dict(STATUS))
+        reply = _broker(vault, now=T + timedelta(hours=12, minutes=5)).handle(dict(STATUS))
     finally:
         held.close()
+    assert (fake_pid, signal.SIGKILL) not in held.signals
+    assert reply.exit == 0 and reply.stderr == "experiment running: 12h05m of 12h00m\n"
     rec = runs.read(path)
-    assert rec is not None
-    if killed:
-        assert (fake_pid, signal.SIGKILL) in held.signals
+    assert rec is not None and rec.outcome is None
+
+
+_REAL_KILL = os.kill
+needs_libproc = pytest.mark.skipif(sys.platform != "darwin", reason="needs macOS libproc")
+# A process of the test's own that opens the experiment's run lock (argv 1), flocks it when argv 2 is "1", says it is
+# ready (argv 3), and waits.
+_HOLDER = (
+    "import fcntl, os, sys, time\n"
+    "fd = os.open(sys.argv[1], os.O_WRONLY)\n"
+    "if sys.argv[2] == '1':\n"
+    "    fcntl.flock(fd, fcntl.LOCK_EX)\n"
+    "open(sys.argv[3], 'w').write('ready')\n"
+    "time.sleep(60)\n"
+)
+
+
+def _holder(vault: Path, tmp_path: Path, *, flock: bool) -> subprocess.Popen[bytes]:
+    lock = runner.run_lock_path(vault, SLUG, EID, os.environ)
+    if not lock.exists():
+        os.close(os.open(lock, os.O_WRONLY | os.O_CREAT, 0o200))
+    ready = tmp_path / f"ready-{flock}"
+    proc = subprocess.Popen([sys.executable, "-I", "-c", _HOLDER, str(lock), "1" if flock else "0", str(ready)])
+    deadline = time.monotonic() + 30
+    while not ready.exists():
+        assert proc.poll() is None and time.monotonic() < deadline, "the lock holder didn't start"
+        time.sleep(0.05)
+    return proc
+
+
+def _overdue_record(vault: Path, pid: int, started: datetime) -> Path:
+    from scout.lab import runs
+
+    path = runs.record_path(vault, SLUG, EID, os.environ)
+    runs.write(path, runs.RunRecord(started.isoformat(), (started + timedelta(hours=1)).isoformat(), pid))
+    return path
+
+
+def _no_signals(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Any signal but 0 (the existence probe) fails the test."""
+
+    def kill(pid: int, sig: int) -> None:
+        if sig != 0:
+            raise AssertionError(f"signal {sig} sent to {pid}")
+        _REAL_KILL(pid, 0)
+
+    monkeypatch.setattr(os, "kill", kill)
+
+
+@needs_libproc
+def test_an_overrun_kill_spares_a_pid_that_doesnt_hold_the_lock_file(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The record names a live process of this test's that doesn't have the lock file open (a reused pid), while
+    something else holds the lock: it is never signalled, and the record is settled as a gone one's."""
+    other = subprocess.Popen(["/bin/sleep", "60"])
+    held = _HeldLock(vault)
+    try:
+        started = datetime.now(UTC) + timedelta(seconds=1)
+        _overdue_record(vault, other.pid, started)
+        _no_signals(monkeypatch)
+        reply = _broker(vault, now=started + timedelta(hours=2)).handle(dict(STATUS))
+        monkeypatch.undo()
+        assert other.poll() is None  # untouched
+        assert reply.exit == 0 and reply.stderr == f"experiment running: another run of {EID} holds it\n"
+    finally:
+        held.close()
+        other.kill()
+        other.wait()
+
+
+@needs_libproc
+def test_an_overrun_kill_spares_a_pid_started_after_the_record(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pid has the lock file open but started after the record was written: not the record's supervisor."""
+    held = _HeldLock(vault)
+    proc = _holder(vault, tmp_path, flock=False)
+    try:
+        started = datetime.now(UTC) - timedelta(hours=1)
+        _overdue_record(vault, proc.pid, started)
+        _no_signals(monkeypatch)
+        reply = _broker(vault, now=started + timedelta(hours=2)).handle(dict(STATUS))
+        monkeypatch.undo()
+        assert proc.poll() is None
+        assert reply.stderr == f"experiment running: another run of {EID} holds it\n"
+    finally:
+        held.close()
+        proc.kill()
+        proc.wait()
+
+
+@needs_libproc
+def test_an_overrun_supervisor_that_proves_itself_is_killed(vault: Path, tmp_path: Path) -> None:
+    """A process of this test's that holds the lock file open and locked, started before the record: SIGKILLed,
+    swept as a gone supervisor, and recorded ``not run``; it no longer holds a ``max_detached`` slot."""
+    from scout.lab import runs
+
+    proc = _holder(vault, tmp_path, flock=True)
+    try:
+        started = datetime.now(UTC) + timedelta(seconds=1)
+        path = _overdue_record(vault, proc.pid, started)
+        reply = _broker(vault, now=started + timedelta(hours=1, minutes=11)).handle(dict(STATUS))
+        assert proc.wait(timeout=10) == -signal.SIGKILL
         assert reply.exit == broker.EXIT_NOT_RUN
         assert reply.stderr == "experiment not run: the supervisor ran past its deadline\n"
-        assert rec.outcome is not None and rec.outcome["reason"] == "the supervisor ran past its deadline"
-    else:
-        assert (fake_pid, signal.SIGKILL) not in held.signals
-        assert reply.exit == 0 and reply.stderr == "experiment running: 12h05m of 12h00m\n"
-        assert rec.outcome is None
+        rec = runs.read(path)
+        assert (
+            rec is not None
+            and rec.outcome is not None
+            and rec.outcome["reason"] == "the supervisor ran past its deadline"
+        )
+        assert runs.live(vault, os.environ) == []
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+def test_a_second_start_of_a_running_detached_experiment_says_it_is_running(vault: Path, fake_run: FakeRun) -> None:
+    _record(vault)  # no outcome, and its supervisor (this test's process) holds the lock
+    with runner._run_lock(vault, SLUG, EID, os.environ):
+        reply = _broker(vault).handle(dict(REQ))
+    assert reply.exit == broker.EXIT_NOT_RUN
+    assert reply.stderr == f"experiment not run: a detached run of {EID} is still running\n"
+    assert fake_run.calls == []
+
+
+def test_a_lock_busy_then_free_still_reads_as_another_run(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The run lock was busy when tried and free a moment later: the answer is still the busy one, never a
+    contradictory "not run: … already running"."""
+    import contextlib as _contextlib
+
+    _record(vault, pid=_dead_pid())
+
+    @_contextlib.contextmanager
+    def busy(*_a: Any) -> Iterator[None]:
+        raise runner.RunLockBusy(f"experiment {SLUG} {EID} is already running")
+        yield
+
+    monkeypatch.setattr(runner, "_run_lock", busy)
+    reply = _broker(vault).handle(dict(STATUS))
+    assert reply.exit == 0 and reply.stderr == f"experiment running: another run of {EID} holds it\n"
 
 
 def test_status_when_another_run_holds_the_lock(vault: Path) -> None:

@@ -134,8 +134,19 @@ class Stopper:
     ) -> None:
         self.env, self.slug, self.eid, self.deadline = env, slug, eid, deadline
         self.stop_file, self.terminated, self.now = stop_file, terminated, now
+        self.marker: str | None = None  # the sweep's probe file, once the gate's checks have passed
+
+    def _touch(self) -> None:
+        """Ruling P2-R9: keep the probe file and its decoy fresh, so macOS's 3-day /tmp cleanup never removes a live
+        run's marker (a collect would then take the run for one a restart ended)."""
+        if self.marker is None:
+            return
+        for path in (self.marker, self.marker + "-denied"):
+            with contextlib.suppress(OSError):
+                os.utime(path, follow_symlinks=False)
 
     def __call__(self) -> str | None:
+        self._touch()
         if self.stop_file.exists():
             return STOPPED_BY_OWNER
         if self.terminated():
@@ -186,6 +197,7 @@ def _outcome(inputs: Inputs, path: Path, stopper: Stopper, deadline: datetime) -
             runs.write(path, replace(current, marker=marker, outside=outside))
         except OSError as exc:
             raise LabError(f"cannot update the run's state record ({exc.__class__.__name__}); not run") from None
+        stopper.marker = marker
 
     try:
         out = runner.run_experiment(

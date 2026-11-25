@@ -204,6 +204,10 @@ class RunOutcome:
     stopped: str | None = None  # why the caller's ``should_stop`` ended the run (a detached run's supervisor, §6.4)
 
 
+class RunLockBusy(LabError):
+    """Another run of the experiment holds its run lock ("already running")."""
+
+
 class DiskFloorError(LabError):
     """Launching would leave the volume under the owner's free-disk floor: the experiment was not run. Exit 4 (not
     run), not 2 (refused), and the run broker doesn't count it against the run's allowance."""
@@ -628,7 +632,7 @@ def _run_lock(vault: Path, slug: str, eid: str, env: Mapping[str, str]) -> Itera
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise LabError(f"experiment {slug} {eid} is already running") from None
+            raise RunLockBusy(f"experiment {slug} {eid} is already running") from None
         yield  # closing the file below lets the lock go
     finally:
         os.close(fd)
