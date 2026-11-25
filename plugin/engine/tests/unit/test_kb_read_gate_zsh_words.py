@@ -142,6 +142,8 @@ MUST_DENY: list[tuple[str, str, bool | str]] = [
     ("grep -rZ --include='*.gz' TODO .", "", BSD),
     ("grep -r -Z --include='*.md.gz' TODO .", "", BSD),  # a `.md.gz` under knowledge-base/ is a note
     ("zgrep -r TODO .", "", BSD),
+    ("ZGREP -r TODO .", "", False),  # a case-insensitive disk runs zgrep (#818); not every test disk is one
+    ("GREP -rZ --include='*.gz' TODO .", "", False),
     ("zgrep -a TODO kb.tgz", "", True),
     ("zgrep TODO knowledge-base/a.md", "", True),
     ("ugrep -rz --include='*.tgz' TODO .", "", False),
