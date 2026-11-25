@@ -188,15 +188,10 @@ struct SchedulesView: View {
             emptyState
         case .slots:
             switch viewMode {
-            case .table:
-                SchedulesMasterTable(
-                    slots: filteredSlots,
-                    newDraftSlot: newDraftSlot,
-                    selectedSlotKey: $selectedSlotKey,
-                    warnings: slotWarnings
-                )
-            case .cards:
-                SchedulesMasterCards(
+            case .table, .cards:
+                // One list around both, so the picker keeps its focus.
+                SchedulesMasterList(
+                    cards: viewMode == .cards,
                     slots: filteredSlots,
                     newDraftSlot: newDraftSlot,
                     selectedSlotKey: $selectedSlotKey,

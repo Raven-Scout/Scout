@@ -63,6 +63,7 @@ private struct CommentRow: View {
     @State private var submitting = false
     @State private var confirmingDelete = false
     @FocusState private var editorFocused: Bool
+    @Environment(\.cardClickFocus) private var clickFocus
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -111,6 +112,8 @@ private struct CommentRow: View {
         HStack(spacing: 4) {
             if onEdit != nil {
                 Button {
+                    // The editor takes the keys, not the list the click is on.
+                    clickFocus?.claimKeys()
                     draft = comment.text
                     editing = true
                     DispatchQueue.main.async { editorFocused = true }

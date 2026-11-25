@@ -10,6 +10,12 @@ struct SchedulesMasterCards: View {
     var warnings: [String: [RunOutcomeDisplay.SlotWarning]] = [:]
     /// Set when the Table view stacks into cards: keep its 24-hour times.
     var twentyFourHour = false
+    /// Set by a view around the grid that holds the Tab stop and arrow keys:
+    /// the Table's, around both of its layouts, so a click that stacks the
+    /// table keeps the keys (UI audit T4), and `SchedulesMasterList`'s, around
+    /// the Table and Cards views, so the picker keeps them (review of #767).
+    /// The grid then adds no stop or key handler of its own.
+    var tableFocus: FocusState<Bool>.Binding?
 
     /// Keyboard focus, set by a click on a card (see `SchedulesMasterTable`).
     @FocusState private var cardsFocused: Bool
@@ -22,50 +28,63 @@ struct SchedulesMasterCards: View {
     static let minCardWidth: CGFloat = 240
 
     var body: some View {
+        if let tableFocus {
+            grid(focus: tableFocus)
+        } else {
+            ScrollViewReader { proxy in
+                grid(focus: $cardsFocused)
+                    // ↑ ↓ Home End step through the cards in reading order (#57):
+                    // ↓ is the next card, which in a grid is the one to the right.
+                    .dsFocusContainer($cardsFocused)
+                    .keyboardListNavigation(
+                        when: cardsFocused,
+                        ids: { SchedulesMasterTable.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot) },
+                        selection: $selectedSlotKey,
+                        announce: { SchedulesMasterTable.name(of: $0, slots: slots, newDraftSlot: newDraftSlot) }
+                    ) { key in
+                        proxy.scrollTo(key)
+                    }
+            }
+        }
+    }
+
+    private func grid(focus: FocusState<Bool>.Binding) -> some View {
         // The card the ring marks while the grid has the keys: the selected one
         // while it's shown (a Type filter can hide it), else the first, which
         // ↓ picks from nothing (`KeyboardListNavigation.ringed`).
         let ringed = KeyboardListNavigation.ringed(
             selectedSlotKey, in: SchedulesMasterTable.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot))
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 12) {
-                    if let draft = newDraftSlot {
-                        cardButton(for: draft, ringed: ringed)
-                    }
-                    ForEach(slots) { slot in
-                        cardButton(for: slot, ringed: ringed)
-                    }
+        return ScrollView {
+            LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 12) {
+                if let draft = newDraftSlot {
+                    cardButton(for: draft, ringed: ringed, focus: focus)
                 }
-                .padding(16)
+                ForEach(slots) { slot in
+                    cardButton(for: slot, ringed: ringed, focus: focus)
+                }
             }
-            // ↑ ↓ Home End step through the cards in reading order (#57):
-            // ↓ is the next card, which in a grid is the one to the right.
-            .dsFocusContainer($cardsFocused)
-            .keyboardListNavigation(
-                when: cardsFocused,
-                ids: { SchedulesMasterTable.keyboardOrder(slots: slots, newDraftSlot: newDraftSlot) },
-                selection: $selectedSlotKey
-            ) { key in
-                proxy.scrollTo(key)
-            }
+            .padding(16)
         }
     }
 
     @ViewBuilder
-    private func cardButton(for slot: Slot, ringed: String?) -> some View {
+    private func cardButton(for slot: Slot, ringed: String?, focus: FocusState<Bool>.Binding) -> some View {
         let isSelected = selectedSlotKey == slot.key
         Button {
             selectedSlotKey = slot.key
-            cardsFocused = true
+            // In the click's own action (see `SchedulesMasterTable.row`).
+            focus.wrappedValue = true
         } label: {
             SlotCard(slot: slot, isSelected: isSelected, warnings: warnings[slot.key] ?? [],
                      twentyFourHour: twentyFourHour)
         }
         .buttonStyle(.dsCard(cornerRadius: 10))
-        // Tab onto the grid itself rings this card; a card Tab lands on has the system ring (T4).
+        // The grid's stop and arrows reach every card; a card isn't a stop of its own.
+        .dsContainerItem()
+        // Tab onto the grid itself rings this card (T4).
         .dsCursorRing(ringed == slot.key, cornerRadius: 10)
         .accessibilitySelected(isSelected)
+        .accessibilityIdentifier("schedules-card-\(slot.key)")
         .id(slot.key)
     }
 }

@@ -23,7 +23,7 @@ struct FocusContainerGuardTests {
     /// Files with a `.focusable()` of their own, and why.
     static let allowlist: [String: String] = [
         // The sink behind every container.
-        "Utilities/DSButtonStyle.swift": "dsFocusContainer itself",
+        "Utilities/DSButtonStyle.swift": "dsFocusContainer itself, and dsContainerItem / dsSkipsTab (focusable(false))",
         // The focus sits on the disclosure chevron itself, which holds no buttons.
         "ActionItems/TopicBoard/DisclosureRow.swift": "chevron, not a container",
     ]
