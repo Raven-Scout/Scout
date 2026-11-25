@@ -107,6 +107,9 @@ class GitRead:
     # folders are when git runs isn't what the gate sees now; "vault-copy", it also copied the repository it runs
     # in (`git worktree add`, `git clone .`), the vault's in a run.
     fs_changed: str = ""
+    # The targets of the links the command made before (`ln -s Vault V2`), each placed from the session's folder
+    # (a relative one is from the link's own folder): one that is the vault, or in or above it, makes a copy of it.
+    links: list[str] = field(default_factory=list)
 
 
 def split_global(args: list[str]) -> tuple[list[str], str | None, str | None, int]:
@@ -160,6 +163,39 @@ def rev_path(word: str) -> str | None:
         elif c == ":" and not depth:
             return word[i + 1 :]
     return None
+
+
+def option_values(args: list[str], longs: set[str], shorts: set[str]) -> list[str]:
+    """The values a subcommand's words give the value-taking options named, as git's parse-options reads them: a
+    long option (``longs``, without ``--``) by its name or any prefix of it (``--exe`` for ``--exec``; a prefix git
+    finds ambiguous only over-judges), as ``--opt=value`` or ``--opt value``; a short one (``shorts``) alone or at
+    the end of a cluster of flags (``-x cmd``, ``-qx cmd``, ``-ixcmd``), its value the rest of the word or the
+    next word. Stops at ``--``."""
+    out: list[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            break
+        if a.startswith("--") and len(a) > 2:
+            name, eq, value = a[2:].partition("=")
+            if any(long.startswith(name) for long in longs):
+                if eq:
+                    out.append(value)
+                elif i + 1 < len(args):
+                    out.append(args[i + 1])
+                    i += 1
+        elif a.startswith("-") and len(a) > 1 and not a.startswith("--"):
+            for j, c in enumerate(a[1:], 1):
+                if c in shorts:
+                    if a[j + 1 :]:
+                        out.append(a[j + 1 :])
+                    elif i + 1 < len(args):
+                        out.append(args[i + 1])
+                        i += 1
+                    break
+        i += 1
+    return out
 
 
 def _cat_file(sub_args: list[str], read: GitRead) -> GitRead | None:

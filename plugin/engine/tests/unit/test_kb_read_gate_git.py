@@ -269,6 +269,33 @@ MUST_DENY = [
     "git -C action-items SHOW HEAD:./context/x.md",
     "GIT -C action-items Log -p context/",
     "git REBASE -x 'cat act*/cont*/x.md' HEAD",
+    # review round 3: options by any prefix of their name, and short flags in a cluster
+    "git rebase -q --exe 'cat act*/cont*/x.md' HEAD",
+    "git rebase -q --ex 'cat act*/cont*/x.md' HEAD",
+    "git rebase -q --exe=$'cat act*/cont*/x.md' HEAD",
+    "git rebase -q -qx 'cat act*/cont*/x.md' HEAD",
+    "GIT_SEQUENCE_EDITOR=true git rebase -q -ix 'cat act*/cont*/x.md' HEAD",
+    "git rebase -q -kix 'cat act*/cont*/x.md' HEAD",
+    "git rebase -q -xcat\\ act\\*/cont\\*/x.md HEAD",
+    "git difftool -y --extc='sh -c \"cat act*/cont*/x.md\"' HEAD -- docs",
+    # review round 3: transports run a command to reach the other side
+    "git ls-remote --upload-pack='sh -c \"cat act*/cont*/x.md >&2\"; false' .",
+    "git ls-remote --upload-pack 'sh -c \"cat act*/cont*/x.md >&2\"; false' .",
+    "git -C . ls-remote -u 'sh -c \"cat act*/cont*/x.md >&2\"; false' .",
+    "git clone -q -u 'sh -c \"cat act*/cont*/x.md >&2\"; false' . ~/c",
+    "git clone -q --upload-pack='sh -c \"cat act*/cont*/x.md >&2\"; false' . ~/c",
+    "git fetch -q --upload-pack='sh -c \"cat act*/cont*/x.md >&2\"; false' .",
+    "git pull -q --upl='sh -c \"cat act*/cont*/x.md >&2\"; false' . main",
+    "git push -q --receive-pack='sh -c \"cat act*/cont*/x.md >&2\"; false' ~/b.git HEAD",
+    "git push -q --exec='sh -c \"cat act*/cont*/x.md >&2\"; false' ~/b.git HEAD",
+    "GIT_SSH_COMMAND='cat act*/cont*/x.md' git fetch -q origin",
+    "GIT_PROXY_COMMAND='cat act*/cont*/x.md' git fetch -q git://example.com/x",
+    "GIT_EXTERNAL_DIFF='sh -c \"cat act*/cont*/x.md\"' git diff HEAD -- docs",
+    # review round 3: a nested shell inside a command git runs, judged as the same shell run directly
+    "git rebase -q --exec 'zsh -fc \"cat act*/cont*/x.md\"' HEAD",
+    "git bisect run zsh -fc 'cat act*/cont*/x.md; exit 0'",
+    "git rebase -q --exec 'sh -c \"cat \\$0/x.md\" action-items/context' HEAD",
+    "git rebase -q -x 'git -C action-items show HEAD:./context/x.md' HEAD",
     # review round 2: merge-file prints the files it names
     "git merge-file -p action-items/context/x.md docs/a.md docs/a.md",
     "git -C action-items merge-file -p context/x.md ../docs/a.md ../docs/a.md",
@@ -289,6 +316,15 @@ AFTER_FOLDER_CHANGES = [
     "git clone -q . ~/cl && git -C ~/cl/action-items show HEAD:./context/x.md",
     "git clone -q . ~/cl && git -C ~/cl grep x",
     "mv docs docs2 && ln -s action-items docs && git -C docs show HEAD:./context/x.md",
+    # review round 3: a link to the vault spelled from the link's own folder, and the other copies of its repository
+    "cd ~ && ln -s Vault V2 && git -C V2 grep x",
+    "cd ~ && ln -s Vault V2 && cd V2 && git grep x",
+    "cd ~ && ln -s Vault V2 && git --git-dir=V2/.git grep x HEAD",
+    "cd ~ && ln -s Vault/.git G2 && git --git-dir=G2 grep x HEAD",
+    "ln -s . self && git -C self grep x",
+    "ln -s ../home/Vault ~/up && git -C ~/up grep x",  # relative to the link's folder (~)
+    "git bundle create ~/b HEAD && git clone -q ~/b ~/cl && git -C ~/cl grep x",
+    "git init -q --bare ~/bare.git && git push -q ~/bare.git HEAD:main && git --git-dir=$HOME/bare.git grep x main",
 ]
 
 
@@ -297,10 +333,63 @@ AFTER_FOLDER_CHANGES = [
 # folder made earlier, and these name action-items/; a folder from a substitution in a command that names it.
 STRICT_DENIES = [
     "git filter-branch -f --tree-filter 'cat act*/cont*/x.md' HEAD",
+    # review round 3: programs git runs that the gate can't read, and the switches that let a URL run one
+    "git clone -q --template=$HOME/t . ~/c",
+    "git clone -q --templ=$HOME/t . ~/c",
+    "git init -q --template=$HOME/t ~/r",
+    "git ls-remote 'ext::sh -c cat% act*/cont*/x.md'",
+    "GIT_ALLOW_PROTOCOL=ext git ls-remote 'ext::sh -c cat% act*/cont*/x.md'",
+    "git -c protocol.ext.allow=always ls-remote origin",
+    "git -c protocol.allow=always fetch origin",
+    "git -c core.gitProxy='cat act*/cont*/x.md' fetch git://example.com/x",
+    "git config core.gitProxy 'cat act*/cont*/x.md'",
+    "GIT_SSH=$HOME/s git fetch -q origin",
+    "export GIT_SSH=$HOME/s; git fetch -q origin",
+    "GIT_ASKPASS=$HOME/s git fetch -q https://example.com/x",
     "git --git-dir=.git -C action-items show HEAD:./context/x.md",
     "GIT_DIR=.git GIT_WORK_TREE=. git -C action-items show HEAD:./context/x.md",
     "git -C $(echo action-items) show HEAD:./context/x.md",
 ]
+
+
+# Shell commands, read KB notes or not: each run through `git rebase -x` must be judged as it is run directly.
+EMBEDDED_CORPUS = [
+    "cat knowledge-base/a.md",
+    "cat k*/a.md",
+    "head -n 3 action-items/context/x.md",
+    "cd action-items && cat context/x.md",
+    "zsh -fc 'cat act*/cont*/x.md'",
+    "sh -c 'cat $0/x.md' action-items/context",
+    "bash -ec 'cat act*/cont*/x.md'",
+    "grep -r x .",
+    "rg x",
+    "f=knowledge-base/a.md; wc -c $f",
+    "echo knowledge-base/a.md | xargs cat",
+    "git -C action-items show HEAD:./context/x.md",
+    "git log -p -- action-items",
+    "cat docs/a.md",
+    "ls docs",
+    "wc -l scripts/run.py",
+    "echo done",
+    "git status",
+    "git log --oneline -3",
+    "git diff --stat",
+    "date +%F",
+]
+
+
+@pytest.mark.parametrize("command", EMBEDDED_CORPUS)
+def test_a_command_git_runs_is_judged_as_the_same_command_run_directly(home: Path, command: str) -> None:
+    import shlex
+
+    direct = _run(home, command) is not None
+    for wrapped in (
+        f"git rebase -q -x {shlex.quote(command)} HEAD",
+        f"git rebase -q --exe={shlex.quote(command)} HEAD",
+        f"git bisect run sh -c {shlex.quote(command)}",
+        f"git ls-remote --upload-pack={shlex.quote(command)} .",
+    ):
+        assert (_run(home, wrapped) is not None) is direct, wrapped
 
 
 @pytest.mark.parametrize("command", STRICT_DENIES)

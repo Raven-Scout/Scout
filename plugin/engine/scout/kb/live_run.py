@@ -1136,6 +1136,9 @@ def _config_form(key: str) -> str | None:
         return key
     if key.startswith("pager."):
         return key
+    # A proxy command, and the protocol switches that let `ext::` URLs run one (review of #817, round 3).
+    if key == "core.gitproxy" or key == "protocol.allow" or (key.startswith("protocol.") and key.endswith(".allow")):
+        return key
     return None
 
 
@@ -1282,6 +1285,8 @@ _SECRET: Callable[[str], str | None] | None = None
 _KB_READ: Callable[[str, str], str | None] | None = None
 # And what a git call reads (scout.kb.git_read): its tree paths and pathspecs, from the folder it runs in.
 _GIT_READ: Callable[[GitRead, str], str | None] | None = None
+# And where the commands git runs for the call go (`git rebase -x 'cmd'`), for the gate to judge as its own.
+_EMBEDDED: list[str] | None = None
 # The forms that callback returns: a read of a KB note, and a read whose path the gate can't work out.
 KB_READ = "a knowledge-base read"
 UNRESOLVED_READ = "a read the gate can't resolve"
@@ -1296,7 +1301,7 @@ MAX_LITERAL_READS = 4096
 MAX_DEPTH = 6
 _STATE: dict[str, Any] = {
     "checked": 0, "secrets": 0, "reads": 0, "literal": 0, "vars": {}, "bodies": [], "unparsed": False, "capped": False,
-    "parsing": False, "fs_changed": "",
+    "parsing": False, "fs_changed": "", "links": [],
 }  # fmt: skip
 _VAR = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 # An interpreter given its program inline or on stdin.
@@ -1781,6 +1786,7 @@ def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | No
                 one = git_read.GitRead(
                     sub=read.sub, git_dir=gd, work_tree=wt, trees=lists[0], pathspecs=lists[1],
                     maybe_paths=lists[2], unbounded=read.unbounded, fs_changed=_STATE["fs_changed"],
+                    links=list(_STATE["links"]),
                 )  # fmt: skip
                 found = _GIT_READ(one, where)
                 if found is not None:
@@ -1788,17 +1794,33 @@ def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | No
     return None
 
 
-# Options whose value is a shell command git runs (`git rebase -x 'cmd'`), and variables that name one.
-_GIT_RUN_OPTIONS: dict[str, set[str]] = {
-    "rebase": {"-x", "--exec"},
-    "difftool": {"-x", "--extcmd"},
-    "mergetool": {"--tool-cmd"},
-    "filter-branch": {
-        "--setup", "--tree-filter", "--index-filter", "--msg-filter", "--env-filter", "--commit-filter",
-        "--parent-filter", "--tag-name-filter",
-    },
+# Options whose value is a shell command git runs (`git rebase -x 'cmd'`), as (long names, short letters): read by
+# scout.kb.git_read.option_values, so every entry takes abbreviations (`--exe`) and clusters (`-qx`). The
+# transports run theirs to reach the other side (`git ls-remote --upload-pack='cmd' .`).
+_GIT_RUN_OPTIONS: dict[str, tuple[set[str], set[str]]] = {
+    "rebase": ({"exec"}, {"x"}),
+    "difftool": ({"extcmd"}, {"x"}),
+    "mergetool": ({"tool-cmd"}, set()),
+    "filter-branch": (
+        {"setup", "tree-filter", "index-filter", "msg-filter", "env-filter", "commit-filter", "parent-filter",
+         "tag-name-filter"},
+        set(),
+    ),
+    "ls-remote": ({"upload-pack"}, {"u"}),
+    "clone": ({"upload-pack"}, {"u"}),
+    "fetch": ({"upload-pack"}, set()),
+    "pull": ({"upload-pack"}, set()),
+    "fetch-pack": ({"upload-pack", "exec"}, set()),
+    "push": ({"receive-pack", "exec"}, set()),
+    "send-pack": ({"receive-pack", "exec"}, set()),
+    "archive": ({"exec"}, set()),
 }  # fmt: skip
-_GIT_RUN_ENV = ("GIT_PAGER", "PAGER", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "EDITOR", "VISUAL")
+_GIT_RUN_ENV = (
+    "GIT_PAGER", "PAGER", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "EDITOR", "VISUAL", "GIT_SSH_COMMAND",
+    "GIT_PROXY_COMMAND", "GIT_EXTERNAL_DIFF",
+)  # fmt: skip
+# Variables that name a program git runs as is (no shell to judge), or let a URL run one: a run never needs them.
+_GIT_PROGRAM_ENV = ("GIT_SSH", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_ALLOW_PROTOCOL")
 # Programs and git subcommands that move, link or copy folders: a git read after one is of folders the gate can't
 # see yet (scout.kb.git_read.GitRead.fs_changed).
 _FOLDER_CHANGERS = {"ln", "mv", "cp", "rsync", "ditto", "install"}
@@ -1807,9 +1829,9 @@ _GIT_FOLDER_CHANGERS = {"worktree", "clone", "mv", "checkout-index", "submodule"
 
 def _git_programs(words: list[str], cwd: str) -> list[str]:
     """The shell commands a git call runs for you, each from the folder git runs in: ``rebase -x|--exec``,
-    ``bisect run``, ``difftool -x|--extcmd``, ``submodule foreach``, ``filter-branch --*-filter``, and a
-    ``GIT_PAGER``/``PAGER``/``GIT_EDITOR``/… the command sets (a prefix, or earlier in it). Judged as if run
-    directly (review of #817)."""
+    ``bisect run``, ``difftool -x|--extcmd``, ``submodule foreach``, ``filter-branch --*-filter``, the transports'
+    ``--upload-pack``/``--receive-pack``, and a ``GIT_PAGER``/``PAGER``/``GIT_EDITOR``/… the command sets (a prefix,
+    or earlier in it). The gate judges each as the same command run directly (review of #817)."""
     from scout.kb import git_read, raw_read
 
     stripped = raw_read._strip(words)
@@ -1818,21 +1840,8 @@ def _git_programs(words: list[str], cwd: str) -> list[str]:
         return []
     chdirs, _git_dir, _work_tree, at = git_read.split_global(git)
     sub, args = (raw_read.fold(git[at]), git[at + 1 :]) if at < len(git) else ("", [])
-    programs: list[str] = []
-    options = _GIT_RUN_OPTIONS.get(sub, set())
-    i = 0
-    while i < len(args):
-        a = args[i]
-        if a in options and i + 1 < len(args):
-            programs.append(args[i + 1])
-            i += 2
-            continue
-        for option in options:
-            if option.startswith("--") and a.startswith(option + "="):
-                programs.append(a.split("=", 1)[1])
-            elif not option.startswith("--") and a.startswith(option) and len(a) > len(option):
-                programs.append(a[len(option) :])
-        i += 1
+    longs, shorts = _GIT_RUN_OPTIONS.get(sub, (set(), set()))
+    programs = git_read.option_values(args, longs, shorts)
     if sub == "bisect" and args[:1] == ["run"] and len(args) > 1:
         programs.append(shlex.join(args[1:]))
     if sub == "submodule":
@@ -1852,6 +1861,61 @@ def _git_programs(words: list[str], cwd: str) -> list[str]:
     return [f"cd {shlex.quote(where)} && {p}" if where else p for p in programs]
 
 
+def _git_run_form(words: list[str]) -> str | None:
+    """The form of a git call that runs a program the gate can't read, else None: hooks from a template folder
+    (``clone``/``init --template``), an ``ext::`` URL (it runs a command), or a ``GIT_SSH``/``GIT_ASKPASS``/
+    ``SSH_ASKPASS``/``GIT_ALLOW_PROTOCOL`` the command sets (a prefix, or earlier in it)."""
+    from scout.kb import git_read, raw_read
+
+    stripped = raw_read._strip(words)
+    git = _git_words(stripped.words) if stripped.words else None
+    if git is None:
+        return None
+    at = git_read.split_global(git)[3]
+    sub, args = (raw_read.fold(git[at]), git[at + 1 :]) if at < len(git) else ("", [])
+    if sub in ("clone", "init") and git_read.option_values(args, {"template"}, set()):
+        return f"git {sub} --template"
+    if any(raw_read.fold(a).lstrip("'\"").startswith("ext::") or "=ext::" in raw_read.fold(a) for a in git):
+        return "git ext:: URL"
+    for word in words[: len(words) - len(stripped.words)]:
+        m = _ASSIGN.match(word)
+        if m and m[1] in _GIT_PROGRAM_ENV:
+            return m[1]
+    for name in _GIT_PROGRAM_ENV:
+        if _STATE["vars"].get(name):
+            return name
+    return None
+
+
+def _local_path(word: str) -> bool:
+    """A push or fetch destination that is a folder on this disk, not a remote's name or a URL."""
+    return word.startswith(("/", ".", "~", "$")) or ("/" in word and ":" not in word) or word.startswith("file:")
+
+
+def _link_targets(words: list[str], cwd: str) -> list[str]:
+    """The targets an ``ln`` call links to, each placed from the session's folder (as run_escape keeps folders):
+    a relative target is from the link's folder (``cd ~ && ln -s Vault V2`` links ~/V2 to ~/Vault)."""
+    from scout.kb import raw_read
+
+    stripped = raw_read._strip(words)
+    if not stripped.words or raw_read.fold(raw_read._command_name(stripped.words[0])) != "ln":
+        return []
+    plain = [w for w in stripped.words[1:] if not w.startswith("-")]
+    if not plain:
+        return []
+    targets, link = (plain[:-1], plain[-1]) if len(plain) > 1 else (plain, "")
+    folder = cwd
+    if link.endswith("/"):
+        folder = _into(cwd, link)
+    elif "/" in link:
+        folder = _into(cwd, link.rsplit("/", 1)[0] or "/")
+    out = []
+    for target in targets:
+        for one in _substitute(target):
+            out.append(one if one.startswith(("/", "~", "$")) else (folder + one if folder else one))
+    return out
+
+
 def _changes_folders(words: list[str]) -> str:
     """ "vault-copy" for a git call that copies the repository the command runs in (``git worktree add``, ``git
     clone .``, with no -C or --git-dir), "changed" for any other that moves, links or copies folders, else ""."""
@@ -1866,11 +1930,18 @@ def _changes_folders(words: list[str]) -> str:
     if git is None:
         return ""
     chdirs, git_dir, _work_tree, at = git_read.split_global(git)
-    if at >= len(git) or raw_read.fold(git[at]) not in _GIT_FOLDER_CHANGERS:
+    if at >= len(git):
         return ""
     here = not chdirs and git_dir is None
     plain = [a for a in git[at + 1 :] if not a.startswith("-")]
     sub = raw_read.fold(git[at])
+    # A bundle of the repository, or a push of it into a folder (`git push /x/b.git HEAD`), copies it too.
+    if here and sub == "bundle" and [raw_read.fold(w) for w in plain[:1]] == ["create"]:
+        return "vault-copy"
+    if here and sub == "push" and plain[:1] and _local_path(plain[0]):
+        return "vault-copy"
+    if sub not in _GIT_FOLDER_CHANGERS:
+        return ""
     if here and sub == "worktree" and [raw_read.fold(w) for w in plain[:1]] == ["add"]:
         return "vault-copy"
     if here and sub == "clone" and plain[:1] and plain[0].rstrip("/") in (".", "..", "./.git", ".git"):
@@ -2461,6 +2532,7 @@ def run_escape(
     secret: Callable[[str], str | None] | None = None,
     kb_read: Callable[[str, str], str | None] | None = None,
     git_read: Callable[[GitRead, str], str | None] | None = None,
+    embedded: list[str] | None = None,
 ) -> str | None:
     """Whether a run's shell command gets around the commit hook's checks: "env" (changes SCOUT_MODE/SCOUT_READER
     or clears the environment), "detach" (backgrounds or hands work to another process), else the name of the form
@@ -2480,12 +2552,13 @@ def run_escape(
     file a reading command reads (``cat``, ``ls``, ``grep``…, input redirects) by the path the shell hands it,
     returning :data:`KB_READ` or :data:`UNRESOLVED_READ` (see :func:`_kb_read`). ``git_read`` (with ``kb_read``)
     judges what each git call reads, given as a :class:`scout.kb.git_read.GitRead` and the folder it runs in
-    (see :func:`_git_read`), returning the same.
+    (see :func:`_git_read`), returning the same. The commands git runs for the call (:func:`_git_programs`) are
+    added to ``embedded``, each with a ``cd`` to git's folder, for the caller to judge as commands of their own.
     """
-    global _PROTECT, _SECRET, _KB_READ, _GIT_READ
+    global _PROTECT, _SECRET, _KB_READ, _GIT_READ, _EMBEDDED
     outer = depth == 0
     if outer:
-        _PROTECT, _SECRET, _KB_READ, _GIT_READ = protect, secret, kb_read, git_read
+        _PROTECT, _SECRET, _KB_READ, _GIT_READ, _EMBEDDED = protect, secret, kb_read, git_read, embedded
         _STATE.update(
             checked=0,
             secrets=0,
@@ -2497,6 +2570,7 @@ def run_escape(
             capped=False,
             parsing=False,
             fs_changed="",
+            links=[],
         )
     try:
         found = _run_escape(command, depth)
@@ -2512,7 +2586,7 @@ def run_escape(
         return found
     finally:
         if outer:
-            _PROTECT = _SECRET = _KB_READ = _GIT_READ = None
+            _PROTECT = _SECRET = _KB_READ = _GIT_READ = _EMBEDDED = None
 
 
 def _known_output(body: str) -> str | None:
@@ -2630,14 +2704,21 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
             if found is None and _GIT_READ is not None and _KB_READ is not None:
                 found = _git_read(literal_words, cwd, oldpwd)
             if found is None and _GIT_READ is not None and _KB_READ is not None:
-                for program in _git_programs(words, cwd):
-                    found = _run_escape(program, depth + 1)
-                    if found is not None:
-                        break
+                found = _git_run_form(words)
+            if found is None and _GIT_READ is not None and _KB_READ is not None:
+                programs = _git_programs(words, cwd)
+                if _EMBEDDED is not None:
+                    _EMBEDDED.extend(programs)
+                else:  # no caller to judge them in full: at least what run_escape sees
+                    for program in programs:
+                        found = _run_escape(program, depth + 1)
+                        if found is not None:
+                            break
         if found == "env":
             return "env"
         results.append((here, found))
         if _KB_READ is not None:
+            _STATE["links"].extend(_link_targets(words, cwd))
             change = _changes_folders(words)
             if change and _STATE["fs_changed"] != "vault-copy":
                 _STATE["fs_changed"] = change

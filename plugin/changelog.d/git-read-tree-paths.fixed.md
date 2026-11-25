@@ -35,4 +35,11 @@
   or copied the vault's repository (`git worktree add`, `git clone .`). `git merge-tree` reads all of a
   `<rev>:<folder>`, `git merge-file -p` the files it names, and `git request-pull -p` the whole repository. Git's
   subcommand is compared in any letter case, as a case-insensitive disk runs it (`git ARCHIVE`, with `GIT`/`Git`
-  from the program-name folding).
+  from the program-name folding). Options that hold a command are read as git reads them, by any prefix of their
+  name and in a cluster of short flags (`--exe`, `-qx`), and the transports' `--upload-pack`/`-u` and
+  `--receive-pack`/`--exec` count too, as do `GIT_SSH_COMMAND`, `GIT_PROXY_COMMAND` and `GIT_EXTERNAL_DIFF`. Each
+  such command goes through the same checks as a shell command run directly, from git's folder. `clone`/`init
+  --template`, an `ext::` URL, `GIT_SSH`, `GIT_ASKPASS`, `SSH_ASKPASS`, `GIT_ALLOW_PROTOCOL` and the
+  `core.gitProxy` and `protocol.*` settings are denied in a run. A link's target is read from the link's own
+  folder (`cd ~ && ln -s Vault V2`, `ln -s . self`), and a bundle or a push of the vault's repository into a
+  folder counts as a copy of it.
