@@ -92,9 +92,13 @@ def started_pids() -> Iterator[list[int]]:
 def test_the_record_round_trips_privately(vault: Path) -> None:
     path = runs.record_path(vault, SLUG, EID, _env())
     assert path.parent == broker.owner_dir(_env()) / "lab-runs" and not path.parent.exists()  # naming creates nothing
-    rec = runs.RunRecord(T.isoformat(), (T + timedelta(hours=1)).isoformat(), 123, "/p", "/m", {"status": "ran"})
+    rec = runs.RunRecord(T.isoformat(), (T + timedelta(hours=1)).isoformat(), 123, "/m", "/o", {"status": "ran"})
     runs.write(path, rec)
     assert runs.read(path) == rec
+    from dataclasses import fields
+
+    # The runner's names: ``marker`` is the sweep's probe file, ``outside`` the folder the sandbox may not write.
+    assert [f.name for f in fields(runs.RunRecord)] == ["started", "deadline", "pid", "marker", "outside", "outcome"]
     assert path.stat().st_mode & 0o777 == 0o600 and path.parent.stat().st_mode & 0o777 == 0o700
     path.write_text('{"started": 1}', encoding="utf-8")
     assert runs.read(path) is None
@@ -127,12 +131,12 @@ def test_failed_gate_is_the_outcome(vault: Path, monkeypatch: pytest.MonkeyPatch
     outcome = supervise.supervise(_inputs(vault))
     assert outcome["status"] == "not run" and outcome["reason"] == reason
     rec = runs.read(runs.record_path(vault, SLUG, EID, _env()))
-    assert rec is not None and rec.outcome == outcome and rec.pid == os.getpid() and rec.probe is None
+    assert rec is not None and rec.outcome == outcome and rec.pid == os.getpid() and rec.marker is None
     reply = broker.experiment_status(vault, SLUG, EID, _env(), datetime.now(UTC))
     assert reply.exit == broker.EXIT_NOT_RUN and reply.stderr == f"experiment not run: {reason}\n"
 
 
-def test_the_supervisor_holds_the_run_lock_and_records_the_probe(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_supervisor_holds_the_run_lock_and_records_the_marker(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     env = _env()
     path = runs.record_path(vault, SLUG, EID, env)
     seen: dict[str, Any] = {}
@@ -156,7 +160,7 @@ def test_the_supervisor_holds_the_run_lock_and_records_the_probe(vault: Path, mo
         seen["refused"] = [str(e) for e in refused]
         kw["on_started"]("/private/tmp/scout-lab-x/probe", "/outside")
         after = runs.read(path)
-        seen["probe"] = None if after is None else (after.probe, after.marker)
+        seen["marker"] = None if after is None else (after.marker, after.outside)
         seen["timeout_s"], seen["limits"] = kw["timeout_s"], kw["max_total_bytes"]
         return runner.RunOutcome(0, "out\n", "err\n", 0.25, False)
 
@@ -164,11 +168,11 @@ def test_the_supervisor_holds_the_run_lock_and_records_the_probe(vault: Path, mo
     outcome = supervise.supervise(_inputs(vault, deadline_s=7200))
     assert seen["alive"] is True
     assert seen["refused"] == [f"experiment {SLUG} {EID} is already running"]
-    assert seen["probe"] == ("/private/tmp/scout-lab-x/probe", "/outside")
+    assert seen["marker"] == ("/private/tmp/scout-lab-x/probe", "/outside")
     assert 7100 < seen["timeout_s"] <= 7200 and seen["limits"] == LIMITS.max_total_bytes
     assert outcome["status"] == "ran" and outcome["exit"] == 0 and outcome["stdout_tail"] == "out\n"
     rec = runs.read(path)
-    assert rec is not None and rec.outcome == outcome and rec.probe == "/private/tmp/scout-lab-x/probe"
+    assert rec is not None and rec.outcome == outcome and rec.marker == "/private/tmp/scout-lab-x/probe"
     assert not runs.lock_held(runs.lock_path(vault, SLUG, EID, env))  # let go once the outcome is written
     started, deadline = runs.parse_time(rec.started), runs.parse_time(rec.deadline)
     assert started is not None and deadline is not None and (deadline - started).total_seconds() == 7200
@@ -273,7 +277,7 @@ def test_detached_start_does_not_wait_for_the_gate(vault: Path, tmp_path: Path, 
     rec = runs.read(path)
     assert rec is not None
     started_pids.append(rec.pid)
-    assert rec.pid != os.getpid() and rec.probe is None and rec.outcome is None
+    assert rec.pid != os.getpid() and rec.marker is None and rec.outcome is None
     assert runs.alive(vault, SLUG, EID, rec, _env())
     assert not runs.inputs_path(path).exists()  # the supervisor removed its inputs once read
     assert os.getsid(rec.pid) == rec.pid  # a session of its own
@@ -337,18 +341,18 @@ def _detached_vault(vault: Path, name: str, body: str) -> None:
 
 
 @kernel
-def test_kernel_hooks_report_the_probe_and_stop_the_run(vault: Path) -> None:
+def test_kernel_hooks_report_the_marker_and_stop_the_run(vault: Path) -> None:
     _commit_script(vault, "slow.sh", "#!/bin/sh\nsleep 30\n")
     commit = _git(vault, "rev-parse", "HEAD").strip()
     started: list[tuple[str, str]] = []
     out = runner.run_experiment(
         vault, SLUG, EID, ["./slow.sh"], cap_usd=1.0, timeout_s=60, env=_env(), commit=commit,
-        disk_free_floor_bytes=0, on_started=lambda probe, outside: started.append((probe, outside)),
+        disk_free_floor_bytes=0, on_started=lambda marker, outside: started.append((marker, outside)),
         should_stop=lambda: "stopped by the owner" if started else None,
     )  # fmt: skip
     assert out.stopped == "stopped by the owner" and not out.timed_out and out.exit != 0
-    [(probe, outside)] = started
-    assert probe.endswith("/probe") and outside == str(paths.experiment_dir(_note(vault)).parent.resolve())
+    [(marker, outside)] = started
+    assert marker.endswith("/probe") and outside == str(paths.experiment_dir(_note(vault)).parent.resolve())
     log = next(paths.experiment_dir(_note(vault)).glob("run-*.log")).read_text(encoding="utf-8")
     assert "detached: true" in log and "stopped: stopped by the owner" in log and "deadline: " in log
 
@@ -408,12 +412,12 @@ def test_kernel_killed_supervisor_leaves_nothing(
     first = runs.read(path)
     assert first is not None
     started_pids.append(first.pid)
-    _wait(lambda: (r := runs.read(path)) is not None and r.probe is not None, 60, "the gate's checks")
+    _wait(lambda: (r := runs.read(path)) is not None and r.marker is not None, 60, "the gate's checks")
     rec = runs.read(path)
-    assert rec is not None and rec.probe is not None and rec.marker is not None
+    assert rec is not None and rec.marker is not None and rec.outside is not None
     probe = sandbox.SandboxProbe()
-    _wait(lambda: bool(runner._holders(probe, rec.probe or "", rec.marker or "")), 30, "the script")
-    script = runner._holders(probe, rec.probe, rec.marker)
+    _wait(lambda: bool(runner._holders(probe, rec.marker or "", rec.outside or "")), 30, "the script")
+    script = runner._holders(probe, rec.marker, rec.outside)
     os.kill(rec.pid, signal.SIGKILL)  # the supervisor this test started
     _wait(lambda: _gone(rec.pid), 30, "the supervisor to go")
     assert all(not _gone(pid) for pid in script)  # its script outlived it
@@ -423,5 +427,5 @@ def test_kernel_killed_supervisor_leaves_nothing(
     assert last == "experiment not run: the supervisor stopped without a result"
     _wait(lambda: all(_gone(pid) for pid in script), 10, "the script's processes to go")
     after = runs.read(path)
-    assert after is not None and after.outcome is not None and after.outcome["swept"] is True
-    assert not Path(rec.probe).parent.exists()  # the supervisor's private temp folder is gone too
+    assert after is not None and after.outcome is not None and after.outcome["swept"] == "clean"
+    assert not Path(rec.marker).parent.exists()  # the supervisor's private temp folder is gone too

@@ -91,6 +91,11 @@ DETACHED_OFF = "detached runs are off in the owner's config"  # detached_max_hou
 DETACHED_BUSY = "a detached experiment is already running"
 SUPERVISOR_GONE = "the supervisor stopped without a result"
 NO_DETACHED_RUN = "no detached run of this experiment was started"
+SURVIVED_SWEEP = "a process the experiment started survived the sweep; check ps"
+OVERRAN = "the supervisor ran past its deadline"
+# How long past its deadline a live supervisor may still be before a collect stops it (a fetch ignoring should_stop).
+OVERRUN_GRACE = timedelta(minutes=10)
+SUPERVISOR_KILL_WAIT_S = 10.0
 
 MAX_MESSAGE_CHARS = 10_000
 MAX_PATHS = 500
@@ -1245,6 +1250,8 @@ class Broker:
         free = runner.free_bytes(self.vault)
         if floor > 0 and (free is None or free - plan.disk_budget_bytes < floor):
             return Reply(EXIT_NOT_RUN, f"experiment not run: {runner.FLOOR_REASON}\n", kind=REFUSED)
+        if (uncollected := _uncollected(self.vault, slug, eid, self.env)) is not None:
+            return uncollected  # an attached or a detached run alike would start over an unswept script
         if detach:
             # A detached start uses the run's allowance; a refusal, or a supervisor that didn't start, keeps it.
             checked = (slug, eid, argv, cap, commit, plan)
@@ -1683,10 +1690,11 @@ def start_detached(
     from scout.lab import runs, supervise
 
     slug, eid, argv, cap, commit, plan = checked
+    # Config and capacity answers, not faults of the experiment's (ruling P2-R8): not run, the allowance kept.
     if limits.detached_max_hours <= 0 or limits.max_detached <= 0:
-        return Reply(EXIT_REFUSED, f"experiment refused: {DETACHED_OFF}\n", kind=REFUSED)
+        return Reply(EXIT_NOT_RUN, f"experiment not run: {DETACHED_OFF}\n", kind=REFUSED)
     if len(runs.live(vault, env)) >= limits.max_detached:
-        return Reply(EXIT_REFUSED, f"experiment refused: {DETACHED_BUSY}\n", kind=REFUSED)
+        return Reply(EXIT_NOT_RUN, f"experiment not run: {DETACHED_BUSY}\n", kind=REFUSED)
     run_limits = replace(limits, max_total_bytes=plan.disk_budget_bytes)
     try:
         supervise.start(
@@ -1711,63 +1719,115 @@ def _recorded_reply(outcome: Mapping[str, Any]) -> Reply:
     return Reply(EXIT_NOT_RUN, f"{lead}experiment not run: {reason}\n", out, kind=REFUSED)
 
 
-def _sweep_record(record: Any) -> bool:
-    """Kill what a gone supervisor's script left (the runner's sweep, by the record's probe file and the folder the
-    script's sandbox may not write), then remove the supervisor's private temp folder. True when the sweep found
-    nothing left; False when it couldn't tell."""
+def _sweep_record(record: Any) -> str:
+    """Kill what a gone supervisor's script left (the runner's sweep, by the record's ``marker``, its probe file, and
+    ``outside``, the folder the script's sandbox may not write), then remove the supervisor's private temp folder.
+
+    ``"clean"``: the sweep found nothing left. ``"probe file gone"``: there is nothing to sweep by, which means a
+    restart (it clears /tmp, and ends every process that held the profile). ``"survivors"``: a process holding the
+    profile is still alive after the sweep, or the kernel couldn't be asked; the caller must not record an outcome."""
     from scout.lab import runner, sandbox
 
+    if not runner._marker_ok(record.marker):
+        return "probe file gone"
     try:
         probe = sandbox.SandboxProbe()
     except (OSError, AttributeError):
-        return False
-    clean = runner._sweep(probe, record.probe, record.marker)
-    folder = os.path.dirname(record.probe)
-    ours = os.path.basename(folder).startswith("scout-lab-") and os.path.dirname(folder) in ("/tmp", "/private/tmp")
-    if clean and ours:
+        return "survivors"
+    if not runner._sweep(probe, record.marker, record.outside):
+        return "survivors"
+    folder = os.path.dirname(record.marker)
+    if os.path.basename(folder).startswith("scout-lab-") and os.path.dirname(folder) in ("/tmp", "/private/tmp"):
         shutil.rmtree(folder, ignore_errors=True)
-    return clean
+    return "clean"
+
+
+def _uncollected(vault: Path, slug: str, eid: str, env: Mapping[str, str]) -> Reply | None:
+    """A not-run reply when an earlier detached run of the experiment has no recorded outcome: a killed supervisor's
+    script may still be running in the experiment's folder, and only a collect sweeps it."""
+    from scout.lab import runs
+
+    record = runs.read(runs.record_path(vault, slug, eid, env))
+    if record is None or record.outcome is not None:
+        return None
+    why = f"an earlier detached run of {eid} hasn't been collected; collect it first"
+    return Reply(EXIT_NOT_RUN, f"experiment not run: {why}\n", kind=REFUSED)
+
+
+def _settle_gone(
+    vault: Path, slug: str, eid: str, env: Mapping[str, str], record: Any, now: datetime, reason: str
+) -> Reply:
+    """A record whose supervisor is gone: under the run lock, sweep (when the gate had opened) and record ``reason``
+    as the outcome, unless the sweep can't confirm nothing is left (then nothing is recorded and the next collect
+    sweeps again). When another run of the experiment holds the lock, it is running."""
+    from scout.errors import LabError
+    from scout.lab import runner, runs
+
+    path = runs.record_path(vault, slug, eid, env)
+    hold = contextlib.ExitStack()
+    try:
+        hold.enter_context(runner._run_lock(vault, slug, eid, env))
+    except LabError as e:
+        if runs.lock_held(runs.lock_path(vault, slug, eid, env)):
+            return Reply(0, f"experiment running: another run of {eid} holds it\n")
+        return Reply(EXIT_NOT_RUN, f"experiment not run: {_one_line(e)}\n", kind=REFUSED)
+    with hold:
+        fresh = runs.read(path) or record
+        if fresh.outcome is not None:  # written meanwhile, by a supervisor that has now let the lock go
+            return _recorded_reply(fresh.outcome)
+        swept = _sweep_record(fresh) if fresh.marker and fresh.outside else "no script started"
+        if swept == "survivors":
+            return Reply(EXIT_NOT_RUN, f"experiment not run: {SURVIVED_SWEEP}\n", kind=REFUSED)
+        outcome = {"status": "not run", "reason": reason, "swept": swept, "finished": now.isoformat()}
+        runs.write(path, replace(fresh, outcome=outcome))
+    return _recorded_reply(outcome)
+
+
+def _stop_overrun(vault: Path, slug: str, eid: str, env: Mapping[str, str], record: Any) -> None:
+    """SIGKILL a supervisor that is alive past its deadline and its grace (it holds the run lock and the record names
+    its pid, so the pid is ours), then wait for its lock to go."""
+    from scout.lab import runs
+
+    with contextlib.suppress(OSError):
+        runs._kill(record.pid, signal.SIGKILL)
+    lock = runs.lock_path(vault, slug, eid, env)
+    deadline = time.monotonic() + SUPERVISOR_KILL_WAIT_S
+    while runs.lock_held(lock) and time.monotonic() < deadline:
+        time.sleep(0.05)
 
 
 def experiment_status(vault: Path, slug: str, eid: str, env: Mapping[str, str], now: datetime) -> Reply:
     """Where the detached run of ``slug`` ``eid`` stands, as one status line (``lab experiment collect``):
 
     - the recorded outcome: ``experiment ran: exit <n>`` (the reply is the script's) or ``experiment not run: …``;
-    - a live supervisor: ``experiment running: <elapsed> of <deadline>`` (``HhMm``);
-    - a supervisor that is gone with no outcome: first the runner's sweep, when the record has a probe (without
-      one, no script was started), then ``experiment not run: the supervisor stopped without a result``, which is
-      recorded as the outcome, so a second collect gives the same answer without sweeping again.
+    - a live supervisor: ``experiment running: <elapsed> of <deadline>`` (``HhMm``); one still alive more than
+      :data:`OVERRUN_GRACE` past its deadline is SIGKILLed and settled as gone, ``not run: the supervisor ran past
+      its deadline``;
+    - a supervisor that is gone with no outcome (:func:`_settle_gone`): the runner's sweep when the gate had opened,
+      then ``experiment not run: the supervisor stopped without a result``, recorded as the outcome, so a second
+      collect gives the same answer without sweeping again. A sweep that can't confirm nothing is left records
+      nothing and answers ``experiment not run: a process the experiment started survived the sweep; check ps``, so
+      the next collect sweeps again;
+    - another run of the experiment holding its lock: ``experiment running: another run of <EID> holds it``.
 
     The sweep runs under the experiment's run lock, so it can't race a supervisor starting."""
-    from scout.errors import LabError
-    from scout.lab import runner, runs
+    from scout.lab import runs
 
-    path = runs.record_path(vault, slug, eid, env)
-    record = runs.read(path)
+    record = runs.read(runs.record_path(vault, slug, eid, env))
     if record is None:
         return Reply(EXIT_NOT_RUN, f"experiment not run: {NO_DETACHED_RUN}\n", kind=REFUSED)
     if record.outcome is not None:
         return _recorded_reply(record.outcome)
-    if not runs.alive(vault, slug, eid, record, env):
-        outcome: dict[str, Any] | None = None
-        try:
-            with runner._run_lock(vault, slug, eid, env):
-                fresh = runs.read(path) or record
-                outcome = fresh.outcome
-                if outcome is None:  # still none, now that no supervisor can be writing it
-                    swept = _sweep_record(fresh) if fresh.probe and fresh.marker else True
-                    outcome = {"status": "not run", "reason": SUPERVISOR_GONE, "swept": swept}
-                    outcome["finished"] = now.isoformat()
-                    runs.write(path, replace(fresh, outcome=outcome))
-        except LabError:
-            outcome = None  # the lock is held again: a run of the experiment holds it, so it is reported running
-        if outcome is not None:
-            return _recorded_reply(outcome)
     started, deadline = runs.parse_time(record.started), runs.parse_time(record.deadline)
-    if started is None or deadline is None:
-        return Reply(0, "experiment running: 0h00m of 0h00m\n")
-    elapsed = (now - started).total_seconds()
-    return Reply(0, f"experiment running: {runs.hhmm(elapsed)} of {runs.hhmm((deadline - started).total_seconds())}\n")
+    if runs.alive(vault, slug, eid, record, env):
+        if deadline is None or now <= deadline + OVERRUN_GRACE:
+            if started is None or deadline is None:
+                return Reply(0, "experiment running: 0h00m of 0h00m\n")
+            elapsed, total = (now - started).total_seconds(), (deadline - started).total_seconds()
+            return Reply(0, f"experiment running: {runs.hhmm(elapsed)} of {runs.hhmm(total)}\n")
+        _stop_overrun(vault, slug, eid, env, record)
+        return _settle_gone(vault, slug, eid, env, record, now, OVERRAN)
+    return _settle_gone(vault, slug, eid, env, record, now, SUPERVISOR_GONE)
 
 
 def _one_line(reason: object) -> str:
@@ -1842,6 +1902,8 @@ def client_experiment(
     except Refused as r:
         print(f"experiment refused: {_one_line(r.reason)}", file=sys.stderr)
         return r.exit_code
+    if (uncollected := _uncollected(vault, slug, eid, env)) is not None:
+        return _emit_experiment(uncollected)
     if detach:
         return _emit_experiment(start_detached(vault, env, limits, (slug, eid, args, cap, commit, plan), timeout_s))
     try:

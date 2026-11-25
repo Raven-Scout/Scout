@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import threading
 from collections.abc import Iterator, Mapping, Sequence
@@ -1658,8 +1659,9 @@ def test_detach_refused_when_off(vault: Path, fake_run: FakeRun, no_start: None,
     _owner_config({"lab": config})
     b = _broker(vault)
     reply = b.handle(dict(DETACH))
-    assert reply.exit == broker.EXIT_REFUSED
-    assert reply.stderr == "experiment refused: detached runs are off in the owner's config\n"
+    # A config answer (ruling P2-R8), not a fault of the experiment's: not run, and the allowance is kept.
+    assert reply.exit == broker.EXIT_NOT_RUN
+    assert reply.stderr == "experiment not run: detached runs are off in the owner's config\n"
     assert b.experiments_run == 0 and fake_run.calls == []
 
 
@@ -1669,8 +1671,8 @@ def test_detach_refused_when_one_is_running(vault: Path, fake_run: FakeRun, no_s
     with runner._run_lock(vault, SLUG, "E1", os.environ):
         b = _broker(vault)
         reply = b.handle(dict(DETACH))
-    assert reply.exit == broker.EXIT_REFUSED
-    assert reply.stderr == "experiment refused: a detached experiment is already running\n"
+    assert reply.exit == broker.EXIT_NOT_RUN  # a capacity answer (ruling P2-R8): the run may try again later
+    assert reply.stderr == "experiment not run: a detached experiment is already running\n"
     assert b.experiments_run == 0 and fake_run.calls == []
 
 
@@ -1780,7 +1782,7 @@ def test_status_refuses_a_bad_name(vault: Path) -> None:
     assert reply.exit == broker.EXIT_REFUSED
 
 
-def test_status_sweeps_a_dead_supervisor(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_status_sweeps_a_dead_supervisor(vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from scout.lab import runs, sandbox
 
     swept: list[tuple[str, str]] = []
@@ -1791,17 +1793,160 @@ def test_status_sweeps_a_dead_supervisor(vault: Path, monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(runner, "_sweep", fake_sweep)
     monkeypatch.setattr(sandbox, "SandboxProbe", lambda: object())
-    probe, marker = "/nonexistent/scout-lab-x/probe", str(paths.experiment_dir(_note(vault)).parent)
-    path = _record(vault, pid=_dead_pid(), probe=probe, marker=marker)
+    marker, outside = _probe_files(tmp_path), str(paths.experiment_dir(_note(vault)).parent)
+    path = _record(vault, pid=_dead_pid(), marker=marker, outside=outside)
     b = _broker(vault)
     first = b.handle(dict(STATUS))
     assert first.exit == broker.EXIT_NOT_RUN
     assert first.stderr == "experiment not run: the supervisor stopped without a result\n"
-    assert swept == [(probe, marker)]
+    assert swept == [(marker, outside)]
     rec = runs.read(path)
     assert rec is not None and rec.outcome is not None
-    assert rec.outcome["reason"] == "the supervisor stopped without a result" and rec.outcome["swept"] is True
-    assert b.handle(dict(STATUS)).stderr == first.stderr and swept == [(probe, marker)]  # answered, not swept again
+    assert rec.outcome["reason"] == "the supervisor stopped without a result" and rec.outcome["swept"] == "clean"
+    assert b.handle(dict(STATUS)).stderr == first.stderr and swept == [(marker, outside)]  # answered, not swept again
+
+
+def _probe_files(folder: Path) -> str:
+    """A sweep's probe file and its decoy, as the runner makes them (both plain files)."""
+    marker = folder / "scout-lab-t" / "probe"
+    marker.parent.mkdir()
+    marker.write_text("", encoding="utf-8")
+    Path(str(marker) + "-denied").write_text("", encoding="utf-8")
+    return str(marker)
+
+
+SURVIVED = "experiment not run: a process the experiment started survived the sweep; check ps\n"
+
+
+@pytest.mark.parametrize("why", ["survivors", "no probe"])
+def test_a_sweep_that_cant_confirm_clean_says_so_and_retries(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, why: str
+) -> None:
+    """Survivors remain, or the kernel can't be asked: the outcome stays unwritten, so the next collect sweeps
+    again, and the reply names the problem (as an attached run's survivors do)."""
+    from scout.lab import runs, sandbox
+
+    swept: list[str] = []
+
+    def fake_sweep(_probe: object, marker: str, _outside: str) -> bool:
+        swept.append(marker)
+        return False
+
+    def no_probe() -> object:
+        raise OSError("sandbox_check unavailable")
+
+    monkeypatch.setattr(runner, "_sweep", fake_sweep)
+    monkeypatch.setattr(sandbox, "SandboxProbe", no_probe if why == "no probe" else (lambda: object()))
+    path = _record(vault, pid=_dead_pid(), marker=_probe_files(tmp_path), outside=str(tmp_path))
+    b = _broker(vault)
+    for _ in range(2):
+        reply = b.handle(dict(STATUS))
+        assert reply.exit == broker.EXIT_NOT_RUN and reply.stderr == SURVIVED
+        rec = runs.read(path)
+        assert rec is not None and rec.outcome is None  # not recorded: the next collect sweeps again
+    assert len(swept) == (2 if why == "survivors" else 0)
+    monkeypatch.setattr(runner, "_sweep", lambda *_a: True)
+    monkeypatch.setattr(sandbox, "SandboxProbe", lambda: object())
+    assert b.handle(dict(STATUS)).stderr == "experiment not run: the supervisor stopped without a result\n"
+
+
+def test_a_probe_file_gone_records_the_outcome(vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The probe file is gone (a restart cleared /tmp, and with it every process that held the profile): nothing
+    can be swept, and nothing is left to sweep, so the outcome is recorded."""
+    from scout.lab import runs, sandbox
+
+    def fail(*_a: Any) -> bool:
+        raise AssertionError("swept by a probe file that isn't there")
+
+    monkeypatch.setattr(runner, "_sweep", fail)
+    monkeypatch.setattr(sandbox, "SandboxProbe", lambda: object())
+    path = _record(vault, pid=_dead_pid(), marker=str(tmp_path / "scout-lab-gone" / "probe"), outside=str(tmp_path))
+    reply = _broker(vault).handle(dict(STATUS))
+    assert reply.stderr == "experiment not run: the supervisor stopped without a result\n"
+    rec = runs.read(path)
+    assert rec is not None and rec.outcome is not None and rec.outcome["swept"] == "probe file gone"
+
+
+def test_an_attached_run_over_an_uncollected_detached_record_is_not_run(vault: Path, fake_run: FakeRun) -> None:
+    """A killed supervisor's script may still be running unpolled in the experiment's folder: an attached run must
+    not start there (and clear its scratch dir) until a collect has swept it."""
+    path = _record(vault, pid=_dead_pid())  # no outcome
+    b = _broker(vault)
+    reply = b.handle(dict(REQ))
+    assert reply.exit == broker.EXIT_NOT_RUN
+    assert (
+        reply.stderr
+        == f"experiment not run: an earlier detached run of {EID} hasn't been collected; collect it first\n"
+    )
+    assert fake_run.calls == [] and b.experiments_run == 0
+    from scout.lab import runs
+
+    rec = runs.read(path)
+    assert rec is not None
+    runs.write(path, runs.RunRecord(rec.started, rec.deadline, rec.pid, outcome={"status": "ran", "exit": 0}))
+    assert b.handle(dict(REQ)).exit == 0 and len(fake_run.calls) == 1  # collected: it runs
+
+
+class _HeldLock:
+    """The experiment's run lock held through a descriptor of the test's own, which a fake SIGKILL closes."""
+
+    def __init__(self, vault: Path) -> None:
+        import fcntl
+
+        self.fd: int | None = os.open(
+            runner.run_lock_path(vault, SLUG, EID, os.environ), os.O_WRONLY | os.O_CREAT, 0o200
+        )
+        fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.signals: list[tuple[int, int]] = []
+
+    def kill(self, pid: int, sig: int) -> None:
+        self.signals.append((pid, sig))
+        if sig == signal.SIGKILL and self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+    def close(self) -> None:
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+
+@pytest.mark.parametrize(("late", "killed"), [(timedelta(minutes=5), False), (timedelta(minutes=11), True)])
+def test_a_supervisor_past_its_deadline_is_stopped_by_collect(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, late: timedelta, killed: bool
+) -> None:
+    """A supervisor alive more than 10 minutes past its deadline (a fetch that ignores should_stop) is SIGKILLed,
+    swept as a gone one, and recorded ``not run``; it no longer holds a ``max_detached`` slot."""
+    from scout.lab import runs
+
+    fake_pid = 999_999_991
+    path = _record(vault, pid=fake_pid)  # the deadline is T + 12 h
+    held = _HeldLock(vault)
+    monkeypatch.setattr(runs, "_kill", held.kill)
+    try:
+        reply = _broker(vault, now=T + timedelta(hours=12) + late).handle(dict(STATUS))
+    finally:
+        held.close()
+    rec = runs.read(path)
+    assert rec is not None
+    if killed:
+        assert (fake_pid, signal.SIGKILL) in held.signals
+        assert reply.exit == broker.EXIT_NOT_RUN
+        assert reply.stderr == "experiment not run: the supervisor ran past its deadline\n"
+        assert rec.outcome is not None and rec.outcome["reason"] == "the supervisor ran past its deadline"
+    else:
+        assert (fake_pid, signal.SIGKILL) not in held.signals
+        assert reply.exit == 0 and reply.stderr == "experiment running: 12h05m of 12h00m\n"
+        assert rec.outcome is None
+
+
+def test_status_when_another_run_holds_the_lock(vault: Path) -> None:
+    """The record's supervisor is gone but an attached run of the experiment holds its lock: running, without the
+    dead record's times."""
+    _record(vault, pid=_dead_pid())
+    with runner._run_lock(vault, SLUG, EID, os.environ):
+        reply = _broker(vault).handle(dict(STATUS))
+    assert reply.exit == 0 and reply.stderr == f"experiment running: another run of {EID} holds it\n"
 
 
 def test_status_of_a_supervisor_gone_before_its_gate_sweeps_nothing(
@@ -1811,7 +1956,7 @@ def test_status_of_a_supervisor_gone_before_its_gate_sweeps_nothing(
         raise AssertionError("swept a run whose script never started")
 
     monkeypatch.setattr(runner, "_sweep", fail)
-    _record(vault, pid=_dead_pid())  # no probe: the gate never opened
+    _record(vault, pid=_dead_pid())  # no marker: the gate never opened
     reply = _broker(vault).handle(dict(STATUS))
     assert reply.stderr == "experiment not run: the supervisor stopped without a result\n"
 

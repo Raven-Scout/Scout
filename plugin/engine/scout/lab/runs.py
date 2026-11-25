@@ -5,8 +5,8 @@ run-broker folder, ``lab-runs/<vault hash>-<slug>-<EID>.json`` (folder 0700, fil
 scheduled run or an experiment's script may write:
 
 - ``started``, ``deadline`` (ISO times) and ``pid`` (the supervisor's) as soon as it holds the experiment's run lock;
-- ``probe`` (the sweep's probe file) and ``marker`` (the folder the script's sandbox may not write: the sweep's
-  ``outside``) once the gate's kernel checks pass, before the script starts;
+- ``marker`` (the sweep's probe file) and ``outside`` (the folder the script's sandbox may not write), named as the
+  runner names them (:func:`scout.lab.runner._sweep`), once the gate's kernel checks pass, before the script starts;
 - ``outcome`` last, before the supervisor lets the run lock go.
 
 **Alive** means the supervisor still holds the experiment's run lock (:func:`lock_held`, a non-blocking ``flock``
@@ -53,8 +53,8 @@ class RunRecord:
     started: str
     deadline: str
     pid: int
-    probe: str | None = None
-    marker: str | None = None
+    marker: str | None = None  # the sweep's probe file (the runner's ``marker``)
+    outside: str | None = None  # the folder the script's sandbox may not write (the runner's ``outside``)
     outcome: dict[str, Any] | None = None
 
 
@@ -120,7 +120,7 @@ def read(path: Path) -> RunRecord | None:
         return None
     pid, outcome = data.get("pid"), data.get("outcome")
     texts = [data.get(k) for k in ("started", "deadline")]
-    optional = [data.get(k) for k in ("probe", "marker")]
+    optional = [data.get(k) for k in ("marker", "outside")]
     if (
         not all(isinstance(t, str) for t in texts)
         or isinstance(pid, bool)
@@ -229,10 +229,17 @@ def request_stop(vault: Path, slug: str, eid: str, env: Mapping[str, str], autho
     if not alive(vault, slug, eid, rec, env):
         raise LabError(f"the supervisor of {slug} {eid} isn't running; `lab experiment collect` reports it")
     stop = stop_path(path)
-    fd = os.open(stop, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump({"by": author, "at": datetime.now().astimezone().isoformat()}, fh)
-    _kill(rec.pid, signal.SIGTERM)
+    try:
+        fd = os.open(stop, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"by": author, "at": datetime.now().astimezone().isoformat()}, fh)
+    except OSError as exc:
+        why = exc.__class__.__name__
+        raise LabError(f"cannot write the stop request {stop} ({why}); nothing was stopped") from None
+    try:
+        _kill(rec.pid, signal.SIGTERM)
+    except OSError as exc:
+        raise LabError(f"cannot signal the supervisor of {slug} {eid} ({exc.__class__.__name__})") from None
     return rec.pid
 
 

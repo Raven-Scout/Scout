@@ -13,7 +13,7 @@ It does what an attached run does, through the attached runner whole (ruling P2-
 2. It writes the state record (:mod:`scout.lab.runs`): started, deadline, its pid. :func:`start` returns then.
 3. It fetches the experiment's model weights, if any (:func:`fetch_weights`; the weights cache, Task 8). The
    script's gate hasn't opened, so nothing of the script has run.
-4. It runs the script. Once the gate's kernel checks pass, the record gains the sweep's ``probe`` and ``marker``,
+4. It runs the script. Once the gate's kernel checks pass, the record gains the sweep's ``marker`` and ``outside``,
    so a later collect can find and kill what the script started if this process dies.
 5. It writes the outcome to the record, then lets the lock go.
 
@@ -178,12 +178,12 @@ def _outcome(inputs: Inputs, path: Path, stopper: Stopper, deadline: datetime) -
     if left <= 0:
         return _not_run(f"{DEADLINE_PASSED} before the script started")
 
-    def on_started(probe: str, outside: str) -> None:
+    def on_started(marker: str, outside: str) -> None:
         current = runs.read(path)
         if current is None:
             raise LabError("the run's state record is gone; not run")
         try:
-            runs.write(path, replace(current, probe=probe, marker=outside))
+            runs.write(path, replace(current, marker=marker, outside=outside))
         except OSError as exc:
             raise LabError(f"cannot update the run's state record ({exc.__class__.__name__}); not run") from None
 

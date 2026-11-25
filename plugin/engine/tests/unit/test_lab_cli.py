@@ -302,6 +302,24 @@ def test_stop_without_a_live_supervisor_is_refused(
     assert code == 2
 
 
+def test_stop_that_cant_write_its_request_is_refused_cleanly(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import os
+
+    from scout.lab import runner as lab_runner
+    from scout.lab import runs
+
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(runs, "_kill", lambda pid, sig: sent.append((pid, sig)))
+    path = _detached_record(vault)
+    runs.stop_path(path).mkdir()  # the stop request can't be written there
+    with lab_runner._run_lock(vault, "summary-drift", "E2", os.environ):
+        code, _, err = _main(monkeypatch, capsys, "experiment", "stop", "summary-drift", "E2", "--author", "alex")
+    assert code == 2 and "cannot write the stop request" in err and "Traceback" not in err
+    assert all(sig == 0 for _, sig in sent)  # nothing was stopped
+
+
 def test_run_detach_reaches_the_client(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from scout.sandbox import broker
 

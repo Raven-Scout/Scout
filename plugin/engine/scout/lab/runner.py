@@ -1071,8 +1071,8 @@ def run_experiment(
     killed (``over_memory``).
 
     Two hooks serve a detached run's supervisor (spec §6.4; :mod:`scout.lab.supervise`), and mark the run log
-    ``detached: true``. ``on_started(probe, outside)`` is called once the gate's kernel checks have passed, before
-    the gate opens: ``probe`` is the sweep's probe file and ``outside`` the folder the sandbox may not write, the two
+    ``detached: true``. ``on_started(marker, outside)`` is called once the gate's kernel checks have passed, before
+    the gate opens: ``marker`` is the sweep's probe file and ``outside`` the folder the sandbox may not write, the two
     paths :func:`_sweep` needs to find the script's processes if this process dies. When it raises, the gate never
     opens. ``should_stop()`` is asked at every poll; a reason it returns kills the run through the timeout's kill path
     and is the outcome's ``stopped``.
