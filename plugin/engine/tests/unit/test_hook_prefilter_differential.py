@@ -30,6 +30,10 @@ elsewhere first names files they never check, the pattern also gained ``ADDED_AL
 HOME), and the last, quote-stripped match ``STRIPPED_NAMES`` (HOME, SCOUT_MODE and SCOUT_READER) and
 ``STRIPPED_NAMERS`` (a builtin that sets what it names, anywhere), so ``HO''ME=x``, ``SCOUT_MO\\DE=`` or
 ``"read" HOM?`` is no way round; a case may differ only by now reaching Python for those too.
+
+A second: ``CASE_RULES``, the Bash pattern's program rules applied ignoring letter case, since on a
+case-insensitive disk ``FIND`` runs find. A case may now reach Python where the old command let it through for a
+command those rules match, the same allowance.
 """
 
 from __future__ import annotations
@@ -84,13 +88,32 @@ EXPANSION_ALTERNATIVES = (
     r"\(",
 )
 EXPANSION_PATTERN = "|".join(EXPANSION_ALTERNATIVES)
-# Rules prefilter.sh also applies ignoring letter case, to the command value as is and again with its quotes and
-# backslashes gone: a program fed paths by another, a cd into action-items/ (on macOS's case-insensitive disk
-# ACTION-ITEMS is the folder and XARGS runs xargs), and, on the stripped value only, a KB folder's name.
-LATE_RULES = (
-    r"(^|[^A-Za-z0-9_.-]|\\[nt])(xargs|parallel)([^A-Za-z0-9_.-]|$)"
-    r"|(cd|pushd|-C|--directory|--git-dir|--work-tree)[^;&|]*action-items"
+# Rules prefilter.sh also applies ignoring letter case (its case_pattern), to the command value as is and again
+# with its quotes and backslashes gone: a program fed paths by another, a cd into action-items/, and each Bash
+# pattern rule that names a program, each with its word boundary in front. On macOS's case-insensitive disk
+# ACTION-ITEMS is the folder, and FIND, RG, NOHUP, XARGS and GIT run find, rg, nohup, xargs and git. On the
+# stripped value only, a KB folder's name counts too.
+_W = r"(^|[^A-Za-z0-9_.-]|\\[nt])"
+CASE_RULES = (
+    _W + r"(xargs|parallel)([^A-Za-z0-9_.-]|$)",
+    r"(cd|pushd|-C|--directory|--git-dir|--work-tree)[^;&|]*action-items",
+    _W + r"scoutctl kb .*(xargs|while |mapfile|readarray)",
+    r"(for [A-Za-z_][A-Za-z0-9_]* in |mapfile|readarray).*scoutctl kb ",
+    _W + r"(rg|find|tree|du|ag|ack|ack-grep|fd|fdfind|ugrep|ug)([^A-Za-z0-9_./-]|$)",
+    _W + r"[ef]?grep[^;&|]* (-[A-Za-z]*[rR]|--(dereference-)?recursive|-d *recurse|--directories=recurse)",
+    _W + r"ls[^;&|]* -[A-Za-z]*R",
+    r"(^|[^A-Za-z0-9_./-]|\\[nt])(env|nohup|setsid|disown|launchctl|osascript|open|tmux|screen|script|at|batch|ssh"
+    r"|mosh|systemd-run)([^A-Za-z0-9_./-]|$)",
+    _W + r"(tee|rm|rmdir|unlink|mv|cp|ln|install|rsync|touch|truncate|chmod|chown|chflags|shred|dd|sed|perl|curl"
+    r"|wget|tar|python[0-9.]*|pypy[0-9.]*|node|nodejs|ruby|php|deno|bun)([^A-Za-z0-9_.-]|$)",
+    _W + r"((ba|z|da|k)?sh)([^A-Za-z0-9_.-]|$)",
+    _W + r"git[^;&|]* (grep|-c )",
+    _W + r"git[^;&|]*(commit|am).*([^A-Za-z0-9_-]|\\[nt])-[A-Za-z]*n",
+    # Anything outside printable ASCII, or a JSON \u escape: the disk folds case the Unicode way (ﬁnd, xargſ, ßh).
+    r"[^ -~]",
+    r"\\u[0-9A-Fa-f]{4}",
 )
+LATE_RULES = "|".join(CASE_RULES)
 STRIPPED_RULES = rf"knowledge[-_]base|action-items/context|{LATE_RULES}"
 MAX_PAYLOAD = 32768  # bytes; a run's kb-read-gate payload over this is blocked in the shell
 # Appended after the expansions: any mention of HOME. (Arithmetic, `(( H$v = 1 ))`, and zsh's `${(P)v::=…}` are
@@ -1120,6 +1143,118 @@ def test_the_owner_still_never_starts_python_for_an_expansion(world: World) -> N
         for env in ({}, {"SCOUT_READER": "owner"}):
             out = world.run(NEW["kb-read-gate"], Case("owner", "kb-read-gate", _bash(command), env, "vault"))
             assert out == Outcome(0, "", "", ""), (command, env)
+
+
+# ----- a program named in another letter case: on a case-insensitive disk it is the same program -------
+
+# One command per program word of the Bash pattern, the program in braces. Each reaches Python in lower case
+# already; CASE_FOLD_FORMS spells the program upper case, capitalised, alternating, and split by '' or \.
+PROGRAM_FORMS = (
+    "{rg} x", "{find} notes", "{tree} notes", "{du} notes", "{ag} x", "{ack} x", "{fd} x", "{ugrep} x",
+    "{ug} x", "{fdfind} x", "{ack-grep} x",
+    "{grep} -r x notes", "{egrep} -r x notes", "{fgrep} -r x notes", "{ls} -R notes",
+    "{git} grep x", "{git} -c a.b=c commit -m x", "{git} commit -n -m x", "{git} am -n x.patch",
+    "{env} FOO=1 ls", "{nohup} sleep 9", "{setsid} sleep 9", "sleep 9; {disown}", "{launchctl} list",
+    "{osascript} -e beep", "{open} notes.txt", "{tmux} new -d", "{screen} -dm x", "{script} -q out ls", "{at} now",
+    "{batch}", "{ssh} host ls", "{mosh} host", "{systemd-run} ls",
+    "{tee} notes.txt", "{rm} notes.txt", "{rmdir} notes", "{unlink} notes.txt", "{mv} a b", "{cp} a b", "{ln} a b",
+    "{install} a b", "{rsync} a b", "{touch} a", "{truncate} -s 0 a", "{chmod} 600 a", "{chown} u a",
+    "{chflags} hidden a", "{shred} a", "{dd} if=a of=b", "{sed} -n 1p a", "{perl} -e 1", "{curl} -o a x",
+    "{wget} x", "{tar} cf a.tar notes", "{python3} -c 1", "{pypy3} -c 1", "{node} -e 1", "{nodejs} -e 1",
+    "{ruby} -e 1", "{php} -r 1", "{deno} run x.ts", "{bun} x",
+    "{sh} -c ls", "{bash} -c ls", "{zsh} -c ls", "{dash} -c ls", "{ksh} -c ls",
+    "ls | {xargs} cat", "ls | {parallel} cat", "{scoutctl} kb files | while read f; do echo; done",
+)  # fmt: skip
+
+
+def _spellings(word: str) -> list[str]:
+    alternating = "".join(c.upper() if i % 2 else c for i, c in enumerate(word))
+    return [
+        word.upper(),
+        word.capitalize(),
+        alternating,
+        f"{word[0].upper()}''{word[1:].upper()}",
+        f"{word[0]}\\{word[1:]}",
+    ]
+
+
+CASE_FOLD_FORMS = tuple(
+    dict.fromkeys(
+        form.replace(m[0], s)
+        for form in PROGRAM_FORMS
+        if (m := re.search(r"\{(.+?)\}", form))
+        for s in _spellings(m[1])
+    )
+)
+# A word in another letter case that names no program the pattern knows, or only as part of a word.
+CASE_NEIGHBOURS = ("cat Find.md", "echo Hello", "ls Notes", "git Status", "cat Rgb.txt", "wc -l Notes.md", "Make all")
+
+
+def test_every_program_word_reaches_python_in_lower_case() -> None:
+    values = ['"command": ' + json.dumps(form.replace("{", "").replace("}", "")) for form in PROGRAM_FORMS]
+    assert _matching_lines(_new_pattern(), values) == set(range(1, len(values) + 1))
+
+
+def test_the_case_rules_are_the_scripts() -> None:
+    out = subprocess.run(
+        ["/bin/sh", str(PREFILTER), "print-bash-pattern", "case"], capture_output=True, text=True, check=True
+    )
+    assert out.stdout.rstrip("\n") == LATE_RULES
+    assert all(_balanced(rule) for rule in CASE_RULES)
+
+
+def test_the_old_filter_let_a_program_in_upper_case_through() -> None:
+    """What the case rules are for: the old pattern matched no program spelled in upper case."""
+    upper = [f.replace(m[0], m[1].upper()) for f in PROGRAM_FORMS if (m := re.search(r"\{(.+?)\}", f))]
+    values = ['"command": ' + json.dumps(c) for c in upper]
+    assert _matching_lines(_pattern(OLD["kb-read-gate"]), values) == set()
+
+
+@pytest.mark.parametrize("shell", ["sh", "/bin/bash"])
+def test_a_program_in_any_letter_case_reaches_python_in_a_run(world: World, shell: str) -> None:
+    assert len(CASE_FOLD_FORMS) > 300
+    assert [c for c in CASE_FOLD_FORMS if not _judged(world, c, shell)] == []
+
+
+def test_a_word_in_another_case_that_is_no_program_stays_in_the_shell(world: World) -> None:
+    assert [c for c in CASE_NEIGHBOURS if _judged(world, c)] == []
+
+
+def test_the_owner_never_starts_python_for_a_program_in_another_case(world: World) -> None:
+    for command in (*CASE_FOLD_FORMS[::7], *UNICODE_FOLD_FORMS):
+        out = world.run(NEW["kb-read-gate"], Case("owner", "kb-read-gate", _bash(command), {}, "vault"))
+        assert out == Outcome(0, "", "", ""), command
+
+
+# A program the disk finds through Unicode case folding, which grep can't do: the ﬁ ligature (U+FB01), the long
+# s (U+017F), ß (folds to ss). Each runs the real program on APFS (`zsh -f -c 'ﬁnd /usr/bin -maxdepth 0'`).
+UNICODE_FOLD_FORMS = (
+    "ﬁnd . -type f -exec cat {} +",
+    "scoutctl kb files | xargſ cat",
+    "echo x | base64 -d | zſh",
+    "ßh host true",
+    "oſaſcript -e beep",
+    "ſcreen -dm x",
+    "ſh -c 'cat a.md'",
+    "/bin/ſh -c ls",
+    "baſh -c ls",
+    "ſed -n p a.md",
+    "rſync a b",
+    "ſcript -q out ls",
+)
+
+
+@pytest.mark.parametrize("ensure_ascii", [True, False], ids=["u-escaped", "utf-8"])
+def test_a_program_folded_the_unicode_way_reaches_python_in_a_run(world: World, ensure_ascii: bool) -> None:
+    """The payload as Python's json writes it (\\uXXXX) and as Claude Code sends it (raw UTF-8)."""
+    missed = []
+    for command in UNICODE_FOLD_FORMS:
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}, ensure_ascii=ensure_ascii)
+        out = world.run(NEW["kb-read-gate"], Case(command, "kb-read-gate", payload, RUN, "vault"))
+        assert out[:3] == (0, "", ""), (command, out)
+        if out.python != f"hook kb-read-gate\n{payload}":
+            missed.append(command)
+    assert missed == []
 
 
 # ----- a payload too long to judge in time is blocked in a run -------------------------------------
