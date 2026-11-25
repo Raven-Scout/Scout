@@ -132,7 +132,10 @@ final class LiveAccessibilityTree {
     /// How many times a read's own duration the main actor stays free after it.
     private static let idleShare = 3
 
+    /// Waits for a `KeyWindowGate` turn first and holds it until `close()`, so
+    /// no keyboard-focus test runs while this window and the switch are on.
     init<V: View>(_ view: V, size: CGSize = CGSize(width: 1280, height: 860)) async {
+        await KeyWindowGate.acquire()
         AccessibilityTree.switchOn()
         try? await Task.sleep(for: .milliseconds(300))
         let host = NSHostingView(rootView: view)
@@ -181,6 +184,7 @@ final class LiveAccessibilityTree {
     func close() {
         window.contentView = nil
         AccessibilityTree.switchOff()
+        KeyWindowGate.release()
     }
 }
 
