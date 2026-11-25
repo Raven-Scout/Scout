@@ -53,8 +53,8 @@ from typing import NamedTuple
 
 import pytest
 
+from tests.unit.test_kb_read_gate_git import AFTER_FOLDER_CHANGES, STRICT_DENIES, UNRESOLVED_GIT
 from tests.unit.test_kb_read_gate_git import MUST_DENY as GIT_MUST_DENY
-from tests.unit.test_kb_read_gate_git import UNRESOLVED_GIT
 
 ENGINE = Path(__file__).resolve().parents[2]
 PLUGIN = ENGINE.parent
@@ -80,6 +80,17 @@ INTENDED_DIFFERENCES: dict[str, str] = {}
 # The alternatives appended to the Bash pattern after the move, as prefilter.sh assembles them: a word the shell
 # rewrites before the program sees it (so its text need not spell the KB path it becomes), a program that takes
 # its paths from another's output, and a change of directory into action-items/.
+# The git reads prefilter.sh sends to Python ($git_reads): a subcommand that prints file contents, the -p/-v hunks,
+# an exclusion pathspec. Also matched once quotes and backslashes are gone (_expansion_matches).
+GIT_READS = (
+    "git[^;&|]* (show|diff|diff-tree|diff-index|diff-files|log|whatchanged|reflog|grep|blame|annotate|archive"
+    "|cat-file|format-patch|fast-export|difftool|range-diff|merge-tree|merge-file|request-pull|unpack-file"
+    "|stash (show|list))([^A-Za-z0-9_-]|$)"
+    "|git[^;&|]* (add|checkout|reset|restore|commit|status|stash)[^;&|]* (-p|--patch|-v|-vv|--verbose)"
+    "([^A-Za-z0-9_-]|$)"
+    "|git[^;&|]*:[!^]"
+)
+
 EXPANSION_ALTERNATIVES = (
     r"\*",
     r"(^|[^$])\?",
@@ -95,11 +106,7 @@ EXPANSION_ALTERNATIVES = (
     r"\(",
     # a git call that picks its repository or top, or whose paths cover the KB without naming it
     "--git-dir|--work-tree|GIT_DIR|GIT_WORK_TREE",
-    "git[^;&|]* (show|diff|diff-tree|diff-index|diff-files|log|whatchanged|reflog|grep|blame|annotate|archive|cat-file"
-    "|format-patch|fast-export|difftool|range-diff|merge-tree|unpack-file|stash (show|list))([^A-Za-z0-9_-]|$)",
-    "git[^;&|]* (add|checkout|reset|restore|commit|status|stash)[^;&|]*"
-    " (-p|--patch|-v|-vv|--verbose)([^A-Za-z0-9_-]|$)",
-    "git[^;&|]*:[!^]",
+    GIT_READS,
 )
 EXPANSION_PATTERN = "|".join(EXPANSION_ALTERNATIVES)
 # Rules prefilter.sh also applies ignoring letter case, to the command value as is and again with its quotes and
@@ -581,6 +588,10 @@ GIT_FORMS = (
     "git ls-tree -r HEAD | xargs -n1 git cat-file -p",
     "git add -p",
     "git status -v",
+    *AFTER_FOLDER_CHANGES,
+    *STRICT_DENIES,
+    "git request-pull -p HEAD . HEAD",
+    "git show --stat $(git rev-parse HEAD:docs/a.md)",
 )
 
 # Commands that read a KB note once the shell has expanded them, though their text spells no KB path (the
@@ -801,6 +812,7 @@ def _expansion_matches(commands: list[str]) -> set[str]:
             ADDED_PATTERN_RE.search(value)
             or re.search(STRIPPED_NAMES, home_stripped)
             or STRIPPED_NAMERS.search(home_stripped)
+            or re.search(GIT_READS, home_stripped)  # the git reads, spelled through quotes, \ or a tab
         ):
             matched.add(command)
     return matched

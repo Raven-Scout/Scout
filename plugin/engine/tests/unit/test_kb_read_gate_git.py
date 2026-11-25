@@ -222,7 +222,88 @@ MUST_DENY = [
     "mkdir -p ~/new/q && GIT_DIR=$HOME/Vault/.git GIT_WORK_TREE=$HOME/new git -C $HOME/new/q grep x HEAD -- ..",
     "mkdir -p ~/new/q && git --git-dir=$HOME/Vault/.git --work-tree=$HOME/new -C $HOME/new/q"
     " show HEAD:../action-items/context/x.md",
+    # review round 2: short magic in any order (`/` top, `!`/`^` exclude), perhaps closed by `:`
+    "git log -p -- ':/!docs'",
+    "git log -p -- ':/^docs'",
+    "git log -p -- ':!/docs'",
+    "git log -p -- ':!:docs'",
+    "git log -p -- ':^:docs'",
+    "git diff HEAD~1 -- ':/!docs'",
+    "git grep x -- ':/!docs'",
+    "git log -p -- \\:\\!docs",
+    "git -C docs log -p -- ':/!x'",
+    # review round 2: merge-tree over trees
+    "git merge-tree HEAD:action-items HEAD:action-items HEAD:action-items",
+    "git merge-tree HEAD: HEAD: HEAD:",
+    # review round 2: the commands git runs for you, judged as if run directly
+    "git rebase -q -x 'cat act*/cont*/x.md' HEAD",
+    "git rebase -q --exec 'cat action-items/context/x.md' HEAD",
+    "git rebase --exec='cat act*/cont*/x.md' HEAD",
+    "git -C docs rebase -x 'cat ../act*/cont*/x.md' HEAD",
+    "git bisect run sh -c 'cat act*/cont*/x.md; exit 0'",
+    "git difftool -y --extcmd='sh -c \"cat act*/cont*/x.md\"' HEAD -- docs",
+    "git difftool -y -x 'cat act*/cont*/x.md' HEAD -- docs",
+    "git submodule foreach 'cat act*/cont*/x.md'",
+    "git submodule foreach --recursive cat act*/cont*/x.md",
+    "GIT_PAGER='cat act*/cont*/x.md;:' git log -1",
+    "PAGER='cat act*/cont*/x.md;:' git log -1",
+    "export GIT_PAGER='cat act*/cont*/x.md;:'; git log -1",
+    # review round 2: a variable as the program
+    "G=git; $G archive HEAD | tar x",
+    "G=git; $G -C action-items show HEAD:./context/x.md",
+    # review round 2: whitespace, quotes and backslashes in git's words (the shell removes them)
+    "git\tgrep x",
+    "git\tlog\t-p\t--\t.",
+    "git 'log' -p -- .",
+    'git "grep" x',
+    "git l\\og -p -- .",
+    "git gr\\ep x",
+    "g\\it grep x",
+    "git \\\nlog -p -- .",
+    "git ar''chive HEAD | tar x",
+    '"git" archive HEAD | tar x',
+    # review round 2: merge-file prints the files it names
+    "git merge-file -p action-items/context/x.md docs/a.md docs/a.md",
+    "git -C action-items merge-file -p context/x.md ../docs/a.md ../docs/a.md",
 ]
+
+# Reads after the command changes folders the gate looks at (review round 2): denied when the command names the
+# vault or a KB folder, or copied the vault's repository. The deny may come from the write checks first.
+AFTER_FOLDER_CHANGES = [
+    "ln -s $HOME/Vault/action-items ~/l2 && git -C ~/l2 show HEAD:./context/x.md",
+    "ln -s $HOME/Vault/action-items ~/l2 && git -C ~/l2 log -p .",
+    "ln -s $HOME/Vault ~/v2 && git -C ~/v2/action-items show HEAD:./context/x.md",
+    "ln -s $HOME/Vault ~/v2 && cd ~/v2/action-items && git grep x",
+    "ln -s $HOME/Vault/.git ~/g && git --git-dir=$HOME/g grep x HEAD",
+    "ln -s $HOME/Vault/.git ~/g && cd ~ && GIT_DIR=g git log -p -1 -- .",
+    "git worktree add -q ~/wt2 && git -C ~/wt2/action-items show HEAD:./context/x.md",
+    "git worktree add -q ~/wt2 && git -C ~/wt2 grep x",
+    "git worktree add -q ~/wt2 && cd ~/wt2 && git log -p -- .",
+    "git clone -q . ~/cl && git -C ~/cl/action-items show HEAD:./context/x.md",
+    "git clone -q . ~/cl && git -C ~/cl grep x",
+    "mv docs docs2 && ln -s action-items docs && git -C docs show HEAD:./context/x.md",
+]
+
+
+# Denied, though not by the KB rule's own message or not as a read git really makes: a filter-branch is a commit
+# written without the hook; git itself fails on a git folder it can't find, but the gate can't tell one from a
+# folder made earlier, and these name action-items/; a folder from a substitution in a command that names it.
+STRICT_DENIES = [
+    "git filter-branch -f --tree-filter 'cat act*/cont*/x.md' HEAD",
+    "git --git-dir=.git -C action-items show HEAD:./context/x.md",
+    "GIT_DIR=.git GIT_WORK_TREE=. git -C action-items show HEAD:./context/x.md",
+    "git -C $(echo action-items) show HEAD:./context/x.md",
+]
+
+
+@pytest.mark.parametrize("command", STRICT_DENIES)
+def test_strict_denies(home: Path, command: str) -> None:
+    _denied(_run(home, command))
+
+
+@pytest.mark.parametrize("command", AFTER_FOLDER_CHANGES)
+def test_a_git_read_after_the_command_changes_folders_is_denied(home: Path, command: str) -> None:
+    _denied(_run(home, command))
 
 
 @pytest.mark.parametrize("command", MUST_DENY)
@@ -328,14 +409,11 @@ ALLOWED = [
     "git -C scripts blame run.py",
     "git -C action-items show HEAD:context/x.md",  # from the top: `context/x.md`, no such file
     "git -C action-items --git-dir=../.git show HEAD:./context/x.md",  # top is action-items: `context/x.md` again
-    "git --git-dir=.git -C action-items show HEAD:./context/x.md",  # .git is from action-items: not a repository
-    "GIT_DIR=.git GIT_WORK_TREE=. git -C action-items show HEAD:./context/x.md",  # the same, from the environment
     "export GIT_DIR=$PWD/.git; git -C action-items show HEAD:./context/x.md",  # top is action-items
     # other repositories, and no repository
     "git -C ~/other/action-items show HEAD:./context/x.md",
     "git -C ~/other log -p",
     "git -C ~/plain/action-items show HEAD:./context/x.md",
-    "git -C /nonexistent show HEAD:./context/x.md",
     # no path: the whole repository, recorded and allowed (DENY_GIT_WHOLE_REPO_READS off)
     "git diff",
     "git diff HEAD~1",
@@ -364,6 +442,8 @@ def test_ordinary_git_use_is_allowed(home: Path, command: str) -> None:
         ("git cat-file -p HEAD", "cat-file"),
         ("git -C action-items diff", "diff"),
         ("git show --stat 0123abcd", "show"),  # an object id may be a blob
+        ("git show --stat $(git rev-parse HEAD:docs/a.md)", "show"),  # so may a substituted rev
+        ("git request-pull -p HEAD . HEAD", "request-pull"),
         ("git ls-tree -r HEAD | git cat-file --batch", "cat-file"),
     ],
 )
@@ -407,7 +487,7 @@ def test_with_the_switch_on_a_whole_repository_read_is_denied(home: Path, monkey
 
 UNRESOLVED_GIT = [
     "git -C $UNSET_X show HEAD:./context/x.md",
-    "git -C $(echo action-items) show HEAD:./context/x.md",
+    "git -C $(echo docs) show HEAD:./context/x.md",
     "git -C `echo action-items` log -p context/",
     "git --git-dir=$UNSET_X show HEAD:./context/x.md",
     "GIT_WORK_TREE=$UNSET_X git show HEAD:./context/x.md",
@@ -416,6 +496,10 @@ UNRESOLVED_GIT = [
     "git -C action-i* show HEAD:./context/x.md",
     "git ls-tree -r HEAD | xargs -n1 git cat-file -p",  # review of #817: objects from stdin
     "git ls-tree -r HEAD | xargs -n1 git show",
+    "git ls-tree -r HEAD | parallel git cat-file -p",
+    "git -C /nonexistent show HEAD:./context/x.md",  # review round 2: a folder not on disk
+    "cp docs/a.md docs/b.md && git log -p -- docs",  # review round 2: after a copy, names nothing of the KB
+    "G=$UNSET_G; $G show HEAD:./x.md",  # review round 2: a program the gate can't know
 ]
 
 
@@ -482,7 +566,7 @@ def test_parse_sorts_a_calls_words(args: str, trees: list, pathspecs: list, mayb
         "status", "status -s", "log --oneline", "log --stat", "diff --stat", "diff --name-only HEAD",
         "show --name-status HEAD", "show -s HEAD", "cat-file -t HEAD", "cat-file -e HEAD:x", "cat-file commit HEAD",
         "add x", "commit -m x", "stash", "stash show", "stash list", "ls-files", "ls-tree HEAD", "rev-parse HEAD",
-        "push", "fetch", "-C a status",
+        "push", "fetch", "-C a status", "request-pull HEAD . HEAD", "merge-file a b c",
     ],
 )  # fmt: skip
 def test_parse_finds_no_read_in_a_names_only_call(args: str) -> None:

@@ -25,4 +25,12 @@
   the gate any `--git-dir`, `--work-tree`, `GIT_DIR` or `GIT_WORK_TREE`, every git subcommand that prints file
   contents (`show`, `diff`, `log`, `grep`, `blame`, `archive`, `cat-file`, `stash show`, …, so `git log --oneline`
   and `git diff HEAD~3` reach it too and are allowed there), the `-p`/`-v` hunks of `add`, `checkout`, `reset`,
-  `restore`, `commit`, `status` and `stash`, and an exclusion pathspec.
+  `restore`, `commit`, `status` and `stash`, and an exclusion pathspec, also when quotes, backslashes, a tab or a
+  line break spell git's words (`git 'log' -p -- .`, `g\it grep x`). Short pathspec magic is read in any order
+  (`:/!docs`, `:!:docs`). The commands git runs for you (`rebase -x|--exec`, `bisect run`, `difftool
+  -x|--extcmd`, `submodule foreach`, `filter-branch` filters, a `GIT_PAGER` or `PAGER` the command sets) are
+  judged as if run directly, and a variable naming git (`G=git; $G archive HEAD`) is worked out. A git read after
+  the command links, moves or copies folders (`ln -s`, `mv`, `cp`, `git worktree add`, `git clone`), or from a
+  folder not on disk, is recorded as `git_unresolved`, and denied when the command names the vault or a KB folder
+  or copied the vault's repository (`git worktree add`, `git clone .`). `git merge-tree` reads all of a
+  `<rev>:<folder>`, `git merge-file -p` the files it names, and `git request-pull -p` the whole repository.

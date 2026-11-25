@@ -529,7 +529,7 @@ def decide(
 
         def git_read(read: GitRead, where: str) -> str | None:
             """A git call's reads (:func:`_git_reads_kb`), from the folder ``where`` it runs in."""
-            found = _git_reads_kb(read, where, vault, env, resolve, text_of)
+            found = _git_reads_kb(read, where, vault, env, resolve, text_of, names_vault)
             if found == "unresolved":
                 if DENY_UNRESOLVED_GIT_READS:
                     return UNRESOLVED_READ
@@ -546,6 +546,7 @@ def decide(
         memo: dict[str, list[str] | None] = {}
         unresolved: set[str] = set()
         whole_repo: set[str] = set()
+        names_vault = _names_vault(command, vault, env)
 
         def globs(target: str) -> list[str] | None:
             if target not in memo:
@@ -604,6 +605,54 @@ def decide(
 
 
 def _git_reads_kb(
+    read: GitRead,
+    where: str,
+    vault: Path,
+    env: Mapping[str, str],
+    resolve: Callable[[str], str | None],
+    text_of: Callable[[str], str | None],
+    names_vault: bool = False,
+) -> str | None:
+    """:func:`_git_tree_reads_kb`, for folders the gate can't be sure of: when an earlier part of the command moved,
+    linked or copied folders (``ln -s``, ``mv``, ``cp``, ``git worktree add``, ``git clone``), or the folder git runs
+    in (or its ``--git-dir``) isn't on disk yet, what git reads there is unknown unless it is plainly the KB already.
+    Then the read is "unresolved", or "kb" when the command names the vault or a KB folder (``names_vault``), or
+    copied the repository it runs in, the vault's (``git worktree add``, ``git clone .``)."""
+    found = _git_tree_reads_kb(read, where, vault, env, resolve, text_of)
+    if found == "kb":
+        return found
+    folder = resolve(where or ".")
+    missing = folder is None or not os.path.lexists(folder)
+    if read.git_dir is not None and not missing:
+        place = resolve(read.git_dir)
+        missing = place is None or not os.path.lexists(place)
+    if not (read.fs_changed or missing):
+        return found
+    return "kb" if names_vault or read.fs_changed == "vault-copy" else "unresolved"
+
+
+# A command names the vault's KB folders: one spelled out, or action-items/ itself (which holds context/).
+_NAMES_KB_FOLDER = re.compile(r"(?:^|[\s'\"=/])action-items/?(?=$|[\s'\";&|)])", re.IGNORECASE)
+
+
+def _names_vault(command: str, vault: Path, env: Mapping[str, str]) -> bool:
+    """Whether ``command`` spells the vault (its path, or ``~/…``, ``$HOME/…``, ``${HOME}/…``) or a KB folder."""
+    text = command.casefold()
+    if is_kb_path(text) or _NAMES_KB_FOLDER.search(command):
+        return True
+    spellings = {str(vault), str(paths.resolve_path(vault))}
+    home = env.get("HOME")
+    if home:
+        try:
+            rel = paths.resolve_path(vault).relative_to(paths.resolve_path(home)).as_posix()
+        except ValueError:
+            rel = None
+        if rel:
+            spellings |= {f"~/{rel}", f"$HOME/{rel}", f"${{HOME}}/{rel}"}
+    return any(sp.casefold() in text for sp in spellings)
+
+
+def _git_tree_reads_kb(
     read: GitRead,
     where: str,
     vault: Path,
@@ -738,7 +787,9 @@ def _git_reads_kb(
 
 
 def _is_exclusion(word: str) -> bool:
-    return word.startswith((":!", ":^")) or bool(re.match(r"^:\([^)]*\bexclude\b", word))
+    from scout.kb import git_read
+
+    return git_read.is_exclusion(word)
 
 
 GIT_GLOB_CAP = 20000  # KB files a git pathspec's wildcard is matched against; more counts as a match

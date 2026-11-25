@@ -1286,7 +1286,7 @@ MAX_LITERAL_READS = 4096
 MAX_DEPTH = 6
 _STATE: dict[str, Any] = {
     "checked": 0, "secrets": 0, "reads": 0, "literal": 0, "vars": {}, "bodies": [], "unparsed": False, "capped": False,
-    "parsing": False,
+    "parsing": False, "fs_changed": "",
 }  # fmt: skip
 _VAR = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 # An interpreter given its program inline or on stdin.
@@ -1684,6 +1684,18 @@ def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | No
     stripped = raw_read._strip(words)
     if not stripped.words:
         return None
+    head = stripped.words[0]
+    if "$" in head or "`" in head:  # `G=git; $G archive HEAD`: the program is a variable's value
+        before = words[: len(words) - len(stripped.words)]
+        for alt in _substitute(head)[:MAX_CHECKED_PATHS]:
+            if "$" in alt or "`" in alt:
+                if git_read.parse([_unshield(w) for w in stripped.words[1:]]) is not None:
+                    return _GIT_READ(git_read.GitRead(sub=stripped.words[1], trees=[SUBST]), cwd)  # unresolved
+                continue
+            found = _git_read([*before, alt, *stripped.words[1:]], cwd, oldpwd)
+            if found is not None:
+                return found
+        return None
     git = _git_words(stripped.words)
     if git is None:
         return None
@@ -1758,12 +1770,101 @@ def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | No
             for wt in work_trees:
                 one = git_read.GitRead(
                     sub=read.sub, git_dir=gd, work_tree=wt, trees=lists[0], pathspecs=lists[1],
-                    maybe_paths=lists[2], unbounded=read.unbounded,
+                    maybe_paths=lists[2], unbounded=read.unbounded, fs_changed=_STATE["fs_changed"],
                 )  # fmt: skip
                 found = _GIT_READ(one, where)
                 if found is not None:
                     return found
     return None
+
+
+# Options whose value is a shell command git runs (`git rebase -x 'cmd'`), and variables that name one.
+_GIT_RUN_OPTIONS: dict[str, set[str]] = {
+    "rebase": {"-x", "--exec"},
+    "difftool": {"-x", "--extcmd"},
+    "mergetool": {"--tool-cmd"},
+    "filter-branch": {
+        "--setup", "--tree-filter", "--index-filter", "--msg-filter", "--env-filter", "--commit-filter",
+        "--parent-filter", "--tag-name-filter",
+    },
+}  # fmt: skip
+_GIT_RUN_ENV = ("GIT_PAGER", "PAGER", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "EDITOR", "VISUAL")
+# Programs and git subcommands that move, link or copy folders: a git read after one is of folders the gate can't
+# see yet (scout.kb.git_read.GitRead.fs_changed).
+_FOLDER_CHANGERS = {"ln", "mv", "cp", "rsync", "ditto", "install"}
+_GIT_FOLDER_CHANGERS = {"worktree", "clone", "mv", "checkout-index", "submodule", "init"}
+
+
+def _git_programs(words: list[str], cwd: str) -> list[str]:
+    """The shell commands a git call runs for you, each from the folder git runs in: ``rebase -x|--exec``,
+    ``bisect run``, ``difftool -x|--extcmd``, ``submodule foreach``, ``filter-branch --*-filter``, and a
+    ``GIT_PAGER``/``PAGER``/``GIT_EDITOR``/… the command sets (a prefix, or earlier in it). Judged as if run
+    directly (review of #817)."""
+    from scout.kb import git_read, raw_read
+
+    stripped = raw_read._strip(words)
+    git = _git_words(stripped.words) if stripped.words else None
+    if git is None:
+        return []
+    chdirs, _git_dir, _work_tree, at = git_read.split_global(git)
+    sub, args = (git[at], git[at + 1 :]) if at < len(git) else ("", [])
+    programs: list[str] = []
+    options = _GIT_RUN_OPTIONS.get(sub, set())
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in options and i + 1 < len(args):
+            programs.append(args[i + 1])
+            i += 2
+            continue
+        for option in options:
+            if option.startswith("--") and a.startswith(option + "="):
+                programs.append(a.split("=", 1)[1])
+            elif not option.startswith("--") and a.startswith(option) and len(a) > len(option):
+                programs.append(a[len(option) :])
+        i += 1
+    if sub == "bisect" and args[:1] == ["run"] and len(args) > 1:
+        programs.append(shlex.join(args[1:]))
+    if sub == "submodule":
+        rest = [a for a in args if a not in ("-q", "--quiet", "--recursive")]
+        if rest[:1] == ["foreach"] and len(rest) > 1:
+            programs.append(" ".join(rest[1:]))  # git hands them to a shell as one line
+    for word in words[: len(words) - len(stripped.words)]:
+        m = _ASSIGN.match(word)
+        if m and m[1] in _GIT_RUN_ENV:
+            programs.append(word.split("=", 1)[1])
+    for name in _GIT_RUN_ENV:
+        programs += [v for v in _STATE["vars"].get(name) or [] if v != SUBST]
+    where = cwd
+    for folder in chdirs:
+        if folder:
+            where = _into(where, folder)
+    return [f"cd {shlex.quote(where)} && {p}" if where else p for p in programs]
+
+
+def _changes_folders(words: list[str]) -> str:
+    """ "vault-copy" for a git call that copies the repository the command runs in (``git worktree add``, ``git
+    clone .``, with no -C or --git-dir), "changed" for any other that moves, links or copies folders, else ""."""
+    from scout.kb import git_read, raw_read
+
+    stripped = raw_read._strip(words)
+    if not stripped.words:
+        return ""
+    if raw_read._command_name(stripped.words[0]) in _FOLDER_CHANGERS:
+        return "changed"
+    git = _git_words(stripped.words)
+    if git is None:
+        return ""
+    chdirs, git_dir, _work_tree, at = git_read.split_global(git)
+    if at >= len(git) or git[at] not in _GIT_FOLDER_CHANGERS:
+        return ""
+    here = not chdirs and git_dir is None
+    plain = [a for a in git[at + 1 :] if not a.startswith("-")]
+    if here and git[at] == "worktree" and plain[:1] == ["add"]:
+        return "vault-copy"
+    if here and git[at] == "clone" and plain[:1] and plain[0].rstrip("/") in (".", "..", "./.git", ".git"):
+        return "vault-copy"
+    return "changed"
 
 
 def _unshield(word: str) -> str:
@@ -2375,7 +2476,16 @@ def run_escape(
     if outer:
         _PROTECT, _SECRET, _KB_READ, _GIT_READ = protect, secret, kb_read, git_read
         _STATE.update(
-            checked=0, secrets=0, reads=0, literal=0, vars={}, bodies=[], unparsed=False, capped=False, parsing=False
+            checked=0,
+            secrets=0,
+            reads=0,
+            literal=0,
+            vars={},
+            bodies=[],
+            unparsed=False,
+            capped=False,
+            parsing=False,
+            fs_changed="",
         )
     try:
         found = _run_escape(command, depth)
@@ -2508,9 +2618,18 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
                 found = _kb_read(literal_words, literal_reads, cwd, fed, oldpwd)
             if found is None and _GIT_READ is not None and _KB_READ is not None:
                 found = _git_read(literal_words, cwd, oldpwd)
+            if found is None and _GIT_READ is not None and _KB_READ is not None:
+                for program in _git_programs(words, cwd):
+                    found = _run_escape(program, depth + 1)
+                    if found is not None:
+                        break
         if found == "env":
             return "env"
         results.append((here, found))
+        if _KB_READ is not None:
+            change = _changes_folders(words)
+            if change and _STATE["fs_changed"] != "vault-copy":
+                _STATE["fs_changed"] = change
         previous = segment
         if words[:1] in (["cd"], ["pushd"]):
             dests = [w for w in words[1:] if w not in ("-L", "-P", "-e", "-@", "--")]

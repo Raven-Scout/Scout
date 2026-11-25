@@ -219,9 +219,10 @@ bash_pattern() {
     #    naming it (`git log -p -- .`, `git grep x HEAD:`, `git archive HEAD`), and with no path it reads the
     #    whole repository (the gate records that). Also -p/-v hunks of add, checkout, reset, restore, commit,
     #    status and stash, and an exclusion pathspec (`:!docs` leaves everything else).
-    alt 'git[^;&|]* (show|diff|diff-tree|diff-index|diff-files|log|whatchanged|reflog|grep|blame|annotate|archive|cat-file|format-patch|fast-export|difftool|range-diff|merge-tree|unpack-file|stash (show|list))([^A-Za-z0-9_-]|$)'
-    alt 'git[^;&|]* (add|checkout|reset|restore|commit|status|stash)[^;&|]* (-p|--patch|-v|-vv|--verbose)([^A-Za-z0-9_-]|$)'
-    alt 'git[^;&|]*:[!^]'
+    git_reads='git[^;&|]* (show|diff|diff-tree|diff-index|diff-files|log|whatchanged|reflog|grep|blame|annotate|archive|cat-file|format-patch|fast-export|difftool|range-diff|merge-tree|merge-file|request-pull|unpack-file|stash (show|list))([^A-Za-z0-9_-]|$)'
+    git_reads="$git_reads"'|git[^;&|]* (add|checkout|reset|restore|commit|status|stash)[^;&|]* (-p|--patch|-v|-vv|--verbose)([^A-Za-z0-9_-]|$)'
+    git_reads="$git_reads"'|git[^;&|]*:[!^]'
+    alt "$git_reads"
     # -- HOME. The gates expand `~` and `$HOME` with the run's own HOME, so a command that points HOME
     #    elsewhere first (`HOME=x cmd`, `unset HOME`, `export HOME=…`) names files they never check.
     #    Every mention goes to Python, which denies a change and lets `HOME=$HOME` or a read through.
@@ -308,6 +309,10 @@ bash_needs_python() {
     # HOME, SCOUT_MODE and SCOUT_READER spelled with quotes or backslashes (`HO''ME=x`,
     # `export SCOUT_MO\DE=x`).
     matches 'HOME|SCOUT_(MODE|READER)'
+    [ "$?" -ne 1 ] && return 0
+    # The git reads above, spelled through quotes, backslashes, a tab or a line break (`git 'log' -p -- .`,
+    # `g\it grep x`, `git<TAB>grep x`, `git \<newline>log -p`): Python judges what git reads.
+    matches "$git_reads"
     [ "$?" -ne 1 ] && return 0
     # A builtin that sets or unsets the variables it names, anywhere in the command, its own name perhaps
     # quoted or escaped (`"read" HOM?`, `\export`, `r''ead`): its target need not spell HOME (`export

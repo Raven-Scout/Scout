@@ -54,7 +54,7 @@ _NAMES_PREFIXES = ("--stat=", "--dirstat=", "-X")
 # Subcommands that print a patch unless told to print names only.
 _PATCH_BY_DEFAULT = {"show", "diff", "difftool", "range-diff", "format-patch"}
 # Subcommands that print a patch only when asked (a patch flag, or log's -L, which prints the lines it follows).
-_PATCH_WHEN_ASKED = {"log", "whatchanged", "reflog", "diff-tree", "diff-index", "diff-files", "status"}
+_PATCH_WHEN_ASKED = {"log", "whatchanged", "reflog", "diff-tree", "diff-index", "diff-files", "status", "request-pull"}
 # Subcommands that always print what they read.
 _ALWAYS = {"blame", "annotate", "grep", "archive", "fast-export", "merge-tree", "unpack-file"}
 # Subcommands that print hunks of the files they are given with -p/--patch (interactive: a run's empty stdin
@@ -103,6 +103,10 @@ class GitRead:
     # With no path: "repo" reads the whole repository (the vault's KB included), "cwd" everything below the
     # folder git runs in, None nothing.
     unbounded: str | None = None
+    # An earlier part of the command moved, linked or copied folders (`ln -s`, `mv`, `cp`): "changed", what the
+    # folders are when git runs isn't what the gate sees now; "vault-copy", it also copied the repository it runs
+    # in (`git worktree add`, `git clone .`), the vault's in a run.
+    fs_changed: str = ""
 
 
 def split_global(args: list[str]) -> tuple[list[str], str | None, str | None, int]:
@@ -190,6 +194,16 @@ def parse(args: list[str]) -> GitRead | None:
     read = GitRead(sub=sub, chdirs=chdirs, git_dir=git_dir, work_tree=work_tree)
     if sub == "cat-file":
         return _cat_file(sub_args, read)
+    if sub == "request-pull":  # `<start> <url> [<end>]`: no paths, and -p prints the whole diff
+        if "-p" not in sub_args:
+            return None
+        read.unbounded = "repo"
+        return read
+    if sub == "merge-file":  # `-p`/`--stdout` prints the merge of the three files it names
+        if not any(a in ("-p", "--stdout") for a in sub_args):
+            return None
+        read.files = [a for a in sub_args if not a.startswith("-")]
+        return read
     if sub == "stash":
         action = next((a for a in sub_args if not a.startswith("-")), "push")
         shows = action in ("show", "list") and _patch(sub_args)
@@ -206,7 +220,8 @@ def parse(args: list[str]) -> GitRead | None:
             # `git show --stat HEAD:a.md` still prints the blob: a tree path is read whatever the flags say.
             _collect(sub, sub_args, read)
             # A bare object id may be a blob (`git show --stat <blob>` prints it): any file, so recorded.
-            blob = sub == "show" and any(OBJECT_ID.match(w) for w in read.maybe_paths)
+            # A rev from a substitution (`$(git rev-parse HEAD:x)`) may be one too.
+            blob = sub == "show" and any(OBJECT_ID.match(w) or "$" in w or "`" in w for w in read.maybe_paths)
             read.pathspecs, read.maybe_paths = [], []
             if blob:
                 read.unbounded = "repo"
@@ -354,22 +369,38 @@ def rel_to(top: Path, folder: Path) -> str | None:
     return "/".join(folder.parts[len(a) :]) if b[: len(a)] == a else None
 
 
-def exclusion(word: str, prefix: str) -> str | None:
-    """The repository path an exclusion pathspec leaves out (``:!x``, ``:^x``, ``:(exclude)x`` from the folder,
-    ``:(exclude,top)x`` from the top), else None (not an exclusion, or one above the top)."""
+def pathspec_magic(word: str) -> tuple[set[str], str] | None:
+    """A pathspec's magic and the path after it, as git reads them: ``:(top,exclude)x`` (long), or the short form,
+    a run of ``/`` (top), ``!`` and ``^`` (exclude) in any order after the ``:``, perhaps closed by another ``:``
+    (``:/!docs``, ``:!/docs``, ``:^:docs``). None for a word with no leading ``:``."""
+    if not word.startswith(":"):
+        return None
     m = re.match(r"^:\(([^)]*)\)(.*)$", word)
     if m:
-        magic = {w.strip() for w in m[1].split(",")}
-        if "exclude" not in magic:
-            return None
-        rest = m[2]
-        return tree_path(f":(top){rest}" if "top" in magic else rest, prefix, pathspec=True)
-    if word.startswith((":!", ":^")):
-        rest = word[2:]
-        return (
-            tree_path(rest[1:], "", pathspec=True) if rest.startswith("/") else tree_path(rest, prefix, pathspec=True)
-        )
-    return None
+        return {w.strip() for w in m[1].split(",")}, m[2]
+    magic: set[str] = set()
+    i = 1
+    while i < len(word) and word[i] in "/!^":
+        magic.add("top" if word[i] == "/" else "exclude")
+        i += 1
+    if i < len(word) and word[i] == ":":
+        i += 1
+    return magic, word[i:]
+
+
+def is_exclusion(word: str) -> bool:
+    parsed = pathspec_magic(word)
+    return parsed is not None and "exclude" in parsed[0]
+
+
+def exclusion(word: str, prefix: str) -> str | None:
+    """The repository path an exclusion pathspec leaves out (``:!x``, ``:^x``, ``:(exclude)x`` from the folder,
+    ``:/!x``, ``:(exclude,top)x`` from the top), else None (not an exclusion, or one above the top)."""
+    parsed = pathspec_magic(word)
+    if parsed is None or "exclude" not in parsed[0]:
+        return None
+    magic, rest = parsed
+    return tree_path(f":(top){rest}" if "top" in magic else rest, prefix, pathspec=True)
 
 
 # Subcommands for which a pathspec made only of exclusions means "everything below the folder git runs in" (git's
@@ -377,7 +408,7 @@ def exclusion(word: str, prefix: str) -> str | None:
 PREFER_CWD = {"grep", "archive"}
 # Subcommands that read every file below a `<rev>:<folder>` they are given (a tree): `git grep x HEAD:action-items`,
 # `git archive HEAD:`, `git diff A:dir B:dir`. `git show`/`cat-file` of a tree print only its names.
-TREE_READERS = {"grep", "archive", "diff", "diff-tree", "diff-index", "difftool"}
+TREE_READERS = {"grep", "archive", "diff", "diff-tree", "diff-index", "difftool", "merge-tree"}
 # A word that may be an object id (a blob's included): 7 to 64 hex digits.
 OBJECT_ID = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
@@ -388,18 +419,12 @@ def tree_path(word: str, prefix: str, *, pathspec: bool) -> str | None:
     ``:/x``/``:(top)x`` from the top). None for an exclusion, or a path above the top (git refuses it)."""
     top = False
     if pathspec:
-        if word.startswith((":!", ":^")):
-            return None
-        m = re.match(r"^:\(([^)]*)\)(.*)$", word)
-        if m:
-            magic = {w.strip() for w in m[1].split(",")}
+        parsed = pathspec_magic(word)
+        if parsed is not None:
+            magic, word = parsed
             if "exclude" in magic:
                 return None
-            top, word = "top" in magic, m[2]
-        elif word.startswith(":/"):
-            top, word = True, word[2:]
-        elif word.startswith(":"):
-            word = word[1:]
+            top = "top" in magic
     else:
         top = not (word in (".", "..") or word.startswith(("./", "../")))
     joined = posixpath.normpath(word.lstrip("/") if top else posixpath.join(prefix or ".", word))
