@@ -1,6 +1,6 @@
 # Privacy Policy
 
-**Last updated: November 16, 2026**
+**Last updated: November 24, 2026**
 
 This Privacy Policy explains how the **Scout** project ("Scout", "we", "us", or "the
 project" — the maintainers who publish the [Raven Scout](https://github.com/Raven-Scout)
@@ -16,12 +16,18 @@ it produces — your knowledge base, action items, logs, and configuration — i
 files on *your* machine (by default, the `~/Scout/` folder) and to *your* own git history.
 Your data never reaches us, because there is nowhere for it to go.
 
-There is one thing we can count. Scout's one-command installer downloads a small version
-file from our GitHub Releases page, and GitHub publicly shows how many times each release
-file has been downloaded. That running total tells us roughly how many times the installer
-has run. It is a number and nothing more: no IP address, no identity, nothing about you or
-your machine. See ["The installer's version check"](#the-installers-version-check), which
-also says how to turn it off.
+There are two things we can count, both from totals GitHub already shows for every file on
+our GitHub Releases page: how many times it has been downloaded. Scout's one-command
+installer downloads a small version file, so that file's total tells us roughly how many
+times the installer has run. The Mac app downloads its update feed and its updates from
+there, so those totals tell us roughly how many copies of the app are in use. They are
+numbers and nothing more: no IP address, no identity, nothing about you or your machine. See
+["The installer's version check"](#the-installers-version-check), which also says how to
+turn it off, and the Mac app's updates under ["Scout for macOS"](#scout-for-macos).
+
+This website also counts its page views, anonymously and without cookies, so we know how
+often it's read. That count never involves the plugin or the apps. See
+["This website"](#this-website).
 
 Because we never receive your data, there is nothing for us to sell, share, mine, or lose.
 The honest privacy story for Scout is one of **architecture, not promises**: the data stays
@@ -58,11 +64,19 @@ the `~/Scout/` folder on your Mac and runs local commands (`scoutctl`, `launchct
 manage your schedule and action items. It does not contain analytics or crash reporting, does
 not create any account, and does not send your data to us or to any third party.
 
-**Updates.** The app checks for new versions of itself about once a day by fetching a release
-feed from the project's GitHub repository, and downloads signed updates from there. This is an
-ordinary web request: GitHub can see your IP address and the app's version, as it would for any
-download. The app does not send usage data or a system profile with it. Setting up the engine
-also downloads the tools it needs, such as `uv`, from their public sources.
+**Updates.** While it's running, the app checks for new versions of itself about once an hour
+by fetching a release feed from the project's GitHub repository, and downloads signed updates
+from there. This is an ordinary web request: GitHub can see your IP address and the app's
+version, as it would for any download. The app does not send usage data or a system profile
+with it. Setting up the engine also downloads the tools it needs, such as `uv`, from their
+public sources.
+
+As with the installer's version file, what we can see is the running total GitHub publishes
+for each release file. The feed's total is how many update checks were made while that release
+was the newest, and an update's total is roughly how many copies of the app installed it. We
+use those totals to estimate how many copies of the app are in use. They are single numbers
+with no IP address, account, device or vault information in them, and the app adds nothing to
+these requests for us to count.
 
 ### Optional sharing with your team
 
@@ -149,8 +163,26 @@ The install works the same without the check.
 ## This website
 
 Our website (`raven-scout.github.io`) is a static informational site hosted on **GitHub Pages**.
-It does **not** use cookies, analytics, tracking pixels, advertising, or third-party fonts, and
-it makes no third-party network requests — fonts and styles are served from the site itself.
+It does **not** use cookies, tracking pixels, advertising, third-party scripts, or third-party
+fonts — fonts, styles and scripts are served from the site itself. The only thing it saves in
+your browser is your light or dark theme, if you pick one.
+
+To learn how often the site is visited, each page you open sends one anonymous page-view count
+to [PostHog](https://posthog.com/privacy), the analytics service we use. That is the site's
+only request to anyone other than GitHub. The count holds:
+
+- the page's address, without any query string or `#` part, and any `utm_` campaign tags in
+  the link you followed;
+- the domain of the site that linked you here, if any (never the full address);
+- the page's title and your screen's width;
+- a random ID made fresh for every page you open, so two page views can't be tied together or
+  to you.
+
+It holds no cookie, no stored identifier and no fingerprint, and it doesn't follow you between
+pages or visits. PostHog receives your IP address when the count arrives, as any server you
+connect to does; we have set PostHog to discard it, so the counts we can see contain no IP
+address. If your browser sends a **Do Not Track** or **Global Privacy Control** signal, the
+site sends no count at all.
 
 As with any website, the host (GitHub) may automatically log technical request data such as IP
 addresses to operate and secure the service. That processing is performed by GitHub under

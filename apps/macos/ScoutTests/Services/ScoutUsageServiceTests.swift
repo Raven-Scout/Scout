@@ -1,3 +1,4 @@
+import Combine
 import Testing
 import Foundation
 @testable import Scout
@@ -36,6 +37,43 @@ private actor StubUsageRunner: ProcessRunner {
 }
 
 private func ok(_ data: Data) -> ProcessResult { ProcessResult(exitCode: 0, stdout: data, stderr: Data()) }
+
+/// A runner whose every call waits until the test lets one through (`release`), counting
+/// calls and how many ran at once. No sleeps: the test decides when each read ends.
+private actor GatedUsageRunner: ProcessRunner {
+    private let result: ProcessResult
+    private(set) var calls = 0
+    private(set) var maxConcurrent = 0
+    private var running = 0
+    private var permits = 0
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    init(_ result: ProcessResult) { self.result = result }
+
+    /// Lets one call (waiting now or the next to arrive) finish.
+    func release() {
+        if waiting.isEmpty { permits += 1 } else { waiting.removeFirst().resume() }
+    }
+
+    private func pass() async {
+        calls += 1
+        running += 1
+        maxConcurrent = max(maxConcurrent, running)
+        if permits > 0 {
+            permits -= 1
+        } else {
+            await withCheckedContinuation { waiting.append($0) }
+        }
+        running -= 1
+    }
+
+    nonisolated func run(
+        executable: URL, arguments: [String], environment: [String: String], workingDirectory: URL?
+    ) async throws -> ProcessResult {
+        await pass()
+        return result
+    }
+}
 
 @Suite("Scout usage summary")
 struct ScoutUsageSummaryTests {
@@ -161,6 +199,66 @@ struct ScoutUsageServiceTests {
         // Exit 2 is any usage error; only "No such command" means an older engine.
         #expect(ScoutUsageService.failureMessage(exitCode: 2, stderr: "Error: Invalid value for '--json'")
             == "Error: Invalid value for '--json'")
+    }
+
+    /// The Today tile and the usage card both refresh when the Control Center appears: never two
+    /// `scoutctl` reads at once, and a call made during a read gets one read after it (its data
+    /// may be newer than that read), not one per caller.
+    @Test func refreshesDuringAReadQueueOneMoreReadAndNeverOverlap() async throws {
+        let runner = GatedUsageRunner(ok(try fixtureData()))
+        let svc = ScoutUsageService(scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"), runner: runner)
+        let first = Task { await svc.refresh() }
+        while await runner.calls == 0 { await Task.yield() }   // the first read is under way
+        // Two more callers while it reads: each asks before its first suspension.
+        let second = Task { await svc.refresh() }
+        let third = Task { await svc.refresh() }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(await runner.calls == 1)                        // they wait; no read of their own yet
+        await runner.release()                                  // the first read ends …
+        while await runner.calls < 2 { await Task.yield() }     // … and one more starts for both
+        await runner.release()
+        _ = await (first.value, second.value, third.value)
+        #expect(await runner.maxConcurrent == 1)
+        #expect(await runner.calls == 2)
+        #expect(svc.summary?.today.runs == 2)
+        // Idle again: the next call reads once.
+        await runner.release()
+        await svc.refresh()
+        #expect(await runner.calls == 3)
+    }
+
+    /// A call that lands after a read's task has finished, but before that read's caller has
+    /// resumed, still gets a read of its own. It used to find the finished task, ask for one
+    /// more read that nothing would run, and return with the card left stale.
+    @Test func aCallRightAfterAReadEndsStillReads() async throws {
+        let runner = GatedUsageRunner(ok(try fixtureData()))
+        await runner.release()
+        await runner.release()
+        let svc = ScoutUsageService(scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"), runner: runner)
+        var late: Task<Void, Never>?
+        // Fires while the read publishes its summary. The main actor runs jobs in order, so this
+        // task runs after the read's task finishes and before the caller below resumes.
+        let sub = svc.objectWillChange.sink { _ in
+            if late == nil { late = Task { @MainActor in await svc.refresh() } }
+        }
+        await svc.refresh()
+        let lateRead = try #require(late)
+        await lateRead.value
+        sub.cancel()
+        #expect(await runner.calls == 2)
+    }
+
+    /// Every publish redraws the views that observe the service; an unchanged summary publishes nothing.
+    @Test func anUnchangedSummaryIsNotPublishedAgain() async throws {
+        let runner = StubUsageRunner([ok(try fixtureData())])
+        let svc = ScoutUsageService(scoutctl: URL(fileURLWithPath: "/usr/local/bin/scoutctl"), runner: runner)
+        await svc.refresh()
+        var publishes = 0
+        let sub = svc.objectWillChange.sink { publishes += 1 }
+        await svc.refresh()
+        sub.cancel()
+        #expect(publishes == 0)
+        #expect(await runner.recorded().count == 2)
     }
 
     @Test func undecodableOutputIsAnError() async {

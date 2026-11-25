@@ -63,7 +63,7 @@ from pathlib import Path
 from typing import IO, Any
 
 from scout import paths
-from scout.kb.live_run import _DIGIT_PARAMS, _SUBST_NAME, _VAR
+from scout.kb.live_run import _DIGIT_PARAMS, _PARAM, _SUBST_NAME, _VAR
 from scout.kb.raw_read import KB_DIRS, filter_reaches_kb, is_kb_note_path, is_kb_path, raw_kb_read
 
 GATE = "kb-read-gate"
@@ -227,6 +227,37 @@ def _deny_unresolved(form: str) -> str:
     )
 
 
+# A run's read of a path the gate can't work out (a command's output, a variable set elsewhere, xargs input from a
+# command the gate can't follow) may be a KB note. True denies it, as a write of one is (#637 round 3). Off for
+# now: in a replay of real runs every such read was a false deny (most read the engine checkout), so each is
+# allowed and recorded as a `kb_read_gate.unresolved_read` event with its categories (UNRESOLVED_CATEGORIES)
+# until there's data to decide on. The KB reads the gate can work out are denied either way.
+DENY_UNRESOLVED_READS = False
+# What made a read unresolved, by the placeholder live_run left in its word.
+UNRESOLVED_CATEGORIES = ("xargs_input", "command_output", "unset_variable")
+
+
+def _unresolved_category(raw: str) -> str:
+    from scout.kb.live_run import SUBST, UNSEEN_INPUT
+
+    if UNSEEN_INPUT in raw:
+        return "xargs_input"
+    if SUBST in raw or "`" in raw:
+        return "command_output"  # a substitution, a backtick, `read`/`mapfile`, `$OLDPWD`
+    return "unset_variable"
+
+
+def _deny_unresolved_read() -> str:
+    return (
+        f"{MARK} In a scheduled run, a shell command doesn't read a file whose path Scout's gate can't work out: "
+        "this one reads a path built from a command substitution, a backtick, a variable the command doesn't set, "
+        "or xargs input it can't see (it follows echo, printf, git ls-files, find, grep -l and rg -l piped straight "
+        "in), and it may be a knowledge-base/ note. Write the "
+        "path out, or set the variable in the same command (`d=docs; cat $d/a.md`); `$(date +%F)` in a file name "
+        f"is fine. {_REPLACEMENT}"
+    )
+
+
 def _deny_inline_write(form: str) -> str:
     return (
         f"{MARK} This command runs {form}: a program that writes files and names a file that decides which of "
@@ -306,12 +337,18 @@ def _deny_skip_form(form: str) -> str:
 
 
 # Audit rows wait here until the decision is out (main prints the deny first): writing a log can never delay it.
-_PENDING_AUDIT: list[tuple[Path, str, str | None]] = []
+_PENDING_AUDIT: list[tuple[Path, str, dict[str, Any]]] = []
 
 
 def _record_hook_skip(vault: Path, form: str, mode: str | None) -> None:
     """Queue the form and the run's mode, never the command: its text can quote a note."""
-    _PENDING_AUDIT.append((vault, form, mode))
+    _PENDING_AUDIT.append((vault, "kb_read_gate.hook_skip", {"form": form, "mode": mode}))
+
+
+def _record_unresolved_read(vault: Path, categories: list[str], mode: str | None) -> None:
+    """Queue an allowed read the gate couldn't work out: what kind of word it was and the run's mode, never the
+    command or the path (see :data:`DENY_UNRESOLVED_READS`)."""
+    _PENDING_AUDIT.append((vault, "kb_read_gate.unresolved_read", {"categories": categories, "mode": mode}))
 
 
 def flush_audit() -> None:
@@ -319,14 +356,9 @@ def flush_audit() -> None:
     from scout.events import append_event
 
     while _PENDING_AUDIT:
-        vault, form, mode = _PENDING_AUDIT.pop(0)
+        vault, kind, payload = _PENDING_AUDIT.pop(0)
         try:
-            append_event(
-                paths.logs_dir(vault),
-                kind="kb_read_gate.hook_skip",
-                source=f"hook:{GATE}",
-                payload={"form": form, "mode": mode},
-            )
+            append_event(paths.logs_dir(vault), kind=kind, source=f"hook:{GATE}", payload=payload)
         except Exception:  # noqa: BLE001, S110 - the deny stands without the event
             pass
 
@@ -369,16 +401,19 @@ def decide(
         if not isinstance(command, str):
             raise ValueError("Bash call without a command")
         from scout.kb import hook_paths
-        from scout.kb.live_run import DELEGATE_FORM, run_escape
+        from scout.kb.live_run import DELEGATE_FORM, KB_READ, UNRESOLVED_READ, run_escape
 
         def resolve(raw: str) -> str | None:
             """The path a word names, with the environment's variables put in; None when the shell fills in
             part of it the gate can't know (a substitution, a variable neither the command nor the run sets)."""
-            text = _DIGIT_PARAMS.sub("0", _VAR.sub(lambda m: _env_value(m, env), raw))
-            if "$" in text or "`" in text:
+            text = _PARAM.sub(lambda m: _env_param(m, env), raw)
+            text = _DIGIT_PARAMS.sub("0", _VAR.sub(lambda m: _env_value(m, env), text))
+            if _LEFT_VAR.search(text) or "`" in text:
                 return None
             expanded = hook_paths._expand(text, env)
-            return expanded if os.path.isabs(expanded) else str(cwd / expanded)
+            joined = expanded if os.path.isabs(expanded) else str(cwd / expanded)
+            # `*/` is folders only: keep the slash a join drops, or the glob would match files too.
+            return joined + "/" if text.endswith("/") and not joined.endswith("/") else joined
 
         def protect(raw: str, removes: bool) -> str | None:
             target = resolve(raw)
@@ -400,7 +435,7 @@ def decide(
             if target is None:
                 return None
             # A glob reads whatever it matches: judge each match, and the literal spelling (`.scout-in*/agents/*`).
-            targets = _glob_targets(target)
+            targets = globs(target)
             if targets is None:
                 return hook_paths.TOO_MANY  # fail closed: a hook that times out allows the call
             for one in targets:
@@ -409,9 +444,51 @@ def decide(
                     return found
             return None
 
-        escape = run_escape(command, protect=protect, secret=secret)
+        def kb_read(raw: str, how: str) -> str | None:
+            """A reading command's file, as the shell hands it over: a KB note (after its glob, if any), or a path
+            the gate can't work out (a substitution, a variable the command doesn't set, unseen xargs input).
+            ``how`` (live_run.KB_READ_HOW): a "file" reader never reads a KB folder it's given (``cat action-items/*``
+            only prints an error for ``context/``), a "folder" reader does, and for "covers" (an xargs lister's root)
+            a folder holding the KB counts too."""
+            target = resolve(raw)
+            if target is None:
+                if DENY_UNRESOLVED_READS:
+                    return UNRESOLVED_READ
+                unresolved.add(_unresolved_category(raw))
+                return None
+            targets = globs(target)
+            if targets is None:
+                # Too many matches to judge: refused wherever the glob starts, since a match past the cap may be a
+                # symlink into the vault (`/tmp/x/*/*/*` behind decoys).
+                return hook_paths.TOO_MANY
+            for one in targets:
+                here = paths.resolve_path(one)
+                rel = _vault_rel(vault, here)
+                if rel is None:
+                    if how == "covers" and vault.resolve().is_relative_to(here):
+                        return KB_READ  # a folder above the vault
+                elif rel != "." and is_kb_path(rel):
+                    if how != "file" or not os.path.isdir(here):
+                        return KB_READ
+                elif how == "covers" and (rel == "." or any(d.startswith(rel + "/") for d in KB_DIRS)):
+                    return KB_READ
+            return None
+
+        memo: dict[str, list[str] | None] = {}
+        unresolved: set[str] = set()
+
+        def globs(target: str) -> list[str] | None:
+            if target not in memo:
+                memo[target] = _literal_globs(target)
+            return memo[target]
+
+        escape = run_escape(command, protect=protect, secret=secret, kb_read=kb_read)
         if escape == "env":
             return _deny_run_env()
+        if escape == KB_READ:
+            return _deny_bash()
+        if escape == UNRESOLVED_READ:
+            return _deny_unresolved_read()
         if escape == DELEGATE_FORM:
             return _deny_delegate_write()
         if escape == "detach":
@@ -420,7 +497,11 @@ def decide(
             _record_hook_skip(vault, escape, mode)
             return _deny_skip_form(escape)
         flagged = raw_kb_read(command, in_kb=_in_kb(cwd, vault), cwd=str(cwd), vault=str(vault), env=env)
-        return _deny_bash() if flagged else None
+        if flagged:
+            return _deny_bash()
+        if unresolved:
+            _record_unresolved_read(vault, sorted(unresolved), mode)
+        return None
     if tool in ("Grep", "Glob"):
         raw = tool_input.get("path")
         root = _target(raw, cwd) if isinstance(raw, str) and raw else cwd
@@ -446,6 +527,21 @@ def decide(
     return None if reader in FULL_READERS else _deny_read()
 
 
+def _literal_globs(target: str) -> list[str] | None:
+    """:func:`_glob_targets` for a path whose quoted characters live_run marked (``UNSHIELD``): each is matched as
+    itself, and the spelling judged is the literal one."""
+    from scout.kb.live_run import UNSHIELD
+
+    if not any(c in UNSHIELD for c in target):
+        return _glob_targets(target)
+    literal = "".join(UNSHIELD.get(c, c) for c in target)
+    if not glob.has_magic(target):
+        return [literal]
+    escaped = "".join(glob.escape(UNSHIELD[c]) if c in UNSHIELD else c for c in target)
+    found = _glob_targets(escaped)
+    return None if found is None else [literal, *found[1:]]
+
+
 GLOB_BUDGET_S = 2.0  # how long a glob in a command may take to expand; the hook itself times out at 15 s
 GLOB_CAP = 256  # matches judged per glob; more refuses the call
 GLOB_WILD_PARTS = 3  # wildcard path components a glob may have before it is refused unexpanded
@@ -467,7 +563,7 @@ def _glob_targets(target: str) -> list[str] | None:
     over = threading.Event()
 
     def expand() -> None:
-        for match in itertools.islice(glob.iglob(target), GLOB_CAP + 1):
+        for match in itertools.islice(glob.iglob(target, recursive=True), GLOB_CAP + 1):  # zsh: `**/` recurses
             found.append(match)
         if len(found) > GLOB_CAP:
             over.set()
@@ -478,6 +574,23 @@ def _glob_targets(target: str) -> list[str] | None:
     if worker.is_alive() or over.is_set():
         return None
     return [target, *sorted(found)]
+
+
+# A `$` the shell would still expand: before a name, `{`, `(` or `[`. One before `]`, `/` or the end, or inside a
+# glob bracket (`[a$]`), is the character itself.
+_LEFT_VAR = re.compile(r"\$(?=[A-Za-z_{(\[])")
+
+
+def _env_param(m: re.Match[str], env: Mapping[str, str]) -> str:
+    """``${NAME:-word}``, ``${NAME%pattern}`` … for a NAME live_run left: from the run's environment, unset if not
+    there. A placeholder's name, or a form the gate can't work out, stays as written (unresolved)."""
+    from scout.kb.live_run import param_value
+
+    name = m[1]
+    if name.startswith("__scout_"):
+        return m[0]
+    found = param_value(env.get(name), m[2] or m[4], m[3] if m[2] else m[5])
+    return m[0] if found is None else found
 
 
 def _env_value(m: re.Match[str], env: Mapping[str, str]) -> str:

@@ -341,7 +341,10 @@ def test_hooks_json_runs_the_gate_on_mcp_calls():
     command = _pre_tool_use_command()
     assert 'c="${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl"; ' in command
     assert '/bin/sh "$h" mcp-tool-gate "$c" hook mcp-tool-gate;' in command
-    assert command.endswith('exec "$c" hook mcp-tool-gate')
+    # Without a usable pre-filter the entry starts the gate itself, and fails closed in a vault when it can't
+    # (test_mcp_tool_gate_fail_closed.py): never `exec`, which would hand Claude Code the engine's exit.
+    assert '"$c" hook mcp-tool-gate && exit 0; s=$?; ' in command and "exec " not in command
+    assert command.endswith("exit 2")
 
 
 def _plugin_root_without_scoutctl(tmp_path: Path) -> Path:
@@ -353,11 +356,13 @@ def _plugin_root_without_scoutctl(tmp_path: Path) -> Path:
 
 
 def test_hook_command_skips_python_outside_a_vault(tmp_path):
-    # No SCOUT_DATA_DIR and a cwd in no vault: the shell guard exits before exec — the plugin root has no scoutctl.
+    # No SCOUT_DATA_DIR and a session cwd in no vault: the shell guard exits before exec — the plugin root has no
+    # scoutctl.
     env = {k: v for k, v in os.environ.items() if k not in ("SCOUT_MODE", "SCOUT_DATA_DIR")}
     env["CLAUDE_PLUGIN_ROOT"] = str(_plugin_root_without_scoutctl(tmp_path))
+    payload = json.dumps({"cwd": str(tmp_path), "tool_name": f"{T}remember"})
     res = subprocess.run(
-        ["sh", "-c", _pre_tool_use_command()], env=env, cwd=tmp_path, input="{}", capture_output=True, text=True
+        ["sh", "-c", _pre_tool_use_command()], env=env, cwd=tmp_path, input=payload, capture_output=True, text=True
     )
     assert res.returncode == 0 and res.stdout == ""
 

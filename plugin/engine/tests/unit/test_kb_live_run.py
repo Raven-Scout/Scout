@@ -951,6 +951,19 @@ def test_other_options_prefixes_and_broken_quotes_are_not_flagged(command: str) 
         "git commit -m x &",
         "(git commit -m x &)",
         "sleep 1 & git commit -m x",
+        # A backslash outside quotes escapes the quote after it, so no quoted span opens and the "&" is real.
+        "git commit -m x \\' & echo '' y",
+        'git commit -m x \\" & echo "" y',
+        "git commit -m x $'\\'' & echo ''",  # in $'…' a backslash escapes the quote
+        "git commit -m x \\\\\\' & echo ''",  # an escaped backslash, then an escaped quote
+        "git commit -m 'it'\\''s' & echo ''",
+        # bash reads `$$'` as the process id and a plain quote, which the `\\'` then closes; zsh reads `$'…'`.
+        "bash <<'EOF'\ngit commit -m x$$'\\' & echo 'y'\nEOF",
+        "echo x$$'\\' & sleep 5 & echo 'y'",
+        "echo x$$'a\\'b' & echo 'y' c'",  # the other way round: only the `$'…'` reading leaves the "&" bare
+        "echo hi # it's\nsleep 5 & echo 'y'",  # a quote in a comment opens nothing
+        'echo hi # say "\nsleep 5 & echo "y"',
+        "git commit -m \\$'x\\' & echo ''",  # an escaped "$": plain single quotes, closed by the second quote
         "launchctl submit -l x -- git commit",
         'osascript -e \'tell app "Terminal" to do script "git commit"\'',
         "open -a Terminal notes/commit.command",
@@ -963,6 +976,30 @@ def test_other_options_prefixes_and_broken_quotes_are_not_flagged(command: str) 
         "bash -c 'git commit -m x &'",
         "cat <<'EOF' > /tmp/x\nbody\nEOF\nnohup git commit -m x",
         "cat <<'EOF' > /tmp/x\nbody\nEOF\ngit commit -m x &",
+        "cat <&3 &",  # the descriptor duplicate isn't a background, the trailing "&" is
+        "git commit -m x <&3 & disown",
+        "cat < notes/a.md & git commit -m x",
+        "git commit -m x\\<&",  # an escaped "<" is a word's last letter: the "&" after it backgrounds
+        "git commit -m x\\>&",
+        "git commit -m x\\|&",
+        "git commit -m x\\&&",
+        "git commit -m x\\\\&",  # two backslashes are one literal backslash: the "&" is real
+        "git commit -m x <&- &",
+        "a<&b&",
+        # A backtick substitution ends at the next backtick, whatever quotes sit inside it.
+        "git commit -m `echo '` & echo `'`",
+        'git commit -m "`echo \'`" & echo "`\'`"',
+        # "<<EOF" in a comment or inside a string that runs over lines opens no here-document.
+        "true # <<EOF\nsleep 5 &\nEOF",
+        'echo "a\n<<EOF b"\nsleep 5 &\nEOF',
+        "echo 'a\n<<EOF b'\nsleep 5 &\nEOF",
+        # A substitution that closes on the operator's own line leaves its here-document without a body.
+        "echo $(cat <<EOF) x\nsleep 5 &\nEOF",
+        "echo `cat <<EOF` x\nsleep 5 &\nEOF",
+        'echo "$(cat <<EOF)" x\nsleep 5 &\nEOF',
+        # zsh reads `$$'\'<<EOF'` as one string, so it runs the lines bash would take as a body.
+        "echo x$$'\\'<<EOF'\n{ echo BG; } &\nwait\nEOF",
+        "echo x$$'\\' <<'EOF''\nsleep 5 &\nEOF",
     ],
 )
 def test_commands_that_detach_are_flagged(command: str) -> None:
@@ -1007,6 +1044,29 @@ SCOUT_WRAP"""
         "git commit -F - <<'EOF'\nQ3 P&L review; (at 10:00)\nnohup notes\nEOF",
         "git commit -F - <<EOF\nP&L\nEOF",
         "cat <<-'EOF' > notes/a.md\n\tR&D (open items)\n\tEOF",
+        "git commit -m 'R&D \\' -q",  # single quotes take no escapes: the string ends at the second quote
+        'git commit -m "say \\"R&D\\""',
+        "git commit -m $'R&D \\' still quoted'",
+        "git commit -m x\\'s -m 'R&D'",
+        'git commit -m \\"x -m "R&D"',
+        "git commit -m \\\\ -m 'R&D'",  # an escaped backslash escapes nothing after it
+        "git add -A # don't forget\ngit commit -m 'R&D' -q",
+        "git commit -m x$$'R&D'",
+        "git commit -m 'a#b' -m 'R&D'",
+        "echo a#b 'R&D'",  # "#" inside a word starts no comment
+        "cat <&3",  # #618: "<&" duplicates a descriptor, it backgrounds nothing
+        "exec 3<&0; cat <&3; exec 3<&-",
+        'read -r line <&3 && echo "$line"',
+        "cat \\\\<&3",  # an escaped backslash, then a real "<&"
+        "echo a\\&b",  # an escaped "&" is a letter
+        "echo a \\&\\& true",
+        "git commit -m \"$(cat <<'EOF'\nR&D, and it's done\nEOF\n)\"",  # a here-document inside "$(…)"
+        "git commit -m \"`cat <<'EOF'\nR&D\nEOF\n`\"",
+        "cat <<EOF # the notes\nR&D\nEOF",
+        'cat <<EOF "a\nb"\nR&D\nEOF',  # the body starts after the line's own end, past the string
+        "echo `echo it's` 'R&D'",
+        "(cat <<EOF) | cat\nR&D\nEOF",  # a subshell's here-document does take the lines below
+        "cat <<A `cat <<B`\nR&D\nA",
     ],
 )
 def test_ordinary_commands_and_reads_are_not_flagged(command: str) -> None:

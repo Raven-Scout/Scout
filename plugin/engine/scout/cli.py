@@ -11,9 +11,10 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import typer
+from typer.core import TyperGroup
 
 from scout import __version__
 from scout.errors import ConfigError, ScoutError
@@ -31,12 +32,35 @@ if TYPE_CHECKING:
 # crashed in an unexpected way" as its own failure mode.
 INTERNAL_ERROR_EXIT_CODE = 70
 
+
+class _ScoutGroup(TyperGroup):
+    """The root command group. ``lab`` is added the first time it is looked up (a ``scoutctl lab ...`` call, or
+    ``--help`` listing the commands), so every other command starts without importing the Lab
+    (``tests/perf/test_startup.py`` counts the modules ``scoutctl version`` loads)."""
+
+    def _add_lab(self) -> None:
+        if "lab" not in self.commands:
+            from scout.lab.cli import app as lab_app
+
+            self.add_command(typer.main.get_group(lab_app), "lab")
+
+    def list_commands(self, ctx: Any) -> list[str]:
+        self._add_lab()
+        return super().list_commands(ctx)
+
+    def get_command(self, ctx: Any, cmd_name: str) -> Any:
+        if cmd_name == "lab":
+            self._add_lab()
+        return super().get_command(ctx, cmd_name)
+
+
 app = typer.Typer(
     name="scoutctl",
     help="Scout engine control CLI.",
     no_args_is_help=True,
     add_completion=False,
     rich_markup_mode=None,  # avoid importing rich at startup
+    cls=_ScoutGroup,
 )
 
 
@@ -129,8 +153,14 @@ def cli_gates_probe(
     extra_flag: list[str] = typer.Option(
         [], "--extra-flag", hidden=True, help="Append a claude flag (manual checks, e.g. --bare)."
     ),
+    runtime: str = typer.Option(
+        "claude-code", "--runtime", help="The run's agent runtime (the runners pass it when it isn't claude-code)."
+    ),
 ) -> None:
     """Exit 0 when claude, run with the runners' flags, fires Scout's kb-read-gate; exit 3 when it doesn't.
+
+    With --runtime other than claude-code, the probe is that runtime's adapter's: exit 0 when its verified
+    capabilities include every hook capability a run on the vault needs, else 3 (an unknown runtime is 3 too).
 
     Runs claude once against a local fake endpoint (no model, no spend, never your
     credentials) in a throwaway fixture vault. Where there's no network sandbox it
@@ -143,8 +173,24 @@ def cli_gates_probe(
     import json
 
     from scout import paths
-    from scout.agent_runtimes import gate_probe
+    from scout.agent_runtimes import gate_probe, registry
     from scout.scripts.bootstrap import resolve_claude_bin
+
+    if runtime.strip().lower() != registry.BUILTIN_DEFAULT:
+        try:
+            adapter = registry.get(runtime.strip().lower())
+        except KeyError as e:
+            typer.echo(f"[scout:gates] unknown agent runtime {runtime!r}", err=True)
+            raise typer.Exit(3) from e
+        checked = gate_probe.runtime_probe(adapter, paths.data_dir(vault))
+        if as_json:
+            typer.echo(json.dumps(checked.to_json(), indent=2))
+        else:
+            typer.echo(f"{'ok' if checked.ok else 'REFUSED'}: {checked.reason}")
+        if not checked.ok:
+            typer.echo(f"[scout:gates] {checked.reason}", err=True)
+            raise typer.Exit(3)
+        return
 
     binary = Path(resolve_claude_bin(claude_bin))
     root = Path(plugin_root) if plugin_root else gate_probe.default_plugin_root()
@@ -170,18 +216,32 @@ app.add_typer(sandbox_app, name="sandbox")
 @sandbox_app.command("profile")
 def cli_sandbox_profile(
     vault: str | None = typer.Option(None, "--vault", help="The run's vault (default: SCOUT_DATA_DIR / cwd)."),
+    runtime: str = typer.Option(
+        "claude-code", "--runtime", help="The run's agent runtime, whose adapter may add protected and writable paths."
+    ),
 ) -> None:
     """Print the sandbox-exec profile for a scheduled run of this vault; the exit code is the status.
 
     0 enforced (profile on stdout), 3 failed (a sandbox is expected here but couldn't be built or self-tested:
-    the runners skip the run), 6 unavailable on this platform, 7 turned off (`scoutctl sandbox off`), 8 Claude
-    Code's own Bash sandbox is on (they can't nest). The runners run the session sandboxed only on 0, go ahead
-    as today on 6/7/8, and skip on anything else. The reason goes to stderr as `[scout:sandbox] <status>: …`.
+    the runners skip the run; an unknown --runtime is failed too), 6 unavailable on this platform, 7 turned off
+    (`scoutctl sandbox off`), 8 Claude Code's own Bash sandbox is on (they can't nest). The runners run the
+    session sandboxed only on 0, go ahead as today on 6/7/8, and skip on anything else. The reason goes to
+    stderr as `[scout:sandbox] <status>: …`.
     """
+    import os
+
     from scout import paths
+    from scout.agent_runtimes import registry
     from scout.sandbox import launch
 
-    result = launch.prepare(paths.data_dir(vault))
+    runtime_id = runtime.strip().lower()
+    try:
+        adapter = registry.get(runtime_id)
+        runtime_paths = adapter.sandbox_paths(os.environ)
+    except Exception as e:  # noqa: BLE001 - no adapter, no profile: the run is skipped, never run unprotected
+        typer.echo(f"[scout:sandbox] failed: the {runtime!r} runtime's sandbox paths: {e}", err=True)
+        raise typer.Exit(launch.Prepared("failed", "").exit_code) from e
+    result = launch.prepare(paths.data_dir(vault), runtime_paths=runtime_paths, runtime_id=runtime_id)
     if result.profile:
         typer.echo(result.profile, nl=False)
     typer.echo(f"[scout:sandbox] {result.status}: {result.reason}", err=True)
@@ -1578,7 +1638,6 @@ def kb_shares(
     args = _kb_args("shares", dict(locals()))
 
     def body(who: str, root: Path) -> object:
-        from typing import Any
 
         from scout.kb import share_stops
         from scout.kb.privacy import FULL_READERS
@@ -2676,7 +2735,6 @@ def _register_connectors() -> None:
         so custom connector probes survive plugin updates (#97).
         """
         import json as _json
-        from typing import Any
 
         from scout.scripts.connector_probes import ProbeKind, resolve_registry
 
@@ -3839,9 +3897,12 @@ def _register_agent_runtime() -> None:
         timeout (on by default only for runtimes that can't cap their own spend) this process
         stays as the CLI's parent and stops it at the deadline (exit 124).
         """
+        import dataclasses as _dataclasses
+
         from scout import paths as _paths
         from scout.agent_runtimes import exec as _exec
         from scout.agent_runtimes import limits as _limits
+        from scout.agent_runtimes.base import caps_own_spend
 
         adapter = _adapter(runtime)
         vault = _paths.data_dir()
@@ -3857,6 +3918,7 @@ def _register_agent_runtime() -> None:
         if print_argv:
             typer.echo(_json.dumps(list(adapter.headless_argv(req).argv)))
             return
+        timeout_s: int | None
         try:
             run_type = _os.environ.get("SCOUT_RUN_TYPE") or None
             lim = _limits.limits_for(vault, adapter, req.mode or None, run_type)
@@ -3872,9 +3934,9 @@ def _register_agent_runtime() -> None:
                 )
         except Exception:  # noqa: BLE001 - limits never stop a start; a runtime without a cap keeps its default
             kind = _limits.kind_of(_os.environ.get("SCOUT_RUN_TYPE")) or _limits.kind_of(req.mode)
-            timeout_s = None if adapter.caps_own_spend else _limits.default_timeout_minutes(kind) * 60
+            timeout_s = None if caps_own_spend(adapter) else _limits.default_timeout_minutes(kind) * 60
         try:
-            code = _exec.run(adapter, req, timeout_s=timeout_s)
+            code = _exec.run(adapter, _dataclasses.replace(req, timeout_s=timeout_s))
         except FileNotFoundError as e:
             typer.echo(f"[scout:agent-runtime] can't start {adapter.display_name}: {e}", err=True)
             raise typer.Exit(127) from e

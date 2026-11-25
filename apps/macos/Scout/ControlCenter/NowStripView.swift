@@ -27,10 +27,25 @@ struct NowStripView: View {
     /// Today's runs by the vault's day (the usage summary's `today` bounds), so the run count
     /// and the cost beside it count the same day. The host's day until the summary loads, and
     /// when its day is over (a refresh after midnight failed): never yesterday's count.
+    ///
+    /// The day's bounds are worked out once, and each run is a plain date compare: this runs
+    /// several times per Control Center render (the Today tile, its task key, the Signals
+    /// card) over every run on record, and a per-run ISO parse or calendar call made that
+    /// most of the page's main-thread time on a vault with ~2,000 run logs.
     nonisolated static func todayRuns(_ runs: [Run], today: UsagePeriod?, now: Date = Date(),
                                       calendar: Calendar = .current) -> [Run] {
-        let current = today?.ifCurrent(at: now)
-        return runs.filter { current?.contains($0.startedAt) ?? calendar.isDate($0.startedAt, inSameDayAs: now) }
+        guard let day = todayBounds(today: today, now: now, calendar: calendar) else {
+            return runs.filter { calendar.isDate($0.startedAt, inSameDayAs: now) }
+        }
+        return runs.filter { day.contains($0.startedAt) }
+    }
+
+    /// `[start, end)` of today: the vault's day from the usage summary while `now` is in it,
+    /// else the host calendar's day holding `now`. nil only if the calendar has no such day.
+    nonisolated static func todayBounds(today: UsagePeriod?, now: Date,
+                                        calendar: Calendar = .current) -> Range<Date>? {
+        if let vaultDay = today?.bounds, vaultDay.contains(now) { return vaultDay }
+        return calendar.dateInterval(of: .day, for: now).map { $0.start..<$0.end }
     }
 
     /// Today's date as well as its runs: a render after midnight re-reads the summary even

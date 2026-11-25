@@ -16,6 +16,11 @@ in the vault's git dir and every read in the secrets dirs (:func:`scout.sandbox.
   :func:`scout.scripts.notify_telegram.send`, which reads the recipient from the owner's files.
 - When the broker doesn't answer, the client writes the request to a queue in the vault (:func:`enqueue`) and
   :func:`drain` applies it after the session, validated exactly like a live request.
+- ``scoutctl lab experiment run`` hands over to :func:`client_experiment`: the broker checks the experiment's
+  committed note (:func:`validate_experiment`: notice, veto, holds, started, the owner's cap) and runs its script
+  with :func:`scout.lab.runner.run_experiment`, from the commit it checked, since ``sandbox-exec`` can't nest
+  inside the run's own sandbox. An experiment request is never queued; a refused one doesn't use the run's
+  allowance. The verb is off until the owner sets ``"experiments_enabled": true`` in ``config.json``.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ import errno
 import fcntl
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -40,7 +46,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from scout import safe_write
+from scout import plural, safe_write
 from scout.kb import hook_paths
 
 PROTOCOL = 1
@@ -48,7 +54,9 @@ ENV_SOCKET = "SCOUT_RUN_BROKER"
 SOCKET_NAME = "b.sock"
 QUEUE_DIR = Path(".scout-state") / "broker-queue"
 FAILED_DIR = "failed"
-VERBS = ("commit", "telegram")
+VERBS = ("commit", "telegram", "experiment")
+# What a client may queue for the drain. An experiment is never queued: it runs live or not at all.
+QUEUE_VERBS = ("commit", "telegram")
 # Where the wrapper and `broker profile` say whether this run's brokers are on, next to .claude-sign-in.json.
 STATUS_FILE = ".run-broker.json"
 # What `broker profile` looks for in the vault's helper: a helper without its client mode would commit directly,
@@ -69,6 +77,8 @@ PARENT_POLL_S = 2.0
 EXIT_REFUSED = 2  # git-safe-commit's usage code: the request breaks the rules
 EXIT_LIMIT = 5  # notify telegram: refused by the broker's limits
 EXIT_QUEUED = 6  # git-safe-commit: queued, it lands after the session (no SHA yet)
+EXIT_NOT_RUN = 4  # scoutctl lab experiment run: no broker to run it, or experiments are off
+EXPERIMENTS_OFF = "experiments are off in the owner's config"  # LabLimits.experiments_enabled
 
 MAX_MESSAGE_CHARS = 10_000
 MAX_PATHS = 500
@@ -126,15 +136,26 @@ class Reply:
     stderr: str = ""
     stdout: str = ""
     kind: str = ""  # REFUSED | RUN_LIMIT | HOUR_LIMIT; the drain reads it, the socket never carries it
+    ran: bool = False  # an experiment's script ran (its exit is the script's); the socket carries it when true
 
     def to_dict(self) -> dict[str, Any]:
-        return {"v": PROTOCOL, "exit": self.exit, "stderr": _tail(self.stderr), "stdout": _tail(self.stdout)}
+        d: dict[str, Any] = {
+            "v": PROTOCOL,
+            "exit": self.exit,
+            "stderr": _tail(self.stderr),
+            "stdout": _tail(self.stdout),
+        }
+        if self.ran:
+            d["ran"] = True
+        return d
 
     @classmethod
     def from_dict(cls, data: Any) -> Reply:
         if not isinstance(data, dict) or not isinstance(data.get("exit"), int) or isinstance(data.get("exit"), bool):
             raise Unreachable("the broker's reply wasn't one")
-        return cls(int(data["exit"]), str(data.get("stderr") or ""), str(data.get("stdout") or ""))
+        return cls(
+            int(data["exit"]), str(data.get("stderr") or ""), str(data.get("stdout") or ""), ran=data.get("ran") is True
+        )
 
 
 def _tail(text: str) -> str:
@@ -189,6 +210,159 @@ def load_limits(env: Mapping[str, str]) -> Limits:
         return int(getattr(defaults, name))
 
     return Limits(pick("max_per_run"), pick("max_per_hour"), pick("max_chars"))
+
+
+@dataclass(frozen=True)
+class LabLimits:
+    """Experiment limits (lab spec §6.3): the owner's, never the run's."""
+
+    experiments_per_run: int = 1
+    max_cost_cap_usd: float = 1.0
+    notice_hours: float = 6
+    timeout_s: float = 1800
+    # The broker's `experiment` verb runs nothing until the owner turns it on (only JSON `true` does). The owner's
+    # own interactive session, which has no broker, isn't gated by it.
+    experiments_enabled: bool = False
+    # Totals for one run (W4): processes the script may have at once, its own included, and bytes its folder and
+    # scratch dir may hold (scout.lab.runner enforces both).
+    max_processes: int = 64
+    max_total_bytes: int = 512 * 1024 * 1024
+    # Descriptors the script may hold open (the gate's `ulimit -n`): dataset loaders and the like need hundreds.
+    max_open_files: int = 1024
+
+
+def _finite(value: float) -> bool:
+    """``math.isfinite``, false (not OverflowError) for an integer too large for a float."""
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def load_lab_limits(env: Mapping[str, str]) -> LabLimits:
+    """The owner's experiment limits from ``config.json``'s ``"lab"`` block, read like :func:`load_limits`: a
+    missing or malformed file, or a value out of bounds, means the default. ``experiments_per_run`` is a positive
+    integer; the others are finite positive numbers, except ``notice_hours``, which may be 0. ``max_processes``,
+    ``max_total_bytes`` and ``max_open_files`` are positive integers too, the bytes up to 1 TiB and the files up to
+    65536.
+    ``experiments_enabled`` is on only when it is exactly ``true``."""
+    defaults = LabLimits()
+    try:
+        data = json.loads((owner_dir(env) / CONFIG_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return defaults
+    block = data.get("lab") if isinstance(data, dict) else None
+    if not isinstance(block, dict):
+        return defaults
+
+    def number(name: str, *, integer: bool = False, zero: bool = False, most: int = 1_000_000) -> Any:
+        value = block.get(name)
+        if isinstance(value, bool) or not isinstance(value, int if integer else (int, float)):
+            return getattr(defaults, name)
+        if _finite(value) and (0 <= value if zero else 0 < value) and value <= most:
+            return value
+        return getattr(defaults, name)
+
+    return LabLimits(
+        number("experiments_per_run", integer=True),
+        float(number("max_cost_cap_usd")),
+        float(number("notice_hours", zero=True)),
+        float(number("timeout_s")),
+        block.get("experiments_enabled") is True,
+        max_processes=number("max_processes", integer=True),
+        max_total_bytes=number("max_total_bytes", integer=True, most=1 << 40),
+        max_open_files=number("max_open_files", integer=True, most=65536),
+    )
+
+
+# The owner's vetoes, one JSON row each ({"slug", "eid", "at", "vault"}), in the owner folder, which a run can't
+# write. A veto in the vault's files can be undone by a run before it is committed; a row here can't, so the broker
+# refuses a listed experiment whatever HEAD, the history or the worktree say. Rows match on slug and EID alone, so
+# a moved or renamed vault keeps its vetoes (`vault` only says where it was made).
+LAB_VETOES_NAME = "lab-vetoes.jsonl"
+
+
+def record_veto(env: Mapping[str, str], vault: Path, slug: str, eid: str, at: datetime) -> None:
+    """Append ``slug`` ``eid`` to the owner's veto store under each of :func:`scout.kb.hook_paths.homes` (``HOME``'s,
+    then the account's when ``HOME`` is another folder), synced to disk (``lab veto``, the owner's verb): a broker
+    with either HOME finds it, a scheduled run's (the account's) included. Raises :class:`OSError` when any store
+    can't be written, as none can from inside a run's sandbox; the stores written before it keep the row, which
+    only ever adds a veto (:func:`owner_veto` is additive).
+
+    Under an exclusive ``flock`` on each store, so two vetoes never interleave. A store whose last line has no
+    newline (a write cut short, or a hand edit that dropped it) gets one first, so the new row starts a line of
+    its own instead of joining the torn tail."""
+    row = {"slug": slug, "eid": eid, "at": at.isoformat(), "vault": os.path.realpath(vault)}
+    for path in veto_stores(env):
+        _append_veto(path, row)
+
+
+def _append_veto(path: Path, row: Mapping[str, str]) -> None:
+    """Append ``row`` to the veto store at ``path`` (see :func:`record_veto`)."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with safe_write.open_append(path, mode=0o600) as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            fh.write(("\n" if _torn_tail(path) else "") + json.dumps(row) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def _torn_tail(path: Path) -> bool:
+    """Whether the file at ``path`` is non-empty and its last byte isn't a newline."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        size = os.fstat(fd).st_size
+        return size > 0 and os.pread(fd, 1, size - 1) != b"\n"
+    finally:
+        os.close(fd)
+
+
+def _json_objects(line: str) -> Iterator[dict[str, Any]]:
+    """Every complete JSON object in ``line``, including several written onto one line (a torn row followed by a
+    whole one) and objects after garbage: a decode that fails resumes at the next ``{``."""
+    decoder = json.JSONDecoder()
+    at = 0
+    while True:
+        at = line.find("{", at)
+        if at < 0:
+            return
+        try:
+            obj, end = decoder.raw_decode(line, at)
+        except ValueError:
+            at += 1
+            continue
+        if isinstance(obj, dict):
+            yield obj
+        at = end
+
+
+def veto_stores(env: Mapping[str, str]) -> list[Path]:
+    """The owner's veto store under each of :func:`scout.kb.hook_paths.homes` (``HOME`` and, when it is another
+    folder, the account's): a veto recorded under either home is in force whatever HOME the broker runs with."""
+    return [owner_dir({**env, "HOME": str(home)}) / LAB_VETOES_NAME for home in hook_paths.homes(env)]
+
+
+def owner_veto(env: Mapping[str, str], slug: str, eid: str) -> str | None:
+    """When an owner's store (:func:`veto_stores`) says ``slug`` ``eid`` was vetoed (the row's ``at``), or None.
+    Strictly additive: a veto in any store counts, and nothing in one store can cancel another's. A missing store
+    has no vetoes; one that exists but can't be read is :class:`Refused`, since a veto can't be ruled
+    out. Damage doesn't hide a row: every complete JSON object in the file is read (:func:`_json_objects`), wherever
+    it sits."""
+    for store in veto_stores(env):
+        try:
+            data = store.read_bytes()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            raise Refused(EXIT_REFUSED, "the owner's veto store can't be read; a veto can't be ruled out") from None
+        for line in data.decode("utf-8", errors="replace").splitlines():
+            for row in _json_objects(line):
+                if row.get("slug") == slug and row.get("eid") == eid:
+                    return str(row.get("at") or "an unrecorded time")
+    return None
 
 
 # -- validation ----------------------------------------------------------------------------------------------------
@@ -279,6 +453,359 @@ def validate_telegram(req: Mapping[str, Any], limits: Limits) -> dict[str, Any]:
     if covers and reply_to is None:
         raise Refused(EXIT_REFUSED, "covers needs reply_to (a reply threads to a message)")
     return {"tier": tier, "parse_mode": parse_mode, "body": body, **flags, "reply_to": reply_to, "covers": covers}
+
+
+MAX_EXPERIMENT_ARGS = 64
+MAX_EXPERIMENT_ARG_CHARS = 4096
+EXPERIMENT_GIT_TIMEOUT_S = 30.0
+
+
+def _vault_git(vault: Path, *args: str) -> str | None:
+    """``git`` in the vault with the broker's PATH and HOME only (no GIT_* from anywhere); None when it fails."""
+    env = {k: os.environ[k] for k in ("PATH", "HOME", "LANG") if os.environ.get(k)}
+    env.setdefault("PATH", _DEFAULT_PATH)
+    env.update({"GIT_LITERAL_PATHSPECS": "1", "GIT_PAGER": "cat"})
+    try:
+        proc = subprocess.run(
+            ["git", "-c", "core.quotePath=false", *args], cwd=str(vault), env=env, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=EXPERIMENT_GIT_TIMEOUT_S, check=False,
+        )  # fmt: skip
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+# Every commit that touched the paths, side branches too, with names relative to the vault.
+_GIT_LOG = ("log", "--full-history", "--relative")
+
+
+_SHA_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
+
+
+def _touched(vault: Path, rels: Sequence[str]) -> list[tuple[int, str, list[str]]] | None:
+    """(commit time, sha, the vault-relative paths it changed under ``rels``) for every commit touching ``rels``,
+    newest first. None when git fails or answers something unexpected (callers fail closed).
+
+    The log names commits only (a time and a hash, nothing a file name can forge); each commit's paths come from
+    ``git diff-tree -z``, NUL-separated and never quoted, so no name with a quote, backslash or newline can hide.
+    """
+    log = _vault_git(vault, *_GIT_LOG, "--format=%ct %H", "--", *rels)
+    if log is None:
+        return None
+    out: list[tuple[int, str, list[str]]] = []
+    for line in log.splitlines():
+        stamp, _, sha = line.partition(" ")
+        if not stamp.isdigit() or not _SHA_RE.match(sha):
+            return None
+        names = _vault_git(
+            vault, "diff-tree", "-z", "-r", "-m", "--root", "--no-commit-id", "--name-only", "--relative", sha,
+            "--", *rels,
+        )  # fmt: skip
+        if names is None:
+            return None
+        out.append((int(stamp), sha, [n for n in names.split("\0") if n]))
+    return out
+
+
+def _vetoed_in_history(vault: Path, slug: str, prefix: str) -> str | None:
+    """The first commit (newest first) whose copy of a note named ``<prefix>*.md`` says ``status: vetoed`` in its
+    frontmatter; any name, so a rename doesn't shed the veto. :class:`Refused` when the history can't be read."""
+    from scout.lab.parser import parse_experiment
+
+    commits = _touched(vault, [prefix.rsplit("/", 1)[0]])
+    if commits is None:
+        raise Refused(EXIT_REFUSED, "git couldn't read the experiment notes' history; a veto can't be ruled out")
+    for _, sha, names in commits:
+        for path in names:
+            if not (path.startswith(prefix) and path.endswith(".md") and "/" not in path[len(prefix) :]):
+                continue
+            text = _vault_git(vault, "show", f"{sha}:./{path}")  # None where the commit deleted it
+            if text is not None and parse_experiment(slug, text).status == "vetoed":
+                return sha
+    return None
+
+
+# What `lab experiment start` writes into a note (R25): a change to these alone isn't a change to the plan.
+_LIFECYCLE_KEYS = ("status", "started")
+_LIFECYCLE_LINE = re.compile(rf"^(?:{'|'.join(_LIFECYCLE_KEYS)})\s*:")
+
+
+def _same_plan(a: str, b: str) -> bool:
+    """Whether two copies of an experiment note differ at most in their top-level ``status``/``started``
+    frontmatter fields. Text without a frontmatter block must match exactly."""
+
+    def plan(text: str) -> list[str] | None:
+        lines = text.split("\n")
+        if not lines or lines[0].rstrip("\r") != "---":
+            return None
+        end = next((i for i in range(1, len(lines)) if lines[i].rstrip("\r") == "---"), None)
+        if end is None:
+            return None
+        head = [line for line in lines[1:end] if not _LIFECYCLE_LINE.match(line)]
+        return ["---", *head, *lines[end:]]
+
+    pa, pb = plan(a), plan(b)
+    return a == b if pa is None or pb is None else pa == pb
+
+
+def _uncommitted(vault: Path, rels: Sequence[str]) -> list[str] | None:
+    """Vault-relative paths under ``rels`` that differ from HEAD: modified, staged, untracked or ignored files.
+    None when git can't say."""
+    prefix = _vault_git(vault, "rev-parse", "--show-prefix")
+    out = _vault_git(
+        vault, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching", "--", *rels
+    )
+    if prefix is None or out is None:
+        return None
+    prefix = prefix.strip()
+    entries = out.split("\0")
+    paths: list[str] = []
+    i = 0
+    while i < len(entries):
+        entry, i = entries[i], i + 1
+        if len(entry) < 4:
+            continue
+        if entry[0] in "RC":  # a rename or copy: the next field is where it came from
+            paths.append(entries[i] if i < len(entries) else "")
+            i += 1
+        paths.append(entry[3:])
+    return [p[len(prefix) :].rstrip("/") if p.startswith(prefix) else p.rstrip("/") for p in paths if p]
+
+
+# R26: what may start an experiment's script. Anything else as argv[0] must be the script itself.
+EXPERIMENT_INTERPRETERS = frozenset({"python3", "python", "sh", "bash", "node"})
+
+
+def _committed_command(
+    vault: Path, exp_rel: str, argv: list[str], runner_owned: Callable[[str], bool], commit: str = "HEAD"
+) -> list[str]:  # fmt: skip
+    """``argv`` when it runs a committed file of the experiment's own folder, else :class:`Refused` (``argv``).
+
+    ``argv[0]`` is an executable file committed in the folder, or one of :data:`EXPERIMENT_INTERPRETERS` with such
+    a file (any mode) as ``argv[1]``: no interpreter options first, so ``-c``, ``-e`` and ``-m`` are out. The rest is
+    data. A file path is relative, stays in the folder (no ``..``, no link out of it) and is never one of the
+    runner's own (its scratch dir, its run logs). A script run directly comes back as ``./<path>``, so the shell
+    finds it in the folder and not on PATH.
+    """
+    direct = argv[0] not in EXPERIMENT_INTERPRETERS
+    if not direct and len(argv) < 2:
+        raise Refused(EXIT_REFUSED, f"argv: {argv[0]} needs the experiment's script as its first argument")
+    given = argv[0] if direct else argv[1]
+    parts = [p for p in given.split("/") if p not in ("", ".")]
+    if not parts or given.startswith(("/", "-")) or ".." in parts:
+        raise Refused(
+            EXIT_REFUSED,
+            f"argv: {given!r} isn't a file of the experiment's; run a committed script in its folder "
+            f"(itself, or with one of {', '.join(sorted(EXPERIMENT_INTERPRETERS))})",
+        )
+    inner = "/".join(parts)
+    if runner_owned(inner):
+        raise Refused(EXIT_REFUSED, f"argv: {inner} is the runner's own file, not the experiment's script")
+    listing = _vault_git(vault, "ls-tree", "-z", commit, "--", f"./{exp_rel}/{inner}") or ""
+    mode = listing.split(" ", 1)[0] if listing.endswith(f"\t{exp_rel}/{inner}\0") else ""
+    if mode not in ("100644", "100755") or (direct and mode != "100755"):
+        why = "isn't a committed executable file" if direct else "isn't a committed file"
+        raise Refused(EXIT_REFUSED, f"argv: {inner} {why} in the experiment's folder")
+    folder = os.path.realpath(vault / exp_rel)
+    real = os.path.realpath(vault / exp_rel / inner)
+    if not real.startswith(folder + os.sep) or not os.path.isfile(real):
+        raise Refused(EXIT_REFUSED, f"argv: {inner} leads out of the experiment's folder")
+    return [f"./{inner}", *argv[1:]] if direct else [argv[0], inner, *argv[2:]]
+
+
+def _shown(vault: Path, moment: datetime) -> str:
+    from scout import config
+
+    return moment.astimezone(config.resolve_timezone(vault)).strftime("%Y-%m-%d %H:%M %Z")
+
+
+def _private_at(slug: str, front: Path, note: Path, front_head: str | None, note_head: str) -> str | None:
+    """Why an experiment counts as private, or None: the thread's front page or the note says so, as committed or
+    in the worktree. Fails closed like the privacy layer, whose parser reads the value (``Private`` or ``secret`` is
+    private): a page that is absent, unreadable or whose frontmatter doesn't parse counts as private."""
+    from scout.lab.parser import parse_experiment, parse_front_page
+
+    def read(path: Path) -> str | None:
+        try:
+            return path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    for label, text in (("the thread's front page at HEAD", front_head), ("the thread's front page", read(front))):
+        if text is None:
+            return f"{label} couldn't be read, so the thread counts as private; it"
+        page = parse_front_page(slug, text)
+        if not page.frontmatter or page.visibility == "private":
+            return f"{label} is private or unparseable; it"
+    for label, text in (("the experiment note at HEAD", note_head), ("the experiment note", read(note))):
+        if text is None:
+            continue  # an unreadable note is refused by the checks that follow
+        exp = parse_experiment(slug, text)
+        if not exp.frontmatter or exp.visibility == "private":
+            return f"{label} is private or unparseable; it"
+    return None
+
+
+def _held(slug: str, eid: str, pages: Sequence[tuple[str, str | None]], notes: Sequence[Any]) -> str | None:
+    """``held: …`` when an unanswered owner comment sits on the experiment's front-page line or on a question its
+    note lists, on any of ``pages`` ((where, text) of the front page) for any of ``notes`` (the parsed note as
+    committed and in the worktree); else None. The definition is ``summary.held``'s:
+    :meth:`scout.lab.model.Thread.unanswered_owner_comments`, targeted at the EID or one of the note's questions."""
+    from scout.lab.parser import parse_front_page
+
+    wanted = {eid, *(q for note in notes for q in note.questions)}
+    found: list[str] = []
+    for where, text in pages:
+        if text is None:
+            continue
+        targets = sorted({t for t, _ in parse_front_page(slug, text).unanswered_owner_comments() if t in wanted})
+        if targets:
+            found.append(f"{', '.join(targets)} {where}")
+    if not found:
+        return None
+    return (
+        f"held: an owner comment waits for Scout's answer on {'; '.join(found)}; "
+        f"answer it before {eid} runs (`scoutctl lab reply`)"
+    )
+
+
+def validate_experiment(
+    req: Mapping[str, Any],
+    vault: Path,
+    limits: LabLimits,
+    now: datetime,
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, str, list[str], float, str]:
+    """(slug, EID, argv, cap, commit) for an experiment request, or :class:`Refused` (exit 2).
+
+    The experiment's note is read as committed at HEAD, never from the worktree (a run can rewrite that), and
+    HEAD is resolved once, to the ``commit`` every check reads and the runner runs the scripts from (ruling R30:
+    the worktree can change after this). ``env`` finds the owner's folder (default: this process's). It doesn't
+    run when:
+
+    - the note isn't at HEAD, or is ``vetoed`` there or in any earlier commit (a veto is final: ruling R22)
+    - the owner's veto store (:func:`owner_veto`) lists it, whatever the vault says
+    - an unanswered owner comment holds it, at HEAD or in the worktree (:func:`_held`)
+    - the worktree note isn't ``running`` (``lab experiment start`` comes first: ruling R31)
+    - the note or its experiment folder has uncommitted changes, other than the runner's own files and the
+      lifecycle fields ``start`` writes (R23, R25)
+    - the newest commit touching the note or the folder's files is more recent than the owner's notice (R23)
+    - ``argv`` doesn't run a committed file of the experiment's folder (:func:`_committed_command`, R26)
+
+    The argv returned is the one to run (a script run directly as ``./<path>``). The cap is the committed note's,
+    clamped to the owner's maximum.
+    """
+    from scout.lab import paths as lab_paths
+    from scout.lab import runner as lab_runner
+    from scout.lab.model import EID_RE, SLUG_RE
+    from scout.lab.parser import parse_experiment
+
+    slug, eid, argv = req.get("slug"), req.get("eid"), req.get("argv")
+    if not isinstance(slug, str) or not re.match(SLUG_RE, slug):
+        raise Refused(EXIT_REFUSED, f"bad thread slug {slug!r}")
+    if not isinstance(eid, str) or not re.fullmatch(EID_RE, eid):
+        raise Refused(EXIT_REFUSED, f"{eid!r} is not an experiment ID (E<n>)")
+    if (
+        not isinstance(argv, list)
+        or not 1 <= len(argv) <= MAX_EXPERIMENT_ARGS
+        or not all(isinstance(a, str) and len(a) <= MAX_EXPERIMENT_ARG_CHARS and not _control(a) for a in argv)
+    ):
+        raise Refused(
+            EXIT_REFUSED,
+            f"the command must be 1 to {MAX_EXPERIMENT_ARGS} arguments of at most {MAX_EXPERIMENT_ARG_CHARS} "
+            "characters each, without control characters",
+        )
+    note = lab_paths.experiment_note(vault, slug, eid)
+    if note is None:
+        raise Refused(EXIT_REFUSED, f"{slug}: no experiment note for {eid}")
+    rel = note.relative_to(vault).as_posix()
+    commit = (_vault_git(vault, "rev-parse", "--verify", "--quiet", "HEAD^{commit}") or "").strip()
+    if not _SHA_RE.match(commit):
+        raise Refused(EXIT_REFUSED, "the vault has no commit to run an experiment from")
+    committed = _vault_git(vault, "show", f"{commit}:./{rel}")
+    if committed is None:
+        raise Refused(EXIT_REFUSED, f"{note.name} isn't at HEAD; an experiment runs only once its plan is committed")
+    head = parse_experiment(slug, committed)
+    front = lab_paths.front_page(vault, slug)
+    front_committed = _vault_git(vault, "show", f"{commit}:./{front.relative_to(vault).as_posix()}")
+    where = _private_at(slug, front, note, front_committed, committed)
+    if where:
+        raise Refused(
+            EXIT_REFUSED,
+            f"{where} counts as private, and experiments in a private thread aren't supported yet "
+            "(their scripts and outputs couldn't be labelled private)",
+        )
+    if head.status == "vetoed":
+        raise Refused(EXIT_REFUSED, f"{eid} is vetoed at HEAD; it doesn't run")
+    folder = (lab_paths.thread_dir(vault, slug) / "experiments").relative_to(vault).as_posix()
+    vetoed_in = _vetoed_in_history(vault, slug, f"{folder}/{slug}-{eid}-")
+    if vetoed_in:
+        raise Refused(EXIT_REFUSED, f"{eid} was vetoed in commit {vetoed_in[:12]}; a veto is final, it doesn't run")
+    vetoed_at = owner_veto(os.environ if env is None else env, slug, eid)
+    if vetoed_at:
+        raise Refused(EXIT_REFUSED, f"vetoed: the owner vetoed {slug} {eid} at {vetoed_at}; a veto is final")
+    exp_rel = lab_paths.experiment_dir(note).relative_to(vault).as_posix()
+
+    def counts(path: str) -> bool:  # the note, or a file of the experiment's that the runner doesn't write
+        inner = path[len(exp_rel) + 1 :] if path.startswith(exp_rel + "/") else None
+        return path == rel or (inner is not None and not lab_runner.runner_owned(inner))
+
+    try:
+        worktree_text = note.read_text(encoding="utf-8")
+        front_text = front.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        raise Refused(EXIT_REFUSED, f"cannot read {note.name} or the thread's front page") from None
+    worktree_exp = parse_experiment(slug, worktree_text)
+    held = _held(slug, eid, [("at HEAD", front_committed), ("in the worktree", front_text)], [head, worktree_exp])
+    if held:
+        raise Refused(EXIT_REFUSED, held)
+    worktree_status = worktree_exp.status
+    if worktree_status != "running":
+        raise Refused(
+            EXIT_REFUSED,
+            f"{eid} is {worktree_status or 'without a status'}, not running; only a running experiment runs "
+            f"(`scoutctl lab experiment start {slug} {eid}` first)",
+        )
+    dirty = _uncommitted(vault, [rel, exp_rel])
+    if dirty is None:
+        raise Refused(EXIT_REFUSED, f"git status failed in the vault; can't tell whether {eid} is committed")
+    # R25: `lab experiment start` writes only the lifecycle fields; that edit isn't a change to the plan.
+    dirty = [p for p in dirty if counts(p) and not (p == rel and _same_plan(worktree_text, committed))]
+    if dirty:
+        shown = ", ".join(dirty[:5]) + (f" and {len(dirty) - 5} more" if len(dirty) > 5 else "")
+        raise Refused(EXIT_REFUSED, f"{eid} has uncommitted changes ({shown}); commit them and wait out the notice")
+    argv = _committed_command(vault, exp_rel, list(argv), lab_runner.runner_owned, commit)
+    commits = _touched(vault, [rel, exp_rel])
+    if commits is None:
+        raise Refused(EXIT_REFUSED, f"git couldn't read {eid}'s history; the notice can't be counted")
+    newest = 0
+    for stamp, sha, names in commits:
+        if stamp <= newest:
+            continue
+        for path in names:
+            if not counts(path):
+                continue
+            if path == rel:
+                before = _vault_git(vault, "show", f"{sha}^:./{rel}")
+                after = _vault_git(vault, "show", f"{sha}:./{rel}")
+                if before is not None and after is not None and _same_plan(before, after):
+                    continue  # only status/started changed (R25)
+            newest = stamp
+            break
+    if not newest:
+        raise Refused(EXIT_REFUSED, f"no commit holds {note.name}; the notice can't be counted")
+    last = datetime.fromtimestamp(newest, UTC)
+    runs_from = last + timedelta(hours=limits.notice_hours)
+    if runs_from > now:
+        raise Refused(
+            EXIT_REFUSED,
+            f"{eid} is within the owner's {limits.notice_hours:g} h notice: its plan or files last changed in a "
+            f"commit at {_shown(vault, last)}, so it may run from {_shown(vault, runs_from)}",
+        )
+    raw = head.frontmatter.get("cost_cap_usd")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not _finite(raw) or raw <= 0:
+        raise Refused(EXIT_REFUSED, f"{note.name} at HEAD has cost_cap_usd {raw!r}; it must be a number above 0")
+    return slug, eid, argv, min(float(raw), limits.max_cost_cap_usd), commit
 
 
 # -- carrying it out -----------------------------------------------------------------------------------------------
@@ -530,6 +1057,8 @@ class Broker:
     sender: Callable[[Mapping[str, Any]], Reply] | None = None  # None: :func:`send_telegram` into this vault
     clock: Callable[[], datetime] = lambda: datetime.now(UTC)
     run_id: str | None = None
+    lab_limits: LabLimits = field(default_factory=LabLimits)
+    experiments_run: int = 0
     # The run a drain applies the queue for (the wrapper's drain as its run ends): what its commits are recorded under
     # in the changes map's run-commit ledger. A queued entry's own `run` is the run's claim, never used for that.
     commit_run: str | None = None
@@ -540,7 +1069,7 @@ class Broker:
     @classmethod
     def for_vault(cls, vault: Path, env: Mapping[str, str] | None = None, **kw: Any) -> Broker:
         env = dict(os.environ if env is None else env)
-        return cls(vault=vault, env=env, limits=load_limits(env), **kw)
+        return cls(vault=vault, env=env, limits=load_limits(env), lab_limits=load_lab_limits(env), **kw)
 
     def handle(self, req: Any) -> Reply:
         if not isinstance(req, dict) or req.get("v") != PROTOCOL:
@@ -552,7 +1081,48 @@ class Broker:
             return self.commit(req)
         if verb == "telegram":
             return self.telegram(req)
+        if verb == "experiment":
+            return self.experiment(req)
         return Reply(EXIT_REFUSED, "broker: unknown verb\n", kind=REFUSED)
+
+    def experiment(self, req: Mapping[str, Any]) -> Reply:
+        """Run one experiment for this run, outside its sandbox, under the experiment sandbox (lab Task 10)."""
+        from scout.errors import LabError
+        from scout.lab import runner
+
+        if not self.lab_limits.experiments_enabled:  # the owner's switch, before anything else is looked at
+            return Reply(EXIT_NOT_RUN, f"experiment not run: {EXPERIMENTS_OFF}\n", kind=REFUSED)
+        allowed = self.lab_limits.experiments_per_run
+        if self.experiments_run >= allowed:
+            ran = plural.count(allowed, "experiment")
+            return Reply(EXIT_LIMIT, f"experiment refused: this run has run its {ran}\n", kind=RUN_LIMIT)
+        try:
+            requested = _requested_timeout(req)
+            slug, eid, argv, cap, commit = validate_experiment(req, self.vault, self.lab_limits, self.clock(), self.env)
+        except Refused as r:
+            # A refused request ran nothing, so it keeps the run's allowance; the notice bounds its retries.
+            return Reply(r.exit_code, f"experiment refused: {_one_line(r.reason)}\n", kind=REFUSED)
+        timeout_s = min(requested, self.lab_limits.timeout_s) if requested is not None else self.lab_limits.timeout_s
+        # Counted once the runner is called, whatever it answers: a script that ran and then failed a check
+        # (a survivor of the kill sweep) still ran.
+        self.experiments_run += 1
+        try:
+            outcome = runner.run_experiment(
+                self.vault,
+                slug,
+                eid,
+                argv,
+                cap_usd=cap,
+                timeout_s=timeout_s,
+                env=self.env,
+                commit=commit,
+                max_processes=self.lab_limits.max_processes,
+                max_total_bytes=self.lab_limits.max_total_bytes,
+                max_open_files=self.lab_limits.max_open_files,
+            )
+        except LabError as e:
+            return Reply(e.exit_code, f"experiment refused: {_one_line(e)}\n", kind=REFUSED)
+        return _outcome_reply(outcome)
 
     def commit(self, req: Mapping[str, Any]) -> Reply:
         try:
@@ -900,6 +1470,103 @@ def client_telegram(fields: Mapping[str, Any], env: Mapping[str, str] | None = N
     return 0
 
 
+EXPERIMENT_CLIENT_SLACK_S = 60.0
+
+
+def _outcome_reply(outcome: Any) -> Reply:
+    """A :class:`scout.lab.runner.RunOutcome` as the run reads it: the script's exit and its output's tails."""
+    return Reply(outcome.exit, outcome.stderr_tail, outcome.stdout_tail, ran=True)
+
+
+def _requested_timeout(req: Mapping[str, Any]) -> int | None:
+    """The run's own ``timeout_s`` for an experiment: absent, or an int of at least 1 (it only ever lowers)."""
+    value = req.get("timeout_s")
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise Refused(EXIT_REFUSED, "timeout_s must be a whole number of seconds, at least 1")
+    return value
+
+
+def _one_line(reason: object) -> str:
+    """A reason on one line (a status line is read as the last line of stderr)."""
+    return " ".join(str(reason).split())
+
+
+def _emit_experiment(reply: Reply) -> int:
+    """Print an experiment reply, then the one status line a run reads last (``experiment ran|refused|not run``)."""
+    code = _emit(reply)
+    if reply.ran:
+        print(f"experiment ran: exit {reply.exit}", file=sys.stderr)
+        return code
+    last = reply.stderr.rstrip("\n").rsplit("\n", 1)[-1] if reply.stderr.strip() else ""
+    if not last.startswith(("experiment refused: ", "experiment not run: ")):
+        print(f"experiment not run: {_one_line(last) or 'the broker answered without running it'}", file=sys.stderr)
+    return code
+
+
+def client_experiment(
+    slug: str, eid: str, argv: Sequence[str], env: Mapping[str, str] | None = None, *, timeout_s: int | None = None
+) -> int:
+    """``scoutctl lab experiment run``: the run's broker runs it, or, in the owner's own session, this process.
+
+    Never queued: a scheduled run without an answering broker gets exit 4 and nothing runs. Without a broker or a
+    scheduled run (an interactive owner session, unsandboxed) the request is checked as the broker would check it
+    and run here, under the owner's limits; the owner's ``experiments_enabled`` switch gates only the broker, not
+    this. ``timeout_s`` can only lower the owner's timeout. The last line on
+    stderr is always one of ``experiment ran: exit <n>``, ``experiment refused: <reason>`` or
+    ``experiment not run: <reason>``.
+    """
+    env = os.environ if env is None else env
+    limits = load_lab_limits(env)
+    sock = env.get(ENV_SOCKET, "")
+    if timeout_s is not None and timeout_s < 1:
+        print("experiment refused: the timeout must be at least 1 second", file=sys.stderr)
+        return EXIT_REFUSED
+    effective = min(timeout_s, limits.timeout_s) if timeout_s is not None else limits.timeout_s
+    if sock:
+        req: dict[str, Any] = {"v": PROTOCOL, "verb": "experiment", "slug": slug, "eid": eid, "argv": list(argv)}
+        if timeout_s is not None:
+            req["timeout_s"] = timeout_s
+        try:
+            return _emit_experiment(call(sock, req, timeout=effective + EXPERIMENT_CLIENT_SLACK_S))
+        except Unreachable:
+            print("experiment not run: this run's broker didn't answer", file=sys.stderr)
+            return EXIT_NOT_RUN
+    if env.get("SCOUT_MODE"):
+        print("experiment not run: experiments need the run broker", file=sys.stderr)
+        return EXIT_NOT_RUN
+    from scout.errors import LabError
+    from scout.lab import runner
+
+    vault = _vault(env)
+    try:
+        slug, eid, args, cap, commit = validate_experiment(
+            {"slug": slug, "eid": eid, "argv": list(argv)}, vault, limits, datetime.now(UTC), env
+        )
+    except Refused as r:
+        print(f"experiment refused: {_one_line(r.reason)}", file=sys.stderr)
+        return r.exit_code
+    try:
+        outcome = runner.run_experiment(
+            vault,
+            slug,
+            eid,
+            args,
+            cap_usd=cap,
+            timeout_s=effective,
+            env=env,
+            commit=commit,
+            max_processes=limits.max_processes,
+            max_total_bytes=limits.max_total_bytes,
+            max_open_files=limits.max_open_files,
+        )
+    except LabError as e:
+        print(f"experiment refused: {_one_line(e)}", file=sys.stderr)
+        return e.exit_code
+    return _emit_experiment(_outcome_reply(outcome))
+
+
 # -- the queue -----------------------------------------------------------------------------------------------------
 #
 # The queue is in the vault, which a run can write, and the drain runs outside the sandbox. So the drain never
@@ -968,7 +1635,7 @@ def _queue_dirs(vault: Path, *names: str, create: bool = False) -> Iterator[dict
 def queue_problem(vault: Path) -> str | None:
     """Why the queue can't be drained safely, or None (also when there is no queue)."""
     try:
-        with _queue_dirs(vault, *VERBS, FAILED_DIR):
+        with _queue_dirs(vault, *QUEUE_VERBS, FAILED_DIR):
             return None
     except QueueUnsafe as e:
         return str(e)
@@ -1026,7 +1693,7 @@ def enqueue(vault: Path, verb: str, req: Mapping[str, Any], *, now: datetime | N
     """Write ``req`` to the queue atomically (a temp file, then a rename), mode 0600. Returns its id (a ULID)."""
     from scout.ids import new_ulid
 
-    if verb not in VERBS:
+    if verb not in QUEUE_VERBS:
         raise ValueError(verb)
     qid = new_ulid()
     entry = {k: v for k, v in req.items() if k not in ("v", "verb")}
@@ -1051,8 +1718,8 @@ def _queued(vault: Path, verb: str) -> list[dict[str, Any]]:
 def pending(vault: Path) -> int:
     """How many entries wait in the queue (failed ones not counted); 0 when the queue isn't safe to read."""
     try:
-        with _queue_dirs(vault, *VERBS, FAILED_DIR) as dirs:  # failed/ too: an unsafe queue waits for the owner
-            return sum(len(_names(dirs[v])) for v in VERBS)
+        with _queue_dirs(vault, *QUEUE_VERBS, FAILED_DIR) as dirs:  # failed/ too: an unsafe queue waits for the owner
+            return sum(len(_names(dirs[v])) for v in QUEUE_VERBS)
     except (QueueUnsafe, OSError):
         return 0
 
@@ -1129,8 +1796,8 @@ def _drain(vault: Path, *, env: dict[str, str], broker: Broker | None, deadline_
         broker = broker or Broker.for_vault(vault, env)
         now = broker.clock()
         try:
-            with _queue_dirs(vault, *VERBS, FAILED_DIR, create=True) as dirs:
-                for verb in VERBS:
+            with _queue_dirs(vault, *QUEUE_VERBS, FAILED_DIR, create=True) as dirs:
+                for verb in QUEUE_VERBS:
                     for name in _names(dirs[verb]):
                         if time.monotonic() >= stop_at:
                             result.kept += 1

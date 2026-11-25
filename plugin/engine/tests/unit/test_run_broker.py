@@ -338,7 +338,7 @@ def test_the_owner_folder_is_protected_from_runs(tmp_path: Path) -> None:
     env = {**os.environ, "HOME": str(tmp_path)}
     hook_paths._ROOTS_CACHE.clear()
     target = broker.owner_dir(env) / broker.CONFIG_NAME
-    assert hook_paths.protected_write(target, None, env) == hook_paths.ENGINE
+    assert hook_paths.protected_write(target, None, env) == hook_paths.OWNER_STATE
 
 
 # -- the queue -------------------------------------------------------------------------------------------------------

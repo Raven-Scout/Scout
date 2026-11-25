@@ -28,6 +28,9 @@ Protected (each with the form name a deny and the audit row use):
   cache, its venv, its hooks.json), ``$CLAUDE_PLUGIN_ROOT``, the venv the engine runs in
   (``sys.prefix``), the engine pointer (``~/.local/state/scout/engine.json``), and the
   plugin the vault's pre-commit hook calls;
+- ``the owner's Scout settings``: the owner-only stores in ``~/.local/state/scout/``
+  (:data:`OWNER_STATE_NAMES`: the sandbox switch, provider consent, run limits, the run
+  brokers' folder, the reviewed doctor warnings and the changes map's owner rows);
 - ``Scout's runner scripts``: the vault files bootstrap installs and runs (``run-*.sh``,
   ``scripts/claude-with-retry.sh``, ``scripts/scoutctl`` …; :data:`RUNNER_FILES`);
 - ``startup files``: the shell's login and rc files and ``~/Library/LaunchAgents``;
@@ -42,6 +45,10 @@ Protected (each with the form name a deny and the audit row use):
 
 :func:`protected_specs` is the list as built (before resolving and case-folding), for the OS write sandbox
 (Phase 1c); :func:`protected_roots` is it normalised for matching.
+
+Each ``~`` path above is protected under ``$HOME`` and, when that is another folder, under the account's home
+from the account database too (:func:`homes`): some readers use one, some the other, and a run may be started
+with a HOME of its own.
 
 A path is compared after ``~``, ``..`` and symlinks are resolved *and* as spelled (so a
 ``.git/hooks`` that is a symlink out of ``.git`` still counts), NFC-normalised and
@@ -71,6 +78,7 @@ GIT_DIR = ".git"
 USER_GIT_CONFIG = "git config"
 AGENT_SETTINGS = "agent settings"
 ENGINE = "Scout's engine"
+OWNER_STATE = "the owner's Scout settings"
 RUNNER_SCRIPTS = "Scout's runner scripts"
 STARTUP = "startup files"
 HARD_LINK = "a hard-linked file"
@@ -93,6 +101,18 @@ REVIEWED_WARNINGS_NAME = "scout-reviewed-warnings.json"
 # owner's reliance on its own work. Also a protected token, so the name is one no vault folder would carry: a
 # generic `change-map` denied a run's own `knowledge-base/change-map/` notes.
 CHANGES_OWNER_NAME = "scout-change-ledger-owner"
+# Every owner-only file and folder in ~/.local/state/scout/ (see engine_roots), protected under each of homes().
+OWNER_STATE_NAMES: tuple[str, ...] = (
+    SANDBOX_SWITCH_NAME,
+    PROVIDER_CONSENT_NAME,
+    RUN_LIMITS_NAME,
+    RUN_BROKERS_NAME,
+    REVIEWED_WARNINGS_NAME,
+    CHANGES_OWNER_NAME,
+)
+# Where an owner store goes when the account database has no home for this user: a root-owned folder no run can
+# create files in, so writes fail and reads find nothing. Never a path taken from the environment.
+NO_ACCOUNT_HOME = Path("/var/empty")
 SECRETS = "Scout's secrets"
 SCHEDULE = "Scout's schedule"
 PROGRAMS = "programs the runners run"
@@ -265,6 +285,52 @@ def _pointer_venv(pointer: Path) -> Path | None:
     return venv if (venv / "pyvenv.cfg").is_file() else None
 
 
+def account_home() -> Path:
+    """This user's home from the account database (``pwd``), never ``$HOME``; :data:`NO_ACCOUNT_HOME` when it has
+    none. What the changes map's owner store is found under (scout.changes.store), and what ssh reads ``~/.ssh``
+    from whatever ``HOME`` says."""
+    try:
+        import pwd
+
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    except (ImportError, KeyError, OSError):
+        return NO_ACCOUNT_HOME
+    return Path(home) if home else NO_ACCOUNT_HOME
+
+
+def homes(env: Mapping[str, str]) -> list[Path]:
+    """Every home a per-user protected path is under: ``$HOME`` (else :meth:`Path.home`) and, when it is another
+    folder, the account's (:func:`account_home`).
+
+    Readers differ on which one they use: the changes map's owner store and ssh use the account's, most of Scout
+    ``$HOME``. A run started with a HOME of its own (a custom launch, a test harness, ``sudo -E``, a wrapper that
+    sets it) must find neither writable, so both layers protect each path under both."""
+    env_home = Path(env.get("HOME") or Path.home())
+    out = [env_home]
+    account = account_home()
+    if account != NO_ACCOUNT_HOME and not _same_folder(account, env_home):
+        out.append(account)
+    return out
+
+
+def _same_folder(a: Path, b: Path) -> bool:
+    """Whether ``a`` and ``b`` are one folder: the same file on disk, so ``/users/x`` is ``/Users/x`` on a
+    case-insensitive disk (APFS) and no rule is written twice. When either is missing, their real paths
+    compared case-folded, as the roots are."""
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return _norm(os.path.realpath(a)) == _norm(os.path.realpath(b))
+
+
+def claude_dirs(env: Mapping[str, str]) -> list[Path]:
+    """``~/.claude`` under each of :func:`homes`, and ``$CLAUDE_CONFIG_DIR`` when it is set."""
+    dirs = [home / ".claude" for home in homes(env)]
+    if env.get("CLAUDE_CONFIG_DIR"):
+        dirs.append(Path(env["CLAUDE_CONFIG_DIR"]))
+    return dirs
+
+
 def engine_roots(env: Mapping[str, str]) -> list[Path]:
     """The engine the hooks run and everything that picks it (see the module doc)."""
     import scout
@@ -276,22 +342,21 @@ def engine_roots(env: Mapping[str, str]) -> list[Path]:
         roots.append(Path(base))
     if env.get("CLAUDE_PLUGIN_ROOT"):
         roots.append(Path(env["CLAUDE_PLUGIN_ROOT"]))
-    home = Path(env.get("HOME") or Path.home())
-    state = home / ".local" / "state" / "scout"
-    pointer = state / "engine.json"
-    roots.append(pointer)
-    venv = _pointer_venv(pointer)
-    if venv is not None:
-        roots.append(venv)
-    # The owner's switch for the scheduled runs' write sandbox (scout.sandbox, Phase 1c): a run that could write
-    # it could turn the sandbox off for the next run.
-    roots.append(state / SANDBOX_SWITCH_NAME)
-    roots.append(state / PROVIDER_CONSENT_NAME)
-    roots.append(state / RUN_LIMITS_NAME)
-    # The run brokers' limits and counts (Phase 1d): a run that could write them could lift its own send limit.
-    roots.append(state / RUN_BROKERS_NAME)
-    roots.append(state / REVIEWED_WARNINGS_NAME)
-    roots.append(state / CHANGES_OWNER_NAME)
+    # Under every home (homes): the changes map's owner store is read from the account's home whatever HOME says,
+    # so a deny list built from HOME alone left it writable to a run started with another HOME.
+    for home in homes(env):
+        state = home / ".local" / "state" / "scout"
+        pointer = state / "engine.json"
+        roots.append(pointer)
+        venv = _pointer_venv(pointer)
+        if venv is not None:
+            roots.append(venv)
+        # The owner's stores (OWNER_STATE_NAMES): the sandbox switch (a run that could write it could turn the
+        # sandbox off for the next run), provider consent, run limits, the run brokers' limits, counts and the
+        # Lab's vetoes (a run could lift its own send limit or un-veto its experiment), the reviewed doctor
+        # warnings, and the changes map's owner rows and run-commit ledger (a run could vouch for its own commits).
+        for name in OWNER_STATE_NAMES:
+            roots.append(state / name)
     return roots
 
 
@@ -314,7 +379,9 @@ def protected_roots(vault: Path | None, env: Mapping[str, str] | None = None) ->
     each against this one list, so the gate stays fast however many paths it is handed (review of #637).
     """
     env = os.environ if env is None else env
-    key = (str(vault), *(env.get(k, "") for k in _ENV_KEYS))
+    # The account's home too (homes): it isn't in the environment, and a test that patches it must not read stale
+    # roots.
+    key = (str(vault), str(account_home()), *(env.get(k, "") for k in _ENV_KEYS))
     if key not in _ROOTS_CACHE:
         _ROOTS_CACHE[key] = _build_roots(vault, env, deadline=time.monotonic() + HOOK_ROOTS_BUDGET_S)
     return _ROOTS_CACHE[key]
@@ -333,10 +400,9 @@ def _build_roots(vault: Path | None, env: Mapping[str, str], *, deadline: float 
 
 
 def secrets_dirs(env: Mapping[str, str]) -> list[Path]:
-    """Where Scout keeps its API keys and tokens: ``~/.scout-secrets``, and ``$SCOUT_SECRETS_DIR`` when it is set
-    (scout.linear_activity.secrets_dir reads the same variable)."""
-    home = Path(env.get("HOME") or Path.home())
-    dirs = [home / ".scout-secrets"]
+    """Where Scout keeps its API keys and tokens: ``~/.scout-secrets`` under each of :func:`homes`, and
+    ``$SCOUT_SECRETS_DIR`` when it is set (scout.linear_activity.secrets_dir reads the same variable)."""
+    dirs = [home / ".scout-secrets" for home in homes(env)]
     if env.get("SCOUT_SECRETS_DIR"):
         dirs.append(Path(env["SCOUT_SECRETS_DIR"]))
     return dirs
@@ -353,7 +419,6 @@ def protected_specs(
     :data:`HOOK_ROOTS_BUDGET_S`; the profile passes none).
     """
     env = os.environ if env is None else env
-    home = Path(env.get("HOME") or Path.home())
     roots: list[Spec] = []
 
     def add(path: Path | str, form: str, *, tree: bool) -> None:
@@ -389,36 +454,45 @@ def protected_specs(
         engine = _precommit_engine(vault, hooks)
         if engine is not None:
             add(engine, ENGINE, tree=True)
-    add(home / ".gitconfig", USER_GIT_CONFIG, tree=False)
+    # Each per-user path under every home (homes): $HOME's, and the account's when a run starts with another HOME.
+    user_homes = homes(env)
+    for home in user_homes:
+        add(home / ".gitconfig", USER_GIT_CONFIG, tree=False)
     if env.get("GIT_CONFIG_GLOBAL"):
         add(env["GIT_CONFIG_GLOBAL"], USER_GIT_CONFIG, tree=False)
-    add(Path(env.get("XDG_CONFIG_HOME") or home / ".config") / "git", USER_GIT_CONFIG, tree=True)
-    claude_dirs = [home / ".claude"]
-    if env.get("CLAUDE_CONFIG_DIR"):
-        claude_dirs.append(Path(env["CLAUDE_CONFIG_DIR"]))
-    for base in claude_dirs:
+    if env.get("XDG_CONFIG_HOME"):
+        add(Path(env["XDG_CONFIG_HOME"]) / "git", USER_GIT_CONFIG, tree=True)
+    for home in user_homes:
+        add(home / ".config" / "git", USER_GIT_CONFIG, tree=True)
+    for base in claude_dirs(env):
         for name in (*CLAUDE_SETTINGS_FILES, ".claude.json"):
             add(base / name, AGENT_SETTINGS, tree=False)
         add(base / "plugins", AGENT_SETTINGS, tree=True)
-    add(home / ".claude.json", AGENT_SETTINGS, tree=False)
-    for name in AGENT_DIRS:
-        add(home / name, AGENT_SETTINGS, tree=True)
+    for home in user_homes:
+        add(home / ".claude.json", AGENT_SETTINGS, tree=False)
+        for name in AGENT_DIRS:
+            add(home / name, AGENT_SETTINGS, tree=True)
     for root in engine_roots(env):
-        add(root, ENGINE, tree=root.is_dir() or root.suffix == "")
-    for name in SHELL_STARTUP:
-        add(home / name, STARTUP, tree=False)
-    add(home / "Library" / "LaunchAgents", STARTUP, tree=True)
+        # The owner's stores sit among the engine's roots but aren't the engine (review of #649, N2).
+        label = OWNER_STATE if root.parent.name == "scout" and root.name in OWNER_STATE_NAMES else ENGINE
+        add(root, label, tree=root.is_dir() or root.suffix == "")
+    for home in user_homes:
+        for name in SHELL_STARTUP:
+            add(home / name, STARTUP, tree=False)
+        add(home / "Library" / "LaunchAgents", STARTUP, tree=True)
     for secrets in secrets_dirs(env):
         add(secrets, SECRETS, tree=True)
-    add(ssh_dir(env), SSH_CONFIG, tree=True)
+    for ssh in ssh_dirs(env):
+        add(ssh, SSH_CONFIG, tree=True)
     if vault is not None:
         # The tick starts each slot's runner, and the trigger engine each trigger's, outside any run (#642 review).
         for name in SCHEDULE_FILES:
             add(vault / ".scout-state" / name, SCHEDULE, tree=False)
     for path, tree in git_config_files(env, deadline=deadline, vault=vault):
         add(path, USER_GIT_CONFIG, tree=tree)
-    for path in runner_programs(env, home):
-        add(path, PROGRAMS, tree=True)
+    for home in user_homes:
+        for path in runner_programs(env, home):
+            add(path, PROGRAMS, tree=True)
     return roots
 
 
@@ -443,6 +517,11 @@ _MISSING = re.compile(r"unable to read config file '([^']+)'")
 
 def ssh_dir(env: Mapping[str, str]) -> Path:
     return Path(env.get("HOME") or Path.home()) / ".ssh"
+
+
+def ssh_dirs(env: Mapping[str, str]) -> list[Path]:
+    """``~/.ssh`` under each of :func:`homes`: OpenSSH reads the account's whatever ``HOME`` says."""
+    return [home / ".ssh" for home in homes(env)]
 
 
 def git_config_files(

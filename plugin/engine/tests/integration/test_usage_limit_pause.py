@@ -32,9 +32,12 @@ SLOT = "morning-briefing"
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 # Runs this checkout's engine for `scoutctl budget …` and the integrity check's `sandbox snapshot|verify`;
-# records every other call.
+# answers `agent-runtime resolve` as an engine with no runtime set does (else the run records a resolve fallback,
+# which health reports: #652 S7); records every other call.
 SCOUTCTL_STUB = """#!/usr/bin/env python3
 import json, os, sys
+if sys.argv[1:3] == ["agent-runtime", "resolve"]:
+    print("claude-code")
 if sys.argv[1:2] == ["budget"] or sys.argv[1:3] in (["sandbox", "snapshot"], ["sandbox", "verify"]):
     os.execv({python!r}, [{python!r}, "-m", "scout.cli", *sys.argv[1:]])
 with open({calls!r}, "a") as fh:

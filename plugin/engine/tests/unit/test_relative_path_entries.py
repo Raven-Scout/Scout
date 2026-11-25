@@ -455,6 +455,8 @@ def test_every_tool_hook_filters_path_first_and_none_calls_dirname() -> None:
     # Shell builtins and keywords, the two assignments, and the two programs an entry starts, both by
     # absolute path: /bin/sh and scoutctl (which filters PATH itself).
     allowed = {"[", "{", "}", "if", "then", "else", "fi", "exit", "exec", "echo", "/bin/sh", '"$c"', "s=0", "s=$?", "!"}
+    # mcp-tool-gate's fallback walks up from $PWD to a vault, as find_vault does: a loop and three assignments.
+    allowed |= {"while", "do", "done", 'd="$PWD"', "d=", 'd="${d%/*}"', 'd="${d:-/}"'}
     for name, command in _tool_hooks():
         assert (
             'h="${CLAUDE_PLUGIN_ROOT}/hooks/prefilter.sh"; c="${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl"; ' in command
@@ -545,7 +547,7 @@ def test_tool_hooks_never_run_a_planted_program(
 
 
 def test_mcp_tool_gate_walk_still_finds_the_vault_from_a_deep_cwd(tmp_path: Path) -> None:
-    """`${d%/*}` in place of dirname: the walk climbs to the vault, and stops at / outside one."""
+    """`${w%/*}` in place of dirname: the walk climbs from the payload's cwd to the vault, and stops at /."""
     command = dict(_tool_hooks())["PreToolUse mcp__.*"]
     vault = tmp_path / "vault"
     deep = vault / "a" / "b" / "c"
@@ -562,7 +564,7 @@ def test_mcp_tool_gate_walk_still_finds_the_vault_from_a_deep_cwd(tmp_path: Path
         ["/bin/sh", "-c", command],
         env=env,
         cwd=deep,
-        input="{}",
+        input=json.dumps({"cwd": str(deep)}),
         capture_output=True,
         text=True,
         timeout=30,
@@ -576,7 +578,7 @@ def test_mcp_tool_gate_walk_still_finds_the_vault_from_a_deep_cwd(tmp_path: Path
         ["/bin/sh", "-c", command],
         env=env,
         cwd=outside,
-        input="{}",
+        input=json.dumps({"cwd": str(outside)}),
         capture_output=True,
         text=True,
         timeout=30,

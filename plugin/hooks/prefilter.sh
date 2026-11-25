@@ -65,8 +65,9 @@ is_run() {
     [ -n "$SCOUT_MODE" ] || { [ -n "${SCOUT_READER+set}" ] && [ "$SCOUT_READER" != owner ]; }
 }
 
-# Sets $d to the vault: SCOUT_DATA_DIR, else the nearest directory at or above the cwd that holds
-# scout-config.yaml, else `/`. `${d%/*}` in place of dirname.
+# Sets $d to the vault: SCOUT_DATA_DIR, else the nearest directory at or above this process's cwd
+# that holds scout-config.yaml, else `/`. `${d%/*}` in place of dirname. Only for a payload that could
+# not be read: the Python hooks go by the payload's cwd (each_vault), which need not be this one.
 find_vault() {
     d="$SCOUT_DATA_DIR"
     if [ -z "$d" ]; then
@@ -281,6 +282,165 @@ bash_needs_python() {
     [ "$?" -ne 1 ]
 }
 
+# Sets $w to the nearest directory at or above $1 that holds scout-config.yaml; fails when there is
+# none. `${w%/*}` in place of dirname.
+walk_up() {
+    w=$1
+    while [ ! -f "$w/scout-config.yaml" ]; do
+        [ "$w" = / ] && return 1
+        w="${w%/*}"
+        w="${w:-/}"
+    done
+}
+
+# Runs `$1 <vault>` for each vault the session of payload $p may be in, by the rule every Python hook
+# goes by (session_vault in each, _may_be_in_a_vault in engine/scout/hooks/__main__.py): SCOUT_DATA_DIR,
+# else the nearest scout-config.yaml at or above the payload's cwd, never this process's own cwd.
+# Returns 0 ("start Python") as soon as $1 does, or when the shell cannot tell for certain; 1 when no
+# vault needs Python.
+#
+# What the shell cannot tell for certain (unknown stays closed): a SCOUT_DATA_DIR that is not absolute;
+# no top-level "cwd" key (Python then goes by its own working directory), or one the shell cannot prove
+# is top-level; a cwd that is not a string, is empty or relative (`~` included), holds a JSON escape,
+# is longer than 4096 bytes, or names a directory the shell cannot enter; a grep that fails.
+#
+# Cost: this runs on every MCP call on the machine, nearly all outside any vault, so the common case
+# starts no process beyond read_payload's cat: Claude Code's own payload shape is read by builtins
+# (claude_code_cwd). Anything else goes to the grep below, a fork and an exec more.
+#
+# The shell does not parse JSON, so one grep finds two things. Its first expression matches only from
+# the payload's start: `{`, then top-level keys with scalar values, then "cwd" and its value. That line
+# comes first when it is there (Claude Code puts cwd before tool_input), and proves a top-level cwd.
+# The second matches any other "cwd" key: the filter checks them all (a tool input may have its own),
+# each as written and with its symlinks resolved. Everything after the grep is builtins on short lines:
+# bash 3.2's ${x#*pat} is quadratic, so it never runs over the payload itself. A symlink is resolved by
+# `cd -P` in this shell and back, not in a subshell: this runs on every MCP call on the machine.
+each_vault() {
+    if [ -n "$SCOUT_DATA_DIR" ]; then
+        case "$SCOUT_DATA_DIR" in /*) ;; *) return 0 ;; esac
+        "$1" "$SCOUT_DATA_DIR"
+        return
+    fi
+    if claude_code_cwd; then
+        cwd_vault "$1"
+        return
+    fi
+    tool grep
+    js='"([^"\\]|\\.)*"'
+    jw='[[:space:]]*'
+    cws=$(printf '%s' "$p" | LC_ALL=C "$t" -oE \
+        -e '^'"$jw"'[{]('"$jw$js$jw:$jw"'('"$js"'|[-+.0-9eE]+|true|false|null)'"$jw"',)*'"$jw"'"cwd"'"$jw:$jw($js|.)" \
+        -e '"cwd"'"$jw:$jw($js|.)") || return 0
+    top=
+    while IFS= read -r cw; do
+        [ "${#cw}" -le 4096 ] || return 0
+        case "$cw" in
+        \"*) [ -n "$top" ] || return 0 ;; # the first line is not the top-level one: no top-level cwd
+        *) [ -z "$top" ] || return 0 ;;   # cannot happen in JSON
+        esac
+        top=1
+        cw="${cw##*\"cwd\"}"
+        cw="${cw#*:}"
+        cw="${cw#"${cw%%[![:space:]]*}"}"
+        case "$cw" in \"*\") ;; *) return 0 ;; esac
+        cw="${cw#\"}"
+        cw="${cw%\"}"
+        cwd_vault "$1" && return 0
+    done <<EOF
+$cws
+EOF
+    return 1
+}
+
+# The fast path of each_vault, all builtins: sets $cw to the payload's top-level cwd when the payload is
+# one line that starts as Claude Code writes it, `{"session_id":"…","transcript_path":"…","cwd":"…"` (any
+# two string-valued keys before cwd, with or without spaces after `:` and `,`), and holds no other
+# "cwd" key. Fails, for the grep above to decide, on anything else. A backslash in a key or value
+# before cwd may hide an escaped quote, so it fails too. `read` from a here-document splits the line on
+# `"`; nothing scans the payload with a pattern removal (quadratic in bash 3.2), and each `case` on it
+# is linear.
+claude_code_cwd() {
+    nl='
+'
+    case "$p" in *"$nl"*) return 1 ;; esac
+    # shellcheck disable=SC2034 # c1 and c5 are the first two key names: any name will do
+    IFS='"' read -r c0 c1 c2 c3 c4 c5 c6 c7 c8 c9 c10 cw c12 <<EOF
+$p
+EOF
+    [ "$c0" = "{" ] && [ "$c9" = cwd ] || return 1
+    for c in "$c2" "$c6" "$c10"; do case "$c" in : | ': ') ;; *) return 1 ;; esac; done
+    for c in "$c4" "$c8"; do case "$c" in , | ', ') ;; *) return 1 ;; esac; done
+    case "$c1$c3$c5$c7" in *\\*) return 1 ;; esac
+    case "$c12" in *'"cwd"'*) return 1 ;; esac # another cwd key: the grep checks them all
+}
+
+# Runs `$1 <vault>` for the vault of cwd $cw, by each_vault's rule (0: start Python). The gate goes by
+# the resolved path, so that is checked first; the path as written is checked too when it differs.
+# The symlinks are resolved by `cd -P` in this shell and back, not in `$(...)`: no fork.
+cwd_vault() {
+    case "$cw" in /*) ;; *) return 0 ;; esac
+    case "$cw" in *\\*) return 0 ;; esac
+    [ "${#cw}" -le 4096 ] || return 0
+    o=$PWD
+    cd -P -- "$cw" 2>/dev/null || return 0
+    r=$PWD
+    # Back where we were. If that is gone, staying here is harmless: with a top-level cwd in the
+    # payload, no Python hook looks at its own working directory.
+    cd -- "$o" 2>/dev/null || true
+    if walk_up "$r"; then "$1" "$w" && return 0; fi
+    [ "$r" = "$cw" ] && return 1
+    if walk_up "$cw"; then "$1" "$w" && return 0; fi
+    return 1
+}
+
+# Whether the session of payload $p may be in a vault (each_vault's rule; unknown counts as yes).
+any_vault() { true; }
+may_be_in_a_vault() { each_vault any_vault; }
+
+# Whether vault $1's connectors.custom.yaml might set restrict_tools, so the gate must start: the
+# literal text, any backslash (a double-quoted YAML key can spell it with escapes, #590) or a NUL byte.
+# A grep, tr or cmp that fails answers yes.
+restricts() {
+    f="$1/connectors.custom.yaml"
+    [ -s "$f" ] || return 1
+    tool grep
+    # shellcheck disable=SC1003 # the pattern ends in an escaped backslash: any backslash in the file
+    LC_ALL=C "$t" -qsE -e 'restrict_tools|\\' "$f"
+    [ "$?" -eq 1 ] || return 0 # the key, or grep failed
+    # No key: Python only if the file holds a NUL byte (tr drops them; cmp then finds a difference).
+    tool tr
+    tr=$t
+    tool cmp
+    # shellcheck disable=SC2094 # both only read the file
+    LC_ALL=C "$tr" -d '\000' 2>/dev/null <"$f" | "$t" -s - "$f" && return 1
+    return 0
+}
+
+# Runs the restrict_tools gate ($@) on payload $p and ends the filter. The gate always exits 0 (its
+# deny is JSON on stdout), so any other exit means it did not run: 126 for a shim naming a missing
+# interpreter, 127 for no scoutctl, 1 for a crash before the gate, 2 for a Python or typer usage
+# error, 128 + n for a signal. Claude Code lets a call through on every exit but 0 and 2, so passing
+# that on would lift every restriction without a word. The call is blocked instead when it is an MCP
+# call in a session that may be in a vault; anything else gets a non-blocking 1, since hooks.json is
+# plugin-wide and a broken engine must not block MCP outside a vault.
+mcp_gate() {
+    printf '%s' "$p" | "$@" && verdict 0
+    s=$?
+    tool grep
+    n=$(printf '%s' "$p" | LC_ALL=C "$t" -oE -e '"tool_name"[[:space:]]*:[[:space:]]*"mcp__[A-Za-z0-9_.-]*')
+    case "$?" in
+    0)
+        n="mcp__${n#*\"mcp__}"
+        n="${n%%[!A-Za-z0-9_.-]*}"
+        ;;
+    1) verdict 1 ;; # not an MCP call: nothing to gate
+    *) n="this MCP call" ;;
+    esac
+    may_be_in_a_vault || verdict 1
+    echo "[scout:mcp-tool-gate] Scout's MCP tool gate could not start (status $s), so $n is blocked in this vault's sessions: its restrict_tools limits can't be checked. To fix it, run /scout-update or \`scoutctl bootstrap doctor\`." >&2
+    verdict 2
+}
+
 name="${1-}"
 [ "$#" -gt 0 ] && shift
 filter="$name"
@@ -289,35 +449,33 @@ filter="$name"
 
 case "$filter" in
 
-# PreToolUse, every MCP call, every session. The restrict_tools gate: Python starts only in a vault
-# whose connectors.custom.yaml might set the key: the literal text, any backslash (a double-quoted
-# YAML key can spell it with escapes, #590) or a NUL byte.
+# PreToolUse, every MCP call, every session. The restrict_tools gate: Python starts only when the
+# session's vault, found from the payload's cwd as the gate finds it (each_vault), has a
+# connectors.custom.yaml that might set the key (restricts), or when the shell can't tell. When it
+# cannot start, the call is blocked in a session that may be in a vault (mcp_gate). With no payload
+# there is no cwd to go by, so this process's own directory decides.
 mcp-tool-gate)
-    find_vault
-    f="$d/connectors.custom.yaml"
-    [ -s "$f" ] || verdict 0
-    tool grep
-    # shellcheck disable=SC1003 # the pattern ends in an escaped backslash: any backslash in the file
-    LC_ALL=C "$t" -qsE -e 'restrict_tools|\\' "$f"
-    [ "$?" -eq 1 ] || { "$@"; verdict "$?"; } # the key, or grep failed
-    # No key: Python only if the file holds a NUL byte (tr drops them; cmp then finds a difference).
-    tool tr
-    tr=$t
-    tool cmp
-    # shellcheck disable=SC2094 # both only read the file
-    LC_ALL=C "$tr" -d '\000' 2>/dev/null <"$f" | "$t" -s - "$f" && verdict 0
-    "$@"
-    verdict "$?"
+    if ! read_payload; then
+        find_vault
+        restricts "$d" || verdict 0
+        echo "[scout:mcp-tool-gate] Scout's MCP tool gate could not read this call, so it is blocked in this vault's sessions." >&2
+        verdict 2
+    fi
+    each_vault restricts || verdict 0
+    mcp_gate "$@"
     ;;
 
-# PreToolUse, MCP write tools. Skipped only for a session that is neither a run nor in a vault.
-# A run is denied when the check cannot run; the owner is warned.
+# PreToolUse, MCP write tools. Skipped only for a session that is neither a run nor in a vault (by
+# the payload's cwd, as the gate decides). A run is denied when the check cannot run; the owner is warned.
 outbound-gate)
     run=
     is_run && run=1
-    find_vault
-    [ -n "$run" ] || [ -f "$d/scout-config.yaml" ] || verdict 0
-    "$@" && verdict 0
+    if [ -n "$run" ]; then
+        "$@" && verdict 0
+    elif read_payload; then
+        may_be_in_a_vault || verdict 0
+        printf '%s' "$p" | "$@" && verdict 0
+    fi
     if [ -n "$run" ]; then
         echo "[scout:outbound-gate] Scout's outbound privacy check could not run, so this call is blocked in a scheduled run. Put the content in the daily file or the owner's Telegram chat instead, and say so in the run notes." >&2
         verdict 2
@@ -398,29 +556,30 @@ kb-write-gate)
     verdict 2
     ;;
 
-# PostToolUse, Read. Labels a KB note in a run or a vault session; a note it cannot label is private.
+# PostToolUse, Read. Labels a KB note in a run or a vault session (by the payload's cwd); a note it
+# cannot label is private.
 kb-read-label)
     if read_payload; then
         case "$p" in *knowledge-base* | *knowledge_base* | *action-items/context*) ;; *) verdict 0 ;; esac
     else
         p=
     fi
-    run=
-    is_run && run=1
-    find_vault
-    [ -n "$run" ] || [ -f "$d/scout-config.yaml" ] || verdict 0
+    is_run || may_be_in_a_vault || verdict 0
     printf '%s' "$p" | "$@" && verdict 0
     printf '%s\n' '{"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "[scout:kb-label] Scout could not label the file just read, so treat it as [private]: its content must not reach any shared surface (Slack, a connector write or query, a web query, drafts/, a back-port)."}}'
     verdict 0
     ;;
 
-# PostToolUse, the shared-notes tools. Records what the answer showed, in a run or a vault session.
+# PostToolUse, the shared-notes tools. Records what the answer showed, in a run or a vault session
+# (by the payload's cwd).
 shared-read-record)
-    run=
-    is_run && run=1
-    find_vault
-    [ -n "$run" ] || [ -f "$d/scout-config.yaml" ] || verdict 0
-    "$@" && verdict 0
+    if is_run; then
+        "$@" && verdict 0
+    else
+        read_payload || p=
+        may_be_in_a_vault || verdict 0
+        printf '%s' "$p" | "$@" && verdict 0
+    fi
     printf '%s\n' '{"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "[scout:shared-read] Scout could not record this answer, so check-outbound will not recognise it. Notes shared with you are private to you: keep their path, title and text off every shared surface (Slack, a connector write or query, a web query, drafts/)."}}'
     verdict 0
     ;;
