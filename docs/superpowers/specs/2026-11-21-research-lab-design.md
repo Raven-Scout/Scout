@@ -223,6 +223,7 @@ planned: 2026-11-21T01:11
 not_before: 2026-11-21T13:00
 cost_cap_usd: 1.00
 data: [sampled pages 2026-10-01..2026-11-20]
+# optional, §6.4: timeout_hours, models, disk_budget_bytes
 ---
 ## Hypothesis
 ## Method
@@ -305,7 +306,8 @@ proposed ──approve──▶ active ◀──resume── paused
   - writing to connectors or external systems
   - editing any other vault file
   - changing Scout's own instructions, config or code
-  - downloading and executing third-party code
+  - downloading or executing third-party code (model weights fetched owner-side under §6.4 are
+    data, not code, and never reach the script by download)
   - pulling private material into web or connector queries
 - **Enforced for scripts, not only instructed** (Jordan, 2026-11-21). An experiment's scripts run
   only through `scoutctl lab experiment run <thread> <E-id> -- <cmd>`, which starts them inside a
@@ -334,6 +336,117 @@ proposed ──approve──▶ active ◀──resume── paused
   research findings log, and the Changes map once that is live), not into a Scout edit.
 - **The result is written even when it is negative or inconclusive.** "Showed nothing" is a
   result, scoped by method and date as the research brain already requires for negatives.
+
+### 6.4 ML experiments: long runs, model weights, the GPU and disk
+
+Added 2026-11-25. The owner's interpretability work trains and probes small models with PyTorch
+on the Mac's GPU. Four limits in §6.3 and §14a stopped that: a 540 s run, no way to get weights,
+no GPU, and 512 MiB of disk. Jordan decided each one (2026-11-23):
+
+| Limit | Decision |
+|---|---|
+| An experiment must finish within one run (540 s) | **Detached runs**: a run starts it, a later run collects it |
+| No network, so no model weights | **An owner-side weights cache**: fetched outside the sandbox, read-only to scripts |
+| The GPU isn't usable in the sandbox | **Allow MPS**: open only what PyTorch's Metal backend needs, proven by a kernel test |
+| 512 MiB per experiment | **A per-plan byte budget**, capped by the owner, with a free-disk floor |
+
+Everything else in §6.3 stays: plan, then run, after the notice; the veto; the cost cap; writes
+only in the experiment's folder; no network for the script but the meter; and the kernel, not
+the instructions, holding the script to it.
+
+All new limits are the owner's, in the run broker's `config.json` `lab` block, beside
+`experiments_enabled` (§14a). A run can't write them. The engine defaults keep a fresh install
+where it is today: GPU off, no weights fetched, no detached runs, 512 MiB. The defaults below
+marked "Jordan's" are the values for the maintainer's own config.
+
+**Detached runs.**
+- `scoutctl lab experiment run <slug> <EID> --detach -- <cmd>` makes the same broker checks as an
+  attached run: the owner's switch, the per-run allowance, the notice, the veto, the commit and
+  the argv. Then the broker starts a **supervisor** outside every sandbox, in a session of its own,
+  and returns once the supervisor has written its state record. It doesn't wait for the script:
+  a weights fetch may come first (below), and a run can't wait more than 10 minutes. The status
+  line is `experiment started: detached`. A gate check that fails later is the experiment's
+  outcome, `not run`, read by the next collect. The experiment stays `running` and the run goes on with its
+  other work.
+- The supervisor does what the attached runner does today: the profile, the gate and its kernel
+  checks, the meter, the process, byte and file limits, the kill sweep and the run log. Its
+  deadline is the plan's `timeout_hours`, clamped to the owner's `lab.detached_max_hours`
+  (engine default 0, meaning off; Jordan's 12).
+- It writes a state record in the owner folder (`lab-runs/<vault hash>-<slug>-<EID>.json`):
+  started, deadline and its pid; the sweep's probe path once the script's gate opens; then the
+  outcome. A run can't write it.
+- **Collecting.** A later run calls `scoutctl lab experiment collect <slug> <EID>`, which asks
+  the broker for the record and ends with one status line:
+  - `experiment ran: exit <n>` → the run finishes the experiment, as after an attached run;
+  - `experiment running: <elapsed> of <deadline>` → leave it, and say so in the wrap;
+  - `experiment not run: <reason>` → the supervisor is gone without an outcome (a restart, a
+    kill). The collect first sweeps that run's sandbox, using the probe path in the record, so
+    nothing the script started outlives it. The run then abandons the experiment with the reason.
+- **One at a time.** At most `lab.max_detached` (engine default 0; Jordan's 1) run at once per
+  vault. A detached start counts toward the run's `experiments_per_run`.
+- **The owner can stop one.** A veto of a `running` experiment stops it: the supervisor checks
+  the owner's veto store at each poll and kills the run. `scoutctl lab experiment stop` does the
+  same without vetoing. Both record `stopped by the owner` as the outcome.
+- **Sleep and restarts.** The deadline is wall-clock time, so a Mac that sleeps uses up the
+  experiment's time. A restart or logout ends the supervisor, and the next collect reports it.
+- Short experiments still run attached, within `--timeout 540`.
+
+**The weights cache.**
+- **The plan names the weights.** An experiment note's frontmatter may list
+  `models: [{repo: <owner>/<name>, revision: <40-hex commit>}]`. The revision must be a full
+  commit hash, so the weights that run are the ones the owner could see during the notice.
+- **Fetching is owner-side and happens when the experiment starts.** The supervisor fetches
+  missing weights before it opens the gate, outside any sandbox, from the Hugging Face Hub only.
+  That is why an experiment that names models must run detached. The fetch:
+  - takes only files with an allowlisted suffix: `.safetensors`, `.json`, `.txt`, `.model`,
+    `.tiktoken`. Never `.py`, `.bin`, `.pt`, `.pth`, `.pkl` or `.ckpt`: pickled weights run code
+    when loaded. A repo that has no safetensors weights is refused, and so is one whose config
+    asks for `trust_remote_code`;
+  - uses the owner's Hugging Face login when one exists. The script never sees that token. Gated
+    models need the owner to accept their licence on the Hub first. A refused fetch ends the
+    experiment `not run`, with the reason;
+  - checks the free disk first (below) and refuses when the files would cross the floor.
+- **The cache** is a folder in the owner's cache (`~/Library/Caches/Scout/lab-weights/<repo>/<revision>/`),
+  capped at `lab.weights_max_bytes` (engine default 0, meaning no fetching; Jordan's 40 GiB).
+  When full it drops the least recently used revision that no `planned` or `running` experiment
+  names; if that isn't enough, the fetch is refused.
+- **Scripts read it, never write it.** The profile allows the cache folder back to read, and the
+  script gets `$SCOUT_LAB_WEIGHTS_DIR`. Writes there stay denied, as they are everywhere outside
+  the experiment's folder.
+- **The record.** The run log lists each model's repo, revision and every file's sha256, and the
+  Result cites them.
+- **The Python environment is the owner's.** The Lab installs no packages. The owner names an
+  interpreter in `lab.python` (a venv with PyTorch, made once by hand), and `python3` in an
+  experiment's argv means that interpreter when it is set. Its folder is allowed back to read.
+
+**The GPU.**
+- When the owner sets `lab.gpu: true` (engine default false; Jordan's true), the profile adds the
+  rules PyTorch's MPS backend needs, and no others. The builder finds them by running a fixed
+  probe under the profile and adding one rule at a time: a tensor on `mps`, a matmul and a
+  synchronize. Each rule is recorded in §14b with the reason it is needed. Where Metal wants a
+  cache folder, it is pointed into the experiment's scratch dir rather than opening a shared one.
+- The existing kernel tests (a write outside the folder, a direct connection, a read of a private
+  file) must still be refused with the GPU rules on.
+- **Memory.** On Apple silicon the GPU shares the Mac's memory, and the sandbox has no memory
+  limit today. The supervisor reads each process's physical footprint at every poll (it includes
+  GPU allocations) and kills the run past `lab.max_memory_bytes`. The default is half the Mac's
+  memory (my call).
+
+**Disk.**
+- **A per-plan budget.** An experiment note may set `disk_budget_bytes`. The broker clamps it to
+  the owner's `lab.max_total_bytes` (engine default 512 MiB; Jordan's 10 GiB). With none set, the
+  budget is 512 MiB. Bytes count as they do today: the folder, the scratch dir and unlinked open
+  files.
+- **A free-disk floor.** An experiment doesn't start, and a fetch doesn't begin, unless the
+  vault's volume would still have `lab.disk_free_floor_bytes` free after the budget (or the
+  fetch) is spent. The engine default is 15 GB (my call), and the reply is
+  `experiment not run: free disk would fall below the floor`. While running, the supervisor kills
+  the run if free space drops below the floor, whatever caused the drop.
+- **Checkpoints never go into git.** Scripts write large files into `checkpoints/` in their
+  folder. The vault's `.gitignore` excludes `knowledge-base/lab/*/experiments/*/checkpoints/`,
+  and the broker's commit verb refuses any file over 10 MiB under `knowledge-base/lab/`. The
+  Result lists the checkpoints by path, size and sha256. Checkpoints stay on disk until the owner
+  deletes them; the research wrap reports how many bytes they hold.
 
 ## 7. Research run changes (engine: `plugin/phases/research/`)
 
@@ -537,9 +650,10 @@ Each step is its own PR, in this order:
    experiment sandbox profile behind `scoutctl lab experiment run` and the metered `call`
    wrapper, with tests showing that a write outside the folder, a direct network connection and
    an over-cap call are each refused. Tests run on fixture threads.
-2. **The research brain.** Rewrite `research-targets.md` and adjust `knowledge-integration.md`
-   and `commit-notify.md` for timeline entries, steers, experiments and proposals; then
-   `_assemble` verification.
+2. **The research brain.** First the §6.4 engine work: detached runs, the weights cache, the GPU
+   rules and the disk budget, each with kernel tests. Then rewrite `research-targets.md` and
+   adjust `knowledge-integration.md` and `commit-notify.md` for timeline entries, steers,
+   experiments (attached and detached) and proposals; then `_assemble` verification.
 3. **The app's Lab tab.** List, thread page, comments, owner verbs through `scoutctl`, badge.
    Remove the Research per-file tab.
 4. **Migration.** `scout-update` step plus the one-time grouping run.
@@ -559,6 +673,24 @@ By Jordan (2026-11-21):
 - Experiments never touch anything outside Scout.
 - That limit is **enforced for experiment scripts by an OS sandbox**, not only by instructions.
 - **Approach A**: markdown thread folders in the KB.
+
+By Jordan (2026-11-23), for ML experiments (§6.4):
+
+- **Detached runs** for experiments longer than one run allows.
+- **An owner-side weights cache**, fetched outside the sandbox and read-only to scripts.
+- **Allow MPS**, with only the access PyTorch's Metal backend needs.
+- **A per-plan byte budget** under an owner maximum, with a free-disk floor.
+
+My calls in §6.4 (flagged for review):
+
+- weights pinned to a full commit hash, safetensors only, Hugging Face Hub only
+- an experiment that names models must run detached, because the fetch happens at start
+- the owner's Python environment named in `lab.python`, made by hand; the Lab installs nothing
+- a memory limit (half the Mac's memory by default), because the GPU shares it
+- a 15 GB free-disk floor, a 40 GiB weights cache, at most 1 detached run at a time, 12 h at most
+- checkpoints in `checkpoints/`, never committed; a 10 MiB per-file commit limit under the lab
+- a veto of a running experiment stops it
+- engine defaults leave all four off, so only an owner's config turns them on
 
 My calls (flagged for review):
 
@@ -603,6 +735,11 @@ does.
   problems, which the app shows as "doesn't match the lab format" (§9). The JSON is a contract
   with canonical fixtures, like the changes map's.
 
+## 14b. The GPU rules (filled in while building §6.4)
+
+Each rule the MPS probe needed, the operation and path it opens, and why. Empty until the
+builder runs the probe; a rule not listed here is not in the profile.
+
 ## 14. Left to the builder
 
 - Exact `scoutctl lab` subcommand and flag names, and the JSON shape of the `lab`
@@ -613,3 +750,6 @@ does.
   wrapper.
 - Visual details of the Lab view within the existing design system: decide in the running app,
   not from mockups.
+- §6.4: how the weights fetch talks to the Hub. Plain HTTPS against its documented file API is
+  preferred to adding `huggingface_hub` as an engine dependency.
+- §6.4: how the supervisor reads a process's physical footprint (`proc_pid_rusage` is one way).
