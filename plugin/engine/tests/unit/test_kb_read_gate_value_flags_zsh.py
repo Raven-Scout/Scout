@@ -23,6 +23,7 @@ import pytest
 
 from scout.hooks import kb_read_gate as gate
 from scout.kb.raw_read import listed_roots
+from tests.integration.test_kb_read_gate_zsh import OPTIONS
 from tests.unit.test_hooks_kb_read_gate import RUN, _denied, _payload
 
 MARK = "kb-only-line"  # appears only in the KB notes, or in what a KB script prints
@@ -59,9 +60,8 @@ def _zsh(home: Path, command: str) -> str | None:
     """What ``command`` prints under zsh from the vault root; None when zsh or the tool isn't installed."""
     if shutil.which("zsh") is None or shutil.which(command.split()[0]) is None:
         return None
-    res = subprocess.run(
-        ["zsh", "-f", "-c", command],
-        cwd=home / "Vault",
+    res = subprocess.run(  # the run's shell: zsh with the options Claude Code evals each Bash call under
+        ["zsh", "-f", "-c", f'{OPTIONS}; cd "$1" && eval "$2"', "zsh", str(home / "Vault"), command],
         env={"HOME": str(home), "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"},
         capture_output=True,
         text=True,
@@ -74,6 +74,9 @@ def _zsh(home: Path, command: str) -> str | None:
     "command",
     [
         "grep -eTODO k*/a.md",
+        "grep -rnA3 TODO",  # #791 review: grep's recursion inside a cluster
+        "grep -rC2 TODO",
+        "grep -r3 TODO .",
         "grep -nex k*/a.md",
         "sed -e1p k*/a.md",
         "sed -n -e'1,20p' k*/a.md",

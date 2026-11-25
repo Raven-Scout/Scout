@@ -75,8 +75,6 @@ _KB_SOURCE = re.compile(
     r"(?:knowledge-base|knowledge_base|action-items/context)"
     r"|\bscoutctl\s+kb\s+(?:files|search|resolve|name-lookup|delta|structure|query|related|traverse|path|stat)\b"
 )
-# A recursive read: what it reads under a folder it doesn't name.
-_RECURSIVE_FLAG = re.compile(r"^-(?:[A-Za-z]*[rR][A-Za-z]*|-recursive|-dereference-recursive|d=?recurse)$")
 # knowledge-base/ontology/schema.yaml and parser.py are tooling, not notes: reading them is fine.
 ONTOLOGY_TOOLING = re.compile(r"(?:^|/)(?:knowledge-base|knowledge_base)/ontology/(?:schema\.ya?ml|parser\.py)$")
 WHOLE_VAULT_GLOBS = {"*", "**", "**/*", "*.md", "**/*.md", "**/*.*"}
@@ -264,7 +262,8 @@ _ACK_VALUES = {"-A", "-B", "-C", "-g", "-m", "-t", "-T", "--after-context", "--b
                "--ignore-dir", "--ignore-file", "--match", "--max-count", "--output", "--pager", "--type",
                "--type-add", "--type-del", "--type-set", "--and", "--or", "--not", "--range-start", "--range-end",
                "--files-from"}  # fmt: skip
-_UGREP_VALUES = _GREP_VALUES | {"-g", "--glob", "-t", "-O", "-M", "-N", "--and", "--andnot", "--not"}
+_UGREP_VALUES = _GREP_VALUES | {"-g", "--glob", "-t", "-O", "-M", "-N", "-J", "-K", "--and", "--andnot", "--not",
+                                 "--depth", "--jobs", "--range"}  # fmt: skip
 _FD_VALUES = {"-d", "-e", "-E", "-t", "-S", "-o", "-j", "-c", "-C", "--max-depth", "--min-depth",
               "--exact-depth", "--extension", "--exclude", "--type", "--size", "--changed-within",
               "--changed-before", "--newer", "--older", "--changed-after", "--change-newer-than",
@@ -405,10 +404,7 @@ def reads_folders(name: str, args: list[str]) -> bool:
     if name in _FOLDER_READERS:
         return True
     if name in ("grep", "egrep", "fgrep"):
-        pairs = zip(args, [*args[1:], ""], strict=True)
-        return any(_RECURSIVE_FLAG.match(a) for a in args) or any(
-            a == "--directories=recurse" or (a in ("-d", "--directories") and b == "recurse") for a, b in pairs
-        )
+        return _grep_recursive(name, args)
     return False
 
 
@@ -617,30 +613,25 @@ def _recursive(name: str, args: list[str]) -> _Recursive | None:
     flags, plain = _split_args(_operands(name, args) if name != "find" else args)
     filters: list[str] = []
     if name in ("grep", "egrep", "fgrep", "ugrep"):
-        recursive = any(_RECURSIVE_FLAG.match(f) for f in flags) or any(
-            a in ("-d", "--directories") and i + 1 < len(args) and args[i + 1] == "recurse" for i, a in enumerate(args)
-        )
-        if name == "ugrep":  # ugrep: `-r` in a cluster (`-rO md`), and `-3` / `--depth=3` recurse too
-            opts = [f for f, _v in _options(name, args)]
-            recursive = recursive or any(f in ("-r", "-R", "--depth") or re.fullmatch(r"-\d", f) for f in opts)
-        if not recursive:
+        if not _grep_recursive(name, args):
             return None
         pattern_given = _program_given(name, args)
         roots = plain if pattern_given else plain[1:]
         filters = [a.split("=", 1)[1] for a in args if a.startswith("--include=")] + _flag_values(args, {"--include"})
         types: list[str] = []
-        if name == "ugrep":  # ugrep also filters with `-g GLOBS` (`!` negating), `-O EXTS` and `-t TYPES`
-            globs = [g for v in _values(name, args, {"-g", "--glob"}) for g in _split_list(v)]
-            filters += [g for g in globs if not g.startswith("!")]
-            filters += ["*." + e.lstrip(".") for v in _values(name, args, {"-O"}) for e in _split_list(v)]
-            types = [t for v in _values(name, args, {"-t"}) for t in _split_list(v)]
-        return _either_filter(_Recursive(roots, True, None, _exclusions(args)), filters, types)
+        if name == "ugrep":  # ugrep also filters with `-g GLOBS`, `-O EXTS` and `-t TYPES`
+            filters += _ugrep_includes(name, args, {"-g", "--glob"})
+            filters += ["*." + e.lstrip(".") for e in _ugrep_includes(name, args, {"-O"})]
+            types = _ugrep_includes(name, args, {"-t"})
+        return _either_filter(_Recursive(roots, True, None, _exclusions(args)), filters, types, prefix=name == "ugrep")
     if name in ("ag", "ack"):  # recursive by default; the first positional is the pattern
         lists = "-g" in args or (name == "ack" and "-f" in args)  # file names only, no pattern
         pattern_given = name == "ack" and any(a == "--match" or a.startswith("--match=") for a in args)
         rec = _Recursive(plain if lists or pattern_given else plain[1:], not lists)
         if name == "ack" and not any(f in ("--type-set", "--type-add") for f, _v in _options(name, args)):
-            return _either_filter(rec, [], _values(name, args, {"-t", "--type"}))  # `-T` excludes: no bound
+            # `-T TYPE` and `--type=noTYPE` exclude a type: they widen the search, never bound it.
+            types = [t for t in _values(name, args, {"-t", "--type"}) if not t.lower().startswith("no")]
+            return _either_filter(rec, [], types)
         return rec
     if name == "fd":  # `fd [pattern] [path...]`: names, or contents when it runs a command on them
         paths = plain[1:] + _values(name, args, {"--search-path"})
@@ -693,11 +684,26 @@ def _fd_without_exec(args: list[str]) -> tuple[list[str], bool]:
     for a in args:
         if skipping:
             skipping = a not in (";", "\\;")
-        elif a in _FD_EXEC or a.startswith(("--exec=", "--exec-batch=")):
+        elif _fd_exec_starts(a):
             runs = skipping = True
         else:
             out.append(a)
     return out, runs
+
+
+def _fd_exec_starts(word: str) -> bool:
+    """``word`` starts fd's exec command: ``-x``, ``--exec=cat``, or a cluster reaching ``x``/``X`` before
+    any flag that takes a value (``-Hx``, ``-xcat``, ``-x=cat``, ``-HX``; ``-ex`` is ``-e x``)."""
+    if word in _FD_EXEC or word.startswith(("--exec=", "--exec-batch=")):
+        return True
+    if not word.startswith("-") or word.startswith("--"):
+        return False
+    for ch in word[1:]:
+        if ch in "xX":
+            return True
+        if not ch.isalnum() or "-" + ch in _FD_VALUES:
+            return False
+    return False
 
 
 def _kb_filter(glob: str) -> bool:
@@ -705,14 +711,41 @@ def _kb_filter(glob: str) -> bool:
     return _names_kb(glob) or glob.strip("\"'") in WHOLE_VAULT_GLOBS or _may_match_kb(glob)
 
 
-def _either_filter(rec: _Recursive, filters: list[str], types: list[str]) -> _Recursive | None:
+def _either_filter(rec: _Recursive, filters: list[str], types: list[str], prefix: bool = False) -> _Recursive | None:
     """For ugrep and ack, where a file passes if it matches any one of the filters (a glob, an
-    extension or a ``-t`` type): None when there are filters and none of them can match a KB file."""
+    extension or a ``-t`` type): None when there are filters and none of them can match a KB file.
+    ugrep takes a type by its first letters (``-t mark`` is markdown): ``prefix`` matches that way."""
     if not filters and not types:
         return rec
-    if any(_kb_filter(f) for f in filters) or any(t.lower().rstrip("+") in _KB_TOOL_TYPES for t in types):
+
+    def kb_type(t: str) -> bool:
+        t = t.lower().rstrip("+")
+        return any(k.startswith(t) for k in _KB_TOOL_TYPES) if prefix else t in _KB_TOOL_TYPES
+
+    if any(_kb_filter(f) for f in filters) or any(kb_type(t) for t in types):
         return rec
     return None
+
+
+def _ugrep_includes(name: str, args: list[str], flags: set[str]) -> list[str]:
+    """The entries of ugrep's comma-separated ``flags`` lists that include files. An entry that starts
+    with ``!`` or ``^`` excludes instead (``-O '^py'``, ``-g '^*.py'``), so it never bounds a search."""
+    entries = [e for v in _values(name, args, flags) for e in _split_list(v)]
+    return [e for e in entries if not e.startswith(("!", "^"))]
+
+
+_GREP_RECURSE = {"-r", "-R", "--recursive", "--dereference-recursive"}
+
+
+def _grep_recursive(name: str, args: list[str]) -> bool:
+    """grep's recursion, read with :func:`_scan` so a cluster counts (``-rnA3``, ``-rC2``, ``-r3``):
+    ``-r``/``-R``, ``-d recurse``; for ugrep also ``-NUM`` and ``--depth``."""
+    for flag, value in _options(name, args):
+        if flag in _GREP_RECURSE or (flag in ("-d", "--directories") and value == "recurse"):
+            return True
+        if name == "ugrep" and (flag == "--depth" or re.fullmatch(r"-\d", flag)):
+            return True
+    return False
 
 
 def _filtered(rec: _Recursive, filters: list[str], types: list[str] | None = None) -> _Recursive | None:

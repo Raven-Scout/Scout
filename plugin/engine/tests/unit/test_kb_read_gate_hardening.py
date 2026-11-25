@@ -873,3 +873,55 @@ def test_the_shell_sends_search_tool_aliases_to_python(vault, tmp_path, command:
     payload = _payload("Bash", {"command": command}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
     assert res.returncode == 2
+
+
+# ----- #791 review: holes in the new ugrep/ack/fd parsing, and grep clusters -----------------------
+REVIEW_MUST_DENY = {
+    # 1. ugrep: a `!` or `^` entry excludes, so it widens the search; a type is matched by its first letters
+    "ugrep exclusions": [
+        "ugrep -r -g '^*.py' TODO",
+        "ugrep -r -g '!*.py' TODO",
+        "ugrep -r -O '^py' TODO",
+        "ugrep -r -O '!py' TODO",
+        "ugrep -r -t '^python' TODO",
+        "ugrep -r -t mark TODO",
+        "ugrep -r -t py,mark TODO",
+    ],
+    # 2. ack: `no` + a type excludes it
+    "ack no-type": ["ack --type=nopython TODO", "ack -t nopython TODO", "ack --type nopython TODO"],
+    # 3. ugrep value flags
+    "ugrep values": ["ugrep -r -K 1 TODO", "ugrep -r -J 4 TODO", "ugrep --depth 5 TODO", "ugrep -r --range 1 TODO"],
+    # 5. grep's recursion inside a cluster (on main too)
+    "grep clusters": ["grep -rnA3 TODO", "grep -rC2 TODO", "grep -r3 TODO .", "egrep -inr TODO", "grep -nRe TODO"],
+}
+
+
+@pytest.mark.parametrize("command", [c for rows in REVIEW_MUST_DENY.values() for c in rows])
+def test_review_791_holes_are_denied(command: str) -> None:
+    assert judged(command)
+    assert judged(command, cwd="/home/alex")
+
+
+# 4. fd's exec flag in a cluster or attached (clap): from action-items/ the command reads context/
+@pytest.mark.parametrize("command", ["fd -Hx cat", "fd -xcat", "fd -x=cat", "fd -HX cat", "fd . -IHx cat {}"])
+def test_fd_exec_in_a_cluster_is_a_content_read(command: str) -> None:
+    assert judged(command, cwd=f"{VAULT}/action-items")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ugrep -r -t python TODO",  # a type filter to code still bounds the search
+        "ugrep -r -O py,'^sh' TODO",  # an include beside an exclude: the include bounds it
+        "ugrep -r -g '*.py,!*.md' TODO",
+        "ack -t python TODO",
+        "ugrep -r -K 1 TODO scripts",
+        "ugrep --depth 5 TODO scripts",
+        "grep -rnA3 TODO scripts",
+        "grep -ne -r docs/a.md",  # `-e` takes `-r` as the pattern: not recursive
+        "fd -ex people scripts",  # `-e x`, not exec
+    ],
+)
+def test_review_791_neighbours_are_allowed(command: str) -> None:
+    assert not judged(command)
+    assert not judged("fd -Hex cat scripts", cwd=f"{VAULT}/action-items")

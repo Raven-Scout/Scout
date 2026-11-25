@@ -5,5 +5,9 @@
   - fd always counts as a lister when it feeds `xargs`. So do ag, ack and ugrep when they print file paths (`ag -g`, `ack -f`, `ugrep -l`). For example, `fd . | xargs cat` run from `action-items/` reads `context/`.
   - The file a flag opens counts as read: `grep -f`/`--file`, `sed -f`, `awk -f`, `jq --from-file` and `ack --files-from`, so `grep -f k*/note.md docs/a.md` is denied. A value attached to `-e` (`grep -eTODO k*/…`, `sed -n -e'1,20p' k*/…`) is read as the pattern, so the KB file after it is judged.
   - The gate's operand reader (`read_operands`) and its recursive-read check now share this one parser, so they agree on what a value flag takes.
+  - ugrep's filters read the way ugrep reads them. An entry starting with `!` or `^` excludes (`-O '^py'`, `-g '^*.py'`), so it never narrows the search. A `-t` type matches by its first letters (`-t mark` is markdown). `-J`, `-K`, `--range` and `--depth N` take a value.
+  - ack's `--type=noTYPE` excludes a type, so it doesn't narrow the search.
+  - fd's exec flag counts inside a cluster or attached: `fd -Hx cat`, `fd -xcat`, `fd -x=cat`.
+  - grep's `-r` counts inside a cluster with a count, as in `grep -rnA3 TODO` and `grep -r3 TODO .`.
   - A filter to code is still allowed: `ack -t python`, `ugrep -rO py`.
   - These no longer count as KB reads: `ag -V`, `fd -V`, `fd -h`, `ag --list-file-types`, `ack --help-types`, `fd -epy x` and `ag --context 3 x`.
