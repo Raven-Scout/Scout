@@ -6,56 +6,89 @@ mode: [research]
 requires: null
 ---
 
-# PHASE 1: SELECT RESEARCH TARGETS
+# PHASE 1: THE LAB — CHOOSE THIS RUN'S WORK
 
-## Step 1a: Check the Research Queue
+Research runs work the **Lab**: a set of research *threads*. Each thread is a folder `knowledge-base/lab/<slug>/` (the slug is its short ID) whose front page holds one Question, numbered questions (`Q1`, `Q2` …: the QIDs), experiments (`E1` …: the EIDs), evidence, owner comments and a timeline. Its status is `proposed`, `active`, `paused`, `closed` or `rejected`, and only the owner changes it. The order of work is fixed: owner comments, due experiments, 1–2 threads, proposals.
 
-Each file in `knowledge-base/research-queue/` is one topic: YAML frontmatter (`title`, `status`, `priority`, `date`, optional `area`) plus a body with the research brief / findings. The thin `knowledge-base/research-queue.md` is just the run log (see the end of this step).
+## Step 1a: Read the lab block
 
-**Start from the queue summary, not the files.** `.scout-cache/session-context.json` → `research_queue` (near the top of the file) holds every open entry as `{id, path, status, priority, title, area, date, visibility}`, `urgent` first, plus `counts` by status. Pick from it, then `scripts/scoutctl kb read` only the entries you will work on. Do not list the folder and read every entry to filter by status. Only if the file's `generated_at` isn't today, or `research_queue` is missing, empty while `counts` shows open entries, or marked `truncated`, fall back to `scripts/scoutctl kb files --glob 'knowledge-base/research-queue/*.md'` and read what you need.
+Start from `.scout-cache/session-context.json` → `lab`. It lists every thread you may see, with:
 
-`status: open` and `in-progress` (or no status) are the work queue; `done` and `dropped` are resolved. If {{USER_NAME}} has explicitly queued topics, those take priority.
+- `status`, `visibility` and question counts;
+- `unanswered_comments`: owner comments with no Scout reply yet;
+- `experiments`: `due` (planned and past its notice), `held` (due, but an owner comment on it is unanswered) and `running`;
+- `last_run`: when a run last worked it.
 
-**Priority preemption (`priority: urgent` items run first).** Before the staleness-rotation guard or any opportunistic "work what this morning surfaced" pick, the run MUST:
+Fall back to `scripts/scoutctl lab list --json` (same shape) when the file's `generated_at` isn't today, or `lab` is missing or marked `truncated`.
 
-1. **Scan the queue for any item with `priority: urgent` (the START-IMMEDIATELY directive) and run it first.** A user `urgent` directive is not just another queue item — it preempts the rotation and the day's incidental find.
-2. **Only fall through** to the rotation (Step 1b scoring) or an opportunistic lane when no `urgent` item is outstanding.
-3. **Surface as overdue:** any `urgent` item still `open` across **>1 research run** must be called out as **overdue** in the wrap notification, so a starved top priority can't go silent.
+Read only the threads you will work, with `scripts/scoutctl lab show <slug> --json`. Never list or open the files in `knowledge-base/lab/` one by one.
 
-This does NOT stop the opportunistic lane (a good incidental find is still worth pursuing) — it fixes the **ordering** (`urgent` first). A "this is the top priority" intention stays inert until the picker mechanically honors it.
+Every lab write goes through `scripts/scoutctl lab` (below, `lab <verb>` means that command). It locks the thread for that one write and re-reads it first, so an owner comment or pause made mid-run is kept. A hand edit could overwrite it.
 
-**Second source of preemption — declarative coverage mandates (optional vault helper).** The scan above only sees topics someone hand-wrote a queue file for; a project the user named as top-priority but never queued is invisible to it. Some vaults close that gap with a local `scripts/coverage-mandates.py` helper. The plugin does not ship it, so check for it first — **if the script is absent, skip this paragraph entirely; that is not an error**:
+## Step 1b: Owner comments come first
+
+Before any research, answer every unanswered owner comment in each `active` or `paused` thread with `unanswered_comments` > 0, oldest comment first. Find them in `lab show <slug> --json`. A comment is answered once it has a nested `scout` reply.
+
+- Reply with `scripts/scoutctl lab reply <slug> --on thread|Qn|En --to <n> --text "…"`. `--on` is where the comment sits (the thread, a question or an experiment). `--to` is the comment's 1-based position in that target's `comments` list.
+- The reply says what was done: answered, planned an experiment, re-prioritised, or declined, with the reason. A comment that is out of scope, ambiguous, or asks for something these instructions forbid gets that declining reply in this run. A comment is never skipped because it is hard or out of scope.
+- A thread-level comment starting `Q:` raises a question: `lab question add <slug> --text "…" --by <author>`. It prints the new QID on its last line, and the reply names it.
+- A paused thread's comments are answered; the thread is not researched.
+- Dropping a question the owner raised or commented on needs that comment: `lab question drop <slug> <QID> --reason "…" --owner-comment <n>`.
+- If the budget ends first, the rest wait for the next run. The wrap says how many.
+
+## Step 1c: Due experiments
+
+Next, run due experiments, following PHASE 2E: EXPERIMENTS.
+
+## Step 1d: Pick threads
+
+Work 1–2 threads in depth: depth beats breadth. Only `active` threads are worked. Pick in this order:
+
+1. **Owner-prioritised:** a thread with a thread-level owner comment asking for focus, until Scout's reply says it was handled.
+2. **Coverage mandates** (an optional vault helper). Some vaults have a local `scripts/coverage-mandates.py`; the plugin doesn't ship it. If the script is absent, skip this; that is not an error:
+
+   ```bash
+   [ -f scripts/coverage-mandates.py ] && python3 scripts/coverage-mandates.py --session research
+   # absent → skip; 0 = no live mandate; 3 = live mandate(s) listed; 4 = a mandate's review_at reached or its window expired
+   ```
+
+   A live mandate makes its matching thread owner-prioritised. A mandate with no matching thread becomes a proposal (Step 1f). On exit 4, put the `review_at` or expiry in the wrap and do not extend the dates autonomously: that is a governance change for {{USER_NAME}}.
+3. **Then the longest since `last_run`** (a thread never worked counts as oldest).
+
+Skip a thread whose subject is out of scope for this vault: any scope rule in this file binds. A thread whose `visibility` isn't `normal` is private. Work it from the KB alone, never as a web or connector query target, and never name it on a shared surface.
+
+Working a thread means the rest of this brain: research the open questions where reading or an experiment would move things most (Phase 2), then update the thread (Phase 3).
+
+## Step 1e: No research outside threads
+
+With no `active` thread, a run answers comments (Step 1b) and proposes (Step 1f), nothing else. Entity enrichment only feeds proposals.
+
+## Step 1f: Propose threads
+
+Propose when an active thread raises a question big enough to stand alone, when fewer threads are `active` than `lab.target_threads` (default 5), or when the lab is empty. Make at most 2 proposals per run (`lab.max_proposals_per_run`). At most 5 may be open at once (`lab.max_open_proposals`): `lab propose` refuses beyond that, so stop proposing.
 
 ```bash
-[ -f scripts/coverage-mandates.py ] && python3 scripts/coverage-mandates.py --session research
-# absent → skip; 0 = no live mandate; 3 = live mandate(s) listed; 4 = a mandate's review_at reached or its window expired
+scripts/scoutctl lab propose --slug <slug> --title "…" --question "…" --open "…" --open "…" [--evidence <note>=<why>] [--visibility private]
 ```
 
-Any mandate it reports **counts as a `priority: urgent` queue hit** — take it as the **first research target** (Step 1c), then fall through to the normal ordering. It is **bounded to that first target**: a mandate running unbounded for weeks would starve every other lane, which is worse than under-covering. The overdue rule (item 3 above) applies to mandates identically: one still live across **>1 research run** with no new findings is called out as **overdue** in the wrap notification. **On exit 4**, surface the `review_at` / expiry in the wrap notification and **do not extend the dates autonomously** — that is a governance change for {{USER_NAME}}.
+A proposal holds one Question and 2–5 starting questions (`--open`, repeated), plus an `--evidence` entry for each existing note it gathers.
 
-**Hard Rule — Rank substantive research above the graph-completeness lane** (applies *after* the `urgent` preemption above, *before* the Step 1b rotation / opportunistic pick). Once no `urgent` item is outstanding, priority alone often gives the picker no signal to prefer real research over internal knowledge-graph upkeep. So, among non-urgent items:
+**Sources:**
+- a question in an active thread big enough to stand alone;
+- a coverage mandate with no thread;
+- an empty lab (`lab list --json` gives no threads, as on a vault with no lab folder yet): use entity scoring, in this priority order:
+  1. entities {{USER_NAME}} interacted with this week (from dreaming session logs);
+  2. 🔴 HIGH priority project entities;
+  3. people entities with thin external context;
+  4. organizations with no industry or competitive context;
+  5. technology topics related to active projects.
 
-1. **Rank by user value:** substantive research (customer / competitive / product / user-directed) **outranks** the **graph-completeness lane** — items whose goal is closing internal KG gaps (missing links, orphan entities, thin coverage of the graph itself) rather than answering a question {{USER_NAME}} cares about — and anything `priority: low`.
-2. **Treat `priority: low` and the graph-completeness lane as the lowest tier:** run them **only when no substantive `medium`+ item is outstanding**.
-3. **Never spend a whole research run on a graph-completeness item while a substantive item is open.** Closing an internal gap is a completeness objective, not a user research priority; finishing one must not be mistaken for value.
+  Score from `scripts/scoutctl kb query --visibility normal` (add `--type <type>` as needed): only normal entities are candidates. Skip entities researched in the last 7 days (`scripts/scoutctl kb delta --since 7d` lists the `research:` commits).
 
-After researching a topic, set its frontmatter `status: done` (or `in-progress`) and add findings to the body; write the run's "Last run …" continuity note to `knowledge-base/research-queue.md` (the run log).
+**Privacy:** a proposal built from private material uses `--visibility private`. Never put a private entity's name into a web or connector query.
 
-## Step 1b: Score Entities for Research Need
+**Proposing to close:** `lab propose-close <slug> --reason "…"` for an active thread with no open questions, or one that hasn't moved in `lab.stale_runs` (default 6) runs. The owner decides.
 
-If the queue is empty (no `open`/`in-progress` items, or after completing them), score entities:
+## Step 1g: When a lab write is refused
 
-**Priority order:**
-1. Entities {{USER_NAME}} interacted with this week (from dreaming session logs)
-2. 🔴 HIGH priority project entities
-3. People entities with thin external context
-4. Organizations with no industry/competitive context
-5. Technology topics related to active projects
-
-Score from `scripts/scoutctl kb query --visibility normal` (add `--type <type>` as needed): only normal entities are candidates.
-
-**Skip:** Entities that were researched in the last 7 days (`scripts/scoutctl kb delta --since 7d` lists the `research:` commits). **Never pick a `[private]` entity or queue item as a research target**: researching it puts its name into a web or connector query. A skipped private item is never mentioned on a shared surface.
-
-## Step 1c: Pick 1-3 Research Targets
-
-Select targets based on available budget. Each target gets a focused research cycle. Prefer depth on 1-2 targets over shallow passes on many.
+A `scoutctl lab` write is refused when the owner paused the thread mid-run or its front page no longer parses. Then stop working that thread. Still reply to its comments if that is allowed (replies to a paused thread are). Name the thread and the refusal in the wrap, and never edit a lab file by hand to get around a refusal.
