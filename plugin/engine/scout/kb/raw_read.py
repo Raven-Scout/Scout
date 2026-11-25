@@ -300,8 +300,10 @@ SHADOWED = {"grep": "ugrep", "egrep": "ugrep", "fgrep": "ugrep", "find": "bfs"}
 def run_models(word: str, name: str, args: list[str]) -> list[tuple[str, list[str]]]:
     """The ways a run's shell may run ``word args`` (``name`` is :func:`_command_name` of ``word``), each as
     ``(model, args)``: the program itself, and for a bare ``grep``/``egrep``/``fgrep``/``find`` (``\\grep``
-    and a quoted name too: only a path skips a shell function) also the snapshot's ugrep or bfs."""
-    alt = SHADOWED.get(name)
+    and a quoted name too: only a path skips a shell function) also the snapshot's ugrep or bfs. A function is
+    found by its exact spelling, so ``GREP`` is the program a case-insensitive disk finds, BSD grep, and
+    ``name`` (folded) is that program."""
+    alt = SHADOWED.get(_unquoted(word))
     if alt is None or "/" in word:
         return [(name, args)]
     if alt == "ugrep":

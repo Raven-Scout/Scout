@@ -187,6 +187,9 @@ MUST_DENY = [
     ("action-items", "grep -l TODO $(ls)"),
     ("", "grep -l TODO $(ls -d k*)"),
     ("docs", "grep -l TODO $(find .. -maxdepth 1)"),
+    # `GREP` is no shell function (they are found as spelled): BSD grep, whose -r still reads the KB
+    ("", "GREP -r TODO ."),
+    ("", "GREP -rl x action-items/*"),
 ]
 
 # Ordinary searches: the gate leaves them alone, and no KB note shows.
@@ -226,6 +229,7 @@ ALLOWED = [
     ("docs", "grep -l TODO $(ls)"),
     ("", "grep -l TODO $(ls docs)"),
     ("", "grep -l TODO $(ls *.yaml)"),
+    ("", "GREP -l x action-items/*"),  # BSD grep: context/ is only "Is a directory"
 ]
 
 # By their path, grep and find are the BSD programs: these read no KB note, though the bare names would.
@@ -288,6 +292,9 @@ def test_run_models() -> None:
     assert raw_read.run_models("\\grep", "grep", ["x"]) == [("grep", ["x"]), ugrep]
     assert raw_read.run_models("egrep", "egrep", ["x"]) == [("egrep", ["x"]), ugrep]
     assert raw_read.run_models("/usr/bin/grep", "grep", ["x"]) == [("grep", ["x"])]
+    assert raw_read.run_models("GREP", "grep", ["x"]) == [("grep", ["x"])]  # no function by that spelling
+    assert raw_read.run_models("FIND", "find", ["."]) == [("find", ["."])]
+    assert raw_read.run_models("'grep'", "grep", ["x"]) == [("grep", ["x"]), ugrep]
     assert raw_read.run_models("find", "find", ["."]) == [("find", ["."]), ("bfs", ["."])]
     assert raw_read.run_models("/usr/bin/find", "find", ["."]) == [("find", ["."])]
     assert raw_read.run_models("cat", "cat", ["f"]) == [("cat", ["f"])]
