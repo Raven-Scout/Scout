@@ -1028,11 +1028,11 @@ def run_experiment(
     is the descriptors the script may hold open (the gate's ``ulimit -n``).
 
     ``max_total_bytes`` is the experiment's disk budget (the broker passes the plan's, clamped to the owner's
-    maximum). ``disk_free_floor_bytes`` (default 15 GB; 0 = none) is the free space the
-    volume must keep: a launch that would leave
-    less raises :class:`DiskFloorError`, and a run that sees less at a poll is killed (``over_disk_floor``).
-    ``max_memory_bytes`` is the processes' physical footprint together (0 = half of the Mac's memory); past it the
-    run is killed (``over_memory``).
+    maximum). ``disk_free_floor_bytes`` (default 15 GB; 0 = none) is the free space the volume must keep: a launch
+    that would leave less raises :class:`DiskFloorError`, and a run that sees less at a poll is killed
+    (``over_disk_floor``). ``max_memory_bytes`` is the processes' physical footprint together (0 = half of the
+    Mac's memory); past it the run is
+    killed (``over_memory``).
     """
     source = os.environ if env is None else env
     if not argv:

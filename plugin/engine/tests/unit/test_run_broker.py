@@ -167,12 +167,58 @@ def test_a_case_variant_of_a_large_lab_file_is_refused(vault: Path) -> None:
     assert "out.bin" in err.value.reason
 
 
-def test_a_large_lab_file_with_a_quote_in_its_name_is_still_found(vault: Path) -> None:
-    name = 'we"ird\\name.bin'
-    _lab_file(vault, f"{EXP}/{name}", BIG)
+def test_a_large_lab_file_with_a_newline_in_its_name_is_refused(vault: Path) -> None:
+    _lab_file(vault, f"{EXP}/nl\nx.bin", BIG)
     with pytest.raises(broker.Refused) as err:
         broker.validate_commit(_commit([EXP]), vault, _env())
-    assert name in err.value.reason
+    assert "nl\\nx.bin" in err.value.reason  # shown on one line, with the newline spelled out
+
+
+def test_a_large_lab_file_named_with_quotes_is_found(vault: Path) -> None:
+    _lab_file(vault, f'{EXP}/"w".bin', BIG)
+    with pytest.raises(broker.Refused) as err:
+        broker.validate_commit(_commit([EXP]), vault, _env())
+    assert '"w".bin' in err.value.reason
+
+
+def test_naming_a_missing_path_beside_a_large_lab_folder_is_still_refused(vault: Path) -> None:
+    """git-safe-commit drops a path that doesn't exist and adds the rest: the check can't skip on a missing one."""
+    _lab_file(vault, f"{EXP}/out.bin", BIG)
+    with pytest.raises(broker.Refused) as err:
+        broker.validate_commit(_commit([EXP, "missing.md"]), vault, _env())
+    assert f"{EXP}/out.bin" in err.value.reason
+
+
+def test_naming_an_ignored_path_beside_a_large_lab_folder_is_still_refused(vault: Path) -> None:
+    (vault / ".gitignore").write_text("ignored.md\n", encoding="utf-8")
+    (vault / "ignored.md").write_text("x\n", encoding="utf-8")
+    _lab_file(vault, f"{EXP}/out.bin", BIG)
+    with pytest.raises(broker.Refused) as err:
+        broker.validate_commit(_commit([EXP, "ignored.md"]), vault, _env())
+    assert f"{EXP}/out.bin" in err.value.reason
+
+
+def test_a_tracked_lab_file_that_grew_is_refused(vault: Path) -> None:
+    rel = f"{EXP}/out.bin"
+    _lab_file(vault, rel, 10)
+    env = {**os.environ, "GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@b.c", "GIT_COMMITTER_NAME": "a",
+           "GIT_COMMITTER_EMAIL": "a@b.c"}  # fmt: skip
+    subprocess.run(["git", "-C", str(vault), "add", "--", rel], check=True, env=env)
+    subprocess.run(["git", "-C", str(vault), "commit", "-qm", "x", "--no-verify"], check=True, env=env)
+    _lab_file(vault, rel, BIG)
+    with pytest.raises(broker.Refused):
+        broker.validate_commit(_commit([EXP]), vault, _env())
+
+
+def test_when_git_cannot_answer_the_commit_is_refused(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _lab_file(vault, f"{EXP}/out.md", 10)
+
+    def broken(*_a: Any, **_k: Any) -> Any:
+        raise OSError("no git")
+
+    monkeypatch.setattr(broker.subprocess, "run", broken)
+    with pytest.raises(broker.Refused, match="couldn't ask git"):
+        broker.validate_commit(_commit([EXP]), vault, _env())
 
 
 def test_a_large_lab_link_is_not_followed(vault: Path, tmp_path: Path) -> None:

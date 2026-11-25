@@ -415,46 +415,30 @@ LAB_COMMIT_MAX_FILE_BYTES = 10 * 1024 * 1024
 LAB_DIR_REL = "knowledge-base/lab"
 
 
-_GIT_ESCAPES = {b"a": b"\a", b"b": b"\b", b"f": b"\f", b"n": b"\n", b"r": b"\r", b"t": b"\t", b"v": b"\v"}
-_GIT_ESCAPE_RE = re.compile(rb"\\([0-7]{3}|.)", re.S)
-
-
-def _unquote_git_path(text: str) -> str:
-    """A path as ``git add --dry-run`` prints it: plain, or C-quoted (``"a\\"b"``) when it holds a quote, a backslash
-    or a control character."""
-    if not (len(text) >= 2 and text.startswith('"') and text.endswith('"')):
-        return text
-
-    def one(m: re.Match[bytes]) -> bytes:
-        code = m.group(1)
-        return bytes([int(code, 8) & 0xFF]) if len(code) == 3 else _GIT_ESCAPES.get(code, code)
-
-    raw = _GIT_ESCAPE_RE.sub(one, text[1:-1].encode("utf-8", "surrogateescape"))
-    return raw.decode("utf-8", "surrogateescape")
-
-
-def _staged_paths(vault: Path, named: Sequence[str], env: Mapping[str, str]) -> list[str] | None:
-    """The vault-relative files ``git add -- <named>`` would stage: git's own answer (``add --dry-run``, so every
-    ignore rule, nested .gitignore files included). None when git refuses (the real add would too, and stages
-    nothing); :class:`Refused` when git can't be asked at all."""
-    try:
-        done = subprocess.run(
-            ["git", "-C", str(vault), "-c", "core.quotePath=false", "add", "--dry-run", "--", *named],
-            env=commit_env(vault, env, None),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            errors="surrogateescape",
-            timeout=60,
-        )
-    except (OSError, subprocess.SubprocessError):
-        raise Refused(EXIT_REFUSED, "couldn't ask git what this commit would stage; not committed") from None
-    if done.returncode != 0:
-        return None
-    out = []
-    for line in done.stdout.splitlines():
-        if line.startswith("add '") and line.endswith("'"):
-            out.append(_unquote_git_path(line[5:-1]))
+def _staged_paths(vault: Path, named: Sequence[str], env: Mapping[str, str]) -> list[str]:
+    """The vault-relative files ``git add -- <named>`` would stage, NUL-separated so no file name can split or hide:
+    the untracked files git doesn't ignore (``ls-files --others --exclude-standard``, nested .gitignore files
+    included) and the tracked files that changed (``--modified``). Each name is the pathspec ``:(icase,literal)``
+    so a case variant matches on a case-insensitive volume, and a name that matches nothing lists nothing (exit 0).
+    Fails closed: any git failure is a :class:`Refused`."""
+    base = commit_env(vault, env, None)
+    base.pop("GIT_LITERAL_PATHSPECS", None)  # it turns every magic pathspec off, :(icase) included
+    specs = [f":(icase,literal){n}" for n in named]
+    out: list[str] = []
+    for flags in (("--others", "--exclude-standard"), ("--modified",)):
+        try:
+            done = subprocess.run(
+                ["git", "-C", str(vault), "-c", "core.quotePath=false", "ls-files", "-z", *flags, "--", *specs],
+                env=base,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError):
+            done = None
+        if done is None or done.returncode != 0:
+            raise Refused(EXIT_REFUSED, "couldn't ask git what this commit would stage; not committed")
+        out.extend(os.fsdecode(raw) for raw in done.stdout.split(b"\0") if raw)
     return out
 
 
@@ -468,9 +452,8 @@ def _refuse_large_lab_files(vault: Path, named: Sequence[str], env: Mapping[str,
     norms = [hook_paths._norm(n) for n in named]
     if not any(n == lab or n.startswith(lab + "/") or lab.startswith(n + "/") for n in norms):
         return  # nothing named is, holds or sits inside the lab folder
-    listed = _staged_paths(vault, named, env)
     vault_real = os.path.realpath(str(vault))
-    for rel in listed or []:
+    for rel in _staged_paths(vault, named, env):
         if not hook_paths._norm(rel).startswith(lab + "/"):
             continue
         try:
@@ -478,9 +461,10 @@ def _refuse_large_lab_files(vault: Path, named: Sequence[str], env: Mapping[str,
         except OSError:
             continue
         if stat.S_ISREG(st.st_mode) and st.st_size > LAB_COMMIT_MAX_FILE_BYTES:
+            shown = rel.encode("unicode_escape").decode("ascii") if not rel.isprintable() else rel
             raise Refused(
                 EXIT_REFUSED,
-                f"'{rel}' is {st.st_size} bytes, over the {LAB_COMMIT_MAX_FILE_BYTES // (1024 * 1024)} MiB a lab "
+                f"'{shown}' is {st.st_size} bytes, over the {LAB_COMMIT_MAX_FILE_BYTES // (1024 * 1024)} MiB a lab "
                 "file may be in a commit; put large outputs (weights, caches) under the experiment's checkpoints/ "
                 "folder, which is never committed",
             )
