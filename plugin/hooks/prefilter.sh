@@ -212,6 +212,15 @@ bash_pattern() {
     # -- Any `(`: zsh reads a group glued to a word as alternation, so `cat kn(o|)wledge-base/a.md` and
     #    `cat (a|b)(c|d)/x.md` name a note with no glob character in them.
     alt '\('
+    # -- A git call that picks its repository or top itself: `git --git-dir=~/V/.git --work-tree=/tmp/w -C
+    #    /tmp/w/a show HEAD:./context/x.md` reads a note from the vault's history without naming the KB.
+    alt '--git-dir|--work-tree|GIT_DIR|GIT_WORK_TREE'
+    #    And a git call whose paths cover the KB without naming it: one naming action-items/ (the folder
+    #    that holds context/: `git log -p -- action-items`), a pathspec `.`, `..`, `:/x` or `:(top)x`
+    #    from the vault, or `git archive` (everything below the folder it runs in).
+    alt 'git[^;&|]*action-items'
+    alt 'git[^;&|]* (\.\.?/?|:/[^ ;&|]*|:\([^ ;&|]*)( |\\"|"|$)'
+    alt 'git[^;&|]* archive'
 }
 
 # Sets $t to program $1 by absolute path: /usr/bin or /bin first, else the first in the (filtered,

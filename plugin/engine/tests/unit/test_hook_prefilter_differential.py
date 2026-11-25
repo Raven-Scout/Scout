@@ -25,6 +25,11 @@ rewrites need not spell the KB path it becomes. The pattern must be the old one 
 differ from the old command only by now reaching Python where the old one let it through, for a command those
 alternatives match. And a run's payload over ``MAX_PAYLOAD`` bytes is blocked before either stage (no corpus case
 is that long).
+
+The git-read change added four more alternatives at the end: any ``--git-dir``, ``--work-tree``, ``GIT_DIR`` or
+``GIT_WORK_TREE`` (a git call that picks its own repository or top), and a git call whose paths cover the KB without
+naming it (one naming action-items/, a ``.``/``..``/``:/x``/``:(top)x`` pathspec, ``git archive``). Every form
+``test_kb_read_gate_git.py`` must deny or record reaches Python (``GIT_FORMS``).
 """
 
 from __future__ import annotations
@@ -39,6 +44,9 @@ from pathlib import Path
 from typing import NamedTuple
 
 import pytest
+
+from tests.unit.test_kb_read_gate_git import MUST_DENY as GIT_MUST_DENY
+from tests.unit.test_kb_read_gate_git import UNRESOLVED_GIT
 
 ENGINE = Path(__file__).resolve().parents[2]
 PLUGIN = ENGINE.parent
@@ -77,6 +85,11 @@ EXPANSION_ALTERNATIVES = (
     r"(^|[^A-Za-z0-9_.-]|\\[nt])(xargs|parallel)([^A-Za-z0-9_.-]|$)",
     r"(cd|pushd|-C|--directory|--git-dir|--work-tree)[^;&|]*action-items",
     r"\(",
+    # a git call that picks its repository or top, or whose paths cover the KB without naming it
+    "--git-dir|--work-tree|GIT_DIR|GIT_WORK_TREE",
+    "git[^;&|]*action-items",
+    r'git[^;&|]* (\.\.?/?|:/[^ ;&|]*|:\([^ ;&|]*)( |\\"|"|$)',
+    "git[^;&|]* archive",
 )
 EXPANSION_PATTERN = "|".join(EXPANSION_ALTERNATIVES)
 # Rules prefilter.sh also applies ignoring letter case, to the command value as is and again with its quotes and
@@ -439,6 +452,27 @@ GATE_FORMS = (
     "cat x$$'\\' k*/a.md '",
 )
 
+# Every git read the Python gate denies or records (test_kb_read_gate_git.py), and a few more like them: git finds
+# the note through a folder (-C, a cd, --git-dir/--work-tree, GIT_DIR/GIT_WORK_TREE) or a path that covers it.
+GIT_FORMS = (
+    *GIT_MUST_DENY,
+    *UNRESOLVED_GIT,
+    "git log -p -- action-items",
+    "git log -p -- .",
+    "git log -p -- ./",
+    "git diff HEAD -- .",
+    "git -C docs log -p -- ..",
+    "git log -p -- ':(top)'",
+    "git grep x -- :/",
+    "git show HEAD:action-items/./context/x.md",
+    "git archive HEAD | tar x -C /tmp/out",
+    "git archive -o /tmp/v.tar HEAD",
+    "GIT_DIR=/tmp/v/.git git show HEAD:./x",
+    "git --work-tree=/tmp/w status -v",
+    "git -C action-items status",
+    "git add action-items/action-items-2026-11-23.md && git commit -m 'update'",
+)
+
 # Commands that read a KB note once the shell has expanded them, though their text spells no KB path (the
 # review's forms, and close variants). In a run every one must reach Python. All synthetic.
 EXPANSION_FORMS = (
@@ -481,6 +515,7 @@ EXPANSION_FORMS = (
     "cd action-items && cat context/x.md",
     "pushd action-items; cat context/x.md",
     "git -C action-items show HEAD:context/x.md",
+    *GIT_FORMS,
     # the same over two lines
     "true\ncat k*/a.md",
     "true\n~/Vault/kno",
@@ -504,6 +539,15 @@ NOT_EXPANSIONS = (
     "scripts/scoutctl kb search widgets",
     "cat notes/a.md",
     "ls action-items",
+    # ordinary git use in a run, which names no folder above the KB
+    "git add docs/a.md",
+    "git add docs/a.md && git commit -m 'update docs'",
+    "git diff --stat",
+    "git show --stat HEAD",
+    "git log -n 3 --format=%s",
+    "git diff HEAD -- docs/a.md",
+    "git show HEAD:docs/a.md",
+    "git log -p -3",
 )
 
 RUN = {"SCOUT_MODE": "briefing"}

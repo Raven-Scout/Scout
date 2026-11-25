@@ -50,7 +50,10 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from scout.kb.git_read import GitRead
 
 LOCK_NAME = ".scout-session.lock"
 RUN_MARKER = LOCK_NAME + ".run"
@@ -1195,6 +1198,8 @@ _PROTECT: Callable[[str, bool], str | None] | None = None
 _SECRET: Callable[[str], str | None] | None = None
 # And whether a reading command's file (scout.kb.raw_read's readers) is a KB note, by the path the shell hands it.
 _KB_READ: Callable[[str, str], str | None] | None = None
+# And what a git call reads (scout.kb.git_read): its tree paths and pathspecs, from the folder it runs in.
+_GIT_READ: Callable[[GitRead, str], str | None] | None = None
 # The forms that callback returns: a read of a KB note, and a read whose path the gate can't work out.
 KB_READ = "a knowledge-base read"
 UNRESOLVED_READ = "a read the gate can't resolve"
@@ -1586,6 +1591,104 @@ def _judge_read(word: str, where: str, how: str, oldpwd: str | None = None) -> s
             found = _KB_READ(_put_pwd(one, where, oldpwd), how)
             if found is not None:
                 return found
+    return None
+
+
+# The variables that choose a git call's repository and its top, when its options don't.
+_GIT_ENV = ("GIT_DIR", "GIT_WORK_TREE")
+
+
+def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | None:
+    """Ask _GIT_READ about a git call that prints file contents (scout.kb.git_read.parse), once for each folder
+    it can run in: the shell's (``cd``, ``env -C``), then each ``-C`` in turn, with the command's own variables,
+    brace lists and ``$PWD`` put in. ``--git-dir``/``--work-tree`` come from its options, else from a
+    ``GIT_DIR=``/``GIT_WORK_TREE=`` prefix or an earlier assignment, else (None) from the run's environment.
+    The files it reads from disk (``grep -f``, ``blame --contents``, ``diff --no-index``) go to _KB_READ as a
+    reader's do. A ``-C`` folder with a glob in it is one the gate can't know (unresolved)."""
+    from scout.kb import git_read, raw_read
+    from scout.kb.hook_paths import TOO_MANY
+
+    assert _GIT_READ is not None
+    stripped = raw_read._strip(words)
+    if not stripped.words or stripped.fed:
+        return None  # `xargs git …` takes its words from stdin: no tree path to judge
+    git = _git_words(stripped.words)
+    if git is None:
+        return None
+    read = git_read.parse([_unshield(w) for w in git])
+    if read is None:
+        return None
+    start = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
+    given = {}
+    for word in words[: len(words) - len(stripped.words)]:
+        m = _ASSIGN.match(word)
+        if m and m[1] in _GIT_ENV:
+            given[m[1]] = _unshield(word.split("=", 1)[1])
+    known = _STATE["vars"]
+
+    def chosen(option: str | None, name: str) -> str | None:
+        if option is not None:
+            return option
+        return given.get(name) or (f"${name}" if known.get(name) else None)
+
+    def alternatives(word: str) -> list[str] | None:
+        """``word`` as the shell hands it over, once per value (``$PWD`` is the shell's folder, ``start``)."""
+        expanded = raw_read.brace_expand(word)
+        if expanded is None:
+            return None
+        return [_put_pwd(one, start, oldpwd) for alt in expanded for one in _substitute(_tilde_dirs(alt))]
+
+    def placed(word: str, where: str) -> list[str]:
+        """A folder word as the gate resolves it, from the session's folder: one built from ``$PWD`` already is;
+        any other relative one is from ``where``, the folder git is in by then (-C applies first)."""
+        out = []
+        for one in _substitute(word):
+            pwd = bool(re.match(r"^\$(?:PWD\b|\{PWD[}:%#/])", one))
+            for value in alternatives(one) or [SUBST]:
+                if re.search(r"[*?\[]", value):
+                    value = SUBST  # a glob the shell expands: a folder the gate can't know
+                out.append(value if pwd or value.startswith(("/", "~", "$")) else _into(where, value).rstrip("/"))
+        return out
+
+    wheres = [start]
+    for folder in read.chdirs:
+        if not folder:
+            continue  # `-C ""` leaves git where it is
+        wheres = [_into("", one) if one else where for where in wheres for one in placed(folder, where)]
+        if len(wheres) > MAX_CHECKED_PATHS:
+            return TOO_MANY
+    git_dir, work_tree = chosen(read.git_dir, "GIT_DIR"), chosen(read.work_tree, "GIT_WORK_TREE")
+    for where in wheres:
+        for word in read.files:
+            found = _judge_read(word, where, "file", oldpwd)
+            if found is not None:
+                return found
+        if read.no_index:  # files on disk, as `diff -r` and `grep -r` read them
+            roots = [*read.maybe_paths, *read.pathspecs] or (["."] if read.unbounded == "cwd" else [])
+            for word in roots:
+                found = _judge_read(word, where, "covers", oldpwd)
+                if found is not None:
+                    return found
+            continue
+        lists = []
+        for words_ in (read.trees, read.pathspecs, read.maybe_paths):
+            flat: list[str] = []
+            for word in words_:
+                flat += alternatives(word) or [SUBST]
+            lists.append(flat)
+        if sum(len(x) for x in lists) > MAX_CHECKED_PATHS:
+            return TOO_MANY
+        git_dirs: list[str | None] = [None] if git_dir is None else list(placed(git_dir, where))
+        work_trees: list[str | None] = [None] if work_tree is None else list(placed(work_tree, where))
+        for gd in git_dirs:
+            for wt in work_trees:
+                one = git_read.GitRead(
+                    sub=read.sub, git_dir=gd, work_tree=wt, trees=lists[0], pathspecs=lists[1],
+                    maybe_paths=lists[2], unbounded=read.unbounded,
+                )  # fmt: skip
+                found = _GIT_READ(one, where)
+                if found is not None:
+                    return found
     return None
 
 
@@ -2010,6 +2113,7 @@ def run_escape(
     protect: Callable[[str, bool], str | None] | None = None,
     secret: Callable[[str], str | None] | None = None,
     kb_read: Callable[[str, str], str | None] | None = None,
+    git_read: Callable[[GitRead, str], str | None] | None = None,
 ) -> str | None:
     """Whether a run's shell command gets around the commit hook's checks: "env" (changes SCOUT_MODE/SCOUT_READER
     or clears the environment), "detach" (backgrounds or hands work to another process), else the name of the form
@@ -2027,12 +2131,14 @@ def run_escape(
     (``python3 -c``, a here-document fed to ``python3 -``) that writes files is judged by the paths and protected
     names it spells. ``secret`` judges each path it names for a read of Scout's secrets. ``kb_read`` judges each
     file a reading command reads (``cat``, ``ls``, ``grep``…, input redirects) by the path the shell hands it,
-    returning :data:`KB_READ` or :data:`UNRESOLVED_READ` (see :func:`_kb_read`).
+    returning :data:`KB_READ` or :data:`UNRESOLVED_READ` (see :func:`_kb_read`). ``git_read`` (with ``kb_read``)
+    judges what each git call reads, given as a :class:`scout.kb.git_read.GitRead` and the folder it runs in
+    (see :func:`_git_read`), returning the same.
     """
-    global _PROTECT, _SECRET, _KB_READ
+    global _PROTECT, _SECRET, _KB_READ, _GIT_READ
     outer = depth == 0
     if outer:
-        _PROTECT, _SECRET, _KB_READ = protect, secret, kb_read
+        _PROTECT, _SECRET, _KB_READ, _GIT_READ = protect, secret, kb_read, git_read
         _STATE.update(
             checked=0, secrets=0, reads=0, literal=0, vars={}, bodies=[], unparsed=False, capped=False, parsing=False
         )
@@ -2050,7 +2156,7 @@ def run_escape(
         return found
     finally:
         if outer:
-            _PROTECT = _SECRET = _KB_READ = None
+            _PROTECT = _SECRET = _KB_READ = _GIT_READ = None
 
 
 def _known_output(body: str) -> str | None:
@@ -2165,6 +2271,8 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
             found = _secret_read(literal_words, literal_reads, cwd)
             if found is None and _KB_READ is not None:
                 found = _kb_read(literal_words, literal_reads, cwd, fed, oldpwd)
+            if found is None and _GIT_READ is not None and _KB_READ is not None:
+                found = _git_read(literal_words, cwd, oldpwd)
         if found == "env":
             return "env"
         results.append((here, found))
