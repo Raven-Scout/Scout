@@ -28,9 +28,19 @@ _READ_COMMANDS = {
     "iconv", "jq", "yq", "view", "vi", "vim", "nano", "most", "pg", "ag", "ack", "fd", "ugrep",
     "ug", "ug+", "ugrep+", "fdfind", "ack-grep",  # aliases: _command_name reads them as ugrep, fd, ack
 }  # fmt: skip
+# Readers of what a compressed file holds, readers too. (`zgrep`, `xzegrep` and the like are grep with
+# decompression on: _command_name reads them as grep, see _DECOMPRESSING.)
+_DECOMPRESSING_READERS = {
+    "zcat", "gzcat", "bzcat", "xzcat", "lzcat", "lz4cat", "zstdcat", "zless", "zmore", "bzless", "bzmore", "xzless",
+    "xzmore", "zdiff", "zcmp", "bzdiff", "bzcmp", "xzdiff", "xzcmp",
+}  # fmt: skip
+_READ_COMMANDS |= _DECOMPRESSING_READERS
+# What runs the word after it: launchers, and zsh's precommand modifiers (`noglob`, `nocorrect`, `-`, `builtin`,
+# `command`, `exec`; `-` is a stray flag to _strip). `noglob grep -r TODO .` is `grep -r TODO .` to the shell.
 _PREFIX_WORDS = {
     "xargs", "sudo", "command", "builtin", "env", "nice", "time", "exec", "timeout", "gtimeout", "stdbuf",
-    "caffeinate", "unbuffer", "parallel", "sh", "bash", "zsh", "dash", "ksh", "eval",
+    "caffeinate", "unbuffer", "parallel", "sh", "bash", "zsh", "dash", "ksh", "eval", "noglob", "nocorrect",
+    "nohup",
 }  # fmt: skip
 # Prefix flags that take a separate value (`xargs -n 1 wc`, `nice -n 10 cat`): the value is not the command.
 _PREFIX_VALUE_FLAGS = {
@@ -42,6 +52,7 @@ _PREFIX_VALUE_FLAGS = {
     "timeout": {"-s", "-k", "--signal", "--kill-after"},
     "gtimeout": {"-s", "-k", "--signal", "--kill-after"},
     "stdbuf": {"-i", "-o", "-e"},
+    "exec": {"-a"},  # `exec -a NAME cmd`: NAME is the command's argv[0], not the command
     **dict.fromkeys(("sh", "bash", "zsh", "dash", "ksh"), {"-o", "-O", "+o", "+O"}),
 }
 # A positional the prefix takes before the command (`timeout 10 cat …`).
@@ -108,7 +119,7 @@ def _strip(words: list[str]) -> _Stripped:
     while words:
         word = words[0]
         base = _command_name(word)  # `/usr/bin/env`, `/usr/bin/xargs` are prefixes too
-        if base in _PREFIX_WORDS and (word == base or "/" in word):
+        if base in _PREFIX_WORDS and (_unquoted(word) == base or "/" in word):  # `no''glob`, `\exec` too
             if base == "command" and len(words) > 1 and words[1] in ("-v", "-V") and not _names_kb(" ".join(words[2:])):
                 return _Stripped([], fed, chdir)  # a lookup: nothing runs (main denied one naming a KB path)
             word = base
@@ -274,6 +285,14 @@ _FD_VALUES = {"-d", "-e", "-E", "-t", "-S", "-o", "-j", "-c", "-C", "--max-depth
 _FD_EXEC = {"-x", "--exec", "-X", "--exec-batch"}
 # Other names the search tools are installed under (Debian's `fdfind`, `ack-grep`; ugrep's `ug`).
 _ALIASES = {"ug": "ugrep", "ug+": "ugrep", "ugrep+": "ugrep", "fdfind": "fd", "ack-grep": "ack"}
+# The greps that decompress what they read (macOS's zgrep is BSD grep with -Z), read as the grep they wrap.
+_DECOMPRESSING = {f"{z}{g}": g for z in ("z", "bz", "xz", "lz", "lz4", "zstd") for g in ("grep", "egrep", "fgrep")}
+_ALIASES.update(_DECOMPRESSING)
+# What a decompressing read opens (BSD grep's -Z and ugrep's -z): compressed files, whose member is the name
+# without the suffix (`x.md.gz` holds `x.md`), and archives, whose members the gate can't name.
+_COMPRESSED_SUFFIXES = ("gz", "z", "bz2", "bz", "xz", "lzma", "lz", "lz4", "zst", "zstd", "br")
+_ARCHIVE_SUFFIXES = ("tar", "tgz", "taz", "tbz", "tbz2", "tb2", "txz", "tlz", "tzst", "zip", "jar", "war", "7z",
+                     "cpio", "pax", "zipx", "apk", "ipa", "xpi", "epub", "docx", "xlsx", "pptx", "odt")  # fmt: skip
 # The type names for the formats the KB keeps, in ack's and ugrep's `-t` (ugrep's `+` adds shebangs).
 _KB_TOOL_TYPES = {"markdown", "md", "yaml", "yml", "json", "csv", "tsv", "html", "htm", "xml", "text", "txt"}
 _VALUE_FLAGS: dict[str, set[str]] = {
@@ -601,10 +620,10 @@ def _exclusions(args: list[str]) -> tuple[str, ...]:
     return tuple(out)
 
 
-def _recursive(name: str, args: list[str]) -> _Recursive | None:
+def _recursive(name: str, args: list[str], word: str | None = None) -> _Recursive | None:
     """Where a recursive read starts, or None for a command that isn't one, or one whose file
     filter stays out of the KB (``--glob 'action-items/*.md'``, ``--include=*.py``), as for the
-    Grep tool."""
+    Grep tool. ``word`` is the command word as written (``zgrep`` is grep that decompresses)."""
     if _not_a_read(name, args):
         return None
     runs = False  # fd -x/-X: it runs a command on each file it finds
@@ -623,7 +642,10 @@ def _recursive(name: str, args: list[str]) -> _Recursive | None:
             filters += _ugrep_includes(name, args, {"-g", "--glob"})
             filters += ["*." + e.lstrip(".") for e in _ugrep_includes(name, args, {"-O"})]
             types = _ugrep_includes(name, args, {"-t"})
-        return _either_filter(_Recursive(roots, True, None, _exclusions(args)), filters, types, prefix=name == "ugrep")
+        rec = _Recursive(roots, True, None, _exclusions(args))
+        if _decompresses(word or name, name, args) and any(_may_match_compressed(f) for f in filters):
+            return rec  # `--include='*.gz'` reads what each archive holds: notes, perhaps
+        return _either_filter(rec, filters, types, prefix=name == "ugrep")
     if name in ("ag", "ack"):  # recursive by default; the first positional is the pattern
         lists = "-g" in args or (name == "ack" and "-f" in args)  # file names only, no pattern
         pattern_given = name == "ack" and any(a == "--match" or a.startswith("--match=") for a in args)
@@ -746,6 +768,42 @@ def _grep_recursive(name: str, args: list[str]) -> bool:
         if name == "ugrep" and (flag == "--depth" or re.fullmatch(r"-\d", flag)):
             return True
     return False
+
+
+_GREPS = ("grep", "egrep", "fgrep", "ugrep")
+
+
+def _decompresses(word: str, name: str, args: list[str]) -> bool:
+    """A reader of what compressed files and archives hold: ``zcat``, ``zgrep`` and their kin; a grep with ``-Z``
+    (BSD grep's ``--decompress``; GNU's ``--null``, judged the BSD way), ``-z`` (ugrep's ``--decompress``, which a
+    run's bare ``grep`` is; GNU's and BSD's ``--null-data``) or ``--decompress``."""
+    if posixpath.basename(_unquoted(word)) in _DECOMPRESSING or name in _DECOMPRESSING_READERS:
+        return True
+    return name in _GREPS and any(f in ("-z", "-Z", "--decompress") for f, _v in _options(name, args))
+
+
+def _archive(path: str) -> bool:
+    """A file whose members a decompressing read reads and the gate can't name: an archive (``kb.tgz``,
+    ``notes.zip``), or a compressed one (``kb.tar.gz``). ``x.md.gz`` holds one file, ``x.md``, which its own
+    name tells."""
+    name = posixpath.basename(_unquoted(path)).lower()
+    for suffix in _COMPRESSED_SUFFIXES:
+        if name.endswith("." + suffix):
+            name = name[: -len(suffix) - 1]
+            break
+    return name.rsplit(".", 1)[-1] in _ARCHIVE_SUFFIXES if "." in name else False
+
+
+def _may_match_compressed(glob: str) -> bool:
+    """Whether a file filter could let through a compressed file or an archive (``*.gz``, ``*.tgz``, ``*.md.*``):
+    under decompression its members are read, and they may be notes. Tried on the glob's last part, since an
+    archive can sit in any folder."""
+    g = glob.strip("\"'").removeprefix("!").rsplit("/", 1)[-1]
+    words = {w for w in re.findall(r"[A-Za-z0-9_-]+", g)}
+    stems = {"x", *(s for w in words for s in (w, f"{w}x", f"x{w}", f"x{w}x"))}
+    exts = [*_ARCHIVE_SUFFIXES, *(f"{k}.{c}" for k in (*KB_FILE_EXTENSIONS, "tar") for c in _COMPRESSED_SUFFIXES)]
+    rx = _glob_regex(g)
+    return any(rx.fullmatch(f"{stem}.{ext}") for stem in stems for ext in exts)
 
 
 def _filtered(rec: _Recursive, filters: list[str], types: list[str] | None = None) -> _Recursive | None:
@@ -1011,6 +1069,8 @@ def _judge(command: str, in_kb: bool, cwd: str | None, vault: str | None, env: M
                         return True
                     if any(_glob_names_kb(a) for a in _operands(name, args)):
                         return True
+                    if _decompresses(words[0], name, args) and any(map(_archive, read_operands(name, args) or [])):
+                        return True  # an archive's members, which the gate can't name (`grep -Z x kb.tgz`)
                     if stripped.fed and upstream_kb:
                         return True
                 elif name == "git":
@@ -1025,9 +1085,9 @@ def _judge(command: str, in_kb: bool, cwd: str | None, vault: str | None, env: M
 
 
 def _command_name(word: str) -> str:
-    """A command word's program: quotes a shell removes (`bash -c 'cat …'`) and a leading backslash
-    (`\rg`, which only skips an alias) gone, and its folder (`/usr/bin/grep`) dropped."""
-    name = word.strip("\"'").lstrip("\\").rsplit("/", 1)[-1]
+    """A command word's program: every quote and backslash a shell removes (`bash -c 'cat …'`, `\rg`, `gr''ep`,
+    `"gr"ep`, `g\rep`) gone, and its folder (`/usr/bin/grep`) dropped."""
+    name = _unquoted(word).rsplit("/", 1)[-1]
     return _ALIASES.get(name, name)
 
 
@@ -1254,7 +1314,7 @@ def _judge_recursive(
                 here = _cd(here, args[0] if args else "~", env, local)  # a bare `cd` goes home
                 continue
             if name in _READ_COMMANDS:
-                rec = _recursive(name, args)
+                rec = _recursive(name, args, words[0])
                 if rec is None or (stripped.fed and not rec.roots):
                     continue  # not recursive, or xargs hands it the files to read
                 if reaches(rec, where):

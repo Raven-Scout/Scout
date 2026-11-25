@@ -30,6 +30,9 @@ elsewhere first names files they never check, the pattern also gained ``ADDED_AL
 HOME), and the last, quote-stripped match ``STRIPPED_NAMES`` (HOME, SCOUT_MODE and SCOUT_READER) and
 ``STRIPPED_NAMERS`` (a builtin that sets what it names, anywhere), so ``HO''ME=x``, ``SCOUT_MO\\DE=`` or
 ``"read" HOM?`` is no way round; a case may differ only by now reaching Python for those too.
+``ADDED_ALTERNATIVES`` also holds a quote or backslash inside a word (``gr''ep -r TODO .``: the shell runs ``grep``,
+which the program rules look for unquoted) and a read that decompresses (an archive's members are notes no file
+name shows); a case may differ by now reaching Python for those as well.
 """
 
 from __future__ import annotations
@@ -94,8 +97,15 @@ LATE_RULES = (
 STRIPPED_RULES = rf"knowledge[-_]base|action-items/context|{LATE_RULES}"
 MAX_PAYLOAD = 32768  # bytes; a run's kb-read-gate payload over this is blocked in the shell
 # Appended after the expansions: any mention of HOME. (Arithmetic, `(( H$v = 1 ))`, and zsh's `${(P)v::=…}` are
-# the expansions' `(` and `$`.)
-ADDED_ALTERNATIVES = ("HOME",)
+# the expansions' `(` and `$`.) Then a quote or backslash inside a word, which hides a program's name from the
+# rules that look for it (`gr''ep`, `g\rep`), and a read that decompresses (zgrep, zcat's kin, grep -z/-Z).
+ADDED_ALTERNATIVES = (
+    "HOME",
+    r"""[A-Za-z0-9_]([^ -&(-~]|\\"|\\\\)+[A-Za-z0-9_]""",  # `[^ -&(-~]`: a single quote (or non-ASCII)
+    r"(^|[^A-Za-z0-9_.-]|\\[nt])((z|bz|xz|lz|lz4|zstd)[ef]?grep|(z|gz|bz|xz|lz|lz4|zstd)cat|(z|bz|xz)(less|more|diff"
+    r"|cmp))([^A-Za-z0-9_./-]|$)",
+    r"(^|[^A-Za-z0-9_.-]|\\[nt])[ef]?grep[^;&|]* (-[A-Za-z]*[zZ]|--decompress)",
+)
 ADDED_PATTERN = "|".join(ADDED_ALTERNATIVES)
 ADDED_PATTERN_RE = re.compile(ADDED_PATTERN)
 # What the last, case-sensitive match finds once quotes and backslashes are removed (\n and \t as spaces): the
