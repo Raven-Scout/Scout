@@ -145,10 +145,62 @@ def test_experiments_phase_reads_each_status_line_the_right_way() -> None:
     assert "abandon" in refused and "new EID" in refused
     not_run = run.split("experiment not run:", 1)[1].lower()
     assert "leave it `running`" in not_run and "wrap" in not_run
+    assert "no broker to run it" in not_run
     # Experiments off still means planning them.
     assert "experiments are off" in text and "still plan" in text
     # Scout never stops an experiment: that verb is the owner's.
-    assert "scripts/scoutctl lab experiment stop" in text and "owner" in text
+    assert "Never call `scripts/scoutctl lab experiment stop`: stopping a running experiment is the owner's." in text
+    # A run meets 2E before PHASE 1 in the assembled brain (files sort by name).
+    assert text.index("# PHASE 2E: EXPERIMENTS") < text.index("You reach this phase from Step 1c (PHASE 1).")
+    assert "retry `running` experiments not marked `detached`" in text
+
+
+def _refused(text: str) -> str:
+    run = text.split("**Read the last stderr line", 1)[1].split("**Finish", 1)[0]
+    return run.split("experiment refused:", 1)[1].split("experiment not run:", 1)[0]
+
+
+def test_a_used_allowance_is_not_a_refusal_of_the_experiment() -> None:
+    """Exit 5 says `experiment refused: this run has run its …`: abandoning on it re-plans every second experiment."""
+    text = _flat(EXPERIMENTS)
+    assert "`lab.experiments_per_run` (default 1)" in text
+    refused = _refused(text)
+    allowance = refused.split("exit 5", 1)[1]
+    assert "this run has run its" in allowance
+    assert "is not a refusal of the experiment" in allowance
+    assert "stop running experiments this run and leave that one as it is" in allowance
+    # The allowance rule comes before the abandon rule, so a run meets it first.
+    assert refused.index("exit 5") < refused.index("abandon")
+
+
+def test_a_refusal_never_replans_a_veto_or_abandons_a_hold() -> None:
+    refused = _refused(_flat(EXPERIMENTS))
+    veto = refused.split("vetoed:", 1)[1].split(";", 1)[0]
+    assert "never re-plan it" in veto and "unless an owner comment invites it" in veto and "Vetoes" in veto
+    hold = refused.split("an unanswered owner comment", 1)[1].split(";", 1)[0]
+    assert "Step 1b" in hold and "retried next run, not abandoned" in hold
+    # The re-plan rule is only for what is left.
+    assert refused.index("vetoed:") < refused.index("new EID")
+
+
+def test_collect_keeps_broker_side_answers_running() -> None:
+    """Ruling P2-R12: a collect `not run` is final only when it is the experiment's own outcome."""
+    collect = _flat(EXPERIMENTS).split("Collect detached experiments first", 1)[1].split("**Before running", 1)[0]
+    keep = collect.split("Some reasons are not final", 1)[1]
+    for reason in (
+        "this run's broker didn't answer",
+        "collecting a detached experiment needs the run broker",
+        "survived the sweep",
+    ):
+        assert reason in keep, reason
+    assert "leave it `running`" in keep and "wrap" in keep
+
+
+def test_detached_experiments_are_collected_in_paused_threads_too() -> None:
+    collect = _flat(EXPERIMENTS).split("Collect detached experiments first", 1)[1].split("**Before running", 1)[0]
+    assert "in `active` and `paused` threads" in collect
+    assert "In a paused thread, only report the result in the wrap" in collect
+    assert "`finish` and `abandon` wait until the thread resumes" in collect
 
 
 def test_experiments_phase_never_commits_checkpoints() -> None:

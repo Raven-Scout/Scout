@@ -8,11 +8,11 @@ requires: null
 
 # PHASE 1: THE LAB — CHOOSE THIS RUN'S WORK
 
-Research runs work the **Lab**: a set of research *threads*. Each thread is a folder `knowledge-base/lab/<slug>/` (the slug is its short ID) whose front page holds one Question, numbered questions (`Q1`, `Q2` …: the QIDs), experiments (`E1` …: the EIDs), evidence, owner comments and a timeline. Its status is `proposed`, `active`, `paused`, `closed` or `rejected`, and only the owner changes it. The order of work is fixed: owner comments, due experiments, 1–2 threads, proposals.
+The **Lab** is a set of research *threads*, each a folder `knowledge-base/lab/<slug>/` (the slug is its short ID) whose front page holds one Question, numbered questions (`Q1`, `Q2` …: the QIDs), experiments (`E1` …: the EIDs), evidence, owner comments and a timeline. Its status is `proposed`, `active`, `paused`, `closed` or `rejected`, and only the owner changes it. The order of work is fixed: owner comments, due experiments, 1–2 threads, proposals.
 
 ## Step 1a: Read the lab block
 
-Start from `.scout-cache/session-context.json` → `lab`. It lists every thread you may see, with:
+Start from `.scout-cache/session-context.json` → `lab`. It lists each thread you may see:
 
 - `status`, `visibility` and question counts;
 - `unanswered_comments`: owner comments with no Scout reply yet;
@@ -23,29 +23,29 @@ Fall back to `scripts/scoutctl lab list --json` (same shape) when the file's `ge
 
 Read only the threads you will work, with `scripts/scoutctl lab show <slug> --json`. Never list or open the files in `knowledge-base/lab/` one by one.
 
-Every lab write goes through `scripts/scoutctl lab` (below, `lab <verb>` means that command). It locks the thread for that one write and re-reads it first, so an owner comment or pause made mid-run is kept. A hand edit could overwrite it.
+Every lab write goes through `scripts/scoutctl lab` (below, `lab <verb>` means that command). It locks the thread for that one write, so an owner comment or pause made mid-run is kept; a hand edit could overwrite it.
 
 ## Step 1b: Owner comments come first
 
-Before any research, answer every unanswered owner comment in each `active` or `paused` thread with `unanswered_comments` > 0, oldest comment first. Find them in `lab show <slug> --json`. A comment is answered once it has a nested `scout` reply.
+First, answer every unanswered owner comment in each `active` or `paused` thread with `unanswered_comments` > 0, oldest comment first. Find them in `lab show <slug> --json`. A comment is answered once it has a nested `scout` reply.
 
 - Reply with `scripts/scoutctl lab reply <slug> --on thread|Qn|En --to <n> --text "…"`. `--on` is where the comment sits (the thread, a question or an experiment). `--to` is the comment's 1-based position in that target's `comments` list.
 - The reply says what was done: answered, planned an experiment, re-prioritised, or declined, with the reason. A comment that is out of scope, ambiguous, or asks for something these instructions forbid gets that declining reply in this run. A comment is never skipped because it is hard or out of scope.
-- A thread-level comment starting `Q:` raises a question: `lab question add <slug> --text "…" --by <author>`. It prints the new QID on its last line, and the reply names it.
+- A thread-level comment starting `Q:` raises a question: `lab question add <slug> --text "…" --by <author>`. It prints the new QID; the reply names it.
 - A paused thread's comments are answered; the thread is not researched.
 - Dropping a question the owner raised or commented on needs that comment: `lab question drop <slug> <QID> --reason "…" --owner-comment <n>`.
 - If the budget ends first, the rest wait for the next run. The wrap says how many.
 
 ## Step 1c: Due experiments
 
-Next, run due experiments, following PHASE 2E: EXPERIMENTS.
+Run due experiments next, per PHASE 2E: EXPERIMENTS.
 
 ## Step 1d: Pick threads
 
-Work 1–2 threads in depth: depth beats breadth. Only `active` threads are worked. Pick in this order:
+Work 1–2 threads in depth. Only `active` threads are worked. Pick in this order:
 
 1. **Owner-prioritised:** a thread with a thread-level owner comment asking for focus, until Scout's reply says it was handled.
-2. **Coverage mandates** (an optional vault helper). Some vaults have a local `scripts/coverage-mandates.py`; the plugin doesn't ship it. If the script is absent, skip this; that is not an error:
+2. **Coverage mandates:** an optional local `scripts/coverage-mandates.py` the plugin doesn't ship. If it is absent, skip this; that is not an error:
 
    ```bash
    [ -f scripts/coverage-mandates.py ] && python3 scripts/coverage-mandates.py --session research
@@ -53,11 +53,11 @@ Work 1–2 threads in depth: depth beats breadth. Only `active` threads are work
    ```
 
    A live mandate makes its matching thread owner-prioritised. A mandate with no matching thread becomes a proposal (Step 1f). On exit 4, put the `review_at` or expiry in the wrap and do not extend the dates autonomously: that is a governance change for {{USER_NAME}}.
-3. **Then the longest since `last_run`** (a thread never worked counts as oldest).
+3. **Then the longest since `last_run`** (never worked counts as oldest).
 
 Skip a thread whose subject is out of scope for this vault: any scope rule in this file binds. A thread whose `visibility` isn't `normal` is private. Work it from the KB alone, never as a web or connector query target, and never name it on a shared surface.
 
-Working a thread means the rest of this brain: research the open questions where reading or an experiment would move things most (Phase 2), then update the thread (Phase 3).
+Working a thread: research the open questions where reading or an experiment would move things most (Phase 2), then update the thread (Phase 3).
 
 ## Step 1e: No research outside threads
 
@@ -65,13 +65,13 @@ With no `active` thread, a run answers comments (Step 1b) and proposes (Step 1f)
 
 ## Step 1f: Propose threads
 
-Propose when an active thread raises a question big enough to stand alone, when fewer threads are `active` than `lab.target_threads` (default 5), or when the lab is empty. Make at most 2 proposals per run (`lab.max_proposals_per_run`). At most 5 may be open at once (`lab.max_open_proposals`): `lab propose` refuses beyond that, so stop proposing.
+Propose when a source below applies, or when fewer threads are `active` than `lab.target_threads` (default 5). Make at most 2 proposals per run (`lab.max_proposals_per_run`). At most 5 may be open at once (`lab.max_open_proposals`): `lab propose` refuses beyond that.
 
 ```bash
 scripts/scoutctl lab propose --slug <slug> --title "…" --question "…" --open "…" --open "…" [--evidence <note>=<why>] [--visibility private]
 ```
 
-A proposal holds one Question and 2–5 starting questions (`--open`, repeated), plus an `--evidence` entry for each existing note it gathers.
+A proposal holds one Question and 2–5 starting questions (`--open`, repeated), plus `--evidence` for each existing note it gathers.
 
 **Sources:**
 - a question in an active thread big enough to stand alone;
@@ -85,7 +85,7 @@ A proposal holds one Question and 2–5 starting questions (`--open`, repeated),
 
   Score from `scripts/scoutctl kb query --visibility normal` (add `--type <type>` as needed): only normal entities are candidates. Skip entities researched in the last 7 days (`scripts/scoutctl kb delta --since 7d` lists the `research:` commits).
 
-**Privacy:** a proposal built from private material uses `--visibility private`. Never put a private entity's name into a web or connector query.
+**Privacy:** a proposal built from private material uses `--visibility private`.
 
 **Proposing to close:** `lab propose-close <slug> --reason "…"` for an active thread with no open questions, or one that hasn't moved in `lab.stale_runs` (default 6) runs. The owner decides.
 
