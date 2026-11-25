@@ -415,25 +415,75 @@ LAB_COMMIT_MAX_FILE_BYTES = 10 * 1024 * 1024
 LAB_DIR_REL = "knowledge-base/lab"
 
 
-def _refuse_large_lab_file(rel: str, vault_real: str) -> None:
-    """A regular file over :data:`LAB_COMMIT_MAX_FILE_BYTES` under ``knowledge-base/lab/`` is refused (exit 2):
-    weights and other big outputs belong in an experiment's ``checkpoints/`` folder, which the vault's .gitignore
-    leaves out. ``lstat`` on the resolved folder plus the leaf, so no link is followed."""
-    if rel != LAB_DIR_REL and not rel.startswith(LAB_DIR_REL + "/"):
-        return
+_GIT_ESCAPES = {b"a": b"\a", b"b": b"\b", b"f": b"\f", b"n": b"\n", b"r": b"\r", b"t": b"\t", b"v": b"\v"}
+_GIT_ESCAPE_RE = re.compile(rb"\\([0-7]{3}|.)", re.S)
+
+
+def _unquote_git_path(text: str) -> str:
+    """A path as ``git add --dry-run`` prints it: plain, or C-quoted (``"a\\"b"``) when it holds a quote, a backslash
+    or a control character."""
+    if not (len(text) >= 2 and text.startswith('"') and text.endswith('"')):
+        return text
+
+    def one(m: re.Match[bytes]) -> bytes:
+        code = m.group(1)
+        return bytes([int(code, 8) & 0xFF]) if len(code) == 3 else _GIT_ESCAPES.get(code, code)
+
+    raw = _GIT_ESCAPE_RE.sub(one, text[1:-1].encode("utf-8", "surrogateescape"))
+    return raw.decode("utf-8", "surrogateescape")
+
+
+def _staged_paths(vault: Path, named: Sequence[str], env: Mapping[str, str]) -> list[str] | None:
+    """The vault-relative files ``git add -- <named>`` would stage: git's own answer (``add --dry-run``, so every
+    ignore rule, nested .gitignore files included). None when git refuses (the real add would too, and stages
+    nothing); :class:`Refused` when git can't be asked at all."""
     try:
-        st = os.lstat(
-            os.path.join(os.path.realpath(os.path.join(vault_real, os.path.dirname(rel))), os.path.basename(rel))
+        done = subprocess.run(
+            ["git", "-C", str(vault), "-c", "core.quotePath=false", "add", "--dry-run", "--", *named],
+            env=commit_env(vault, env, None),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="surrogateescape",
+            timeout=60,
         )
-    except OSError:
-        return
-    if stat.S_ISREG(st.st_mode) and st.st_size > LAB_COMMIT_MAX_FILE_BYTES:
-        raise Refused(
-            EXIT_REFUSED,
-            f"'{rel}' is {st.st_size} bytes, over the {LAB_COMMIT_MAX_FILE_BYTES // (1024 * 1024)} MiB a lab file may "
-            "be in a commit; put large outputs (weights, caches) under the experiment's checkpoints/ folder, "
-            "which is never committed",
-        )
+    except (OSError, subprocess.SubprocessError):
+        raise Refused(EXIT_REFUSED, "couldn't ask git what this commit would stage; not committed") from None
+    if done.returncode != 0:
+        return None
+    out = []
+    for line in done.stdout.splitlines():
+        if line.startswith("add '") and line.endswith("'"):
+            out.append(_unquote_git_path(line[5:-1]))
+    return out
+
+
+def _refuse_large_lab_files(vault: Path, named: Sequence[str], env: Mapping[str, str]) -> None:
+    """A commit that would stage a regular file over :data:`LAB_COMMIT_MAX_FILE_BYTES` under ``knowledge-base/lab/``
+    is refused (exit 2). Weights and other big outputs belong in an experiment's ``checkpoints/`` folder, which the
+    vault's .gitignore leaves out. What would be staged is git's answer (:func:`_staged_paths`), so naming a folder
+    is no way round the rule; paths compare case-folded (a case-insensitive volume reads ``Knowledge-Base/Lab`` as
+    the lab folder). Each file is checked with ``lstat``, no link followed."""
+    lab = hook_paths._norm(LAB_DIR_REL)
+    norms = [hook_paths._norm(n) for n in named]
+    if not any(n == lab or n.startswith(lab + "/") or lab.startswith(n + "/") for n in norms):
+        return  # nothing named is, holds or sits inside the lab folder
+    listed = _staged_paths(vault, named, env)
+    vault_real = os.path.realpath(str(vault))
+    for rel in listed or []:
+        if not hook_paths._norm(rel).startswith(lab + "/"):
+            continue
+        try:
+            st = os.lstat(os.path.join(vault_real, rel))
+        except OSError:
+            continue
+        if stat.S_ISREG(st.st_mode) and st.st_size > LAB_COMMIT_MAX_FILE_BYTES:
+            raise Refused(
+                EXIT_REFUSED,
+                f"'{rel}' is {st.st_size} bytes, over the {LAB_COMMIT_MAX_FILE_BYTES // (1024 * 1024)} MiB a lab "
+                "file may be in a commit; put large outputs (weights, caches) under the experiment's checkpoints/ "
+                "folder, which is never committed",
+            )
 
 
 def validate_commit(req: Mapping[str, Any], vault: Path, env: Mapping[str, str]) -> tuple[str, list[str], str | None]:
@@ -487,8 +537,8 @@ def validate_commit(req: Mapping[str, Any], vault: Path, env: Mapping[str, str])
         form = hook_paths.removes_protected(spelled, vault, env) or hook_paths.removes_protected(real, vault, env)
         if form is not None:
             raise Refused(EXIT_REFUSED, f"'{p}' is protected ({form}); a scheduled run doesn't commit it")
-        _refuse_large_lab_file(rel, vault_real)
         out.append(rel)
+    _refuse_large_lab_files(vault, out, env)
     return msg, out, override
 
 

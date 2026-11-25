@@ -111,10 +111,10 @@ import subprocess
 import tarfile
 import tempfile
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
 from scout import config, plural, safe_write
 from scout import paths as vault_paths
@@ -234,7 +234,7 @@ def memory_limit(max_memory_bytes: int) -> int:
 _RUSAGE_INFO_V4 = 4
 _RUSAGE_BUF_BYTES = 512  # rusage_info_v4 is 304 bytes; room to spare
 _PHYS_FOOTPRINT_OFFSET = 16 + 7 * 8  # ri_uuid[16], then ri_user_time .. ri_resident_size, then ri_phys_footprint
-_rusage: object | None = None
+_rusage: Callable[[int, int, Any], int] | None = None
 
 
 def footprint_bytes(pid: int) -> int | None:
@@ -250,7 +250,7 @@ def footprint_bytes(pid: int) -> int | None:
             fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
             _rusage = fn
         buf = ctypes.create_string_buffer(_RUSAGE_BUF_BYTES)
-        if _rusage(pid, _RUSAGE_INFO_V4, buf) != 0:  # type: ignore[operator]
+        if _rusage(pid, _RUSAGE_INFO_V4, buf) != 0:
             return None
         return int.from_bytes(buf.raw[_PHYS_FOOTPRINT_OFFSET : _PHYS_FOOTPRINT_OFFSET + 8], "little")
     except (OSError, AttributeError):
@@ -1004,7 +1004,7 @@ def run_experiment(
     max_processes: int = broker.LabLimits.max_processes,
     max_total_bytes: int = broker.LabLimits.max_total_bytes,
     max_open_files: int = broker.LabLimits.max_open_files,
-    disk_free_floor_bytes: int = 0,
+    disk_free_floor_bytes: int = broker.LabLimits.disk_free_floor_bytes,
     max_memory_bytes: int = 0,
 ) -> RunOutcome:
     """Run ``argv`` for experiment ``eid`` of thread ``slug`` under the experiment sandbox.
@@ -1028,7 +1028,8 @@ def run_experiment(
     is the descriptors the script may hold open (the gate's ``ulimit -n``).
 
     ``max_total_bytes`` is the experiment's disk budget (the broker passes the plan's, clamped to the owner's
-    maximum). ``disk_free_floor_bytes`` (0 = none) is the free space the volume must keep: a launch that would leave
+    maximum). ``disk_free_floor_bytes`` (default 15 GB; 0 = none) is the free space the
+    volume must keep: a launch that would leave
     less raises :class:`DiskFloorError`, and a run that sees less at a poll is killed (``over_disk_floor``).
     ``max_memory_bytes`` is the processes' physical footprint together (0 = half of the Mac's memory); past it the
     run is killed (``over_memory``).

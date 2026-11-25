@@ -12,6 +12,9 @@ see). A left-out experiment is gone from every part of the document: ``lab show`
 replies and unanswered comments counted on its line. ``lab show`` counts them in ``private_experiments``, as
 ``lab.md`` counts private threads; it is 0 for a full reader. An experiment with no note is kept, with
 ``frontmatter`` null.
+
+``lab list`` gives each thread ``checkpoint_bytes``: the bytes under the ``checkpoints/`` folders of the experiments
+the reader may see (those folders are never committed). A left-out experiment's checkpoints don't count.
 """
 
 from __future__ import annotations
@@ -151,24 +154,31 @@ def _experiment_ids(vault: Path, thread: Thread, now: _dt.datetime, hidden: set[
     return {"planned": planned, "running": running, "due": due, "held": held}
 
 
-def _checkpoint_bytes(vault: Path, thread: Thread) -> int:
-    """The bytes of the regular files under each of the thread's experiments' ``checkpoints/`` folders (``lstat``;
-    a link is neither followed nor counted). Those folders are never committed, so the wrap can say what they hold."""
+def _checkpoint_bytes(vault: Path, thread: Thread, hidden: set[str]) -> int:
+    """The bytes of the regular files under the ``checkpoints/`` folder of each of the thread's experiments the
+    reader may see (``hidden`` ones are left out, like everywhere else), each inode once and no link followed or
+    counted. Those folders are never committed, so the wrap can say what they hold."""
     total = 0
-    root = paths.thread_dir(vault, thread.slug) / "experiments"
-    try:
-        folders = [Path(e.path) / "checkpoints" for e in os.scandir(root) if e.is_dir(follow_symlinks=False)]
-    except OSError:
-        return 0
-    stack = [f for f in folders if not f.is_symlink()]
+    seen: set[tuple[int, int]] = set()
+    stack: list[Path] = []
+    for e in thread.experiments:
+        note = None if e.eid in hidden else paths.experiment_note(vault, thread.slug, e.eid)
+        if note is not None:
+            stack.append(paths.experiment_dir(note) / "checkpoints")
     while stack:
+        folder = stack.pop()
         try:
-            with os.scandir(stack.pop()) as it:
+            if folder.is_symlink():
+                continue
+            with os.scandir(folder) as it:
                 for entry in it:
                     if entry.is_dir(follow_symlinks=False):
                         stack.append(Path(entry.path))
                     elif entry.is_file(follow_symlinks=False):
-                        total += entry.stat(follow_symlinks=False).st_size
+                        st = entry.stat(follow_symlinks=False)
+                        if (st.st_dev, st.st_ino) not in seen:
+                            seen.add((st.st_dev, st.st_ino))
+                            total += st.st_size
         except OSError:
             continue
     return total
@@ -195,11 +205,11 @@ def _summary(vault: Path, thread: Thread, now: _dt.datetime, hidden: set[str]) -
         "experiments": _experiment_ids(vault, thread, now, hidden),
         "last_run": None if last_run is None else _json(last_run),
         "problems": len(thread.problems),
-        "checkpoint_bytes": _checkpoint_bytes(vault, thread),
+        "checkpoint_bytes": _checkpoint_bytes(vault, thread, hidden),
     }
 
 
-def _broken_summary(vault: Path, thread: Thread, exc: Exception) -> dict[str, Any]:
+def _broken_summary(vault: Path, thread: Thread, exc: Exception, hidden: set[str]) -> dict[str, Any]:
     """The row for a thread whose summary couldn't be built: the same keys, nothing counted, the failure named
     in ``error`` and counted as one more problem, so the app shows it as not matching the lab format."""
     return {
@@ -215,7 +225,7 @@ def _broken_summary(vault: Path, thread: Thread, exc: Exception) -> dict[str, An
         "experiments": {"planned": [], "running": [], "due": [], "held": []},
         "last_run": None,
         "problems": len(thread.problems) + 1,
-        "checkpoint_bytes": _checkpoint_bytes(vault, thread),
+        "checkpoint_bytes": _checkpoint_bytes(vault, thread, hidden),
         "error": f"cannot summarize this thread: {exc.__class__.__name__}: {exc}"[:300],
     }
 
@@ -243,7 +253,8 @@ def lab_list(
         try:
             row = _summary(vault, thread, moment, _hidden_experiments(vault, thread, labels, full))
         except Exception as exc:  # noqa: BLE001 - one malformed thread must not empty the whole list
-            row = _broken_summary(vault, thread, exc)
+            # A failed summary can't say which experiments the reader may see: a partial reader sees none of them.
+            row = _broken_summary(vault, thread, exc, set() if full else {e.eid for e in thread.experiments})
         rows.append((thread, row))
     rows.sort(key=lambda pair: (_status_rank(pair[0].status), pair[0].title.lower(), pair[0].slug))
     return {

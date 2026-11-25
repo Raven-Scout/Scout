@@ -82,3 +82,22 @@ def test_contract_checkpoint_bytes(tmp_path: Path) -> None:
     other.write_bytes(b"z" * 77)  # not under checkpoints/: not counted
     [row] = summary.lab_list(vault, None, full=True, now=NOW)["threads"]
     assert row["checkpoint_bytes"] == 1000 + 234
+
+
+def test_checkpoint_bytes_leave_out_what_a_partial_reader_may_not_see(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    thread = paths.thread_dir(vault, "summary-drift")
+    for eid_dir, size in (("summary-drift-E1-baseline", 100), ("summary-drift-E2-section-hash", 50)):
+        folder = thread / "experiments" / eid_dir / "checkpoints"
+        folder.mkdir(parents=True)
+        (folder / "w.bin").write_bytes(b"x" * size)
+        os.link(folder / "w.bin", folder / "same-inode.bin")  # one inode: counted once
+    front = "knowledge-base/lab/summary-drift/summary-drift.md"
+    e1 = "knowledge-base/lab/summary-drift/experiments/summary-drift-E1-baseline.md"
+    e2 = "knowledge-base/lab/summary-drift/experiments/summary-drift-E2-section-hash.md"
+    both = summary.lab_list(vault, {front: "normal", e1: "normal", e2: "normal"}, full=False, now=NOW)
+    assert both["threads"][0]["checkpoint_bytes"] == 150
+    partial = summary.lab_list(vault, {front: "normal", e1: "normal", e2: "private"}, full=False, now=NOW)
+    assert partial["threads"][0]["checkpoint_bytes"] == 100
+    full = summary.lab_list(vault, None, full=True, now=NOW)
+    assert full["threads"][0]["checkpoint_bytes"] == 150
