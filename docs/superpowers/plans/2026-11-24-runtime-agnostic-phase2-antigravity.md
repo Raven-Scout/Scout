@@ -28,7 +28,7 @@
 - Run limits are on by default for agy: 45 awake minutes (90 for a research slot) and the `auto` daily token ceiling (spec §8.6). agy has no `budget_cap`.
 - Generated files (`~/.gemini/config/hooks.json` block, `plugin/runtimes/antigravity/`, `verified.json`, `connectors.snapshot.json`) are generated, never hand-edited, and drift-tested.
 - Public surfaces (fixtures, PRs, commits, docs) use the stand-ins in `plugin/CLAUDE.md`. No vault content.
-- Inside another agent CLI's home folder (`~/.gemini`, `~/.codex`, …) a run can write only the folders `profile.AGENT_DATA_DIRS` lists for its runtime id (agy: `~/.gemini/antigravity-cli`), and never a `settings*.json`, `config.toml`, `hooks.json`, `hooks/` or `mcp*.json` there, at any depth (#806). An adapter can't widen this. A new data folder is a change to `AGENT_DATA_DIRS` with a kernel row, and a need to write one of those names is a stop-and-ask, never a widening.
+- Inside another agent CLI's home folder (`~/.gemini`, `~/.codex`, …) a run can write only the folders `profile.AGENT_DATA_DIRS` lists for its runtime id (agy: `~/.gemini/antigravity-cli`), and never a `settings*.json`, `config.toml`, `hooks.json`, `hooks/` or `mcp*.json` there, at any depth (#806), nor the folders `profile.AGENT_DATA_REDENY` lists inside the data folder (agy: `builtin/`, 2A). An adapter can't widen this. A new data folder is a change to `AGENT_DATA_DIRS` with a kernel row, and a need to write one of those names is a stop-and-ask, never a widening.
 - Claude Code runs stay byte-identical: golden argv, `hooks.json` and the Claude sandbox profile don't change in any PR here.
 - Every PR adds a changelog fragment (`plugin/changelog.d/<slug>.<section>.md`, and `apps/macos/changelog.d/` for 2J).
 
@@ -276,6 +276,21 @@ Tests: `test_pre_tool_denies_on_any_internal_error` (monkeypatch each gate to ra
 
 Tests: `test_install_writes_only_its_own_key`, `test_install_is_idempotent`, `test_check_reports_an_edited_block`, `test_a_scheduled_run_cant_install`, `test_check_refuses_a_run_on_drift`, `test_a_run_cant_write_agys_gate_config` (2C.3's entry, a `write_file` to the config path and a `run_command` that `rm`s it, both denied).
 
+**agy's first start and its agentapi shim (Jordan, 2026-11-25; findings §7.1).** These come from 2A's stop-and-asks.
+- **First start happens outside the sandbox. No carve-out in `~/.gemini/config`.** agy's first start in a `HOME` writes `~/.gemini/config/{.migrated,config.json,mcp_config.json,projects/default-cli-project.json}`. The run profile denies all of those, and a warm start writes none of them.
+  - `install` starts agy once, outside the sandbox and without a model turn. This task picks the command with a throwaway-`HOME` spike.
+  - `install --check` then checks that `projects/default-cli-project.json` exists.
+  - 2E's per-version probe does the same after a self-update, so a version migration (`.migrated`) also happens outside a run.
+  - A run that still meets a first start fails closed (agy exits 1), and run health shows it.
+- **`bin/agentapi` is verified and restored around every agy run.** agy rewrites this shim (`exec <agy> agentapi "$@"`) before every shell call, so `~/.gemini/antigravity-cli/bin/` stays writable. A run could still replace it between agy's own writes.
+  - At install and at each probe, Scout records the shim's checksum and keeps a copy where a run can't write it, under a protected path such as `~/.local/state/scout/`.
+  - Before and after each agy run, the runner compares the file with that record. If it changed, the runner restores the recorded copy and reports the named finding `agent_runtime.agy_shim_restored` in run health. The finding carries no file contents.
+  - If the restore can't happen, the run is skipped.
+  - Tests: `test_a_changed_shim_is_restored_and_reported`, `test_an_unrestorable_shim_skips_the_run`, `test_the_shim_record_is_outside_the_runs_reach`.
+- **`builtin/` is denied to runs (done in 2A: `profile.AGENT_DATA_REDENY`).** agy loads `builtin/skills` and `builtin/plugins` into every later session. That is vendor content outside review.
+  - Scout's own skill edits go through the vault and the plugin's reviewed path.
+  - If agy ever needs skills a run edited, Scout generates them at install time from its reviewed skills, outside the run (2I).
+
 **2C done when:** the translation table test is green for every fixture, the generated config is drift-tested, and `hooks.json` is byte-identical.
 
 ---
@@ -315,6 +330,7 @@ Tests: `test_install_writes_only_its_own_key`, `test_install_is_idempotent`, `te
 - Failure-mode rows (findings §1.4) are re-measured with a test hook and recorded as pinned facts. A change in either direction fails the probe and names the row.
 - The cache is `.scout-state/agent-runtime-probes.json`, keyed by runtime, version, hook code hash and gate config hash. `Antigravity.capabilities()` returns `DECLARED | proven` from the cache entry for this version, else `DECLARED` (so `check` refuses an unproven version).
 - `check` runs the probe itself, for free, when the installed version has no cache entry (spec §8.3 rule 4).
+- The probe runs agy's first start for a new version outside the sandbox, so a migration never happens inside a run. It also records `bin/agentapi`'s checksum for the runner's verify-and-restore (2C.4, Jordan 2026-11-25).
 - Tests (stub agy that replays recorded stream-json and hook calls): `test_a_new_agy_version_reprobes`, `test_the_probe_fails_on_a_canary_leak`, `test_a_changed_failure_mode_row_fails_the_probe`, `test_capabilities_follow_the_cache`. A real-agy run is a CI job only where agy installs without a login (decide in this task, from 2A's notes).
 
 ### Task 2E.3: `probe antigravity --real-login` and `verified.json`
@@ -390,3 +406,6 @@ Tests: `test_install_writes_only_its_own_key`, `test_install_is_idempotent`, `te
 5. **The local-server deny stays on** even if 2A finds no bypass. Lifting it is its own PR.
 6. **`default_model()`** is fixed in 2B from `agy models`, not guessed here.
 7. **Denied calls are counted, not failed.** agy exits 0 after a deny (findings §1.1), so the run stands and health shows the count.
+8. **agy's first start never happens in a run** (Jordan, 2026-11-25). `install` and the per-version probe start agy outside the sandbox. There is no carve-out in `~/.gemini/config`, and a run that meets a first start fails closed (2C.4, 2E.2).
+9. **A run can't write agy's `builtin/` skills and plugins** (Jordan, 2026-11-25). They reach every later agy session, and they are vendor content outside review (2A, `profile.AGENT_DATA_REDENY`).
+10. **`bin/agentapi` is verified and restored around each agy run** (Jordan, 2026-11-25). agy needs to write it. A change is restored and reported; a failed restore skips the run (2C.4).
