@@ -86,11 +86,16 @@ def _strings(value: Any, field: str = "") -> Iterator[tuple[str, str]]:
 
 def flagged_fields(vault: Path, tool_input: Mapping[str, Any], surface: str) -> dict[str, list[int]]:
     """Field → line numbers that name a private note. Never the matched text."""
-    from scout.kb.outbound import check_outbound
+    from scout.kb import outbound
 
+    # Once for the call, not once per field: building the terms walks the vault (about a second on
+    # a mature one), so a call with eleven strings used to run past DEADLINE_S.
+    terms = outbound.outbound_terms(vault, surface)
     out: dict[str, list[int]] = {}
+    if terms is None:
+        return out
     for field, text in _strings(tool_input):
-        lines = check_outbound(vault, text, surface)
+        lines = outbound.find_mentions(text, terms, allow_markers=False)
         if lines:
             out[field] = lines
     return out

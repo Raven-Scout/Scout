@@ -79,29 +79,35 @@ your personal account's id with respect to this bot.
 
 ## 4. Capture the chat-id
 
-Telegram surfaces the chat-id via the Bot API's `getUpdates` method. Run:
+Run:
 
 ```bash
-TOKEN="$(cat ~/.scout-secrets/telegram-bot-token)"
-curl -s "https://api.telegram.org/bot${TOKEN}/getUpdates" | jq '.result[0].message.chat.id'
+scoutctl telegram find-chat-id
 ```
 
-You should see a number — usually a 9–10 digit positive int for personal
-DMs, or a negative int for group chats. Save it:
+It lists each private chat that has messaged your bot, as `<chat-id>` and
+the sender's first name. The id is usually a 9–10 digit positive int. It
+reads updates without confirming them, so it is safe to run more than once
+and never takes messages away from Scout's inbound polling. Save the id:
 
 ```bash
 printf '%s' '987654321' > ~/.scout-secrets/telegram-chat-id
 chmod 600 ~/.scout-secrets/telegram-chat-id
 ```
 
-> **If `getUpdates` returns an empty `result` array,** you haven't actually
-> sent the bot a message yet. Go back to step 3 and send any text. Telegram
-> only retains updates for ~24h and only for chats with recent activity.
+> **If it finds nothing,** you haven't sent the bot a message yet. Go back
+> to step 3 and send any text. Telegram only retains updates for ~24h and
+> only for chats with recent activity. Once the inbound trigger is on, it
+> confirms the updates it reads, so a raw `getUpdates` call (or this command)
+> can come back empty even though you did message the bot.
 
-> **Group chats are supported** but require an extra step — add the bot to
-> the group, then post anything in the group. The chat-id will be negative.
-> Use the same file path; the value can be either a string or a number per
-> Telegram's API. Scout treats it as a raw string.
+> **Group chats are supported for outbound notifications** but require an
+> extra step — add the bot to the group, then post anything in the group.
+> `scoutctl telegram find-chat-id` lists it as `group (outbound only)` with
+> the group's title; its chat-id is negative. Use the same file path; the
+> value can be either a string or a number per Telegram's API. Scout treats
+> it as a raw string. Inbound immediate-response handling is private-chat
+> only: messages in a group are ignored.
 
 ## 5. Verify with a dry-run
 
@@ -154,13 +160,15 @@ will.
 
 The runners (`run-scout.sh`, `run-dreaming.sh`, `run-research.sh`) only say
 that a wrap message is owed. The brain file's notification section names the
-channel and the recipient:
+channel and the recipient. `run-respond.sh` (the immediate-response run, started
+by the inbound trigger) sends no wrap at all:
 
 | Runner             | Reads the channel from                                               |
 |--------------------|----------------------------------------------------------------------|
 | `run-scout.sh`     | `SKILL.md`'s notification sections                                   |
 | `run-dreaming.sh`  | `DREAMING.md`'s notification section, else `SKILL.md`'s              |
 | `run-research.sh`  | `RESEARCH.md`'s Step 4d, else `SKILL.md`'s notification sections     |
+| `run-respond.sh`   | `RESPOND.md`'s Step 6: the one reply to your messages, threaded under the newest (`--reply-to`), no wrap |
 
 Turn it on with the `telegram` connector:
 
@@ -243,7 +251,7 @@ scoutctl notify telegram --tier info --parse-mode html \
 - **Scout keeps only `http://`, `https://` and `mailto:` links, written as
   `<a href="…">` with no other attribute.** Any other `<a>` (`tg://`,
   `obsidian://`, `javascript:`, a second `href`, `target=…`) is replaced by
-  its label before sending, and a `warning: dropped N link(s) …` line goes to
+  its label before sending, and a `warning: dropped N links …` line goes to
   stderr.
   Telegram itself would keep a `tg://` deep link live (join a chat, add a
   proxy) and silently drop an `obsidian://` link. Put such a path in `<code>`
@@ -288,7 +296,7 @@ chunk (about 2000 characters of nesting): Scout stops carrying them over.
 | `HTTP error: 401 Unauthorized`                                    | Token revoked by BotFather (`/revoke`) or copy-paste corruption.            |
 | `HTTP error: 400 Bad Request: chat not found`                     | Wrong chat-id, or you never DM'd the bot (step 3 missed).                   |
 | `warning: Telegram refused the HTML of chunk …`                  | `--parse-mode html` body has an unsupported or unclosed tag, or an unescaped `<`/`&`. The chunk was sent as plain text. |
-| `warning: dropped N link(s) whose href is not http(s) or mailto` | `--parse-mode html` body has an `<a href>` with another scheme. The link was sent as its plain label. |
+| `warning: dropped 1 link whose href …` / `warning: dropped N links whose href is not http(s) or mailto` | `--parse-mode html` body has an `<a href>` with another scheme. The link was sent as its plain label. |
 | Bot reachable but no message arrives                              | Check phone notification settings — silent push respects Do Not Disturb.    |
 | `getUpdates` returns empty `result`                              | No recent activity in the chat. Send the bot a message; retry within 24h.   |
 

@@ -50,6 +50,68 @@ struct PerFileItemWriterPureTests {
         #expect(updated.contains("# X\nbody"))
     }
 
+    // MARK: trailing YAML comments on keyword fields
+
+    /// The frontmatter line for `key` after rewriting it to `value`.
+    private func rewrittenLine(_ line: String, key: String, value: String) throws -> String {
+        let text = "---\ntitle: X\n\(line)\n---\n\n# X\nbody"
+        let updated = try PerFileItemWriter.rewriteFrontmatterField(text: text, key: key, value: value, file: "x.md")
+        #expect(updated.hasPrefix("---\ntitle: X\n") && updated.hasSuffix("\n---\n\n# X\nbody"))
+        return try #require(updated.components(separatedBy: "\n").first { $0.lowercased().hasPrefix(key) })
+    }
+
+    @Test func rewriteKeepsUnquotedTrailingComment() throws {
+        #expect(try rewrittenLine("status: open   # parked 2026-01-02 — waiting on vendor", key: "status", value: "in-progress")
+                == "status: in-progress   # parked 2026-01-02 — waiting on vendor")
+        #expect(try rewrittenLine("priority: low\t# bumped later", key: "priority", value: "urgent")
+                == "priority: urgent\t# bumped later")
+    }
+
+    @Test func rewriteKeepsCommentAfterClosingQuote() throws {
+        #expect(try rewrittenLine("status: \"open\"  # note", key: "status", value: "done") == "status: done  # note")
+        #expect(try rewrittenLine("status: 'open' # note", key: "status", value: "dropped") == "status: dropped # note")
+    }
+
+    @Test func rewriteDropsHashInsideQuotes() throws {
+        // A `#` inside the quotes is part of the value, not a comment.
+        #expect(try rewrittenLine("status: \"open # not a comment\"", key: "status", value: "done") == "status: done")
+    }
+
+    @Test func rewriteKeepsHashNotAfterWhitespaceAsValue() throws {
+        // `high#x` is one bare scalar; there's no comment to keep.
+        #expect(try rewrittenLine("priority: high#x", key: "priority", value: "urgent") == "priority: urgent")
+    }
+
+    @Test func rewriteWithoutCommentIsUnchanged() throws {
+        #expect(try rewrittenLine("status: open", key: "status", value: "done") == "status: done")
+        #expect(try rewrittenLine("status: open   ", key: "status", value: "done") == "status: done")
+        #expect(try rewrittenLine("status: \"open\"", key: "status", value: "done") == "status: done")
+        #expect(try rewrittenLine("status: \"open", key: "status", value: "done") == "status: done")  // unterminated
+    }
+
+    @Test func rewriteKeepsCommentOnEmptyValue() throws {
+        #expect(try rewrittenLine("status: # set me", key: "status", value: "open") == "status: open # set me")
+    }
+
+    @Test func rewriteSeparatesCommentGluedToClosingQuote() throws {
+        // `"open"# note` must not become `done# note`, which reads back as one scalar.
+        #expect(try rewrittenLine("status: \"open\"# note", key: "status", value: "done") == "status: done # note")
+    }
+
+    @Test func rewriteLeavesFreeTextHashAlone() throws {
+        // Free-text fields keep `#` as content (`Pattern #197`), so there is no comment to carry over.
+        #expect(try rewrittenLine("source: Pattern #197", key: "source", value: "Alex DM") == "source: Alex DM")
+    }
+
+    @Test func rewrittenCommentedStatusParsesAsNewValue() throws {
+        let text = "---\ntitle: X\nstatus: done   # retired 2026-01-02 — expired\npriority: \"low\" # why\n---\n\n# X\nbody"
+        var updated = try PerFileItemWriter.rewriteFrontmatterField(text: text, key: "status", value: "open", file: "x.md")
+        updated = try PerFileItemWriter.rewriteFrontmatterField(text: updated, key: "priority", value: "high", file: "x.md")
+        #expect(updated.contains("status: open   # retired 2026-01-02 — expired\npriority: high # why\n"))
+        let item = try #require(PerFileItemParser.parseFile(contents: updated, fileURL: URL(fileURLWithPath: "/tmp/x.md")))
+        #expect(item.status == .open && item.priority == .high)
+    }
+
     @Test func rewriteFieldThrowsWhenFieldMissing() throws {
         let text = "---\ntitle: X\nstatus: open\n---\n\n# X\nbody"  // no priority:
         #expect(throws: PerFileItemWriterError.fieldNotFound(field: "priority", file: "x.md")) {
@@ -171,6 +233,39 @@ struct PerFileItemWriterE2ETests {
         try await writer.setStatus(.open, fileURL: fileURL, label: "X")
         #expect(try String(contentsOf: fileURL, encoding: .utf8).contains("status: open"))
         #expect(try #require(runner.calls.last).arguments.contains("app: reopen X"))
+    }
+
+    @Test func setStatusKeepsInlineComment() async throws {
+        let vault = try makeVault(); defer { try? FileManager.default.removeItem(at: vault) }
+        let fileURL = vault.appendingPathComponent("docs/wishlist/2026-06-10-x.md")
+        try "---\ntitle: X\nstatus: done   # retired 2026-06-12 — expires reached\npriority: high\ndate: 2026-06-10\n---\n\n# X\nbody"
+            .write(to: fileURL, atomically: true, encoding: .utf8)
+        let writer = PerFileItemWriter(scoutDirectory: vault, gitService: GitService(repoURL: vault, runner: okRunner()), now: { Self.fixedDate() })
+        try await writer.setStatus(.open, fileURL: fileURL, label: "X")
+        #expect(try String(contentsOf: fileURL, encoding: .utf8)
+                == "---\ntitle: X\nstatus: open   # retired 2026-06-12 — expires reached\npriority: high\ndate: 2026-06-10\n---\n\n# X\nbody")
+    }
+
+    @Test func setPriorityKeepsCommentAfterQuotedValue() async throws {
+        let vault = try makeVault(); defer { try? FileManager.default.removeItem(at: vault) }
+        let fileURL = vault.appendingPathComponent("docs/wishlist/2026-06-10-x.md")
+        try "---\ntitle: X\nstatus: open\npriority: \"medium\"  # lowered after review\ndate: 2026-06-10\n---\n\n# X\nbody"
+            .write(to: fileURL, atomically: true, encoding: .utf8)
+        let writer = PerFileItemWriter(scoutDirectory: vault, gitService: GitService(repoURL: vault, runner: okRunner()), now: { Self.fixedDate() })
+        try await writer.setPriority(.urgent, fileURL: fileURL, label: "X")
+        #expect(try String(contentsOf: fileURL, encoding: .utf8)
+                == "---\ntitle: X\nstatus: open\npriority: urgent  # lowered after review\ndate: 2026-06-10\n---\n\n# X\nbody")
+    }
+
+    @Test func resolveWithoutCommentWritesBareValue() async throws {
+        let vault = try makeVault(); defer { try? FileManager.default.removeItem(at: vault) }
+        let fileURL = vault.appendingPathComponent("docs/wishlist/2026-06-10-x.md")
+        try "---\ntitle: X\nstatus: open\npriority: high\ndate: 2026-06-10\n---\n\n# X\nbody"
+            .write(to: fileURL, atomically: true, encoding: .utf8)
+        let writer = PerFileItemWriter(scoutDirectory: vault, gitService: GitService(repoURL: vault, runner: okRunner()), now: { Self.fixedDate() })
+        try await writer.resolve(.dropped, fileURL: fileURL, label: "X")
+        #expect(try String(contentsOf: fileURL, encoding: .utf8)
+                == "---\ntitle: X\nstatus: dropped\npriority: high\ndate: 2026-06-10\n---\n\n# X\nbody")
     }
 
     @Test func statusCommitMessageMapping() {

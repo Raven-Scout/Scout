@@ -36,14 +36,14 @@ import subprocess
 import sys
 import time as _time
 import traceback
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from scout import config as scout_config
-from scout import paths
+from scout import events, paths, safe_write
 from scout.errors import ConfigError
 from scout.events import Event, now_iso
 from scout.ids import new_ulid
@@ -313,20 +313,14 @@ def _write_last_fire_cache(
     """Atomically write the last-fire index cache. Best-effort — never raises."""
     state_dir.mkdir(parents=True, exist_ok=True)
     cache_path = state_dir / LAST_FIRE_CACHE_FILENAME
-    tmp_path = cache_path.with_suffix(".json.tmp")
     payload = {
         "schema_version": _LAST_FIRE_CACHE_SCHEMA_VERSION,
         "tracker_mtime_ns": _file_mtime_ns(tracker_path),
         "session_tokens_mtime_ns": _file_mtime_ns(session_tokens_path),
         "last_fire": {key: ts.astimezone(_dt.UTC).isoformat().replace("+00:00", "Z") for key, ts in index.items()},
     }
-    try:
-        with tmp_path.open("w", encoding="utf-8") as f:
-            json.dump(payload, f)
-        os.replace(tmp_path, cache_path)
-    except OSError:
-        with contextlib.suppress(OSError):
-            tmp_path.unlink()
+    with contextlib.suppress(OSError):
+        safe_write.atomic_write_text(cache_path, json.dumps(payload))
 
 
 def _get_last_fire_index(state_dir: Path, tracker_path: Path) -> dict[str, _dt.datetime]:
@@ -363,7 +357,7 @@ def _record_fire(tracker_path: Path, slot_key: str, slot: Slot, now: _dt.datetim
         "scout_mode": slot_key,
         "source": "schedule.tick",
     }
-    with tracker_path.open("a", encoding="utf-8") as f:
+    with safe_write.open_append(tracker_path, on_unsafe=_on_unsafe(tracker_path.parent)) as f:
         f.write(json.dumps(row) + "\n")
 
 
@@ -529,8 +523,13 @@ def _network_ready(
 # ----- runner spawn -------------------------------------------------------
 
 
-def _spawn_runner(vault: Path, slot_key: str, slot: Slot) -> int:
+def _spawn_runner(vault: Path, slot_key: str, slot: Slot, *, trigger: str | None = None) -> int:
     """Spawn the runner for ``slot_key``. Returns the child PID.
+
+    ``trigger`` goes to the run as ``SCOUT_TRIGGER``, which the run ledger's
+    ``trigger`` records (``run_trigger`` in run-outcome.sh). ``fire_now``
+    passes ``manual``: a person pressed Run now. The tick passes nothing, so
+    the runner records ``schedule`` from ``SCOUT_FORCE_MODE``.
 
     Raises ``FileNotFoundError`` if the runner script is missing — that
     propagates from ``subprocess.Popen`` when the file does not exist on
@@ -548,13 +547,17 @@ def _spawn_runner(vault: Path, slot_key: str, slot: Slot) -> int:
             f"Edit ~/Scout/.scout-state/schedule.yaml and set runtime: local, "
             f"or delete the slot."
         )
-    runner_path = vault / slot.runner
+    from scout.schedule import check_runner
+
+    runner_path = vault / check_runner(slot.runner, f"slot {slot_key}")  # again: a Slot can be built in code
     env = os.environ.copy()
     env["SCOUT_FORCE_MODE"] = slot_key
     env["SCOUT_DATA_DIR"] = str(vault)
     # The run reads the vault as the owner's unattended reader (#453, spec §6.2),
     # whatever runner the slot names (a vault-local one may not export it).
     env["SCOUT_READER"] = "autonomous"
+    if trigger is not None:
+        env["SCOUT_TRIGGER"] = trigger
     proc = subprocess.Popen(
         [str(runner_path)],
         cwd=str(vault),
@@ -607,24 +610,32 @@ def _emit_event(
         "source": ev.source,
         "payload": ev.payload,
     }
-    with log_path.open("a", encoding="utf-8") as f:
+    with safe_write.open_append(log_path, on_unsafe=_on_unsafe(log_dir)) as f:
         f.write(json.dumps(row) + "\n")
     return ev
+
+
+def _on_unsafe(log_dir: Path) -> safe_write.OnUnsafe:
+    """A link, hard link or non-file a run put at the tick's lock or logs is removed and made again, never
+    followed, and recorded: a refusal there would stop every tick (and every scheduled run) until someone looked."""
+    return events.unsafe_file_recorder(log_dir, kind="schedule.tick.unsafe_file_replaced", source="cli:schedule_tick")
 
 
 # ----- concurrency lock ---------------------------------------------------
 
 
 @contextlib.contextmanager
-def _try_lock(lock_path: Path) -> Iterator[bool]:
+def _try_lock(lock_path: Path, *, log_dir: Path | None = None) -> Iterator[bool]:
     """Acquire an exclusive non-blocking flock on ``lock_path``.
 
     Yields ``True`` if the lock was acquired (and releases it on exit),
-    ``False`` if another process is holding it.
+    ``False`` if another process is holding it. Never through a link a run put
+    there; with ``log_dir``, such a link is replaced and recorded rather than refused.
     """
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
-    try:
+    on_unsafe = _on_unsafe(log_dir) if log_dir is not None else None
+    with safe_write.open_lock(lock_path, mode=0o644, on_unsafe=on_unsafe) as fh:
+        fd = fh.fileno()
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -635,9 +646,6 @@ def _try_lock(lock_path: Path) -> Iterator[bool]:
         finally:
             with contextlib.suppress(OSError):
                 fcntl.flock(fd, fcntl.LOCK_UN)
-    finally:
-        with contextlib.suppress(OSError):
-            os.close(fd)
 
 
 # ----- main entry points --------------------------------------------------
@@ -690,7 +698,7 @@ def run() -> Event:
     lock_path = state / LOCK_FILENAME
     tracker_path = log_dir / TRACKER_FILENAME
 
-    with _try_lock(lock_path) as acquired:
+    with _try_lock(lock_path, log_dir=log_dir) as acquired:
         if not acquired:
             return _emit_event(
                 log_dir,
@@ -704,6 +712,168 @@ def run() -> Event:
             log_dir=log_dir,
             tracker_path=tracker_path,
             started_at=started_at,
+        )
+
+
+# Delegate mirrors (#550 V2c): only a vault with this file imports scout.delegate_mirror on a tick.
+_DELEGATE_STATE = ".scout-state/delegate-mirrors.json"
+_DELEGATE_LOG = "delegate-sync.log"
+
+
+def _spawn_delegate_sync(vault: Path, log_dir: Path) -> int:
+    """Start ``scoutctl delegate sync --all --if-moved`` detached, so its pushes never hold the tick lock."""
+    env = os.environ.copy()
+    env["SCOUT_DATA_DIR"] = str(vault)
+    env.pop("SCOUT_MODE", None)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    from scout._spawn import python_module_argv
+
+    with safe_write.open_append(log_dir / _DELEGATE_LOG, on_unsafe=_on_unsafe(log_dir)) as log:
+        proc = subprocess.Popen(
+            python_module_argv("scout", "delegate", "sync", "--all", "--if-moved"),
+            cwd=str(Path.home()),  # never the vault, on top of -P: the vault reaches it as SCOUT_DATA_DIR
+            env=env,
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+    return proc.pid
+
+
+def _sync_delegates(*, vault: Path, log_dir: Path, spawn: Callable[[Path, Path], int] | None = None) -> None:
+    """Start a delegate-mirror sync when some mirror may be behind and none started for 15 minutes. Never raises.
+
+    So hand edits (Obsidian) reach the owner's agents between scheduled runs,
+    which sync at their own end. A vault with no delegate links costs one stat.
+    """
+    if not (vault / _DELEGATE_STATE).exists() or _in_a_run():
+        return
+    try:
+        from scout import delegate_mirror
+
+        if not delegate_mirror.due(vault):
+            return
+        delegate_mirror.mark_started(vault)
+        pid = (spawn or _spawn_delegate_sync)(vault, log_dir)
+        _emit_event(log_dir, kind="delegate_mirror.sync_started", source="cli:schedule_tick", payload={"pid": pid})
+    except Exception as exc:
+        _emit_event(
+            log_dir,
+            kind="delegate_mirror.spawn_failed",
+            source="cli:schedule_tick",
+            payload={"error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
+# The delegates' inboxes (#550 V4b1): pulled and applied between runs, as the owner, never inside a run.
+_INBOX_STATE = ".scout-state/delegate-inbox/state.json"
+_INBOX_LOG = "delegate-inbox-sync.log"
+
+
+def _in_a_run() -> bool:
+    """Whether this tick runs inside a scheduled run (#517's rule): it then starts no step that acts as the owner
+    (the mirror sync, the inbox sync), since those drop SCOUT_MODE and SCOUT_READER for their child."""
+    from scout.kb.reader import is_scheduled
+
+    return is_scheduled(os.environ)
+
+
+def _spawn_inbox_sync(vault: Path, log_dir: Path) -> int:
+    """Start ``scoutctl inbox sync`` detached. ``SCOUT_MODE`` and ``SCOUT_READER`` are both removed: the sync is
+    the owner's (apply refuses a run's reader by design), and it holds the session lock only briefly."""
+    env = os.environ.copy()
+    env["SCOUT_DATA_DIR"] = str(vault)
+    env.pop("SCOUT_MODE", None)
+    env.pop("SCOUT_READER", None)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    from scout._spawn import python_module_argv
+
+    with safe_write.open_append(log_dir / _INBOX_LOG, on_unsafe=_on_unsafe(log_dir)) as log:
+        proc = subprocess.Popen(
+            python_module_argv("scout", "inbox", "sync"),
+            cwd=str(Path.home()),  # never the vault: the vault reaches it as SCOUT_DATA_DIR
+            env=env,
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+    return proc.pid
+
+
+def _sync_inboxes(
+    *, vault: Path, log_dir: Path, now: _dt.datetime, spawn: Callable[[Path, Path], int] | None = None
+) -> None:
+    """Start an inbox sync when an inbox is linked, none started for 15 minutes, and no slot fires within the next
+    5 minutes (a sync never stands in a run's way). Never raises; a vault with no inbox costs one stat."""
+    if not (vault / _INBOX_STATE).exists() or _in_a_run():
+        return
+    try:
+        from scout import delegate_inbox_sync
+
+        schedule = _load_or_default(vault)
+        soon = now + delegate_inbox_sync.SLOT_GUARD  # tomorrow's first slot counts too, across midnight
+        targets = [
+            t for slot in schedule.values() for t in (slot.target_today(now=now), slot.target_today(now=soon)) if t
+        ]
+        if not delegate_inbox_sync.due(vault, now=now, slot_times=targets):
+            return
+        delegate_inbox_sync.mark_started(vault)
+        pid = (spawn or _spawn_inbox_sync)(vault, log_dir)
+        _emit_event(log_dir, kind="delegate_inbox.sync_started", source="cli:schedule_tick", payload={"pid": pid})
+    except Exception as exc:
+        _emit_event(
+            log_dir,
+            kind="delegate_inbox.spawn_failed",
+            source="cli:schedule_tick",
+            payload={"error": f"{type(exc).__name__}: {exc}"},
+        )
+
+
+# The run brokers' queue (Phase 1d, scout.sandbox.broker): what a run asked for while its broker didn't answer.
+_BROKER_QUEUE = ".scout-state/broker-queue"
+_BROKER_LOG = "broker-drain.log"
+
+
+def _spawn_broker_drain(vault: Path, log_dir: Path) -> int:
+    """Start ``scoutctl broker drain`` detached, outside any sandbox, so a slow commit never holds the tick lock."""
+    env = os.environ.copy()
+    env["SCOUT_DATA_DIR"] = str(vault)
+    env.pop("SCOUT_RUN_BROKER", None)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    from scout._spawn import python_module_argv
+
+    with safe_write.open_append(log_dir / _BROKER_LOG, on_unsafe=_on_unsafe(log_dir)) as log:
+        proc = subprocess.Popen(
+            python_module_argv("scout", "broker", "drain", "--vault", str(vault)),
+            cwd=str(Path.home()),
+            env=env,
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+    return proc.pid
+
+
+def _drain_brokers(*, vault: Path, log_dir: Path, spawn: Callable[[Path, Path], int] | None = None) -> None:
+    """Start a broker drain when a run left something queued. Never raises; an empty queue costs a few stats."""
+    if not (vault / _BROKER_QUEUE).is_dir():
+        return
+    try:
+        from scout.sandbox import broker
+
+        if broker.pending(vault) == 0:  # reads the queue without following a link
+            return
+        pid = (spawn or _spawn_broker_drain)(vault, log_dir)
+        _emit_event(log_dir, kind="broker.drain_started", source="cli:schedule_tick", payload={"pid": pid})
+    except Exception as exc:
+        _emit_event(
+            log_dir,
+            kind="broker.drain_spawn_failed",
+            source="cli:schedule_tick",
+            payload={"error": f"{type(exc).__name__}: {exc}"},
         )
 
 
@@ -740,6 +910,9 @@ def _do_tick(
 ) -> Event:
     # Event triggers evaluate first (spec: docs/specs/event-triggers.md §Event flow).
     _evaluate_triggers(vault=vault, log_dir=log_dir)
+    _sync_delegates(vault=vault, log_dir=log_dir)
+    _sync_inboxes(vault=vault, log_dir=log_dir, now=_now())
+    _drain_brokers(vault=vault, log_dir=log_dir)
 
     schedule = _load_or_default(vault)
     last_fire = _get_last_fire_index(state_dir, tracker_path)
@@ -902,7 +1075,7 @@ def fire_now(slot_key: str) -> Event:
     lock_path = state / LOCK_FILENAME
     tracker_path = log_dir / TRACKER_FILENAME
 
-    with _try_lock(lock_path) as acquired:
+    with _try_lock(lock_path, log_dir=log_dir) as acquired:
         if not acquired:
             return _emit_event(
                 log_dir,
@@ -932,7 +1105,9 @@ def fire_now(slot_key: str) -> Event:
         target_local = now.isoformat()
         target_utc = _target_utc_iso(now)
         try:
-            pid = _spawn_runner(vault, slot_key, slot)
+            # A person started it: the ledger says `trigger: manual` while the
+            # slot names the schedule, so the app can mark it "Started by you".
+            pid = _spawn_runner(vault, slot_key, slot, trigger="manual")
         except (FileNotFoundError, OSError, ConfigError) as exc:
             return _emit_event(
                 log_dir,

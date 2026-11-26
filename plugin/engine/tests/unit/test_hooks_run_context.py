@@ -69,6 +69,7 @@ def _rows(path: Path) -> list[dict]:
     [
         (RESEARCH_PROMPT, "research"),
         ("You are Scout running in DREAMING mode — the evening session.", "dreaming"),
+        ("You are Scout running in RESPOND mode — answering the owner's pending Telegram messages now.", "respond"),
         (SLOT_PROMPT, "midday-consolidation"),
         ([{"type": "text", "text": RESEARCH_PROMPT}], "research"),
         ("summarize my inbox", None),

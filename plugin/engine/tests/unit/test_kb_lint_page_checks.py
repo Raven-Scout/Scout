@@ -223,7 +223,7 @@ def test_a_private_page_gets_only_paths_line_numbers_and_counts(kb_repo) -> None
     kb_repo.stage(FRONT, page(SECTIONS[:5], extra="Finding 12 says so.\n", frontmatter="visibility: private\n"))
     found = {f.check: f for f in findings(kb_repo)}
     assert set(found) == {"page-sections", "page-narration"}
-    assert "2 required section(s)" in found["page-sections"].message
+    assert "2 required sections" in found["page-sections"].message
     assert "Go deeper" not in found["page-sections"].message and "History" not in found["page-sections"].message
     assert "Finding" not in found["page-narration"].message and found["page-narration"].line
 

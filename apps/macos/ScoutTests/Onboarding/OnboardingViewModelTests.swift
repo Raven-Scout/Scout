@@ -83,11 +83,11 @@ struct OnboardingViewModelTests {
                runner: RuleBasedRunner = RuleBasedRunner(), resolve: @escaping @Sendable (String) -> String? = { _ in nil },
                makeInstaller: @escaping (@escaping @Sendable (InstallProgress) -> Void) -> EngineInstaller? = { _ in nil },
                handoff: @escaping @MainActor (String) throws -> Void = { _ in },
-               appVault: URL? = nil) -> OnboardingViewModel {
+               appVault: URL? = nil, authorDefaults: UserDefaults? = nil) -> OnboardingViewModel {
         let l = layout ?? self.layout
         return OnboardingViewModel(engineState: engineState, layout: l, release: release, runner: runner,
                                    prerequisites: checker(runner, layout: l, resolve: resolve), makeInstaller: makeInstaller,
-                                   handoff: handoff, appVault: appVault, onFinished: {})
+                                   handoff: handoff, appVault: appVault, authorDefaults: authorDefaults, onFinished: {})
     }
 
     // MARK: step machine
@@ -465,8 +465,11 @@ struct OnboardingViewModelTests {
         #expect(OnboardingViewModel.parseDailyBudget("1e3") == nil)
         #expect(OnboardingViewModel.parseDailyBudget("abc") == nil)
 
+        // Asked on About you, with the other details, not on Connectors (#90).
         let m = model()
-        m.step = .connectors
+        m.step = .identity
+        m.identity.userName = "Alex"
+        m.identity.userEmail = "alex@example.com"
         #expect(m.canContinue)            // empty: optional
         m.dailyBudget = "ten"
         #expect(!m.canContinue)           // non-empty and invalid blocks
@@ -501,14 +504,14 @@ struct OnboardingViewModelTests {
         return VaultFixture(home: home, layout: EngineLayout(home: home), vault: vault, runner: runner)
     }
 
-    fileprivate func vaultModel(_ f: VaultFixture, sinks: SinkBox? = nil) -> OnboardingViewModel {
+    fileprivate func vaultModel(_ f: VaultFixture, sinks: SinkBox? = nil, authorDefaults: UserDefaults? = nil) -> OnboardingViewModel {
         let layout = f.layout, runner = f.runner
         let m = model(layout: layout, release: releaseFixture, runner: runner, makeInstaller: { sink in
             sinks?.append(sink)
             return EngineInstaller(layout: layout, release: releaseFixture, tarballURL: nil, runner: runner,
                             uv: UvInstaller(release: releaseFixture.uv, layout: layout, downloader: NoDownloads(), runner: runner, systemCandidates: []),
                             claude: URL(fileURLWithPath: "/c"), progress: sink)
-        })
+        }, authorDefaults: authorDefaults)
         m.prerequisites = ready
         m.vaultPath = f.vault.path
         m.identity.userName = "Alex"; m.identity.userEmail = "alex@example.com"
@@ -538,6 +541,48 @@ struct OnboardingViewModelTests {
         let auto = f.runner.calls(to: "scoutctl").first { $0.starts(with: ["bootstrap", "auto"]) }
         #expect(auto?.contains("--connectors") == true && auto?.contains("email") == true)
         #expect(!m.busy)
+    }
+
+    /// UI audit #85: the "About you" name signs the owner's comments, so
+    /// they aren't signed "user". A throwaway suite, never the app's defaults.
+    @Test func createVaultMakesTheAboutYouNameTheCommentByline() async throws {
+        let f = try vaultFixture()
+        defer { try? FileManager.default.removeItem(at: f.home) }
+        let suite = "scout.tests.onboarding-author.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let m = vaultModel(f, authorDefaults: defaults)
+        m.identity.userName = "  Alex Rivera "
+        m.step = .vault
+        await m.createVault()
+        #expect(m.progress[.bootstrapVault]?.status == .done)
+        #expect(defaults.string(forKey: CommentAuthor.defaultsKey) == "Alex Rivera")
+        #expect(CommentAuthor.configuredName(defaults) == "Alex Rivera")
+    }
+
+    @Test func createVaultKeepsANameAlreadySetInSettings() async throws {
+        let f = try vaultFixture()
+        defer { try? FileManager.default.removeItem(at: f.home) }
+        let suite = "scout.tests.onboarding-author.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("priya", forKey: CommentAuthor.defaultsKey)
+        let m = vaultModel(f, authorDefaults: defaults)
+        m.step = .vault
+        await m.createVault()
+        #expect(defaults.string(forKey: CommentAuthor.defaultsKey) == "priya")
+    }
+
+    @Test func aFailedBootstrapWritesNoByline() async throws {
+        let f = try vaultFixture(bootstrapOK: false)
+        defer { try? FileManager.default.removeItem(at: f.home) }
+        let suite = "scout.tests.onboarding-author.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let m = vaultModel(f, authorDefaults: defaults)
+        m.step = .vault
+        await m.createVault()
+        #expect(defaults.string(forKey: CommentAuthor.defaultsKey) == nil)
     }
 
     @Test func aDailyBudgetFailureIsSurfacedButDoesNotFailSetup() async throws {

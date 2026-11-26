@@ -190,8 +190,8 @@ def _refuse_system_side_effects(cmd: list[str], env: dict[str, str]) -> None:
     """A fixture install must never touch launchd, cron or ~/.local/bin. Without --no-jobs,
     `bootstrap install` boots out and replaces the user's real loaded scheduler jobs; a real HOME
     would put anything else that slips through into the user's own dotfiles."""
-    if "--no-jobs" not in cmd or "--skip-claude" not in cmd:
-        raise RuntimeError(f"refusing a fixture install without --no-jobs/--skip-claude: {cmd}")
+    if "--no-jobs" not in cmd:
+        raise RuntimeError(f"refusing a fixture install without --no-jobs: {cmd}")
     if Path(env.get("HOME", "")).resolve() == Path.home().resolve():
         raise RuntimeError("refusing a fixture install with the real HOME")
 
@@ -209,10 +209,10 @@ def _install_from(checkout: Checkout, dest: Path, connectors: frozenset[str], in
         HOME=str(install_home),
         PATH=f"{STUB_BIN}{os.pathsep}{env.get('PATH', '')}",  # refusing launchctl/crontab first
     )
-    # -P: the current directory must not shadow PYTHONPATH. --no-jobs and --skip-claude are what
-    # keep a fixture install off launchd: without them it replaces the user's real scheduler jobs.
+    # -P: the current directory must not shadow PYTHONPATH. --no-jobs is what keeps a fixture
+    # install off launchd: without it the install replaces the user's real scheduler jobs.
     cmd = [
-        sys.executable, "-P", "-m", "scout", "bootstrap", "install", "--no-jobs", "--skip-claude",
+        sys.executable, "-P", "-m", "scout", "bootstrap", "install", "--no-jobs",
         "--instance-name", "Scout", "--user-name", FIXTURE_USER, "--user-email", FIXTURE_EMAIL,
         "--timezone", "UTC", "--platform", "macos", "--connectors", ",".join(sorted(connectors)),
         "--user-slack-id", inputs["user_slack_id"], "--github-username", inputs["github_username"],
@@ -231,8 +231,8 @@ def _install_from(checkout: Checkout, dest: Path, connectors: frozenset[str], in
 def _refuse_jobs(cfg: BootstrapConfig) -> None:
     """The in-process install runs with the real HOME in a live eval run (the keychain login
     needs it), so jobs must be off: they'd replace the user's real scheduler jobs."""
-    if not (cfg.skip_jobs and cfg.skip_claude):
-        raise RuntimeError("refusing a fixture install without skip_jobs/skip_claude")
+    if not cfg.skip_jobs:
+        raise RuntimeError("refusing a fixture install without skip_jobs")
 
 
 def _seed_scheduler_tick(vault: Path, at: datetime) -> None:
@@ -260,7 +260,6 @@ def _install_here(dest: Path, connectors: frozenset[str], inputs: dict[str, str]
         enabled_connectors=set(connectors),
         connector_inputs=dict(inputs),
         skip_jobs=True,
-        skip_claude=True,
     )
     _refuse_jobs(cfg)
     install(cfg)

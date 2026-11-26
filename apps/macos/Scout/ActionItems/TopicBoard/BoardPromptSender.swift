@@ -41,17 +41,17 @@ enum BoardPromptSender {
     }
 
     @MainActor
-    static func send(_ prompt: String, session: String?, scoutDirectory: URL, cli: CLIConfig) throws -> String {
+    static func send(_ prompt: String, session: String?, scoutDirectory: URL, cli: CLIConfig) async throws -> String {
         let route = route(for: session)
         switch route {
         case .resume(let id, let folder):
             copy(prompt)
-            try ClaudeLauncher.resume(cliSessionID: id, cwd: folder, config: cli)
+            try await ClaudeLauncher.resume(cliSessionID: id, cwd: folder, config: cli)
         case .open(let url):
             copy(prompt)
             NSWorkspace.shared.open(url)
         case .newSession:
-            try startSession(prompt, in: scoutDirectory, cli: cli)
+            try await startSession(prompt, in: scoutDirectory, cli: cli)
         }
         return confirmation(for: route)
     }
@@ -59,11 +59,11 @@ enum BoardPromptSender {
     /// A new Claude Code session in Claude Desktop, or in the terminal set in
     /// Settings when Claude Desktop isn't installed.
     @MainActor
-    private static func startSession(_ prompt: String, in folder: URL, cli: CLIConfig) throws {
+    private static func startSession(_ prompt: String, in folder: URL, cli: CLIConfig) async throws {
         do {
-            try ClaudeLauncher.launch(target: .claudeDesktop(.code(folder: folder)), prompt: prompt)
+            try await ClaudeLauncher.launch(target: .claudeDesktop(.code(folder: folder)), prompt: prompt)
         } catch ClaudeLauncher.LaunchError.claudeDesktopNotInstalled {
-            try ClaudeLauncher.launch(target: .cli(cwd: folder, config: cli), prompt: prompt)
+            try await ClaudeLauncher.launch(target: .cli(cwd: folder, config: cli), prompt: prompt)
         }
     }
 

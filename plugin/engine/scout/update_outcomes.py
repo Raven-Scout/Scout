@@ -9,9 +9,13 @@ breaks an evaluation.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+
+from scout import events, safe_write
+from scout.plain_text import one_line
 
 LEDGER = ".scout-logs/update-outcomes.jsonl"
 RESULTS = (
@@ -63,7 +67,8 @@ class UpdateOutcome:
 def append(vault: Path, row: UpdateOutcome) -> None:
     path = vault / LEDGER
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
+    record = events.unsafe_file_recorder(path.parent, kind="self_update.unsafe_file_replaced", source="self_update")
+    with safe_write.open_append(path, on_unsafe=record) as f:
         f.write(json.dumps(row.to_json(), sort_keys=True) + "\n")
 
 
@@ -73,8 +78,16 @@ def _epoch(value: object) -> datetime | None:
     return datetime.fromtimestamp(value, UTC)
 
 
-def _str_or_none(value: object) -> str | None:
-    return value if isinstance(value, str) else None
+# The shapes the updater writes, so a hand-edited or forged row can't carry free text into health or a prompt.
+DETAIL_MAX = 300
+_VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,40}")
+_LOG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.log")
+# `managed_by` (install.sh, claude-code, scout-app, dev, unknown) and the doctor severity are short names.
+_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9._-]{0,40}")
+
+
+def _token_or_none(value: object, pattern: re.Pattern[str]) -> str | None:
+    return value if isinstance(value, str) and pattern.fullmatch(value) else None
 
 
 def _parse(obj: object) -> UpdateOutcome | None:
@@ -82,23 +95,24 @@ def _parse(obj: object) -> UpdateOutcome | None:
         return None
     at = _epoch(obj.get("at"))
     result, step = obj.get("result"), obj.get("step")
-    from_version, managed_by = obj.get("from"), obj.get("managed_by")
+    from_version = _token_or_none(obj.get("from"), _VERSION_RE)
+    managed_by = _token_or_none(obj.get("managed_by"), _NAME_RE)
     if at is None or result not in RESULTS or step not in STEPS:
         return None
-    if not isinstance(from_version, str) or not isinstance(managed_by, str):
+    if from_version is None or managed_by is None:
         return None
     sidecars = obj.get("sidecars")
     return UpdateOutcome(
         at=at,
         from_version=from_version,
-        target=_str_or_none(obj.get("target")),
+        target=_token_or_none(obj.get("target"), _VERSION_RE),
         managed_by=managed_by,
         result=result,
         step=step,
-        doctor=_str_or_none(obj.get("doctor")),
+        doctor=_token_or_none(obj.get("doctor"), _NAME_RE),
         sidecars=tuple(s for s in sidecars if isinstance(s, str)) if isinstance(sidecars, list) else (),
-        detail=_str_or_none(obj.get("detail")) or "",
-        log=_str_or_none(obj.get("log")),
+        detail=one_line(obj.get("detail"), limit=DETAIL_MAX),
+        log=_token_or_none(obj.get("log"), _LOG_RE),
         release_published_at=_epoch(obj.get("release_published_at")),
     )
 

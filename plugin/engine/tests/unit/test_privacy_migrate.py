@@ -89,7 +89,7 @@ def test_report_lists_paths_only_and_says_they_count_as_private(vault: Path) -> 
     result = cli()
     assert result.exit_code == 0, result.output
     assert DRAFT in result.output
-    assert "already count as private" in result.output
+    assert "it already counts as private" in result.output
     _no_private_content(result.output)
 
     data = json.loads(cli("--json").output)
@@ -434,7 +434,7 @@ def test_set_private_rewrites_a_quoted_value_without_keeping_its_text(vault: Pat
 
 
 def test_a_failed_write_leaves_the_note_and_no_temp_file(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def boom(src: str, dst: object) -> None:
+    def boom(src: str, dst: object, **_kw: object) -> None:
         raise OSError("disk full")
 
     monkeypatch.setattr(pm.os, "replace", boom)
@@ -579,7 +579,7 @@ def test_strict_load_handles_an_unhashable_key() -> None:
 def test_report_lines_for_each_list_alone() -> None:
     assert pm.MigrationReport().lines() == ["privacy migration: nothing to do"]
     links = pm.MigrationReport(private_links=[("drafts/a.md", [2, 5])]).lines()
-    assert links[0].startswith("private links: 1 shared file(s)")
+    assert links[0].startswith("private links: 1 shared file")
     assert "  drafts/a.md: lines 2, 5" in links
     single = pm.MigrationReport(private_links=[("drafts/a.md", [2])]).lines()
     assert "  drafts/a.md: line 2" in single

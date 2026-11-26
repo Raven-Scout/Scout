@@ -55,8 +55,8 @@ projects/<name>/
    `last_verified:` and `verified_against:`, never in a "Last verified" line or blockquote at the
    top.
 4. **Plain sentences, short bullets.** Keep a bullet to two lines at most, with one bold phrase at
-   most; in "Where it stands", at most ~300 characters, which `kb lint` checks. What doesn't fit
-   goes in the linked topic note, not in a second long bullet. No walls of bold. Use tables only
+   most; in "Where it stands", at most 6 bullets of at most ~300 characters, which `kb lint` and
+   `kb structure` check. What doesn't fit goes in the linked topic note, not in a second long bullet. No walls of bold. Use tables only
    for people, decisions and dates.
 5. **Absolute dates.** Write "Mar 12", or "Mar 12, 2026" when the year matters. Never "yesterday" or
    "last run". Times only when they matter, labelled with their zone (`%Z`).
@@ -174,17 +174,19 @@ local-only (`kb classify`), because a new copy could widen it or hit a hard priv
 where a rebuild could write into a share; restructure those by hand. The pass only trims a
 shared page that is over budget or carries narration: it cuts whole lines (never a heading), and
 moves a line only into an existing note in the folder that isn't shared. On a local-only project nothing leaves the folder: keep source notes and moved files
-inside it. A page too big for one session takes several nights: archive it once, on the first night,
-move one area into `knowledge/` a night (the page only has to shrink), and rewrite it once the rest
-fits.
+inside it. The pass doesn't start a full rebuild of a page over `kb_structure.nightly_max_bytes`
+(12 KB by default): that waits for an interactive session, where it gets rebuilt in one sitting. It
+orders the rest by priority × days since `as_of`. A page too big for one session takes several nights:
+archive it once, on the first night, move one area into `knowledge/` a night (the page only has to
+shrink), and rewrite it once the rest fits.
 
 1. Copy the page verbatim to `projects/<name>/archive/<name>-YYYY-MM-DD-pre-restructure.md`. Lint
    skips `archive/`, so the copy's size and old headings are fine.
 2. Move the durable knowledge into topic notes in `projects/<name>/knowledge/` (cited, at most
    10 KB each) and the decisions into the decisions note. An old `decision-log.md` merges into it.
    Meetings, docs, PRs and decision threads go in source notes. Sort every other loose file in the
-   folder into `documents/`, `research/` or `archive/` (or out of the folder) with `git mv`: an old
-   `nav-history.md` goes to `archive/`. Find path-style links with `scripts/scoutctl kb search --fixed
+   folder into `documents/`, `research/` or `archive/` (or out of the folder) with `mv`: an old
+   `nav-history.md` goes to `archive/`. Find path-style links with `scripts/scoutctl kb search --all --fixed
    'projects/<name>/'` and repoint them in the same commit, and name both paths of each move when you
    commit with `scripts/git-safe-commit.sh`. Leave a loose file labelled private, shared or local-only
    where it is. Don't drop facts. Superseded facts go into a topic's

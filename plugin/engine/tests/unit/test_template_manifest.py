@@ -78,7 +78,6 @@ def _config(vault: Path) -> BootstrapConfig:
         enabled_connectors={"slack"},
         connector_inputs={"user_slack_id": "U0123456789"},
         skip_jobs=True,
-        skip_claude=True,
     )
 
 

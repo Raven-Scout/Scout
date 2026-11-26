@@ -269,6 +269,19 @@ def test_empty_runner_raises(tmp_path):
         load_schedule(bad)
 
 
+@pytest.mark.parametrize("runner", ["custom.sh", "scripts/claude-with-retry.sh", "../run-scout.sh", "/bin/sh"])
+def test_a_runner_that_isnt_one_of_scouts_raises(tmp_path, runner):
+    """The tick starts the runner outside any run's sandbox, and schedule.yaml is in the vault (review of #642)."""
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(
+        "schema_version: 1\nslots:\n  bad-slot:\n    type: briefing\n"
+        f"    runner: '{runner}'\n    fires_at_local: '08:00'\n    weekdays: [Mon]\n"
+        "    missed_window_hours: 4\n    on_miss: fire\n    cooldown_minutes: 60\n"
+    )
+    with pytest.raises(ConfigError, match="runner must be one of"):
+        load_schedule(bad)
+
+
 def test_overlay_path_layered_on_seed_when_present(tmp_path, monkeypatch):
     """If <vault>/.scout-state/schedule.local.yaml exists, layer on top of the canonical."""
     canonical = tmp_path / "schedule.yaml"

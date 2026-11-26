@@ -90,6 +90,7 @@ def _stub_scoutctl(tmp_path: Path, *, answer: str | None) -> tuple[Path, Path]:
 
 def _run(script: Path, slot_key: str, **extra_env: str) -> subprocess.CompletedProcess:
     env = {k: v for k, v in os.environ.items() if not k.startswith("SCOUT_")}
+    env["SCOUT_RUN_SANDBOX"] = "off"  # the runners' write sandbox needs a real engine (tests/conftest.py)
     env["SCOUT_FORCE_MODE"] = slot_key
     env.update(extra_env)
     return subprocess.run([str(script)], env=env, capture_output=True, text=True, timeout=60)
@@ -140,7 +141,11 @@ def test_runner_falls_back_to_opus_when_resolve_fails(tmp_path: Path, name: str,
 
 
 @pytest.mark.parametrize(("name", "slot_key"), RUNNERS)
-def test_runner_without_an_engine_runs_on_opus(tmp_path: Path, name: str, slot_key: str) -> None:
+def test_runner_without_an_engine_never_launches_claude(tmp_path: Path, name: str, slot_key: str) -> None:
+    """No engine, no gate probe: the run is skipped rather than run ungated (spec 2026-11-13 §3.5, review of #635).
+
+    The opus fallback for a resolve that fails is test_runner_falls_back_to_opus_when_resolve_fails.
+    """
     scout_dir = tmp_path / "Scout"
     scout_dir.mkdir()
     script = _render(TEMPLATES / name, scout_dir, "/nonexistent/scoutctl")
@@ -149,7 +154,8 @@ def test_runner_without_an_engine_runs_on_opus(tmp_path: Path, name: str, slot_k
     result = _run(script, slot_key)
 
     assert result.returncode == 0, result.stderr + _log(scout_dir)
-    assert _model_arg(argv_file) == ["--model", "opus"]
+    assert not argv_file.exists()
+    assert "scoutctl is missing" in _log(scout_dir)
 
 
 @pytest.mark.parametrize(("name", "slot_key"), RUNNERS)

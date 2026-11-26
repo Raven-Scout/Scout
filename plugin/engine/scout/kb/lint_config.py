@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from scout.config import config_load_problem, load_config, user_value
+from scout.plural import noun
 
 _MODES = frozenset({"report", "block"})
 _SCOPE_PREFIXES = ("knowledge-base/", "action-items/")
@@ -53,7 +54,24 @@ REPORT_UNTIL_NAMED = frozenset({"page-loose", "page-sections", "page-narration",
 # The blocking checks a mode decides; only these are worth naming in `checks:`.
 MODE_CHECKS = frozenset({"size", "mega-line", "diary"}) | REPORT_UNTIL_NAMED
 # Block in every mode and ignore SCOUT_LINT_OVERRIDE (#453, spec §8.2/§8.3; scout.kb.lint_privacy).
-PRIVACY_BLOCKING = frozenset({"private-link", "private-mention", "privacy-widening", "privacy-check-failed"})
+# shared-source-*: a note built from someone's shared note (Agnes #6090 §7). They were blocking findings but
+# missing here, so they blocked only where a path's lint mode was `block` (#550 review of #738).
+# delegate-source-private: an agent's text not promoted, made normal (#550 V4b2).
+PRIVACY_BLOCKING = frozenset(
+    {
+        "private-link",
+        "private-mention",
+        "privacy-widening",
+        "privacy-check-failed",
+        "shared-source-private",
+        "shared-source-reshared",
+        "delegate-source-private",
+    }
+)
+# Block in every mode, but unlike PRIVACY_BLOCKING SCOUT_LINT_OVERRIDE still overrides them: a broken
+# lab thread would otherwise reach the app and the runs that parse it, and a vault on `mode: report`
+# (or a `path_modes` rule saying so) is not a reason to let one in. `mode_for` answers `block` for them.
+ALWAYS_BLOCKING = frozenset({"lab-format"})
 # Warnings: never block, whatever the mode.
 WARNING_CHECKS = frozenset(
     {
@@ -66,10 +84,13 @@ WARNING_CHECKS = frozenset(
         "frontmatter-unparseable",
         "privacy-overlay-unreadable",
         "local-only-unchecked",
+        "link-leaves-scope",
+        "settings-file-replaced",
         "page-config",
+        "lab-understanding-size",
     }
 )
-KNOWN_CHECKS = MODE_CHECKS | PRIVACY_BLOCKING | WARNING_CHECKS
+KNOWN_CHECKS = MODE_CHECKS | PRIVACY_BLOCKING | ALWAYS_BLOCKING | WARNING_CHECKS
 
 
 @dataclass(frozen=True)
@@ -227,7 +248,7 @@ CONFIG_FILE = "scout-config.yaml"
 def in_privacy_scope(rel: str, shared_files: tuple[str, ...]) -> bool:
     """Whether the privacy checks (#453, spec §8.2) look at ``rel``.
 
-    Wider than :meth:`LintConfig.in_scope`: markdown under ``knowledge-base/``
+    Wider than :meth:`LintConfig.in_scope`: markdown (any case of ``.md``) under ``knowledge-base/``
     and ``action-items/`` (exclude globs don't apply: they are size-lint
     tuning), every file matching a ``shared_files`` glob whatever its suffix,
     and ``scout-config.yaml`` (the widening guard watches its ``privacy:``
@@ -235,7 +256,7 @@ def in_privacy_scope(rel: str, shared_files: tuple[str, ...]) -> bool:
     """
     if rel == CONFIG_FILE:
         return True
-    if rel.endswith(".md") and rel.startswith(_SCOPE_PREFIXES):
+    if rel.lower().endswith(".md") and rel.startswith(_SCOPE_PREFIXES):  # `.MD` too: git and macOS keep the case
         return True
     return any_match(shared_files, rel)
 
@@ -281,8 +302,9 @@ class LintConfig:
         """The mode a finding of ``check`` on ``rel`` is enforced in: the first
         matching ``path_modes`` rule's, else the global ``mode``. A
         :data:`REPORT_UNTIL_NAMED` check matches only a rule that names it, and
-        otherwise reports. ``block`` for every check while the config doesn't load."""
-        if self.config_problem is not None:
+        otherwise reports. ``block`` for every check while the config doesn't load,
+        and for an :data:`ALWAYS_BLOCKING` check whatever the rules say."""
+        if self.config_problem is not None or check in ALWAYS_BLOCKING:
             return "block"
         named_only = check in REPORT_UNTIL_NAMED
         for r in self.path_modes:
@@ -303,7 +325,10 @@ class LintConfig:
         return f"{self.mode}, per path" if self.path_modes else self.mode
 
     def in_scope(self, rel: str) -> bool:
-        return rel.endswith(".md") and rel.startswith(_SCOPE_PREFIXES) and not any_match(self.exclude_globs, rel)
+        # Any case of `.md`, as in_privacy_scope and the classifier read it (#605): `x.MD` is a note too.
+        return (
+            rel.lower().endswith(".md") and rel.startswith(_SCOPE_PREFIXES) and not any_match(self.exclude_globs, rel)
+        )
 
     def budget_for(self, rel: str) -> int | None:
         for b in self.budgets:
@@ -379,6 +404,8 @@ def _rule_checks(value: Any, where: str, warn: Warn) -> frozenset[str] | None:
     for check in checks:
         if check not in KNOWN_CHECKS:
             warn(f"{where} names unknown check {check!r}, which it can never match; known: {sorted(MODE_CHECKS)}")
+        elif check in ALWAYS_BLOCKING:
+            warn(f"{where} names {check!r}, which blocks in every mode, so the rule changes nothing for it")
         elif check not in MODE_CHECKS:
             warn(f"{where} names {check!r}, which no mode changes: privacy always blocks, warnings never do")
     return frozenset(checks)
@@ -391,7 +418,7 @@ def _path_mode(d: Any, where: str, warn: Warn) -> PathMode | None:
         return None
     unknown = sorted(str(k) for k in d if k not in _RULE_KEYS)
     if unknown:
-        warn(f"{where} has unknown key(s) {unknown}, ignored; known: {sorted(_RULE_KEYS)}")
+        warn(f"{where} has unknown {noun(len(unknown), 'key')} {unknown}, ignored; known: {sorted(_RULE_KEYS)}")
     glob = d.get("glob")
     if not isinstance(glob, str) or not glob:
         warn(f"{where} has glob {glob!r}, not a path glob, so the rule is dropped")
@@ -459,7 +486,7 @@ def _section_mistakes(cfg: dict[str, Any], data_dir: Path | None, warn: Warn) ->
     raw = cfg.get("kb_lint")
     unknown = sorted(str(k) for k in raw if k not in _KB_LINT_KEYS) if isinstance(raw, dict) else []
     if unknown:
-        warn(f"kb_lint has unknown key(s) {unknown}, ignored; known: {sorted(_KB_LINT_KEYS)}")
+        warn(f"kb_lint has unknown {noun(len(unknown), 'key')} {unknown}, ignored; known: {sorted(_KB_LINT_KEYS)}")
 
 
 def _fail_closed(cfg: LintConfig, problem: str) -> LintConfig:

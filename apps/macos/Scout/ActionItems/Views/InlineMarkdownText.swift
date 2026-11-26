@@ -197,7 +197,7 @@ struct InlineMarkdownText: View {
         // iterating `s.runs` would be walking a collection as it reshapes.
         let ranges = s.runs.filter { $0.link?.scheme == KBTag.scheme }.map(\.range)
         for range in ranges {
-            s[range].font = DS.mono(11.5, weight: .medium)
+            s[range].font = DS.font(.caption, .mono, weight: .medium)
             s[range].foregroundColor = DS.Accent.ink
             s[range].backgroundColor = DS.Accent.wash
             // Markdown links default to underlined accent-blue; a chip is
@@ -206,24 +206,24 @@ struct InlineMarkdownText: View {
         }
     }
 
-    /// `[[target]]` / `[[target|alias]]` — compiled once; rewriteWikilinks runs
-    /// for every cache miss and regex compilation dominates its cost.
-    private static let wikilinkRe = try! NSRegularExpression(
-        pattern: #"\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]"#
-    )
-
     /// Linear issue key, e.g. `PROJ-1234`.
     private static let linearRe = try! NSRegularExpression(pattern: #"^[A-Z]{2,10}-\d+$"#)
 
     /// Replace ``[[target]]`` / ``[[target|alias]]`` with ``[label](scout-wiki://target)``
     /// so AttributedString(markdown:) renders them as clickable links we intercept.
+    /// What counts as a wikilink is `Wikilink`'s rule, the one the knowledge
+    /// base counts links and backlinks by. Its alias separator may be escaped
+    /// as `\|`, the form notes use inside table cells; without that, the
+    /// backslash stayed on the target and the link went nowhere.
     private static func rewriteWikilinks(_ s: String) -> String {
-        let ns = s as NSString
         var result = s
-        let matches = wikilinkRe.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed()
-        for m in matches {
-            let target = ns.substring(with: m.range(at: 1))
-            let label  = m.range(at: 2).location == NSNotFound ? target : ns.substring(with: m.range(at: 2))
+        // A wikilink inside an inline code span is code, not a link.
+        let code = CodeSpanScanner.ranges(in: s)
+        for m in Wikilink.matches(in: s).reversed()
+        where !code.contains(where: { NSIntersectionRange($0, m.range).length > 0 }) {
+            let target = m.target
+            // An alias written inside a table cell escapes its own pipes too (`a\|b`).
+            let label = m.alias?.replacingOccurrences(of: "\\|", with: "|") ?? target
             let encoded = target.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) ?? target
             let replacement = "[\(label)](scout-wiki://\(encoded))"
             result = (result as NSString).replacingCharacters(in: m.range, with: replacement)
@@ -254,19 +254,35 @@ struct InlineMarkdownText: View {
 
     /// `target` arrives already percent-decoded from `target(of:)`.
     private func openWikilink(target decoded: String) -> OpenURLAction.Result {
-        // In-app navigation first (Knowledge Base). If the handler resolves the
-        // target it returns true and we stop; otherwise route it.
-        if let kbWikilinkHandler, kbWikilinkHandler(decoded) { return .handled }
+        Self.openWikilink(target: decoded, kbHandler: kbWikilinkHandler, openKBNote: openKBNote)
+            ? .handled : .discarded
+    }
+
+    /// Open a clicked wikilink: in-app navigation first (the Knowledge Base
+    /// handler, which returns true when it resolved the target), else route
+    /// it. Shared with the KB's web reader. Returns whether anything opened.
+    @discardableResult
+    static func openWikilink(target decoded: String, kbHandler: ((String) -> Bool)?,
+                             openKBNote: StableAction<String>?) -> Bool {
+        if let kbHandler, kbHandler(decoded) { return true }
         let workspace = UserDefaults.standard.string(forKey: "linearWorkspace") ?? ""
-        switch Self.route(for: decoded, canOpenKBNote: openKBNote != nil, linearWorkspace: workspace) {
+        switch route(for: decoded, canOpenKBNote: openKBNote != nil, linearWorkspace: workspace) {
         case .kbNote(let target):
             openKBNote?(target)
-            return .handled
+            return true
         case .external(let url):
             NSWorkspace.shared.open(url)
-            return .handled
+            return true
         case nil:
-            return .discarded
+            return false
         }
+    }
+
+    /// `raw` with tags, GitHub refs and wikilinks rewritten as markdown links
+    /// (`scout-tag://`, `https://github.com/…`, `scout-wiki://`) — the same
+    /// rewriting this view renders from. The KB's web reader runs it line by
+    /// line, so it must never add or remove a newline (it doesn't).
+    static func linkifiedMarkdown(_ raw: String) -> String {
+        rewriteWikilinks(GitHubRefLinkifier.linkify(KBTag.linkify(raw)))
     }
 }

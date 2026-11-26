@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from scout.scripts.brain_merge import (
+    BRAIN_KINDS,
     PROVENANCE_FILE,
     Action,
     Provenance,
@@ -95,7 +96,7 @@ def test_the_fingerprint_matches_what_assembly_writes(tmp_path: Path) -> None:
         enabled_connectors=set(),
         connector_inputs={},
     )
-    for kind in ("SKILL", "DREAMING", "RESEARCH"):
+    for kind in BRAIN_KINDS:
         assert _assemble(cfg, kind).startswith(assembly_fingerprint(kind))
 
 
@@ -215,7 +216,7 @@ def test_unset_fields_are_left_out_of_the_file() -> None:
     assert '"snapshot"' not in dumps_provenance({"SKILL.md": Provenance(sha256="ab" * 32)})
 
 
-_ALL_INVALID = {f"{k}.md": Provenance(snapshot="invalid") for k in ("SKILL", "DREAMING", "RESEARCH")}
+_ALL_INVALID = {f"{k}.md": Provenance(snapshot="invalid") for k in BRAIN_KINDS}
 
 
 def test_a_missing_provenance_file_reads_as_no_records(tmp_path: Path) -> None:

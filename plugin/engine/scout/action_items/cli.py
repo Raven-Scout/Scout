@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 import typer
 
 from scout.errors import ActionItemError
+from scout.plural import count, have
 
 if TYPE_CHECKING:
     from scout.events import Event
@@ -477,7 +478,10 @@ def cli_archive_stale(
     verbatim to `action-items/archive/stale-items-YYYY-MM.md` — nothing is
     deleted.
     """
+    from contextlib import nullcontext
+
     from scout import paths
+    from scout.action_items.fit import apply_lock
     from scout.action_items.stale import STALE_AFTER_DAYS, archive_stale
     from scout.config import today
 
@@ -489,7 +493,9 @@ def cli_archive_stale(
             day = _dt.date.fromisoformat(date)
         except ValueError as e:
             raise ActionItemError(f"--date: invalid date {date!r}") from e
-    archived = archive_stale(data_dir=vault, date=day, max_age_days=days or STALE_AFTER_DAYS, dry_run=dry_run)
+    # It rewrites the daily file and the backlog: like fit, never race a live run (the run's own call goes ahead).
+    with nullcontext() if dry_run else apply_lock(vault):
+        archived = archive_stale(data_dir=vault, date=day, max_age_days=days or STALE_AFTER_DAYS, dry_run=dry_run)
     if not archived:
         sys.stdout.write("archive-stale: nothing untouched long enough to archive\n")
         return
@@ -498,6 +504,135 @@ def cli_archive_stale(
     sys.stdout.write(f"archive-stale: {verb} {len(archived)} {noun}:\n")
     for item in archived:
         sys.stdout.write(f"  [#{item.tag}] unchanged since {item.last_changed.isoformat()}\n")
+
+
+@app.command("fit")
+def cli_fit(
+    date: str | None = typer.Option(
+        None, "--date", help="Day whose file to fit, YYYY-MM-DD (default: today in the configured timezone)."
+    ),
+    apply: bool | None = typer.Option(
+        None,
+        "--apply/--dry-run",
+        help="Write the changes, or only report them (default: action_items.fit in scout-config.yaml).",
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+) -> None:
+    """Keep today's daily file to its budget: backlog, open-task cap, context notes, Recently Completed.
+
+    Moves 🅿️ Parked, 🟢 Watching and 🟡 tasks not due within 14 days to
+    `action-items/backlog.md` (and backlog 🟡 tasks that came due back), spills
+    the bottom of 🟡 past the open-task cap, moves extra prose sub-bullets to
+    each task's context note and deletes completed Recently Completed entries
+    past 3 days (git keeps them). No open task is deleted. `materialize` runs it once a day; with
+    `action_items.fit: report` (the default) it only reports, to
+    `.scout-logs/action-items-fit.json`.
+    """
+    from scout import paths
+    from scout.action_items.budget import load_settings
+    from scout.action_items.fit import apply_lock, fit
+    from scout.config import today
+
+    vault = data_dir or paths.data_dir()
+    if date is None:
+        day = today(vault)
+    else:
+        try:
+            day = _dt.date.fromisoformat(date)
+        except ValueError as e:
+            raise ActionItemError(f"--date: invalid date {date!r}") from e
+    settings = load_settings(vault)
+    writing = settings.fit == "apply" if apply is None else apply
+    if writing:
+        # Like retitle: never race a live run's edits (a fit the run starts itself goes ahead).
+        with apply_lock(vault):
+            result = fit(data_dir=vault, date=day, apply=True, settings=settings)
+    else:
+        result = fit(data_dir=vault, date=day, apply=False, settings=settings)
+    if result is None:
+        raise ActionItemError(f"no daily file for {day.isoformat()}")
+    applied = result.applied
+    if json_out:
+        sys.stdout.write(_json.dumps({"applied": applied, "mode": settings.fit, **result.to_json()}) + "\n")
+        return
+    if not result.changed:
+        sys.stdout.write("fit: nothing to move — the daily file already fits\n")
+    else:
+        verb = "fitted" if applied else "would fit (dry run; `--apply` or action_items.fit: apply writes)"
+        sys.stdout.write(f"fit: {verb}: {result.summary()}\n")
+        for move in result.moves:
+            sys.stdout.write(f"  [#{move.tag}] {move.section} → {move.to} ({move.reason})\n")
+    if result.conflicts:
+        sys.stdout.write(
+            "fit: open in both files with different text, left alone (merge by hand): "
+            + ", ".join(f"[#{t}]" for t in result.conflicts)
+            + "\n"
+        )
+    if applied:
+        sys.stdout.write("fit: re-read the daily file and backlog.md before editing either\n")
+
+
+@app.command("check-size")
+def cli_check_size(
+    date: str | None = typer.Option(
+        None, "--date", help="Day whose file to check, YYYY-MM-DD (default: today in the configured timezone)."
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+) -> None:
+    """Check today's daily file against its budget (`action_items.budget` in scout-config.yaml).
+
+    Measures the file's size, its open tasks and the tasks carrying more prose
+    sub-bullets than allowed. Exit codes: 0 = within the target, 1 = over the
+    target or the hard limit (a warning: follow what it prints, then note it in
+    this run's 🪵 Run notes), 2 = cannot check.
+    """
+    from scout import paths
+    from scout.action_items.budget import load_settings, measure
+
+    name = "check-size"
+    day = _check_day(name, date, data_dir)
+    vault = data_dir or paths.data_dir()
+    target = paths.action_items_daily_path(vault, date=_dt.date.fromisoformat(day))
+    try:
+        text = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise _cannot_check(name, e, json_out) from e
+    from scout.action_items.fit import report_conflicts
+
+    settings = load_settings(vault)
+    budget = settings.budget
+    report = measure(text, budget)
+    conflicts = report_conflicts(vault, day=_dt.date.fromisoformat(day))
+    level = report.level(budget)
+    if json_out:
+        payload = {"day": day, **report.to_json(budget), "conflicts": conflicts}
+        sys.stdout.write(_json.dumps(payload) + "\n")
+    elif level == "ok":
+        sys.stdout.write(f"{name}: within budget ({report.bytes / 1024:.1f} KB, {report.open_tasks} open tasks)\n")
+    else:
+        label = "over the hard limit" if level == "hard" else "over the target"
+        sys.stdout.write(f"{name}: {label}:\n")
+        for problem in report.problems(budget):
+            sys.stdout.write(f"  {problem}\n")
+        first = (
+            "Run `scoutctl action-items fit`, re-read the daily file and backlog.md, then shorten"
+            if settings.fit == "apply"
+            else "`fit` is in report mode, so don't run it; shorten"
+        )
+        sys.stdout.write(
+            f"{first} anything this run wrote past the item format, and add `action items over budget: "
+            "<these numbers>` to this run's 🪵 Run notes entry.\n"
+        )
+    if conflicts and not json_out:
+        sys.stdout.write(
+            f"{name}: open twice with different text (fit left both copies): "
+            + ", ".join(f"[#{t}]" for t in conflicts)
+            + ". Merge each into one row if this run has the news; otherwise note it in 🪵 Run notes.\n"
+        )
+    if level != "ok":
+        raise typer.Exit(code=1)
 
 
 @app.command("check-review-requests")
@@ -879,6 +1014,250 @@ def cli_check_tier_ceiling(
         raise typer.Exit(code=1)
 
 
+@app.command("check-titles")
+def cli_check_titles(
+    date: str | None = typer.Option(
+        None, "--date", help="Day whose file to check, YYYY-MM-DD (default: today in the configured timezone)."
+    ),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+    json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+    list_all: bool = typer.Option(
+        False,
+        "--all",
+        help="Read-only inventory instead of the check: every open title over 80 characters, carried or not, "
+        "by tag and length with its stale clock. Never prints a title. Exit 0 (2 = cannot read).",
+    ),
+) -> None:
+    """Check task titles and Today's Focus in today's file against *Clean Title, Prose Body, Refs Block*.
+
+    A task title (the bold segment) that is new or changed since the newest
+    earlier daily file must be at most 80 characters; a title committed earlier
+    today is still new. Of the carried titles over the limit, the 5 longest in
+    🔴 Urgent in the baseline (today's file as last committed, else the earlier
+    one) are named, so re-running the check after shortening them doesn't name
+    the next 5. Other carried ones are left until a run
+    touches them for a real reason, since every rewording restarts the item's
+    stale clock. Today's Focus holds at most 5 bullets of at most 300
+    characters each.
+    Run it before committing a briefing or consolidation.
+    Exit codes: 0 = all within the limits, 1 = some are not, 2 = cannot check.
+    """
+    from scout.action_items.prefetched import PrefetchCheckError
+    from scout.action_items.titles import TITLE_MAX, check_titles
+
+    name = "check-titles"
+    day = _check_day(name, date, data_dir)
+    if list_all:
+        _list_long_titles(name, day, data_dir, json_out)
+        return
+    try:
+        result = check_titles(data_dir=data_dir, today=day)
+    except PrefetchCheckError as e:
+        raise _cannot_check(name, e, json_out) from e
+
+    if json_out:
+        sys.stdout.write(
+            _json.dumps(
+                {
+                    "checked": result.checked,
+                    "long_carried": result.long_carried,
+                    "findings": [
+                        {"label": f.label, "tag": f.tag, "problem": f.problem, "chars": f.chars, "carried": f.carried}
+                        for f in result.findings
+                    ],
+                    "passed": result.passed,
+                }
+            )
+            + "\n"
+        )
+    elif not result.passed:
+        n = len(result.findings)
+        sys.stdout.write(f"{name}: {n} problem{'s' if n != 1 else ''} with titles or Today's Focus:\n")
+        for f in result.findings:
+            sys.stdout.write(f"  {f.label} {f.problem}\n")
+        sys.stdout.write(
+            f"Rewrite each title named as a short imperative of at most {TITLE_MAX} characters (about 12 words), "
+            "and move the rest into the body after ` — ` or the task's context note: keep every fact, and keep "
+            "the [#TAG]. Trim Today's Focus to a bold lead and one sentence per bullet. Then run this again.\n"
+        )
+    else:
+        n_long = result.long_carried
+        carried = f"; {count(n_long, 'carried title')} still long, left for a later touch" if n_long else ""
+        sys.stdout.write(
+            f"{name}: {count(result.checked, 'task title')} and Today's Focus within the limits{carried}\n"
+        )
+    if not result.passed:
+        raise typer.Exit(code=1)
+
+
+def _list_long_titles(name: str, day: str, data_dir: Path | None, json_out: bool) -> None:
+    """`check-titles --all`: tags, lengths and stale clocks only, never a title."""
+    from scout.action_items.prefetched import PrefetchCheckError
+    from scout.action_items.titles import TITLE_MAX, list_long_titles
+
+    try:
+        listing = list_long_titles(data_dir=data_dir, today=day)
+    except PrefetchCheckError as e:
+        raise _cannot_check(name, e, json_out) from e
+    buckets = listing.buckets()
+    longest = max((t.chars for t in listing.long), default=0)
+    if json_out:
+        payload = {
+            "date": listing.date.isoformat(),
+            "limit": TITLE_MAX,
+            "checked": listing.checked,
+            "over": len(listing.long),
+            "longest": longest,
+            "buckets": buckets,
+            "items": [
+                {
+                    "tag": t.tag,
+                    "chars": t.chars,
+                    "section": t.section,
+                    "carried": t.carried,
+                    "last_changed": t.last_changed.isoformat(),
+                    "archive_due": t.archive_due.isoformat(),
+                }
+                for t in listing.long
+            ],
+        }
+        sys.stdout.write(_json.dumps(payload, ensure_ascii=False) + "\n")
+        return
+    bands = ", ".join(f"{label}: {n}" for label, n in buckets.items())
+    sys.stdout.write(
+        f"{name} --all: {len(listing.long)} of {listing.checked} open titles over {TITLE_MAX} characters"
+        f" (longest {longest}; {bands})\n"
+    )
+    for t in listing.long:
+        sys.stdout.write(
+            f"  [#{t.tag}] {t.chars} chars · {t.section or '-'} · {'carried' if t.carried else 'new'}"
+            f" · unchanged since {t.last_changed} · archives {t.archive_due} if untouched\n"
+        )
+
+
+@app.command("retitle")
+def cli_retitle(
+    date: str | None = typer.Option(
+        None, "--date", help="Day whose file to use, YYYY-MM-DD (default: today; --apply and --undo need today)."
+    ),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+    model: str = typer.Option("sonnet", "--model", help="Model the claude CLI proposes titles with."),
+    section: list[str] | None = typer.Option(
+        None, "--section", help="Only items in this section, by its emoji (e.g. 🔴). Repeatable."
+    ),
+    skip_within: int = typer.Option(
+        7, "--skip-archiving-within", min=0, help="Leave out items the stale archive takes within this many days."
+    ),
+    refresh: bool = typer.Option(False, "--refresh", help="Ask the model again for every row, not just new ones."),
+    apply_sha: str | None = typer.Option(
+        None, "--apply", metavar="WORKSHEET_SHA", help="Apply the worksheet the dry run printed this sha for."
+    ),
+    undo_commit: str | None = typer.Option(
+        None, "--undo", metavar="COMMIT", help="Put back the titles a cleanup commit shortened (with --yes)."
+    ),
+    yes: bool = typer.Option(False, "--yes", help="With --undo: do it. Without, --undo only shows what it would do."),
+) -> None:
+    """The owner's one-off title cleanup: shorten every open title over 80 characters, keeping each stale clock.
+
+    Run it yourself, in a terminal: it refuses in a scheduled run, without a TTY
+    and while a run of the vault is live. The dry run (the default) asks your
+    own `claude` login for proposals (API-key variables are removed from its
+    environment), checks each against *Clean Title, Prose Body, Refs Block*,
+    saves them to `.scout-cache/retitle/<date>.json` (edit any proposal there,
+    or set "skip": true, and run the dry run again) and prints a worksheet sha.
+    Nothing else is written. `--apply <sha>` then changes only the bold titles
+    in today's file, keeps each original word for word in the item's context
+    note (`former_title`), records each rewrite in
+    `.scout-state/title-rewrites.jsonl` so the 60-day clock is kept, and makes
+    one commit with `scripts/git-safe-commit.sh`. Undo it with
+    `--undo <commit> --yes`, never `git revert` on a later day: that drops the
+    records and restarts every clock from the cleanup day.
+    Exit codes: 0 = done, 1 = nothing to apply, 2 = refused or cannot run.
+    """
+    from scout import paths
+    from scout.action_items import retitle
+    from scout.action_items.prefetched import PrefetchCheckError
+    from scout.errors import DataDirError
+
+    name = "retitle"
+    day = _check_day(name, date, data_dir)
+    try:
+        vault = paths.require_data_dir(data_dir)
+        retitle.owner_gate(vault)
+        if undo_commit is not None:
+            _retitle_undo(vault, day, undo_commit, yes)
+            return
+        if apply_sha is not None:
+            result = retitle.apply(vault=vault, today=day, sha=apply_sha, commit=retitle.git_safe_commit)
+            for tag in result.drifted:
+                sys.stdout.write(f"  [#{tag}] skipped: changed since the dry run\n")
+            if not result.applied:
+                sys.stdout.write(f"{name}: nothing applied\n")
+                raise typer.Exit(code=1)
+            n = len(result.applied)
+            sys.stdout.write(
+                f"{name}: shortened {n} title{'s' if n != 1 else ''}, clocks kept; committed {result.commit}\n"
+                f"Undo with: scoutctl action-items retitle --undo {result.commit} --yes (not git revert)\n"
+            )
+            return
+        sheet = retitle.plan(
+            vault=vault,
+            today=day,
+            proposer=retitle.ask_claude(model),
+            sections=tuple(section or ()),
+            skip_within=skip_within,
+            refresh=refresh,
+        )
+    except (retitle.RetitleError, PrefetchCheckError, DataDirError) as e:
+        sys.stdout.write(f"{name}: {e}\n")
+        raise typer.Exit(code=2) from e
+
+    ready = [r for r in sheet.rows if r.ready]
+    for r in sheet.rows:
+        clock = (
+            "touched today, its clock restarts regardless"
+            if r.touched_today
+            else f"unchanged since {r.last_changed}, archive due {r.archive_due}: kept"
+        )
+        new = len(r.proposed) if r.proposed is not None else "?"
+        sys.stdout.write(f"[#{r.tag}] {r.chars} → {new}  {r.section or '-'}  {clock}\n")
+        if r.skip:
+            sys.stdout.write(f"    skip: {'yours' if r.skip is True else r.skip}\n")
+            continue
+        if r.proposed is not None:
+            sys.stdout.write(f"    new: {r.proposed}\n")
+        for problem in r.problems:
+            sys.stdout.write(f"    problem: {problem}\n")
+    skipped = sum(1 for r in sheet.rows if r.skip)
+    with_problems = len(sheet.rows) - skipped - len(ready)
+    sys.stdout.write(
+        f"{name}: {len(ready)} to apply, {with_problems} with problems, {skipped} skipped — dry run, nothing changed\n"
+        f'Worksheet: {sheet.path} (edit a proposal or set "skip": true, then run this again)\n'
+        f"worksheet sha: {sheet.sha}\n"
+    )
+    if ready:
+        sys.stdout.write(f"Apply with: scoutctl action-items retitle --apply {sheet.sha}\n")
+
+
+def _retitle_undo(vault: Path, day: str, commit_sha: str, yes: bool) -> None:
+    from scout.action_items import retitle
+
+    if not yes:
+        undo_plan = retitle.plan_undo(vault=vault, today=day, commit_sha=commit_sha)
+    else:
+        undo_plan, sha = retitle.undo(vault=vault, today=day, commit_sha=commit_sha, commit=retitle.git_safe_commit)
+    for tag, (_cur, former) in undo_plan.restore.items():
+        note = "its note goes (the cleanup made it)" if tag in undo_plan.delete_notes else "its note's title goes back"
+        sys.stdout.write(f"  [#{tag}] back to the original ({len(former)} characters); {note}\n")
+    for tag in undo_plan.changed:
+        sys.stdout.write(f"  [#{tag}] left alone: changed since the cleanup\n")
+    n = len(undo_plan.restore)
+    if not yes:
+        sys.stdout.write(f"retitle --undo: would restore {count(n, 'title')}; run again with --yes to do it\n")
+    else:
+        sys.stdout.write(f"retitle --undo: restored {count(n, 'title')}, clocks kept; committed {sha}\n")
+
+
 @app.command("backfill-prefixes")
 def cli_backfill_prefixes(
     path: Path | None = typer.Argument(
@@ -905,7 +1284,7 @@ def cli_backfill_prefixes(
         sys.stdout.write("no unprefixed open tasks found\n")
         return
     verb = "would add" if dry_run else "added"
-    sys.stdout.write(f"{verb} {len(added)} prefix(es):\n")
+    sys.stdout.write(f"{verb} {count(len(added), 'prefix', 'prefixes')}:\n")
     for line_no, prefix, title in added:
         sys.stdout.write(f"  line {line_no}: [#{prefix}] {title}\n")
 
@@ -937,7 +1316,7 @@ def cli_backfill_context(
     data_dir = daily.parent.parent if daily is not None else paths.data_dir()
     report = backfill_context(data_dir=data_dir, snapshot=snapshot, daily=target, write=write)
     verb = "wrote" if write else "would write"
-    sys.stdout.write(f"{verb} {len(report.to_write)} note(s); {len(report.existing)} already had one\n")
+    sys.stdout.write(f"{verb} {count(len(report.to_write), 'note')}; {len(report.existing)} already had one\n")
     if report.missing:
         sys.stdout.write(f"no snapshot entry: {', '.join(report.missing)}\n")
     if report.ambiguous:
@@ -948,7 +1327,8 @@ def cli_backfill_context(
             sys.stdout.write(f"  'action-items/context/{tag}.md': null   # {size} bytes\n")
     if report.long_lines:
         sys.stdout.write(
-            f"{len(report.long_lines)} note(s) have line(s) over the kb-lint limit (blocking `mega-line` "
+            f"{count(len(report.long_lines), 'note')} {have(len(report.long_lines))} a line over the kb-lint limit "
+            "(blocking `mega-line` "
             "in block mode) — commit the backfill with SCOUT_LINT_OVERRIDE='restore pre-restructure context'\n"
         )
 

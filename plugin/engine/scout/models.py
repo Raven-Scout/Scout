@@ -42,11 +42,21 @@ class ResolvedModel:
     source: str  # env | slot | config | builtin
 
 
-def validate_model(value: object, *, where: str) -> str:
+def validate_model(value: object, *, where: str, runtime: str = "claude-code") -> str:
     """Return ``value`` normalised (stripped, lower case), or raise ConfigError.
 
     ``where`` names the setting in the message, e.g. ``slot 'midday-consolidation'``.
+    ``runtime`` is the agent runtime the model is for (spec 2026-11-13 §8.7): Claude
+    Code's rule is the one below; any other runtime's adapter checks its own IDs.
     """
+    if runtime != "claude-code":
+        from scout.agent_runtimes import registry
+
+        try:
+            adapter = registry.get(runtime)
+        except KeyError as e:
+            raise ConfigError(f"{where}: {e.args[0]}") from e
+        return adapter.validate_model(value, where=where)
     if isinstance(value, str):
         normalised = value.strip().lower()
         if normalised in ALIASES or _FULL_ID_RE.match(normalised):

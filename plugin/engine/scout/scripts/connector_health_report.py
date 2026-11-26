@@ -31,12 +31,14 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from scout import connector_calls, paths
+from scout import connector_calls, paths, safe_write
 from scout.config import resolve_timezone
 from scout.connectors import Capability, Connector, ConnectorRegistry, load_registry
 from scout.events import Event, now_iso
 from scout.ids import new_ulid
+from scout.plural import count
 from scout.schedule import SlotType
+from scout.sessions._atomic import atomic_write_text
 
 # Set for the length of one run(): the zone is read from the config once,
 # not once per rendered timestamp (11 config reads per report before #80).
@@ -64,6 +66,11 @@ DARK_GAP_THRESHOLD = 3
 # Pattern #54: if a connector logged a healthy run in ANY mode within this window,
 # a 0-call (not 0-error) current run is "alive but unused this mode", not an outage.
 CROSS_MODE_LIVENESS_WINDOW = timedelta(hours=4)
+
+# The macOS app's alert contract. `connector-alerts.log` is for people; the app
+# reads this file instead. See `render_alerts_state` for the format.
+ALERTS_STATE_FILENAME = "connector-alerts.json"
+ALERTS_STATE_SCHEMA_VERSION = 1
 
 
 # ----- data structures -----------------------------------------------------
@@ -115,14 +122,9 @@ def _read_index(path: Path) -> dict[str, dict[str, Any]]:
 
 def _write_index(path: Path, files: dict[str, dict[str, Any]]) -> None:
     """Replace the index atomically; a failure only costs the next run a re-read."""
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
+    with contextlib.suppress(OSError):
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps({"version": INDEX_VERSION, "files": files}, sort_keys=True), encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
+        safe_write.atomic_write_text(path, json.dumps({"version": INDEX_VERSION, "files": files}, sort_keys=True))
 
 
 def _all_before(entry: dict[str, Any] | None, key: _StatKey, cutoff: datetime) -> bool:
@@ -397,6 +399,7 @@ def compute_critical_alerts(
         curr_ok = _ok_count(stats, c, current_sid)
         if curr_ok != 0:
             continue
+        curr_err = _err_count(stats, c, current_sid)
         gap = dark_runs(stats, c, session_list)
         samples, healthy = mode_baseline(stats, c, prior_sessions, current_mode, sessions_by_id, n=3)
         if samples >= 3:
@@ -406,10 +409,26 @@ def compute_critical_alerts(
         else:
             should_alert = False
 
-        # Chronic-skip override: dark for >=3 runs in a slot type that requires
-        # this connector.
         mode_required = connector.required_in_type(current_slot_type)
-        if not should_alert and gap >= DARK_GAP_THRESHOLD and mode_required:
+        chronic = gap >= DARK_GAP_THRESHOLD and mode_required
+
+        # A connector that was never ATTEMPTED this run produced no evidence about its
+        # health. `curr_ok == 0 and curr_err == 0` means unexercised: the PostToolUse
+        # hook logs every call, so no row at all means no call was made. That is a
+        # property of the run (a short run, one that didn't need the connector), and
+        # `mode_baseline` can't tell it from an outage: it asks "do prior runs of this
+        # mode usually call it?", which is a statement about runs, not the connector.
+        #
+        # So an unexercised connector only reaches CRITICAL through the chronic-skip
+        # backstop: >=3 consecutive dark runs in a slot type that REQUIRES it. That
+        # costs up to two runs of detection latency for a connector that dies
+        # silently, and removes a false CRITICAL on every run that simply didn't
+        # call a healthy connector.
+        if curr_err == 0:
+            should_alert = chronic
+        elif chronic:
+            # Chronic-skip override: dark for >=3 runs in a slot type that requires
+            # this connector.
             should_alert = True
 
         if not should_alert:
@@ -425,15 +444,25 @@ def compute_critical_alerts(
         # connector simply wasn't exercised in this mode) AND the connector was
         # healthy in ANY mode within the liveness window, it's alive — not an
         # outage. Suppress the false CRITICAL. Error calls this run still alert.
-        curr_err = _err_count(stats, c, current_sid)
         current_ts = sessions_by_id[current_sid][0]["_ts"]
         if curr_err == 0 and last_ok is not None and current_ts - last_ok <= CROSS_MODE_LIVENESS_WINDOW:
             continue
 
+        # Say which kind of zero this is. "0 successful calls" reads as "it was
+        # called and failed"; when curr_err is also 0 nothing was called at all, and
+        # the alert rests on the run gap rather than on any observed failure.
+        observed = (
+            f"{count(curr_err, 'failed call')} in `{current_mode}` run"
+            if curr_err
+            else (
+                f"NOT CALLED in `{current_mode}` run (no successes, no errors — "
+                f"alerting on the {gap}-run gap, not on an observed failure)"
+            )
+        )
         reason = (
-            f"0 successful calls in `{current_mode}` run; "
+            f"{observed}; "
             f"{healthy}/{samples} prior `{current_mode}` runs were healthy; "
-            f"dark for {gap} run(s) total; last healthy {fmt_ts(last_ok)}"
+            f"dark for {count(gap, 'run')} total; last healthy {fmt_ts(last_ok)}"
         )
         alerts.append(
             Alert(
@@ -595,14 +624,15 @@ def render_health_md(
         "when `SCOUT_MODE` is unset).",
         "",
         "### Alert rules",
-        "- **Critical connector (mode-aware):** 0 successful calls in this run when ≥2 of the "
-        "3 prior runs OF THE SAME MODE were healthy (≥3 successful calls each). If fewer than 3 "
-        "prior same-mode runs exist, ≥1 healthy same-mode run is enough to trigger. If zero "
-        "prior same-mode runs exist, no baseline → no alert.",
+        "- **Critical connector (mode-aware):** 0 successful calls and ≥1 failed call in this "
+        "run when ≥2 of the 3 prior runs OF THE SAME MODE were healthy (≥3 successful calls "
+        "each). If fewer than 3 prior same-mode runs exist, ≥1 healthy same-mode run is enough "
+        "to trigger. If zero prior same-mode runs exist, no baseline → no alert.",
         "- **Chronic-skip override:** any connector dark across ≥3 consecutive scheduled runs "
-        "fires an alert in modes where it's required by `connectors.yaml`.",
+        "fires an alert in modes where it's required by `connectors.yaml`. This is the only way "
+        "a connector that was NOT CALLED this run (no successes, no errors) can alert.",
         "- **Pattern #48:** if a connector has never logged a successful call across the entire "
-        "window, the alert is suppressed (it's unwired, not broken — see [[Wishlist]] §wire-up).",
+        "window, the alert is suppressed (it's unwired, not broken: run `/scout-connect` to wire it up).",
         "- **Pattern #54:** if a connector was healthy in any mode within the last 4h and the "
         "current run had 0 error calls, the CRITICAL is suppressed (alive but unused this mode).",
         "- **Warning:** any connector with ≥3 calls this run and >50% errors.",
@@ -638,6 +668,127 @@ def render_pending_alerts_md(
             lines.append(f"   ↳ *Last error:* `{a.err_sample}`")
     lines.append("_Full matrix + detailed remediation: `knowledge-base/connector-health.md`._")
     return "\n".join(lines) + "\n"
+
+
+def _iso_z(t: datetime) -> str:
+    return t.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _is_iso(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
+def read_prior_alerts(path: Path) -> list[dict[str, str]]:
+    """The alert entries of the previous run's alert state, validated.
+
+    A missing, unreadable, or foreign-schema file reads as "no prior alerts",
+    and an entry missing a key, level or timestamp is dropped: its alert then
+    starts a fresh streak. That costs at most one re-shown (already acked)
+    banner, never a hidden one.
+    """
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(doc, dict) or doc.get("schema_version") != ALERTS_STATE_SCHEMA_VERSION:
+        return []
+    alerts = doc.get("alerts")
+    out: list[dict[str, str]] = []
+    for a in alerts if isinstance(alerts, list) else []:
+        if not isinstance(a, dict):
+            continue
+        key, level = a.get("connector_key"), a.get("level")
+        if not (isinstance(key, str) and key and level in ("CRITICAL", "WARNING")):
+            continue
+        if not (_is_iso(a.get("ts")) and _is_iso(a.get("first_seen"))):
+            continue
+        name, reason = a.get("name"), a.get("reason")
+        out.append(
+            {
+                "connector_key": key,
+                "level": str(level),
+                "name": name if isinstance(name, str) else key,
+                "reason": reason if isinstance(reason, str) else "",
+                "ts": str(a["ts"]),
+                "first_seen": str(a["first_seen"]),
+            }
+        )
+    return out
+
+
+def render_alerts_state(
+    alerts: list[Alert],
+    *,
+    now: datetime,
+    current_mode: str,
+    prior: list[dict[str, str]],
+    uncalled: set[str],
+) -> str:
+    """The alert state the macOS app reads: `.scout-logs/connector-alerts.json`.
+
+    Rewritten in full on every run. It holds the alerts the latest run raised,
+    plus each prior alert on a connector the latest run did not call
+    (`uncalled`: no successes, no errors), carried over unchanged, `ts`
+    included. A run that never called a connector has no evidence the
+    connector recovered, and since #477 such a run doesn't raise the alert
+    either, so dropping it would reset the alert's streak (and lose the
+    user's ack) every time a run skips the connector. `"alerts": []` once
+    every alert is cleared::
+
+        {
+          "schema_version": 1,
+          "generated_at": "2026-04-22T12:30:00Z",   # UTC, whole seconds
+          "mode": "morning-briefing",               # the run that raised them
+          "alerts": [
+            {
+              "connector_key": "mcp:claude_ai_Google_Drive",  # registry key
+              "level": "CRITICAL",                            # or "WARNING"
+              "name": "Google Drive",                         # display name
+              "reason": "...",                                # same text as the .log line
+              "ts": "2026-04-22T12:30:00Z",                   # the run that last raised it
+              "first_seen": "2026-04-22T08:00:00Z"            # start of the streak
+            }
+          ]
+        }
+
+    `first_seen` is the `ts` of the run that started the alert's streak. A
+    streak of `(connector_key, level)` lasts until a run CALLS the connector
+    without raising that alert: `first_seen` carries over through runs that
+    raise it again and through runs that skip the connector, and resets only
+    after such a clearing run. The app keys its acknowledgements on
+    `connector_key|level|first_seen`, so acking an alert hides it for the rest
+    of its streak, not the next one.
+
+    The contract fixture is `tests/fixtures/contract/connector-alerts.json`.
+    """
+    ts = _iso_z(now)
+    raised = {(a.connector_key, a.level) for a in alerts}
+    first_seen = {(p["connector_key"], p["level"]): p["first_seen"] for p in prior}
+    entries = [
+        {
+            "connector_key": a.connector_key,
+            "level": a.level,
+            "name": a.name,
+            "reason": a.reason,
+            "ts": ts,
+            "first_seen": first_seen.get((a.connector_key, a.level), ts),
+        }
+        for a in alerts
+    ]
+    entries += [p for p in prior if p["connector_key"] in uncalled and (p["connector_key"], p["level"]) not in raised]
+    doc = {
+        "schema_version": ALERTS_STATE_SCHEMA_VERSION,
+        "generated_at": ts,
+        "mode": current_mode,
+        "alerts": entries,
+    }
+    return json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
 def fire_macos_notification(alerts: list[Alert]) -> None:
@@ -702,6 +853,7 @@ def _run(*, data_dir: Path | None, now: datetime | None, cleanup: bool) -> Event
     log_dir = paths.logs_dir(target_data)
     out_path = paths.kb_dir(target_data) / "connector-health.md"
     alerts_path = log_dir / "connector-alerts.log"
+    alerts_state_path = log_dir / ALERTS_STATE_FILENAME
     pending_path = paths.cache_dir(target_data) / "connector-alerts-pending.md"
 
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -748,7 +900,8 @@ def _run(*, data_dir: Path | None, now: datetime | None, cleanup: bool) -> Event
 
     # Render connector-health.md.
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(
+    safe_write.atomic_write_text(
+        out_path,
         render_health_md(
             now=n,
             session_list=session_list,
@@ -761,23 +914,43 @@ def _run(*, data_dir: Path | None, now: datetime | None, cleanup: bool) -> Event
             lint_overrides=_lint_override_count(log_dir, n),
             cap_markers=cap_markers,
         ),
-        encoding="utf-8",
     )
+
+    # The app's alert state: every run rewrites it, so an alert a run clears
+    # leaves the app's banner, and a persisting alert keeps first_seen.
+    uncalled = {c for c in alertable if _ok_count(stats, c, current_sid) + _err_count(stats, c, current_sid) == 0}
+    try:
+        atomic_write_text(
+            alerts_state_path,
+            render_alerts_state(
+                alerts,
+                now=n,
+                current_mode=current_mode,
+                prior=read_prior_alerts(alerts_state_path),
+                uncalled=uncalled,
+            ),
+        )
+    except OSError:
+        # A state we can't rewrite must not keep showing alerts this run may
+        # have cleared. Losing first_seen (a re-shown acked alert) is the
+        # lesser harm.
+        with contextlib.suppress(OSError):
+            alerts_state_path.unlink(missing_ok=True)
 
     pending_path.parent.mkdir(parents=True, exist_ok=True)
     if alerts:
         ts_str = n.astimezone(_zone()).strftime("%Y-%m-%d %H:%M:%S %Z")
         try:
-            with alerts_path.open("a", encoding="utf-8") as f:
+            with safe_write.open_append(alerts_path) as f:
                 for a in alerts:
                     f.write(f"{ts_str} [{a.level}] run={current_mode} {a.name}: {a.reason}\n")
         except OSError:
             pass
 
         try:
-            pending_path.write_text(
+            safe_write.atomic_write_text(
+                pending_path,
                 render_pending_alerts_md(alerts, current_mode=current_mode, now=n, registry=registry),
-                encoding="utf-8",
             )
         except OSError:
             pass
@@ -831,7 +1004,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         n_alerts = len(event.payload.get("alerts", []))
         n_sessions = event.payload.get("sessions_in_window", 0)
-        print(f"connector-health: {n_sessions} sessions in window, {n_alerts} alert(s)")
+        print(f"connector-health: {count(n_sessions, 'session')} in window, {count(n_alerts, 'alert')}")
         return 0
     except Exception as e:  # pragma: no cover — defensive
         print(f"connector-health: fatal error: {type(e).__name__}: {e}")

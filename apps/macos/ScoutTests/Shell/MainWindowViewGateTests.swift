@@ -23,30 +23,26 @@ struct MainWindowViewGateTests {
         ]
     }
 
-    @Test("onboarding tracks gatesTabs on a non-Settings tab, and never shows on Settings")
-    func gateFollowsGatesTabsExceptOnSettings() {
+    @Test("onboarding tracks gatesTabs on every page")
+    func gateFollowsGatesTabs() {
         for (name, state) in allStates {
             let kept = AppState.keepsOnboarding(state: state, holdsWindow: false)
             #expect(kept == state.gatesTabs, "unexpected keep for \(name)")
             #expect(
-                MainWindowView.showsOnboarding(state: state, selection: .controlCenter, onboardingActive: kept) == state.gatesTabs,
-                "unexpected gate for \(name) on .controlCenter"
-            )
-            #expect(
-                MainWindowView.showsOnboarding(state: state, selection: .settings, onboardingActive: kept) == false,
-                "gate must never show on .settings for \(name)"
+                MainWindowView.showsOnboarding(state: state, onboardingActive: kept) == state.gatesTabs,
+                "unexpected gate for \(name)"
             )
         }
     }
 
     /// A flow that is finishing (vault just created, or Ready showing) holds
     /// the window even once the engine no longer gates the tabs, so the user
-    /// sees it through to "Open Scout".
+    /// sees it through to "Open Scout". Settings stays reachable as its own
+    /// window (⌘,), so no page is exempt from the gate (UI audit #10).
     @Test func aFinishingFlowHoldsTheWindowAfterTheGateLifts() {
         for (name, state) in allStates {
             #expect(AppState.keepsOnboarding(state: state, holdsWindow: true), "a finishing flow must be kept for \(name)")
-            #expect(MainWindowView.showsOnboarding(state: state, selection: .controlCenter, onboardingActive: true), "\(name)")
-            #expect(!MainWindowView.showsOnboarding(state: state, selection: .settings, onboardingActive: true), "\(name)")
+            #expect(MainWindowView.showsOnboarding(state: state, onboardingActive: true), "\(name)")
         }
     }
 }

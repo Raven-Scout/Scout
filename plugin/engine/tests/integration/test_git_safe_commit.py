@@ -94,7 +94,6 @@ def _config(vault: Path, plugin: Path, *, version: str = "0.4.0") -> BootstrapCo
         enabled_connectors=set(),
         connector_inputs={},
         skip_jobs=True,
-        skip_claude=True,
     )
 
 
@@ -510,22 +509,35 @@ def test_a_move_cannot_widen_a_note_that_is_private_by_its_path(repo: Path, help
     assert _head(repo) == before
 
 
-def test_a_scheduled_commit_can_not_add_a_pages_fact_to_a_shared_source_note(
-    repo: Path, helper: Path, path_env: str
+_FACT = "The widget budget moves to next quarter ([[widget]])."
+
+
+@pytest.mark.parametrize(
+    ("edits", "line", "expected"),
+    [
+        pytest.param("  shared_edits: refuse\n", _FACT, 5, id="refuse"),
+        pytest.param("", _FACT, 0, id="checked, a plain fact"),
+        pytest.param("", "Ask about the widget budget ([[secret-plan]]).", 5, id="checked, a private link"),
+    ],
+)
+def test_a_scheduled_commit_to_a_shared_source_note(
+    repo: Path, helper: Path, path_env: str, edits: str, line: str, expected: int
 ) -> None:
-    """#569: the note's label doesn't change, only its content, so the label checks let it through."""
+    """#569 froze a shared note's content for runs; ``shared_edits: checked`` (the default) lets a run
+    add a line that names no private note, through the real hook and helper."""
     scoutctl = Path(sys.executable).with_name("scoutctl")
     source = "knowledge-base/sources/2026-11/2026-11-02-widget-sync.md"
     page = "knowledge-base/projects/widget/widget.md"
     for rel, text in (
         (source, "---\nkind: meeting\ndate: 2026-11-02\n---\n# Widget sync\n\nThe pilot starts next week.\n"),
         (page, "# Widget\n\nThe widget budget moves to next quarter.\n"),
+        ("knowledge-base/projects/widget/secret-plan.md", "---\nvisibility: private\n---\n# Plan\n"),
     ):
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
         (repo / rel).write_text(text, encoding="utf-8")
     (repo / "scout-config.yaml").write_text(
         "privacy:\n  federation:\n    enabled: true\n  federation_defaults:\n"
-        '    - {glob: "knowledge-base/sources/**", scope: ["person:priya@example.com"]}\n',
+        '    - {glob: "knowledge-base/sources/**", scope: ["person:priya@example.com"]}\n' + edits,
         encoding="utf-8",
     )
     _git(repo, "add", "-A")
@@ -534,11 +546,16 @@ def test_a_scheduled_commit_can_not_add_a_pages_fact_to_a_shared_source_note(
 
     before = _head(repo)
     with (repo / source).open("a", encoding="utf-8") as fh:
-        fh.write("\nThe widget budget moves to next quarter ([[widget]]).\n")
-    blocked = _run(helper, path_env, "consolidation: widget budget", source, SCOUT_MODE="consolidation")
-    assert blocked.returncode == 5
-    assert "privacy-widening" in blocked.stdout + blocked.stderr
+        fh.write(f"\n{line}\n")
+    run = _run(helper, path_env, "consolidation: widget budget", source, SCOUT_MODE="consolidation")
+    assert run.returncode == expected, run.stdout + run.stderr
+    if expected == 0:
+        assert _head(repo) != before
+        return
+    assert ("privacy-widening" if edits else "private-link") in run.stdout + run.stderr
     assert _head(repo) == before
+    if not edits:
+        return  # a private link in a shared note blocks the owner's commit too
 
     owner = _run(helper, path_env, "owner: widget budget", source)
     assert owner.returncode == 0, owner.stderr

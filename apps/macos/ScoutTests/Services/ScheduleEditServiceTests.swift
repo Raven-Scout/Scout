@@ -23,7 +23,9 @@ private let sampleListJSON = """
 private func makeServiceOnDisk(
     listJSON: String = sampleListJSON,
     validateExitCode: Int32 = 0,
-    validateStderr: Data = Data()
+    validateStderr: Data = Data(),
+    drafts: SlotDraftStore? = nil,
+    reloadJSON: String? = nil
 ) throws -> (ScheduleEditService, QueueProcessRunner, URL) {
     let dir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("schedule-edit-test-\(UUID().uuidString)")
@@ -56,7 +58,7 @@ private func makeServiceOnDisk(
 
     // Two queued stdouts: one for loadAll(), one for the post-save reload.
     let runner = QueueProcessRunner(
-        stdouts: [listJSON, listJSON],
+        stdouts: [listJSON, reloadJSON ?? listJSON],
         exitCode: 0,
         validateExitCode: validateExitCode,
         validateStderr: validateStderr
@@ -65,7 +67,8 @@ private func makeServiceOnDisk(
         scoutctl: URL(fileURLWithPath: "/usr/bin/env"),
         runner: runner,
         canonicalSchedulePath: canonical,
-        argumentsPrefix: ["scoutctl"]
+        argumentsPrefix: ["scoutctl"],
+        drafts: drafts
     )
     return (service, runner, dir)
 }
@@ -248,6 +251,45 @@ struct ScheduleEditServiceTests {
         }
     }
 
+    @Test("agent_runtime survives load → edit another field → save (C2)")
+    @MainActor
+    func test_save_keeps_agent_runtime_when_another_field_is_edited() async throws {
+        let listJSON = """
+        [
+          {"key":"morning-briefing","type":"briefing","runner":"run-scout.sh",
+           "fires_at_local":"08:00","weekdays":["Mon","Tue","Wed","Thu","Fri"],
+           "missed_window_hours":4,"on_miss":"fire","cooldown_minutes":60,
+           "budget_usd":null,"tz":null,"runtime":"local","model":null,
+           "agent_runtime":"claude-code"},
+          {"key":"research","type":"research","runner":"run-research.sh",
+           "fires_at_local":"14:00","weekdays":["Mon","Tue","Wed","Thu","Fri"],
+           "missed_window_hours":4,"on_miss":"skip","cooldown_minutes":240,
+           "budget_usd":null,"tz":null,"runtime":"local","model":null,
+           "agent_runtime":null}
+        ]
+        """
+        let (service, _, dir) = try makeServiceOnDisk(listJSON: listJSON)
+        try await service.loadAll()
+        #expect(service.slots[0].agentRuntime == "claude-code")
+
+        // Edit the cooldown through the same draft path the form uses.
+        var draft = SlotDraft(from: service.slots[0])
+        draft.cooldownMinutes = 90
+        var updated = service.slots
+        updated[0] = draft.toSlot()
+        try await service.save(allSlots: updated)
+
+        let written = try String(
+            contentsOf: dir.appendingPathComponent("schedule.yaml"), encoding: .utf8
+        )
+        let blocks = written.components(separatedBy: "\n  research:\n")
+        #expect(blocks.count == 2)
+        #expect(blocks[0].contains("cooldown_minutes: 90"))
+        #expect(blocks[0].contains("\n    agent_runtime: claude-code"))
+        // An unset agent runtime stays unset: no key, so the slot keeps inheriting.
+        #expect(!blocks[1].contains("agent_runtime"))
+    }
+
     @Test("save falls back to header-less emit when canonical has no slots: anchor")
     @MainActor
     func test_save_falls_back_to_pure_yaml_when_no_slots_anchor() async throws {
@@ -341,5 +383,98 @@ actor QueueProcessRunner: ProcessRunner {
 
     private func validateResult() -> ProcessResult {
         ProcessResult(exitCode: validateExitCode, stdout: Data(), stderr: validateStderr)
+    }
+}
+
+/// Unsaved slot-form drafts are settled by the service itself after every
+/// load, so it happens whether or not the Schedules page is on screen.
+@Suite("ScheduleEditService + SlotDraftStore")
+@MainActor
+struct ScheduleEditServiceDraftTests {
+    @Test("every load reconciles stored drafts: saved ones quietly, orphans reported")
+    func loadReconcilesDrafts() async throws {
+        let store = SlotDraftStore()
+        let (service, _, _) = try makeServiceOnDisk(drafts: store)
+        try await service.loadAll()
+        let morning = try #require(service.slots.first { $0.key == "morning-briefing" })
+
+        // A draft typed against an older morning slot that the file now
+        // matches (its save landed with the page closed)…
+        var older = SlotDraft(from: morning)
+        older.cooldownMinutes = 15
+        store.update(SlotDraft(from: morning), baseline: older.toSlot(), for: morning.key)
+        // …and an edit to a slot the file no longer has.
+        var gone = SlotDraft(from: morning)
+        gone.key = "evening-run"
+        gone.firesAtLocal = "18:00"
+        store.update(gone, baseline: morning, for: "evening-run")
+        #expect(store.unsavedSlotNames.count == 2)
+
+        try await service.loadAll()
+        #expect(!store.hasUnsavedDrafts)
+        #expect(store.droppedSlotNames == ["Evening run"])
+    }
+
+    @Test("a failed save keeps the draft")
+    func failedSaveKeepsDraft() async throws {
+        let store = SlotDraftStore()
+        let (service, _, _) = try makeServiceOnDisk(validateExitCode: 1, drafts: store)
+        try await service.loadAll()
+        let morning = try #require(service.slots.first { $0.key == "morning-briefing" })
+        var draft = SlotDraft(from: morning)
+        draft.firesAtLocal = "07:30"
+        store.update(draft, baseline: morning, for: morning.key)
+
+        await #expect(throws: (any Error).self) {
+            try await service.update(actionName: "Edit Schedule") { slots in
+                slots.map { $0.key == morning.key ? draft.toSlot() : $0 }
+            }
+        }
+        #expect(store.entry(for: morning.key)?.draft == draft)
+        #expect(store.droppedSlotNames.isEmpty)
+    }
+
+    @Test("a write that lands but can't reload says so, with its change for undo")
+    func reloadFailureAfterWriteIsDistinct() async throws {
+        let (service, _, dir) = try makeServiceOnDisk(reloadJSON: "not json")
+        try await service.loadAll()
+
+        do {
+            try await service.delete(slotKey: "research")
+            Issue.record("expected ScheduleReloadAfterWriteError")
+        } catch let written as ScheduleReloadAfterWriteError {
+            #expect(written.change?.actionName == "Delete Schedule")
+        }
+        // The delete is on disk.
+        let onDisk = try String(contentsOf: dir.appendingPathComponent("schedule.yaml"), encoding: .utf8)
+        #expect(!onDisk.contains("research:"))
+        let problem = SchedulesView.problem(
+            ScheduleReloadAfterWriteError(change: nil, reason: "bad output"),
+            action: "delete the schedule")
+        #expect(problem.title == "Saved, but the page didn't update")
+        #expect(problem.details == "bad output")
+    }
+
+    @Test("a rejected schedule keeps the validator's output behind Details (R2)")
+    func validateFailureIsPlainWithRawOutputInDetails() async throws {
+        let (service, _, _) = try makeServiceOnDisk(
+            validateExitCode: 2,
+            validateStderr: Data("slots.research.cooldown_minutes: must be >= 0".utf8)
+        )
+        try await service.loadAll()
+        do {
+            try await service.save(allSlots: service.slots)
+            Issue.record("expected ScheduleValidationError")
+        } catch let rejected as ScheduleValidationError {
+            #expect(rejected.exitCode == 2)
+            let problem = SchedulesView.problem(rejected, action: "save the schedule")
+            #expect(problem.title == "Couldn't save the schedule")
+            // The plain words carry no engine output; the raw line is Details only.
+            #expect(problem.impact?.contains("cooldown_minutes") == false)
+            #expect(!problem.title.contains("cooldown_minutes"))
+            #expect(problem.details == "slots.research.cooldown_minutes: must be >= 0")
+        }
+        // A validator that printed nothing still leaves something to copy.
+        #expect(ScheduleValidationError(exitCode: 3, output: "  \n").details.contains("exited 3"))
     }
 }

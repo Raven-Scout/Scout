@@ -15,16 +15,16 @@ struct ShowMoreRow: View {
             HStack(spacing: 10) {
                 Button(action: action) {
                     Label("Show \(window.nextPageCount(in: tasks)) more", systemImage: "chevron.down")
-                        .font(DS.sans(11.5, weight: .medium))
+                        .font(DS.font(.caption, weight: .medium))
                 }
                 .buttonStyle(.borderless)
                 if let showAll, window.canShowAll(in: tasks) {
                     Button("Show all", action: showAll)
-                        .font(DS.sans(11.5, weight: .medium))
+                        .font(DS.font(.caption, weight: .medium))
                         .buttonStyle(.borderless)
                 }
-                Text("\(hidden) not shown · ⌘F searches all of them")
-                    .font(DS.sans(11))
+                Text("\(hidden) not shown · \(ShortcutLabel.text(AppShortcut.find)) searches all of them")
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p4)
                 Spacer(minLength: 0)
             }

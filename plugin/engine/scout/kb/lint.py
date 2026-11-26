@@ -36,7 +36,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, TextIO
 
-from scout import paths
+from scout import paths, plural, safe_write
 from scout.action_items.context_notes import context_note_rel
 from scout.ids import leading_prefix_pattern
 from scout.kb.git_io import (
@@ -309,6 +309,9 @@ def _check_citations(rel: str, text: str, added_nums: set[int]) -> list[Finding]
 
 _FM_ALIASES_RE = re.compile(r"^aliases:[ \t]*(.*?)\s*$")
 _FM_LIST_ITEM_RE = re.compile(r"^\s*-\s+(.*?)\s*$")
+# An inline list may carry a trailing ` # comment` after its closing bracket
+# (`aliases: [Sam Rivera]   # why`): YAML and Obsidian ignore it, so must we.
+_FM_INLINE_LIST_RE = re.compile(r"""^\[(.*?)\](?:\s+#.*)?$""")
 _FM_INLINE_ITEM_RE = re.compile(r"""\s*(?:"([^"]*)"|'([^']*)'|([^,]*))\s*(?:,|$)""")
 _FM_NON_NAMES = {"", "null", "~", "|", ">", "[]"}
 
@@ -357,8 +360,8 @@ def _frontmatter_aliases(path: Path) -> list[str]:
                 val = m.group(1)
                 if not val or val.startswith("#"):  # block list follows
                     in_block = True
-                elif val.startswith("[") and val.endswith("]"):  # inline list
-                    for dq, sq, bare in _FM_INLINE_ITEM_RE.findall(val[1:-1]):
+                elif (flow := _FM_INLINE_LIST_RE.match(val)) is not None:  # inline list, optional ` # comment`
+                    for dq, sq, bare in _FM_INLINE_ITEM_RE.findall(flow.group(1)):
                         names.append(dq or sq or bare.strip())
                 else:
                     names.append(_fm_scalar(val))
@@ -467,6 +470,8 @@ class StagedFile:
     page_rules: Callable[[], PageRules | None]
     # A new daily file's earlier daily file; its lines count as this file's old version.
     baseline_text: str | None = None
+    # Per-commit marks for checks that run once however many files are staged; shared across the lint.
+    once: set[str] = field(default_factory=set)
 
 
 StagedCheck = Callable[[StagedFile], list[Finding]]
@@ -568,7 +573,12 @@ def _page_sections(f: StagedFile) -> list[Finding]:
     if not missing:
         return []
     verb = "new front page lacks" if old is None else "commit removes"
-    what = f"{len(missing)} required section(s)" if _page_private(f) else "required section(s) " + ", ".join(missing)
+    n = len(missing)
+    what = (
+        plural.count(n, "required section")
+        if _page_private(f)
+        else f"required {plural.noun(n, 'section')} " + ", ".join(missing)
+    )
     return [Finding(f.rel, "page-sections", True, f"{verb} {what} — see docs/kb-page-standard.md")]
 
 
@@ -621,12 +631,14 @@ def _page_bullets(f: StagedFile) -> list[Finding]:
         return []
     limit, sections = rules.cfg.max_bullet_chars, rules.cfg.bullet_sections
     added = {n for n, _ in f.added}
-    entries = section_entries(staged_text_lossy(f.repo, f.rel), sections)
+    staged = staged_text_lossy(f.repo, f.rel)
+    entries = section_entries(staged, sections)
     long = [(first, len(t)) for first, last, t in entries if len(t) > limit and any(first <= n <= last for n in added)]
-    if not long:
-        return []
     was_front = f.size_base is not None and _page_kind(rules, f.size_base) == "front"
     old = head_text_lossy(f.repo, f.size_base) if f.size_base and was_front else None
+    counted = _bullet_count_findings(f, rules, staged, old)
+    if not long:
+        return counted
     kept = {t for _, _, t in entries}
     spare = sorted(
         (len(t) for _, _, t in section_entries(old or "", sections) if len(t) > limit and t not in kept), reverse=True
@@ -654,6 +666,52 @@ def _page_bullets(f: StagedFile) -> list[Finding]:
     ]
     if len(new) > PAGE_NARRATION_SHOWN:
         out.append(Finding(f.rel, "page-bullet", True, f"and {len(new) - PAGE_NARRATION_SHOWN} more long entries"))
+    return counted + out
+
+
+def _quoted(text: str) -> str:
+    return f'"{text}"'
+
+
+def _bullet_count_findings(f: StagedFile, rules: PageRules, staged: str, old: str | None) -> list[Finding]:
+    """A commit that leaves a bullet section over ``max_bullets`` entries, with more than it had."""
+    from scout.kb.structure import check_bullets
+
+    cfg = rules.cfg
+    now = check_bullets(staged, cfg).over(cfg.max_bullets)
+    before = check_bullets(old or "", cfg).counts
+    grown = {s: n for s, n in now.items() if n > before.get(s, 0)}
+    if not grown:
+        return []
+    private = _page_private(f)
+    return [
+        Finding(
+            f.rel,
+            "page-bullet",
+            True,
+            f"{'a section' if private else _quoted(s)} now has {n} entries (limit {cfg.max_bullets}) — keep "
+            "the most important current state, and move the rest into the project's knowledge/ notes or History",
+        )
+        for s, n in grown.items()
+    ]
+
+
+def _lab(f: StagedFile) -> list[Finding]:
+    """The lab's format check (:mod:`scout.lab.lint`) on a staged file under ``knowledge-base/lab/``.
+
+    Sibling files are read from the index, not the working tree. ``lab.md`` is checked once per
+    commit whenever any lab file is staged, so a new thread without it, or a front page flipped
+    private, is caught.
+    """
+    if not f.rel.startswith("knowledge-base/lab/"):
+        return []
+    from scout.lab.lint import INDEX_REL, StagedIndex, index_findings, lab_findings
+
+    source = StagedIndex(f.repo)
+    out = lab_findings(f.repo, f.rel, staged_text_lossy(f.repo, f.rel), source, include_index=False)
+    if INDEX_REL not in f.once:
+        f.once.add(INDEX_REL)
+        out += index_findings(source, source.read(INDEX_REL))
     return out
 
 
@@ -672,6 +730,7 @@ STAGED_CHECKS: tuple[StagedCheck, ...] = (
     _page_sections,
     _page_narration,
     _page_bullets,
+    _lab,
 )
 
 
@@ -679,6 +738,7 @@ def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
     result = LintResult()
     known: set[str] | None = None
     debts = _LineDebt(repo, cfg)
+    once: set[str] = set()
 
     def known_targets() -> set[str]:
         nonlocal known
@@ -712,6 +772,11 @@ def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
         key=lambda sp: "block" not in (cfg.mode_for(sp.rel, "mega-line"), cfg.mode_for(sp.rel, "diary")),
     )
     for sp in claim_order:
+        if sp.rel.startswith("knowledge-base/lab/") and not sp.rel.endswith(".md"):
+            from scout.lab.lint import StagedIndex, lab_findings
+
+            result.findings += lab_findings(repo, sp.rel, "", StagedIndex(repo))
+            continue
         if not cfg.in_scope(sp.rel):
             continue
         size_base = sp.head_rel
@@ -723,7 +788,7 @@ def lint_staged(repo: Path, cfg: LintConfig) -> LintResult:
                 baseline_text = head_text(repo, baseline)
         added = _new_lines(repo, sp.rel, sp.head_rel, baseline_text)
         staged = StagedFile(
-            repo, cfg, sp.rel, size_base, added, staged_rels, known_targets, debts, page_rules, baseline_text
+            repo, cfg, sp.rel, size_base, added, staged_rels, known_targets, debts, page_rules, baseline_text, once
         )
         for check in STAGED_CHECKS:
             result.findings += check(staged)
@@ -783,7 +848,7 @@ def format_findings(result: LintResult, cfg: LintConfig | None) -> str:
     count = f"{len(result.blocking)} blocking"
     if per_path:
         count += f" ({sum(enforced(f, cfg) for f in result.blocking)} enforced)"
-    lines = [f"kb-lint: {count}, {len(result.warnings)} warning(s) (mode: {mode})"]
+    lines = [f"kb-lint: {count}, {plural.count(len(result.warnings), 'warning')} (mode: {mode})"]
     for f in result.findings:
         mark = "✗" if f.blocking else "!"
         where = f"{f.path}:{f.line}" if f.line else f.path
@@ -810,7 +875,7 @@ def format_findings(result: LintResult, cfg: LintConfig | None) -> str:
 
 def _append_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
+    with safe_write.open_append(path) as f:
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 

@@ -23,6 +23,21 @@
 
 set -euo pipefail
 
+# The uv and Claude Code installers put binaries here; a fresh shell may lack it.
+export PATH="${HOME:-/nonexistent}/.local/bin:$PATH"
+# Then keep only absolute entries, before any command runs: /scout-update runs this with the vault
+# as cwd, and a relative entry (`.`, `./bin`, an empty one) would let a planted dirname, uv or
+# python3 run in place of the real one. A leading `~` becomes $HOME, as bash's own PATH search
+# reads it.
+safe_path=""
+IFS=: read -r -a path_entries <<<"$PATH" || true
+for path_entry in ${path_entries[@]+"${path_entries[@]}"}; do
+    case "$path_entry" in \~ | \~/*) [ -z "${HOME:-}" ] || path_entry="$HOME${path_entry#"~"}" ;; esac
+    case "$path_entry" in /*) safe_path="${safe_path:+$safe_path:}$path_entry" ;; esac
+done
+export PATH="${safe_path:-/usr/bin:/bin}"
+unset safe_path path_entries path_entry
+
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="${SCOUT_VENV_DIR:-$PLUGIN_ROOT/.venv}"
 EXTRAS="${SCOUT_VENV_EXTRAS:-}"
@@ -51,9 +66,6 @@ if [ ! -d "$PLUGIN_ROOT/engine" ]; then
     echo "error: engine directory not found at $PLUGIN_ROOT/engine" >&2
     exit 1
 fi
-
-# The uv and Claude Code installers put binaries here; a fresh shell may lack it.
-export PATH="${HOME:-/nonexistent}/.local/bin:$PATH"
 
 # Builder: uv when available (install.sh guarantees it). SCOUT_INSTALL_NO_UV=1
 # forces the python3.1x + pip fallback below.

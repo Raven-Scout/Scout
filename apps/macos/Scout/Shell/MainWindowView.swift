@@ -1,10 +1,18 @@
 import SwiftUI
 
 struct MainWindowView: View {
-    @State private var selection: SidebarItem = .controlCenter
+    @State private var selection: SidebarItem
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var proposalsService: ProposalsDocumentService
     @EnvironmentObject var updates: UpdateService
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
+
+    /// `initialSelection` lets the layout tests render the whole window on
+    /// any page; the app always opens on Control Center.
+    init(initialSelection: SidebarItem = .controlCenter) {
+        _selection = State(initialValue: initialSelection)
+    }
 
     var body: some View {
         // The NavigationSplitView must be the root view of the window — not
@@ -24,11 +32,12 @@ struct MainWindowView: View {
                         researchBadge: appState.researchDocumentService.activeCount,
                         settingsBadge: updates.availableCount,
                         settingsAttention: appState.engineHealth.needsAttention,
+                        healthAttention: appState.runLedgerService.needsAttention,
                         tabsGated: appState.engineHealth.state.gatesTabs)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
         } detail: {
             Group {
-                if Self.showsOnboarding(state: appState.engineHealth.state, selection: selection,
+                if Self.showsOnboarding(state: appState.engineHealth.state,
                                         onboardingActive: appState.onboarding != nil) {
                     if let onboarding = appState.onboarding {
                         // Identity per flow, so a new flow's `.task` runs `start()`.
@@ -42,7 +51,16 @@ struct MainWindowView: View {
                     detail
                 }
             }
+            // Every page, onboarding included: a new version is worth
+            // seeing wherever you are (Settings ▸ Updates has the detail).
+            .safeAreaInset(edge: .top, spacing: 0) {
+                AppUpdateBanner(updates: updates)
+            }
             .background(PaperBackdrop())
+            .environmentObject(appState.vaultUndo)
+            .overlay(alignment: .bottomTrailing) {
+                WriteFeedbackOverlay(controller: appState.vaultUndo)
+            }
             .sheet(isPresented: upgradeSheetPresented) {
                 EngineUpgradeSheet(
                     progress: appState.engineUpgradeProgress ?? [:],
@@ -57,10 +75,24 @@ struct MainWindowView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             StatusBarView(viewLabel: selection.statusLabel)
         }
+        .onAppear {
+            // So a notification click can reopen this window once it's closed (card C3).
+            if appState.openMainWindow == nil {
+                appState.openMainWindow = { [openWindow] in openWindow(id: "main") }
+            }
+        }
         .onChange(of: appState.requestedSidebar) { _, requested in
             guard let requested else { return }
             selection = requested
             appState.requestedSidebar = nil
+        }
+        .onAppear {
+            // The Go menu can reopen a closed window with a page already
+            // requested; `onChange` doesn't fire for a value set before appear.
+            if let requested = appState.requestedSidebar {
+                selection = requested
+                appState.requestedSidebar = nil
+            }
         }
     }
 
@@ -71,11 +103,12 @@ struct MainWindowView: View {
 
     /// Pure gate decision (spec §5, Ruling 41): the detail pane shows the
     /// onboarding flow whenever the engine can't back the tabs — or while a
-    /// flow `AppState` keeps is still finishing — except on Settings, which
-    /// stays reachable and offers the same flow in a sheet. Static + pure so
-    /// it can be unit-tested over every `EngineState` without a view.
-    nonisolated static func showsOnboarding(state: EngineState, selection: SidebarItem, onboardingActive: Bool) -> Bool {
-        selection != .settings && (state.gatesTabs || onboardingActive)
+    /// flow `AppState` keeps is still finishing. Settings stays reachable as
+    /// its own window (⌘,, UI audit #10), which offers the same flow in a
+    /// sheet. Static + pure so it can be unit-tested over every `EngineState`
+    /// without a view.
+    nonisolated static func showsOnboarding(state: EngineState, onboardingActive: Bool) -> Bool {
+        state.gatesTabs || onboardingActive
     }
 
     @ViewBuilder
@@ -83,6 +116,11 @@ struct MainWindowView: View {
         switch selection {
         case .controlCenter:
             ControlCenterView()
+        case .health:
+            HealthView(openSettings: { HelpActions.showEngineSettings(openSettings) },
+                       logsDirectory: appState.scoutDirectory.appendingPathComponent(".scout-logs"))
+                .environmentObject(appState.runLedgerService)
+                .environmentObject(appState.engineHealth)
         case .sessions:
             SessionsView()
                 .environmentObject(appState.sessionIndexService)
@@ -116,21 +154,22 @@ struct MainWindowView: View {
             KnowledgeBaseView(pendingNote: $appState.pendingKBNote, privacy: appState.knowledgeBasePrivacy)
                 .environmentObject(appState.knowledgeBaseService)
                 .environmentObject(appState.knowledgeBaseWriterBox)
-        case .settings:
-            SettingsView()
         }
     }
 }
 
-/// `nonisolated`: a plain value the pure gate/dimming rules
-/// (`showsOnboarding`, `SidebarView.isDimmed`) compare off the main actor.
+/// The main window's pages. Settings isn't one: it is the ⌘, window
+/// (UI audit #10), which the sidebar's Settings row opens.
+/// `nonisolated`: a plain value the pure dimming rule (`SidebarView.isDimmed`)
+/// compares off the main actor.
 nonisolated enum SidebarItem: Hashable, CaseIterable {
-    case controlCenter, sessions, actionItems, schedules, proposals, wishlist, research, knowledgeBase, settings
+    case controlCenter, health, sessions, actionItems, schedules, proposals, wishlist, research, knowledgeBase
 
     /// Short label shown in the bottom status bar's "view" cell.
     var statusLabel: String {
         switch self {
         case .controlCenter: return "control"
+        case .health:        return "health"
         case .sessions:      return "sessions"
         case .actionItems:   return "actions"
         case .schedules:     return "schedules"
@@ -138,7 +177,6 @@ nonisolated enum SidebarItem: Hashable, CaseIterable {
         case .wishlist:      return "wishlist"
         case .research:      return "research"
         case .knowledgeBase: return "knowledge"
-        case .settings:      return "settings"
         }
     }
 }

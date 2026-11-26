@@ -165,6 +165,23 @@ struct ClaudeSessionServiceTests {
         #expect(activity?.calls.first?.isError == false)
     }
 
+    @Test("a skipped run never started a session, so it gets none, even one titled in its minute")
+    func activity_aSkippedRunHasNoSession() async throws {
+        let dir = try makeDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let started = Date(timeIntervalSince1970: 1_781_600_000)
+        // The live run's session, which the lock skip started the same minute as.
+        try writeSession(in: dir, file: "live.jsonl", lines: [
+            toolUseLine(sessionId: "live-session", customTitle: "scout-briefing-\(titleFragment(for: started))",
+                        timestamp: isoString(started), id: "t1", name: "Bash",
+                        inputJSON: #"{"command":"ls -la"}"#),
+        ])
+        let svc = ClaudeSessionService(projectsDirectory: dir)
+
+        let skip = Run.make(startedAt: started.addingTimeInterval(31), status: .skippedConcurrency)
+        #expect(await svc.activity(for: skip) == nil)
+        #expect(await svc.activity(for: Run.make(startedAt: started))?.sessionId == "live-session")
+    }
+
     @Test("a second lookup is served from the in-actor cache")
     func activity_cachesParsedSessions() async throws {
         let dir = try makeDir(); defer { try? FileManager.default.removeItem(at: dir) }

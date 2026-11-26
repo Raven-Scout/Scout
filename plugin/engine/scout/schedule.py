@@ -25,9 +25,22 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
+from scout.agent_runtimes.resolve import validate_runtime
 from scout.errors import ConfigError
 from scout.models import validate_model
 from scout.yaml_safe import load_yaml
+
+# The only scripts a slot or a trigger may start (review of #642). schedule.yaml and triggers.yaml live in the
+# vault's .scout-state/, and the tick runs the named file outside any run's sandbox, from launchd: a free-form
+# runner would let a run's write to either file choose what runs unsandboxed next.
+RUNNERS: tuple[str, ...] = ("run-scout.sh", "run-dreaming.sh", "run-research.sh", "run-respond.sh")
+
+
+def check_runner(runner: object, where: str) -> str:
+    """``runner`` when it names one of :data:`RUNNERS`, else ConfigError."""
+    if not isinstance(runner, str) or runner.strip() not in RUNNERS:
+        raise ConfigError(f"{where}: runner must be one of {', '.join(RUNNERS)}, got {runner!r}")
+    return runner.strip()
 
 
 class SlotType(enum.Enum):
@@ -84,6 +97,9 @@ class Slot:
     tz: str | None = None  # optional IANA zone; absent → system local
     runtime: SlotRuntime = SlotRuntime.LOCAL
     model: str | None = None  # optional; absent → scout-config's models.default (scout.models)
+    # Optional agent runtime (spec 2026-11-13 §8.7); absent → SCOUT_AGENT_RUNTIME / agent_runtimes.default /
+    # claude-code (scout.agent_runtimes.resolve). Not `runtime`, which says where the slot runs.
+    agent_runtime: str | None = None
 
     @property
     def priority(self) -> SlotPriority:
@@ -233,9 +249,7 @@ def _build_slot(key: str, raw: dict[str, Any]) -> Slot:
                 ZoneInfo(tz)
             except ZoneInfoNotFoundError as e:
                 raise ConfigError(f"slot {key}: unknown tz {tz!r}") from e
-        runner = raw["runner"]
-        if not isinstance(runner, str) or not runner.strip():
-            raise ConfigError(f"slot {key}: runner must be a non-empty string")
+        runner = check_runner(raw["runner"], f"slot {key}")
         mw = int(raw["missed_window_hours"])
         if mw <= 0:
             raise ConfigError(f"slot {key}: missed_window_hours must be > 0, got {mw}")
@@ -249,8 +263,17 @@ def _build_slot(key: str, raw: dict[str, Any]) -> Slot:
             raise ConfigError(
                 f"slot {key!r}: runtime {runtime_raw!r} is not one of {[r.value for r in SlotRuntime]}"
             ) from e
+        agent_runtime_raw = raw.get("agent_runtime")
+        agent_runtime = (
+            None if agent_runtime_raw is None else validate_runtime(agent_runtime_raw, where=f"slot {key!r}")
+        )
+        # A slot's model must fit the slot's own runtime; without one, Claude Code's rule (as before).
         model_raw = raw.get("model")
-        model = None if model_raw is None else validate_model(model_raw, where=f"slot {key!r}")
+        model = (
+            None
+            if model_raw is None
+            else validate_model(model_raw, where=f"slot {key!r}", runtime=agent_runtime or "claude-code")
+        )
         return Slot(
             key=key,
             type=slot_type,
@@ -264,6 +287,7 @@ def _build_slot(key: str, raw: dict[str, Any]) -> Slot:
             tz=tz,
             runtime=runtime,
             model=model,
+            agent_runtime=agent_runtime,
         )
     except (KeyError, ValueError, TypeError) as e:
         raise ConfigError(f"slot {key}: malformed entry: {e}") from e

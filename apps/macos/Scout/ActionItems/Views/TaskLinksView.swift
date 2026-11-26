@@ -5,6 +5,12 @@ import AppKit
 /// Editorial style: boxed chip with tinted icon + label + subtle arrow.
 struct TaskLinksView: View {
     let links: [TaskDeepLink]
+    /// The card's header already shows a chip for each of these links (its
+    /// refs field is on): these then aren't Tab stops of their own. With
+    /// Keyboard navigation on, Tab stopped on each link twice, the second
+    /// time here, just under the description, where the hand check saw no
+    /// ring (UI audit T4). Off, these are the only chips, and stay stops.
+    var headerHasChips = false
     @Environment(\.openKBNote) private var openKBNote
 
     /// Only links with an external URL open here; in-app refs (cross-refs) and
@@ -25,6 +31,7 @@ struct TaskLinksView: View {
                             chipBody(for: link, external: false)
                         }
                         .buttonStyle(.plainHit)
+                        .dsSkipsTab(headerHasChips)
                         .help("Open \(link.displayLabel) in the Knowledge Base")
                     } else if let url = link.openURL {
                         Button {
@@ -33,6 +40,7 @@ struct TaskLinksView: View {
                             chipBody(for: link)
                         }
                         .buttonStyle(.plainHit)
+                        .dsSkipsTab(headerHasChips)
                         .help(url.absoluteString)
                     }
                 }
@@ -44,18 +52,14 @@ struct TaskLinksView: View {
     private func chipBody(for link: TaskDeepLink, external: Bool = true) -> some View {
         HStack(spacing: 5) {
             Image(systemName: iconName(for: link))
-                .font(.system(size: 10))
+                .font(DS.font(.caption2))
                 .foregroundStyle(iconColor(for: link))
             Text(label(for: link))
-                .font(DS.sans(11.5, weight: .medium))
-                .foregroundStyle(DS.Ink.p2)
             Image(systemName: external ? "arrow.up.right" : "arrow.right")
-                .font(.system(size: 9))
+                .font(DS.font(.micro))
                 .foregroundStyle(DS.Ink.p4)
         }
-        .padding(.horizontal, 8)
-        .frame(height: 22)
-        .background(EditorialChipBackground())
+        .dsTag()
     }
 
     private func iconName(for link: TaskDeepLink) -> String {

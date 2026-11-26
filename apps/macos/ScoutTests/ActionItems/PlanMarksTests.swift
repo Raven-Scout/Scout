@@ -147,9 +147,78 @@ struct PlanMarksTests {
             "  - block: 2026-09-30 10:00-10:45",
             "  - priya: second",
         ])
-        #expect(task.plan.markerPositions == [1, 1])
+        #expect(task.comments.map(\.engineIndex) == [1, 4])
         #expect(task.commentSelector(at: 1) == .index(1))
         #expect(task.commentSelector(at: 2) == .index(4))
+    }
+
+    // MARK: - Comments scoutctl can't address (#556)
+
+    @Test func anInlineNoteHasNoSelectorAndDoesNotShiftTheOthers() throws {
+        // The engine never lists `//==<< … >>==//`, so the comment after it is
+        // the engine's first. Counting shown comments would send 2, which is
+        // the next comment, or another task's line.
+        let task = try parseTask([
+            "- [ ] [#PROJ1] **Draft the rollout note**",
+            "  //==<< check the numbers first >>==//",
+            "  > scout (2026-09-30 09:00 AM): quoted",
+            "  - alex: first",
+            "  - priya: second",
+        ])
+        #expect(task.comments.map(\.text) == ["check the numbers first", "quoted", "first", "second"])
+        #expect(task.comments.map(\.engineIndex) == [nil, nil, 1, 2])
+        #expect(task.commentSelector(at: 1) == nil)
+        #expect(task.commentSelector(at: 2) == nil)
+        #expect(task.commentSelector(at: 3) == .index(1))
+        #expect(task.commentSelector(at: 4) == .index(2))
+        #expect(task.commentSelector(at: 5) == nil)
+    }
+
+    @Test func aCommentAfterABlankLineHasNoSelector() throws {
+        let task = try parseTask([
+            "- [ ] [#PROJ1] **Draft the rollout note**",
+            "  - alex: before the gap",
+            "",
+            "  - alex: after the gap",
+        ])
+        #expect(task.comments.map(\.engineIndex) == [1, nil])
+    }
+
+    @Test func inAOneSpaceListEachTaskKeepsItsOwnIndex() throws {
+        // The issue's shape: the next task line is indented too. The inline
+        // note on the first task has no selector, so nothing the card sends
+        // can reach the second task's marker or comment.
+        let tasks = try parseTasks([
+            " - [ ] [#PROJ1] **Draft the rollout note**",
+            "   //==<< check the numbers first >>==//",
+            " - [ ] [#OPS2] **Review the runbook**",
+            "   - estimate: 45m",
+            "   - sam: ready",
+        ])
+        #expect(tasks.count == 2)
+        #expect(tasks[0].commentSelector(at: 1) == nil)
+        #expect(tasks[1].plan.estimateMinutes == 45)
+        #expect(tasks[1].commentSelector(at: 1) == .index(2))
+    }
+
+    @Test func aChildTasksCommentHasNoSelector() throws {
+        // The engine addresses top-level tasks. It skips the child's own
+        // sub-bullets when it numbers the parent's comments.
+        let tasks = try parseTasks([
+            "- [ ] [#PROJ1] **Draft the rollout note**",
+            "  - alex: on the parent",
+            "  - [ ] [#KID1] **Collect the numbers**",
+            "    - sam: on the child",
+        ])
+        #expect(tasks.map { $0.comments.map(\.engineIndex) } == [[1], [nil]])
+    }
+
+    @Test func editAndDeleteAreOfferedOnlyForAnAddressableComment() {
+        let reachable = TaskComment(author: "alex", timestamp: "", text: "hi", engineIndex: 1)
+        let inline = TaskComment(author: "user", timestamp: "", text: "hi")
+        #expect(CommentListView.offersActions(reachable, canEdit: true, canDelete: true))
+        #expect(!CommentListView.offersActions(inline, canEdit: true, canDelete: true))
+        #expect(!CommentListView.offersActions(reachable, canEdit: false, canDelete: false))
     }
 
     @Test func aCommentWriteSendsTheEngineIndexWithoutAskingTheEngine() async throws {
@@ -170,8 +239,9 @@ struct PlanMarksTests {
             runner: runner,
             gitService: nil
         )
+        let selector = try #require(task.commentSelector(at: 1))
         _ = try await writer.submit(
-            .editComment(subject: "X", shortPrefix: "PROJ1", selector: task.commentSelector(at: 1), newText: "later"),
+            .editComment(subject: "X", shortPrefix: "PROJ1", selector: selector, newText: "later"),
             displayedDate: Date()
         )
         let calls = await runner.calls

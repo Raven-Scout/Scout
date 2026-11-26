@@ -113,8 +113,14 @@ enum SmokeFixtures {
     ]
 
     static let errors: [DetectedError] = [
-        DetectedError(line: 12, pattern: "ERROR", snippet: "ERROR: the tracing job timed out"),
-        DetectedError(line: 88, pattern: "Traceback", snippet: "Traceback (most recent call last):"),
+        DetectedError(line: 12, pattern: "error", snippet: "ERROR: the tracing job timed out", kind: .error),
+        DetectedError(line: 88, pattern: "traceback", snippet: "ValueError: bad slot", kind: .traceback, block: [
+            "Traceback (most recent call last):",
+            "  File \"/tmp/scout/cli.py\", line 10, in main",
+            "    run()",
+            "ValueError: bad slot",
+        ]),
+        DetectedError(line: 120, pattern: "429", snippet: "429 Too Many Requests", kind: .api),
     ]
 
     static func perFileItem(
@@ -327,7 +333,7 @@ struct ComponentSmokeTests {
             size: CGSize(width: 700, height: 300))
         ViewHost.render(
             CommentListView(comments: SmokeFixtures.comments,
-                            onEdit: { _, _ in }, onDelete: { _ in }),
+                            onEdit: { _, _ in true }, onDelete: { _ in }),
             size: CGSize(width: 700, height: 300))
         ViewHost.render(CommentListView(comments: []), size: CGSize(width: 700, height: 80))
     }
@@ -335,7 +341,7 @@ struct ComponentSmokeTests {
     @Test("the comment composer renders")
     func commentComposerRenders() {
         ViewHost.render(
-            CommentComposerView(task: SmokeFixtures.task(), displayedDate: SmokeFixtures.day) { _ in },
+            CommentComposerView(task: SmokeFixtures.task(), displayedDate: SmokeFixtures.day) { _ in true },
             size: CGSize(width: 700, height: 80))
     }
 
@@ -343,7 +349,7 @@ struct ComponentSmokeTests {
     func editorialActionButtonRenders() {
         ViewHost.render(
             HStack {
-                EditorialActionButton("Send", style: .primary, shortcut: "⌘↵") {}
+                EditorialActionButton("Send", style: .primary, keyboardShortcut: AppShortcut.commit) {}
                 EditorialActionButton("Cancel") {}
                 EditorialActionButton("Add comment", systemImage: "text.bubble") {}
                 EditorialActionButton("Send", style: .primary) {}
@@ -388,7 +394,7 @@ struct ComponentSmokeTests {
             ViewHost.render(
                 SlotEditForm(
                     liveSlot: SmokeFixtures.slot(), isNewDraft: isNew,
-                    onSave: { _ in }, onDelete: {}, onFireNow: { _ in },
+                    onSave: { _, _ in }, onDelete: {}, onFireNow: { _ in },
                     onRevertNewDraft: isNew ? {} : nil),
                 size: CGSize(width: 520, height: 900))
         }
@@ -400,7 +406,7 @@ struct ComponentSmokeTests {
             ViewHost.render(
                 SlotEditForm(
                     liveSlot: SmokeFixtures.slot(type: type), isNewDraft: false,
-                    onSave: { _ in }, onDelete: {}, onFireNow: { _ in },
+                    onSave: { _, _ in }, onDelete: {}, onFireNow: { _ in },
                     onRevertNewDraft: nil),
                 size: CGSize(width: 520, height: 900))
         }
@@ -412,7 +418,7 @@ struct ComponentSmokeTests {
     func proposalCardRendersEveryStatus() {
         let statuses: [ProposalStatus] = [
             .proposed, .pending(autoApplyDate: "2026-06-20"), .approved,
-            .rejected, .applied(date: "2026-06-16"), .unknown("Weird"),
+            .rejected, .applied(date: "2026-06-16"), .closed("Superseded"), .unknown("Weird"),
         ]
         for status in statuses {
             ViewHost.render(

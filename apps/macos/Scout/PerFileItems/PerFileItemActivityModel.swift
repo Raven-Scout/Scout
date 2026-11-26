@@ -37,7 +37,7 @@ final class PerFileItemActivityModel: ObservableObject {
     /// overwrites a newer one.
     func load(_ item: PerFileItem) async {
         guard let rel = ItemActivity.repoRelativePath(of: item.fileURL, repo: repoURL) else {
-            state = .unavailable("History is only available for items inside the Scout vault's git repo.")
+            state = .unavailable("History is only available for items inside the Scout folder's git history.")
             return
         }
         relativePath = rel

@@ -7,9 +7,11 @@ struct KBRightPanel: View {
     let relPath: String
     @ObservedObject var service: KnowledgeBaseService
     let onNavigate: (String) -> Void
+    /// Open the overview's map with this note selected.
+    var onShowOnMap: ((String) -> Void)? = nil
 
     private enum Tab: String { case links, graph }
-    @State private var tab: Tab = .links
+    @AppStorage("kbRightPanelTab") private var tab: Tab = .links
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,12 +27,17 @@ struct KBRightPanel: View {
             case .links:
                 ScrollView { linksContent.padding(12) }
             case .graph:
-                KBLocalGraphView(graph: service.localGraph(around: relPath),
-                                 onNavigate: onNavigate)
-                    .padding(.bottom, 8)
-                    // Rebuild (fresh simulation, re-centered) whenever the open
-                    // note changes, so the graph always reflects the current page.
-                    .id(relPath)
+                ZStack(alignment: .topLeading) {
+                    KBMapWebView(service: service, mode: .local(center: relPath), onOpen: onNavigate)
+                    if let onShowOnMap {
+                        Button { onShowOnMap(relPath) } label: {
+                            Label("Show on full map", systemImage: "point.3.connected.trianglepath.dotted")
+                        }
+                        .buttonStyle(.ds(.secondary, size: .small))
+                        .padding(8)
+                        .help("Open the knowledge map with this note selected")
+                    }
+                }
             }
         }
         .frame(maxHeight: .infinity)
@@ -48,14 +55,9 @@ struct KBRightPanel: View {
                     FlowLayout(spacing: 6) {
                         ForEach(outgoing) { link in
                             Button { if let r = link.resolved { onNavigate(r) } } label: {
-                                Text(link.target)
-                                    .font(DS.sans(11))
-                                    .foregroundStyle(link.resolved == nil ? DS.Ink.p4 : DS.Accent.ink)
-                                    .padding(.horizontal, 8).padding(.vertical, 3)
-                                    .background(EditorialChipBackground())
-                                    .opacity(link.resolved == nil ? 0.6 : 1)
+                                Text(link.target).dsTag(link: true)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.plainHit)  // ds-guard: hit area — a link tag; .dsTag draws it, disabled when unresolved
                             .disabled(link.resolved == nil)
                             .help(link.resolved == nil ? "Note not found" : link.resolved!)
                         }
@@ -71,10 +73,13 @@ struct KBRightPanel: View {
                         ForEach(backlinks) { bl in
                             Button { onNavigate(bl.path) } label: {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(bl.name).font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                                    Text(bl.name).font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p1)
                                     if !bl.excerpt.isEmpty {
-                                        InlineMarkdownText(bl.excerpt)
-                                            .font(DS.sans(10.5)).foregroundStyle(DS.Ink.p3)
+                                        // Plain text: a one-line snippet of a table row or a bold
+                                        // label can't render, and links inside a row that is
+                                        // itself a button would compete with it (UI audit T3).
+                                        Text(PlainText.strippingMarkdown(bl.excerpt))
+                                            .font(DS.font(.caption2)).foregroundStyle(DS.Ink.p3)
                                             .lineLimit(2).multilineTextAlignment(.leading)
                                     }
                                 }
@@ -93,9 +98,9 @@ struct KBRightPanel: View {
     private func section<Content: View>(title: String, count: Int, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Text(title.uppercased()).font(DS.sans(10, weight: .semibold)).tracking(0.5)
+                Text(title.uppercased()).font(DS.font(.caption2, weight: .semibold)).tracking(0.5)
                     .foregroundStyle(DS.Ink.p4)
-                Text("\(count)").font(DS.mono(10)).foregroundStyle(DS.Ink.p4)
+                Text("\(count)").font(DS.font(.caption2, .mono)).foregroundStyle(DS.Ink.p4)
                 Spacer(minLength: 0)
             }
             content()
@@ -103,6 +108,6 @@ struct KBRightPanel: View {
     }
 
     private func emptyLine(_ text: String) -> some View {
-        Text(text).font(DS.sans(11)).foregroundStyle(DS.Ink.p4)
+        Text(text).font(DS.font(.caption)).foregroundStyle(DS.Ink.p4)
     }
 }

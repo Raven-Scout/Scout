@@ -84,6 +84,8 @@ def test_structure_reads_history_once_within_budget(tmp_path: Path, monkeypatch:
         rows = structure.structure_rows(vault)
         best = min(best, time.perf_counter() - start)
         assert len(rows) == FOLDERS
-        assert sorted(c[1] for c in calls if c[:1] == ["git"]) == ["log", "ls-files"]
+        git_calls = [c for c in calls if c[:1] == ["git"]]
+        assert sorted(c[1] for c in git_calls if "cat-file" not in c) == ["log", "ls-files"]
+        assert len([c for c in git_calls if "cat-file" in c]) == 2  # the committed and staged config, once each
     assert any(r["stale"] for r in rows)
     assert best < BUDGET_S, f"kb structure took {best:.2f}s over {COMMITS} commits (budget {BUDGET_S}s)"

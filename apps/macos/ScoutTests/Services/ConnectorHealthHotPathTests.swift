@@ -57,6 +57,8 @@ struct ConnectorHealthHotPathTests {
         // Noise that must never be picked up.
         try "".write(to: dir.appendingPathComponent("connector-alerts.log"),
                      atomically: true, encoding: .utf8)
+        try "".write(to: dir.appendingPathComponent(ConnectorAlert.fileName),
+                     atomically: true, encoding: .utf8)
         try "".write(to: dir.appendingPathComponent("connector-calls-garbage.jsonl"),
                      atomically: true, encoding: .utf8)
 

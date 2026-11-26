@@ -33,7 +33,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: .github/scripts/changed-paths.sh '^(plugin/engine/scout/|plugin/engine/tests/fixtures/contract/|apps/.*/Fixtures/|apps/.*/Resources/|\.claude-plugin/|plugin/\.claude-plugin/|plugin/engine/pyproject\.toml$|apps/macos/Scout\.xcodeproj/project\.pbxproj$|\.github/workflows/contract\.yml$|\.github/scripts/changed-paths\.sh$)'
+        run: .github/scripts/changed-paths.sh '^(plugin/engine/scout/|plugin/engine/tests/fixtures/contract/|apps/.*/Fixtures/|apps/.*/Resources/|\.claude-plugin/|plugin/\.claude-plugin/|plugin/engine/pyproject\.toml$|apps/macos/Scout\.xcodeproj/project\.pbxproj$|\.github/workflows/contract\.yml$|\.github/scripts/changed-paths\.sh$|plugin/changelog\.d/|apps/macos/changelog\.d/|plugin/CHANGELOG\.md$|apps/macos/CHANGELOG\.md$)'
 
   verify:
     needs: changes
@@ -50,6 +50,8 @@ jobs:
         plugin/engine/scout/schedule.snapshot.json apps/macos/ScoutTests/Fixtures/schedule.snapshot.json
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the changelog check reads the base's CHANGELOGs and the commits since it
       - uses: astral-sh/setup-uv@v3
       - name: Setup Python
         run: uv python install 3.12
@@ -64,6 +66,20 @@ jobs:
       - name: App and plugin versions match
         working-directory: plugin/engine
         run: .venv/bin/python -m scout.scripts.versioning check
+
+      # Changelog fragments (plugin/changelog.d/README.md): every fragment parses, no fragment the base
+      # has is changed, and nothing changes a `## [X.Y.Z]` section the base already has. On a PR, HEAD is
+      # the merge with the base, so an entry a merge of main would file under a just-cut release fails
+      # here. A PR into release/vX.Y.Z may edit [X.Y.Z] (and may not add a fragment). The base checks
+      # gate pull_request and merge_group only: a push to main was checked as its PR, and a squash merge
+      # keeps only the Co-authored-by block as trailers, so a waiver the PR passed would fail the push.
+      - name: Changelog fragments parse; released sections unchanged
+        working-directory: plugin/engine
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          TARGET: ${{ github.base_ref || github.event.merge_group.base_ref }}
+          EVENT: ${{ github.event_name }}
+        run: .venv/bin/python -m scout.scripts.changelog check --base "$BASE" --target-branch "$TARGET" --event "$EVENT"
 
       # 1. The canonical snapshots must match their YAML sources. (This check
       #    existed pre-merge and is retained verbatim.)
@@ -245,6 +261,321 @@ jobs:
               *" $path "*) echo "OK  $path (discovered)" ;;
               *)
                 echo "::error file=$path::tracked doctor-run-health.json copy was never compared by this step — add it to, or make it match, the apps/*/[Ss]cout*Tests/Fixtures/ glob"
+                status=1
+                ;;
+            esac
+          done <<< "$tracked"
+          exit $status
+
+      # 6. The connector alert state (.scout-logs/connector-alerts.json) the
+      #    app's alert banner reads: same rule as the doctor fixture.
+      - name: Connector alerts fixture is byte-identical across clients
+        run: |
+          set -uo pipefail
+          canonical=plugin/engine/tests/fixtures/contract/connector-alerts.json
+          status=0
+          checked=0
+          checked_list=" "
+          for copy in apps/*/[Ss]cout*Tests/Fixtures/connector-alerts.json; do
+            [ -f "$copy" ] || continue
+            checked=$((checked + 1))
+            checked_list="$checked_list$copy "
+            if cmp -s "$canonical" "$copy"; then
+              echo "OK  $copy"
+            else
+              echo "::error file=$copy::connector-alerts.json is not byte-identical to $canonical — regenerate it with SCOUT_REGEN_CONTRACT=1 (tests/unit/test_connector_alerts_contract.py), then cp it over $copy"
+              status=1
+            fi
+          done
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::no client copy of connector-alerts.json found — the glob may be stale"
+            status=1
+          fi
+
+          tracked="$(git ls-files -- '*connector-alerts.json')"
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            [ "$path" = "$canonical" ] && continue
+            case "$checked_list" in
+              *" $path "*) echo "OK  $path (discovered)" ;;
+              *)
+                echo "::error file=$path::tracked connector-alerts.json copy was never compared by this step — add it to, or make it match, the apps/*/[Ss]cout*Tests/Fixtures/ glob"
+                status=1
+                ;;
+            esac
+          done <<< "$tracked"
+          exit $status
+
+      # 7. The usage summary (`scoutctl budget usage --json`) the app's usage
+      #    card reads: same rule as the doctor fixture.
+      - name: Usage summary fixture is byte-identical across clients
+        run: |
+          set -uo pipefail
+          canonical=plugin/engine/tests/fixtures/contract/usage-summary.json
+          status=0
+          checked=0
+          checked_list=" "
+          for copy in apps/*/[Ss]cout*Tests/Fixtures/usage-summary.json; do
+            [ -f "$copy" ] || continue
+            checked=$((checked + 1))
+            checked_list="$checked_list$copy "
+            if cmp -s "$canonical" "$copy"; then
+              echo "OK  $copy"
+            else
+              echo "::error file=$copy::usage-summary.json is not byte-identical to $canonical — regenerate it with SCOUT_REGEN_CONTRACT=1 (tests/unit/test_usage_summary.py), then cp it over $copy"
+              status=1
+            fi
+          done
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::no client copy of usage-summary.json found — the glob may be stale"
+            status=1
+          fi
+
+          tracked="$(git ls-files -- '*usage-summary.json')"
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            [ "$path" = "$canonical" ] && continue
+            case "$checked_list" in
+              *" $path "*) echo "OK  $path (discovered)" ;;
+              *)
+                echo "::error file=$path::tracked usage-summary.json copy was never compared by this step — add it to, or make it match, the apps/*/[Ss]cout*Tests/Fixtures/ glob"
+                status=1
+                ;;
+            esac
+          done <<< "$tracked"
+          exit $status
+
+      # 8. `scoutctl protection status --json`, which the app's Run protection
+      #    card reads: same rule as the doctor fixture.
+      - name: Protection status fixture is byte-identical across clients
+        run: |
+          set -uo pipefail
+          canonical=plugin/engine/tests/fixtures/contract/protection-status.json
+          status=0
+          checked=0
+          checked_list=" "
+          for copy in apps/*/[Ss]cout*Tests/Fixtures/protection-status.json; do
+            [ -f "$copy" ] || continue
+            checked=$((checked + 1))
+            checked_list="$checked_list$copy "
+            if cmp -s "$canonical" "$copy"; then
+              echo "OK  $copy"
+            else
+              echo "::error file=$copy::protection-status.json is not byte-identical to $canonical — regenerate it with SCOUT_REGEN_CONTRACT=1 (tests/unit/test_run_protection_contract.py), then cp it over $copy"
+              status=1
+            fi
+          done
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::no client copy of protection-status.json found — the glob may be stale"
+            status=1
+          fi
+
+          tracked="$(git ls-files -- '*protection-status.json')"
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            [ "$path" = "$canonical" ] && continue
+            case "$checked_list" in
+              *" $path "*) echo "OK  $path (discovered)" ;;
+              *)
+                echo "::error file=$path::tracked protection-status.json copy was never compared by this step — add it to, or make it match, the apps/*/[Ss]cout*Tests/Fixtures/ glob"
+                status=1
+                ;;
+            esac
+          done <<< "$tracked"
+          exit $status
+
+      # 9. The run ledger (`scoutctl runs --json`) the app's Health panel reads:
+      #    same rule as the doctor fixture.
+      - name: Run ledger fixture is byte-identical across clients
+        run: |
+          set -uo pipefail
+          canonical=plugin/engine/tests/fixtures/contract/run-ledger.json
+          status=0
+          checked=0
+          checked_list=" "
+          for copy in apps/*/[Ss]cout*Tests/Fixtures/run-ledger.json; do
+            [ -f "$copy" ] || continue
+            checked=$((checked + 1))
+            checked_list="$checked_list$copy "
+            if cmp -s "$canonical" "$copy"; then
+              echo "OK  $copy"
+            else
+              echo "::error file=$copy::run-ledger.json is not byte-identical to $canonical — regenerate it with SCOUT_REGEN_CONTRACT=1 (tests/unit/test_run_ledger_contract.py), then cp it over $copy"
+              status=1
+            fi
+          done
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::no client copy of run-ledger.json found — the glob may be stale"
+            status=1
+          fi
+
+          tracked="$(git ls-files -- '*run-ledger.json')"
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            [ "$path" = "$canonical" ] && continue
+            case "$checked_list" in
+              *" $path "*) echo "OK  $path (discovered)" ;;
+              *)
+                echo "::error file=$path::tracked run-ledger.json copy was never compared by this step — add it to, or make it match, the apps/*/[Ss]cout*Tests/Fixtures/ glob"
+                status=1
+                ;;
+            esac
+          done <<< "$tracked"
+          exit $status
+
+      # 10. The delegate mirror status (`scoutctl delegate status --json`) the
+      #     app's Settings ▸ Agent copies card reads (#550): same rule as the
+      #     doctor fixture.
+      - name: Delegate status fixture is byte-identical across clients
+        run: |
+          set -uo pipefail
+          canonical=plugin/engine/tests/fixtures/contract/delegate-status.json
+          status=0
+          checked=0
+          checked_list=" "
+          for copy in apps/*/[Ss]cout*Tests/Fixtures/delegate-status.json; do
+            [ -f "$copy" ] || continue
+            checked=$((checked + 1))
+            checked_list="$checked_list$copy "
+            if cmp -s "$canonical" "$copy"; then
+              echo "OK  $copy"
+            else
+              echo "::error file=$copy::delegate-status.json is not byte-identical to $canonical — regenerate it with SCOUT_REGEN_CONTRACT=1 (tests/unit/test_delegate_status_contract.py), then cp it over $copy"
+              status=1
+            fi
+          done
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::no client copy of delegate-status.json found — the glob may be stale"
+            status=1
+          fi
+
+          tracked="$(git ls-files -- '*delegate-status.json')"
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            [ "$path" = "$canonical" ] && continue
+            case "$checked_list" in
+              *" $path "*) echo "OK  $path (discovered)" ;;
+              *)
+                echo "::error file=$path::tracked delegate-status.json copy was never compared by this step — add it to, or make it match, the apps/*/[Ss]cout*Tests/Fixtures/ glob"
+                status=1
+                ;;
+            esac
+          done <<< "$tracked"
+          exit $status
+
+      # 11. The inbox review (`scoutctl inbox review … --json`) the app's
+      #     review sheet reads (#550 V4b3): same rule as the doctor fixture.
+      - name: Inbox review fixture is byte-identical across clients
+        run: |
+          set -uo pipefail
+          canonical=plugin/engine/tests/fixtures/contract/inbox-review.json
+          status=0
+          checked=0
+          checked_list=" "
+          for copy in apps/*/[Ss]cout*Tests/Fixtures/inbox-review.json; do
+            [ -f "$copy" ] || continue
+            checked=$((checked + 1))
+            checked_list="$checked_list$copy "
+            if cmp -s "$canonical" "$copy"; then
+              echo "OK  $copy"
+            else
+              echo "::error file=$copy::inbox-review.json is not byte-identical to $canonical — regenerate it with SCOUT_REGEN_CONTRACT=1 (tests/unit/test_inbox_review_contract.py), then cp it over $copy"
+              status=1
+            fi
+          done
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::no client copy of inbox-review.json found — the glob may be stale"
+            status=1
+          fi
+
+          tracked="$(git ls-files -- '*inbox-review.json')"
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            [ "$path" = "$canonical" ] && continue
+            case "$checked_list" in
+              *" $path "*) echo "OK  $path (discovered)" ;;
+              *)
+                echo "::error file=$path::tracked inbox-review.json copy was never compared by this step — add it to, or make it match, the apps/*/[Ss]cout*Tests/Fixtures/ glob"
+                status=1
+                ;;
+            esac
+          done <<< "$tracked"
+          exit $status
+
+      # 12. The progress watcher's line (`.scout-logs/.scout-session.lock.alive`,
+      #     engine scout/run_progress.py) the app's SessionLogService reads to
+      #     tell a working run from a hung one: same rule as the doctor fixture.
+      - name: Run progress fixture is byte-identical across clients
+        run: |
+          set -uo pipefail
+          canonical=plugin/engine/tests/fixtures/contract/run-progress.alive
+          status=0
+          checked=0
+          checked_list=" "
+          for copy in apps/*/[Ss]cout*Tests/Fixtures/run-progress.alive; do
+            [ -f "$copy" ] || continue
+            checked=$((checked + 1))
+            checked_list="$checked_list$copy "
+            if cmp -s "$canonical" "$copy"; then
+              echo "OK  $copy"
+            else
+              echo "::error file=$copy::run-progress.alive is not byte-identical to $canonical — regenerate it with SCOUT_REGEN_CONTRACT=1 (tests/unit/test_run_progress.py), then cp it over $copy"
+              status=1
+            fi
+          done
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::no client copy of run-progress.alive found — the glob may be stale"
+            status=1
+          fi
+
+          tracked="$(git ls-files -- '*run-progress.alive')"
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            [ "$path" = "$canonical" ] && continue
+            case "$checked_list" in
+              *" $path "*) echo "OK  $path (discovered)" ;;
+              *)
+                echo "::error file=$path::tracked run-progress.alive copy was never compared by this step — add it to, or make it match, the apps/*/[Ss]cout*Tests/Fixtures/ glob"
+                status=1
+                ;;
+            esac
+          done <<< "$tracked"
+          exit $status
+
+      # 13. The investigation prompts (`scoutctl health resolve-prompt <kind>
+      #     <key> --json`) behind the app's "Resolve with Claude" button: same
+      #     rule as the doctor fixture.
+      - name: Resolve prompt fixture is byte-identical across clients
+        run: |
+          set -uo pipefail
+          canonical=plugin/engine/tests/fixtures/contract/resolve-prompt.json
+          status=0
+          checked=0
+          checked_list=" "
+          for copy in apps/*/[Ss]cout*Tests/Fixtures/resolve-prompt.json; do
+            [ -f "$copy" ] || continue
+            checked=$((checked + 1))
+            checked_list="$checked_list$copy "
+            if cmp -s "$canonical" "$copy"; then
+              echo "OK  $copy"
+            else
+              echo "::error file=$copy::resolve-prompt.json is not byte-identical to $canonical — regenerate it with SCOUT_REGEN_CONTRACT=1 (tests/unit/test_resolve_prompt_contract.py), then cp it over $copy"
+              status=1
+            fi
+          done
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::no client copy of resolve-prompt.json found — the glob may be stale"
+            status=1
+          fi
+
+          tracked="$(git ls-files -- '*resolve-prompt.json')"
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            [ "$path" = "$canonical" ] && continue
+            case "$checked_list" in
+              *" $path "*) echo "OK  $path (discovered)" ;;
+              *)
+                echo "::error file=$path::tracked resolve-prompt.json copy was never compared by this step — add it to, or make it match, the apps/*/[Ss]cout*Tests/Fixtures/ glob"
                 status=1
                 ;;
             esac

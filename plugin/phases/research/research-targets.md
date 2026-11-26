@@ -10,9 +10,11 @@ requires: null
 
 ## Step 1a: Check the Research Queue
 
-Read every `*.md` file in `knowledge-base/research-queue/` (list them with `scripts/scoutctl kb files --glob 'knowledge-base/research-queue/*.md'`, read each with `scripts/scoutctl kb read`; the thin `knowledge-base/research-queue.md` is now just the run log — see the end of this step). Each file is one topic: YAML frontmatter (`title`, `status`, `priority`, `date`, optional `area`) plus a body with the research brief / findings.
+Each file in `knowledge-base/research-queue/` is one topic: YAML frontmatter (`title`, `status`, `priority`, `date`, optional `area`) plus a body with the research brief / findings. The thin `knowledge-base/research-queue.md` is just the run log (see the end of this step).
 
-`status: open` and `in-progress` are the work queue; `done` and `dropped` are resolved. If {{USER_NAME}} has explicitly queued topics, those take priority.
+**Start from the queue summary, not the files.** `.scout-cache/session-context.json` → `research_queue` (near the top of the file) holds every open entry as `{id, path, status, priority, title, area, date, visibility}`, `urgent` first, plus `counts` by status. Pick from it, then `scripts/scoutctl kb read` only the entries you will work on. Do not list the folder and read every entry to filter by status. Only if the file's `generated_at` isn't today, or `research_queue` is missing, empty while `counts` shows open entries, or marked `truncated`, fall back to `scripts/scoutctl kb files --glob 'knowledge-base/research-queue/*.md'` and read what you need.
+
+`status: open` and `in-progress` (or no status) are the work queue; `done` and `dropped` are resolved. If {{USER_NAME}} has explicitly queued topics, those take priority.
 
 **Priority preemption (`priority: urgent` items run first).** Before the staleness-rotation guard or any opportunistic "work what this morning surfaced" pick, the run MUST:
 
@@ -37,7 +39,7 @@ Any mandate it reports **counts as a `priority: urgent` queue hit** — take it 
 2. **Treat `priority: low` and the graph-completeness lane as the lowest tier:** run them **only when no substantive `medium`+ item is outstanding**.
 3. **Never spend a whole research run on a graph-completeness item while a substantive item is open.** Closing an internal gap is a completeness objective, not a user research priority; finishing one must not be mistaken for value.
 
-After researching a topic, set its frontmatter `status: done` (or `in-progress`) and add findings to the body; write the run's "Last verified …" continuity note to `knowledge-base/research-queue.md` (the run log).
+After researching a topic, set its frontmatter `status: done` (or `in-progress`) and add findings to the body; write the run's "Last run …" continuity note to `knowledge-base/research-queue.md` (the run log).
 
 ## Step 1b: Score Entities for Research Need
 

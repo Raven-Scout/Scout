@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from scout import config as scout_config
+from scout import safe_write
 
 DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 
@@ -23,7 +24,7 @@ RUN_LOG_HEADER = (
     "# Research Queue — run log\n"
     "\n"
     "Per-topic research items live as files in [[research-queue/]]. This file is the thin "
-    'run log: the research session records its latest "Last verified …" continuity note here.\n'
+    'run log: the research session records its latest "Last run …" continuity note here.\n'
     "\n"
     "---\n"
     "\n"
@@ -191,7 +192,7 @@ def migrate_wishlist_file(src: Path, out_dir: Path, in_done_file: bool, default_
         if not item.title:
             continue
         dest = _unique_path(out_dir, filename_for(item, default_date))
-        dest.write_text(render_item(item))
+        safe_write.atomic_write_text(dest, render_item(item))
         count += 1
     return count
 
@@ -232,7 +233,7 @@ def migrate_research_file(src: Path, out_dir: Path, default_date: str) -> int:
         if not item.title:
             continue
         dest = _unique_path(out_dir, filename_for(item, default_date))
-        dest.write_text(render_item(item))
+        safe_write.atomic_write_text(dest, render_item(item))
         count += 1
     return count
 
@@ -348,7 +349,7 @@ def migrate_perfile(vault: Path, default_date: str | None = None) -> dict:
 
     # Rewrite research-queue.md to the thin run-log (only if it existed).
     if preserved_body is not None:
-        rq.write_text(_build_run_log(preserved_body))
+        safe_write.atomic_write_text(rq, _build_run_log(preserved_body))
 
     return {"migrated": True, "wishlist": wishlist_count, "research": research_count}
 

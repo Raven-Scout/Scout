@@ -233,6 +233,9 @@ def test_frontmatter_name_or_title_alone_is_still_dangling(kb_repo) -> None:
         ("aliases: Solo Name\n", ["Solo Name"]),
         ("aliases: Solo Name # trailing comment\n", ["Solo Name"]),
         ("aliases: ['A, B', C]\n", ["A, B", "C"]),
+        ("aliases: [Inline Name]   # trailing comment\n", ["Inline Name"]),
+        ("aliases: [Inline Name]  # see [[other]]\n", ["Inline Name"]),
+        ("aliases: [A, 'B # not a comment']  # c\n", ["A", "B # not a comment"]),
         ('aliases:\n- One\n- "Two"\nname: X\n', ["One", "Two"]),
         ("aliases: []\n", []),
         ("aliases: null\n", []),
@@ -443,11 +446,11 @@ def test_the_header_counts_what_is_enforced_only_with_rules(kb_repo) -> None:
     kb_repo.stage(SESSION_SHARD, "- " + "y" * 600 + "\n")
     out = io.StringIO()
     run_hook(kb_repo.root, env={}, out=out)
-    assert "kb-lint: 2 blocking (1 enforced), 0 warning(s) (mode: report, per path)" in out.getvalue()
+    assert "kb-lint: 2 blocking (1 enforced), 0 warnings (mode: report, per path)" in out.getvalue()
     _small_budgets(kb_repo)
     out = io.StringIO()
     run_hook(kb_repo.root, env={}, out=out)
-    assert "kb-lint: 2 blocking, 0 warning(s) (mode: block)" in out.getvalue()
+    assert "kb-lint: 2 blocking, 0 warnings (mode: block)" in out.getvalue()
 
 
 def test_a_crash_deciding_the_verdict_fails_open(kb_repo, monkeypatch) -> None:

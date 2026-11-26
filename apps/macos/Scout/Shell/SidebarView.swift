@@ -1,10 +1,18 @@
 import SwiftUI
 
-/// Editorial sidebar: sand-colored group label, flat row, neumorphic-pressed
-/// chrome on the active item. Matches the handoff bundle's `.sb-item.active`
-/// language from Scout.html.
+/// The main window's sidebar: a native `List(selection:)` in the sidebar
+/// style, so arrow keys move between pages, VoiceOver reads each row as a
+/// selectable item with its badge, and the row highlight follows the system.
+/// (It was a hand-built stack of buttons with none of that, C7.) The Go menu
+/// (`GoCommands`) reaches the same pages, ⌘1–⌘9 in this order.
+///
+/// The last row, Settings, isn't a page: it opens the Settings window (⌘,),
+/// Scout's only Settings (UI audit #10), and keeps its update count and
+/// attention mark so the sidebar still says when Settings needs a look.
+/// Being a button, not a selectable row, arrow keys pass over it; ⌘, opens it.
 struct SidebarView: View {
     @Binding var selection: SidebarItem
+    @Environment(\.openSettings) private var openSettings
     /// Count of agent sessions that need you — drives the badge on the
     /// Sessions row. Hidden when zero.
     var sessionsBadge: Int = 0
@@ -16,105 +24,146 @@ struct SidebarView: View {
     /// Count of active research topics — drives the badge on the Research row.
     var researchBadge: Int = 0
     /// Number of update tracks (app, plugin) with an update available — drives
-    /// the badge on the Settings row, where Settings ▸ Updates lives.
+    /// the badge on the Settings row; it opens Settings ▸ Updates.
     var settingsBadge: Int = 0
     /// True when the engine needs the user's attention (spec §5) — draws a
-    /// small warning dot on the Settings row.
+    /// warning symbol on the Settings row, labelled for VoiceOver.
     var settingsAttention: Bool = false
-    /// True while the engine gates the tabs (spec §5): every row but Settings
-    /// has nothing to show, so it renders dimmed — still clickable (it lands
-    /// on the engine gate). Settings stays live and undimmed.
+    /// True when run health is red — draws the warning dot on the Health row.
+    var healthAttention: Bool = false
+    /// True while the engine gates the tabs (spec §5): every page has nothing
+    /// to show, so its row renders dimmed — still selectable (it lands on the
+    /// engine gate). The Settings row stays live and undimmed.
     var tabsGated: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            groupLabel("Scout")
-            row(.controlCenter, label: "Control Center", system: "chart.bar.doc.horizontal")
-            row(.sessions,      label: "Sessions",       system: "rectangle.stack.badge.person.crop", badge: sessionsBadge)
-            row(.actionItems,   label: "Action Items",   system: "checklist")
-            row(.schedules,     label: "Schedules",      system: "calendar.badge.clock")
-            row(.proposals,     label: "Proposals",      system: "lightbulb",        badge: proposalsBadge)
-            row(.wishlist,      label: "Wishlist",       system: "star",             badge: wishlistBadge)
-            row(.research,      label: "Research",       system: "magnifyingglass",  badge: researchBadge)
-            row(.knowledgeBase, label: "Knowledge Base", system: "books.vertical")
-            Spacer().frame(height: 10)
-            groupLabel("App")
-            row(.settings,      label: "Settings",       system: "gearshape", badge: settingsBadge, attention: settingsAttention)
-            Spacer()
+        List(selection: listSelection) {
+            Section("Scout") {
+                ForEach(SidebarItem.allCases, id: \.self) { item in
+                    row(item)
+                }
+            }
+            Section("App") {
+                settingsRow
+            }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 14)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(
-            LinearGradient(
-                colors: [DS.Paper.sunk, DS.Paper.base],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-        )
-        .overlay(alignment: .trailing) {
-            Rectangle().fill(DS.Rule.soft).frame(width: 0.5)
-        }
+        .listStyle(.sidebar)
+        .accessibilityIdentifier("sidebar")
     }
 
-    /// Pure dimming rule: only while gated, and never the Settings row.
+    /// `List` selects through an optional; the window always shows a page,
+    /// so a deselect (clicking empty space) keeps the current one.
+    private var listSelection: Binding<SidebarItem?> {
+        Binding(get: { selection },
+                set: { if let item = $0 { selection = item } })
+    }
+
+    /// Pure dimming rule: every page while gated. (The Settings row, which
+    /// opens a window rather than a page, never dims.)
     nonisolated static func isDimmed(_ item: SidebarItem, tabsGated: Bool) -> Bool {
-        tabsGated && item != .settings
+        tabsGated
     }
 
-    private func groupLabel(_ text: String) -> some View {
-        Text(text.uppercased())
-            .font(DS.sans(10.5, weight: .medium))
-            .tracking(0.08 * 10.5)
-            .foregroundStyle(DS.Ink.p4)
-            .padding(.horizontal, 10)
-            .padding(.top, 6)
-            .padding(.bottom, 4)
+    /// Identifier of the Settings row, for UI tests.
+    nonisolated static let settingsRowIdentifier = "sidebar-settings"
+
+    /// What VoiceOver says for the Settings row beyond its title.
+    nonisolated static func settingsAccessibilityValue(updates: Int, attention: Bool) -> String {
+        var parts: [String] = []
+        if updates > 0 { parts.append("\(updates) update\(updates == 1 ? "" : "s") available") }
+        if attention { parts.append("needs attention") }
+        return parts.joined(separator: ", ")
     }
 
-    @ViewBuilder
-    private func row(_ item: SidebarItem, label: String, system: String, badge: Int = 0, attention: Bool = false) -> some View {
-        let isActive = selection == item
-        Button {
-            selection = item
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: system)
-                    .font(.system(size: 13))
-                    .foregroundStyle(isActive ? DS.Accent.ink : DS.Ink.p3)
-                    .frame(width: 16, height: 16)
-                Text(label)
-                    .font(DS.sans(13))
-                    .foregroundStyle(isActive ? DS.Ink.p1 : DS.Ink.p2)
-                if attention {
-                    Circle().fill(DS.Status.warn).frame(width: 6, height: 6)
-                }
-                Spacer(minLength: 0)
-                if badge > 0 {
-                    Text("\(badge)")
-                        .font(DS.sans(10.5, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .frame(minWidth: 18, minHeight: 16)
-                        .background(Capsule().fill(DS.Accent.fill))
-                }
-            }
-            // Same 0.5 dimming the app uses for unavailable controls
-            // (SlotEditForm's disabled runtime picker, done task cards).
-            .opacity(Self.isDimmed(item, tabsGated: tabsGated) ? 0.5 : 1)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background {
-                if isActive {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(DS.Paper.base)
-                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-                        .shadow(color: DS.Neumorphic.shadow.opacity(0.35), radius: 2, x: 1, y: 1)
-                }
-            }
-            .contentShape(Rectangle())
+    /// The badge count a row shows (0 = none).
+    func badge(for item: SidebarItem) -> Int {
+        switch item {
+        case .sessions:  return sessionsBadge
+        case .proposals: return proposalsBadge
+        case .wishlist:  return wishlistBadge
+        case .research:  return researchBadge
+        default:         return 0
         }
-        .buttonStyle(.plainHit)
+    }
+
+    /// What VoiceOver says for a row beyond its title: the badge, the
+    /// attention state and the gate. Pure, so it can be unit-tested.
+    nonisolated static func accessibilityValue(for item: SidebarItem, badge: Int,
+                                               attention: Bool, tabsGated: Bool) -> String {
+        var parts: [String] = []
+        if badge > 0 { parts.append(item.badgeDescription(badge)) }
+        if attention { parts.append("needs attention") }
+        if isDimmed(item, tabsGated: tabsGated) { parts.append("unavailable until Scout is set up") }
+        return parts.joined(separator: ", ")
+    }
+
+    /// Whether a page row carries the attention mark: Health when run
+    /// health is red. (The Settings row has its own, `settingsAttention`.)
+    private func hasAttention(_ item: SidebarItem) -> Bool {
+        item == .health && healthAttention
+    }
+
+    /// Opens the Settings window: at Engine when the engine needs the user
+    /// (that comes first), at Updates when an update is waiting, else where
+    /// it was.
+    private var settingsRow: some View {
+        Button {
+            if settingsAttention {
+                HelpActions.showEngineSettings(openSettings)
+            } else if settingsBadge > 0 {
+                HelpActions.showSettings(openSettings, at: SettingsAnchor.updates)
+            } else {
+                openSettings()
+            }
+        } label: {
+            Label {
+                HStack(spacing: 6) {
+                    Text("Settings…")
+                    if settingsAttention {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .foregroundStyle(DS.Status.warn)
+                            .help("Needs attention")
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            } icon: {
+                Image(systemName: "gearshape")
+            }
+        }
+        .buttonStyle(.plainHit) // ds-guard: hit area — a sidebar row, drawn like its neighbours
+        .badge(settingsBadge)
+        .help(ShortcutLabel.help("Open Settings", AppShortcut.settings))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Settings")
+        .accessibilityValue(Self.settingsAccessibilityValue(updates: settingsBadge, attention: settingsAttention))
+        .accessibilityHint("Opens the Settings window")
+        .accessibilityIdentifier(Self.settingsRowIdentifier)
+    }
+
+    private func row(_ item: SidebarItem) -> some View {
+        let attention = hasAttention(item)
+        let count = badge(for: item)
+        return Label {
+            HStack(spacing: 6) {
+                Text(item.title)
+                if attention {
+                    // A symbol, not a colour-only dot, so it reads without colour too.
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .foregroundStyle(DS.Status.err)
+                        .help("Needs attention")
+                }
+            }
+        } icon: {
+            Image(systemName: item.systemImage)
+        }
+        .badge(count)
+        .opacity(Self.isDimmed(item, tabsGated: tabsGated) ? 0.5 : 1)
+        .tag(item)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(item.title)
+        .accessibilityValue(Self.accessibilityValue(for: item, badge: count,
+                                                    attention: attention, tabsGated: tabsGated))
+        .accessibilityIdentifier(item.accessibilityIdentifier)
     }
 }

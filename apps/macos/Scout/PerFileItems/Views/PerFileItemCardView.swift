@@ -18,31 +18,98 @@ struct PerFileItemCardView: View {
 
     @State private var isWriting = false
     @State private var errorText: String?
+    @State private var bodyExpanded = false
+
+    /// A body taller than this is clipped behind "Show more". On a real vault
+    /// one card carried its whole progress log and filled the window (UI
+    /// audit C6).
+    static let collapsedBodyHeight: CGFloat = 180
+    /// Text built while collapsed — comfortably more than 180 pt shows.
+    static let collapsedCharacterBudget = 1_500
+    /// Text built when expanded. Past this the card links to the file: a
+    /// standing research lane grew to 220 KB, and the list builds every card.
+    static let expandedCharacterBudget = 20_000
+
+    /// Whether `blocks` are long enough to collapse: many lines, or a lot of
+    /// text that wraps into many.
+    nonisolated static func isLongBody(_ blocks: [MarkdownBodyBlock]) -> Bool {
+        var lines = 0
+        var characters = 0
+        for block in blocks {
+            let text: String
+            switch block {
+            case .prose(let t): text = t
+            case .code(_, let c): text = c
+            case .heading(_, let t): text = t
+            case .tasks(let tasks): text = tasks.map(\.text).joined(separator: "\n")
+            case .quote(_, let title, let t): text = [title, t].compactMap { $0 }.joined(separator: "\n")
+            }
+            lines += text.split(separator: "\n", omittingEmptySubsequences: false).count + 1
+            characters += text.count
+        }
+        return lines > 10 || characters > 900
+    }
 
     var body: some View {
+        let blocks = item.bodyBlocks
         VStack(alignment: .leading, spacing: 12) {
             header
             if let label = optionalLabel, let value = optionalValue, !value.isEmpty {
-                Text("\(label): \(value)")
-                    .font(DS.mono(11))
+                // Through the inline renderer, so its wikilinks and URLs can be clicked.
+                InlineMarkdownText(Self.provenanceMarkdown(label: label, value: value))
+                    .font(DS.font(.caption, .mono))
                     .foregroundStyle(DS.Ink.p4)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            if !item.bodyBlocks.isEmpty {
-                MarkdownBodyView(blocks: item.bodyBlocks)
+            if !blocks.isEmpty {
+                bodyContent(blocks)
             }
             actions
             if let errorText {
                 Label(errorText, systemImage: "exclamationmark.triangle.fill")
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Status.err)
             }
         }
-        .editorialCard(padding: 18)
-        .overlay(alignment: .leading) {
-            if isSelected {
-                RoundedRectangle(cornerRadius: 2).fill(DS.Ink.p1)
-                    .frame(width: 3).padding(.vertical, 6)
+        .editorialCard(padding: 18, selected: isSelected)
+    }
+
+    // MARK: - Body
+
+    @ViewBuilder
+    private func bodyContent(_ blocks: [MarkdownBodyBlock]) -> some View {
+        if Self.isLongBody(blocks) {
+            let shown = MarkdownBodyBlock.prefix(
+                blocks,
+                characters: bodyExpanded ? Self.expandedCharacterBudget : Self.collapsedCharacterBudget
+            )
+            VStack(alignment: .leading, spacing: 6) {
+                MarkdownBodyView(blocks: shown.blocks)
+                    .frame(maxHeight: bodyExpanded ? nil : Self.collapsedBodyHeight, alignment: .top)
+                    .clipped()
+                    .overlay(alignment: .bottom) {
+                        if !bodyExpanded {
+                            LinearGradient(colors: [DS.Paper.raised.opacity(0), DS.Paper.raised],
+                                           startPoint: .top, endPoint: .bottom)
+                                .frame(height: 36)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                HStack(spacing: 14) {
+                    Button(bodyExpanded ? "Show less" : "Show more") { bodyExpanded.toggle() }
+                        .accessibilityLabel(bodyExpanded ? "Show less of this item" : "Show more of this item")
+                    if bodyExpanded && shown.truncated {
+                        Button("Too long for a card — open the file") {
+                            NSWorkspace.shared.open(item.fileURL)
+                        }
+                        .help(item.fileURL.path)
+                    }
+                }
+                .buttonStyle(.ds(.link, size: .small))
             }
+        } else {
+            MarkdownBodyView(blocks: blocks)
         }
     }
 
@@ -52,10 +119,10 @@ struct PerFileItemCardView: View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
                 if !item.date.isEmpty {
-                    Text(item.date).font(DS.mono(11)).foregroundStyle(DS.Ink.p4)
+                    Text(item.date).font(DS.font(.caption, .mono)).foregroundStyle(DS.Ink.p4)
                 }
-                Text(item.title)
-                    .font(DS.serif(17, weight: .medium))
+                Text(item.displayTitle)
+                    .dsFont(.title, .serif, weight: .medium)
                     .foregroundStyle(DS.Ink.p1)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -73,6 +140,28 @@ struct PerFileItemCardView: View {
     }
 
     private var optionalValue: String? { item.source ?? item.area }
+
+    /// A bare `https://` URL, not already an autolink (`<…>`), a link's text
+    /// (`[…`) or a link's target (`](…`). It may
+    /// hold balanced parentheses (`…/Foo_(bar)`), and it doesn't take trailing
+    /// punctuation or an unbalanced `)` that closes the surrounding prose.
+    nonisolated private static let bareURLRe = try! NSRegularExpression(
+        pattern: #"(?<![<\[])(?<!\]\()\bhttps?://(?:[^\s<>()\[\]]|\([^\s<>()\[\]]*\))*(?:[^\s<>()\[\].,;:!?'"]|\([^\s<>()\[\]]*\))"#
+    )
+
+    /// The "Source: …" line as inline markdown: wikilinks and markdown links
+    /// stay as written for `InlineMarkdownText`, and a bare URL is wrapped as
+    /// an autolink (the inline parser doesn't link bare URLs). The label is
+    /// escaped so it can't turn into markup.
+    nonisolated static func provenanceMarkdown(label: String, value: String) -> String {
+        let ns = value as NSString
+        var out = value as NSString
+        for m in bareURLRe.matches(in: value, range: NSRange(location: 0, length: ns.length)).reversed() {
+            out = out.replacingCharacters(in: m.range, with: "<\(ns.substring(with: m.range))>") as NSString
+        }
+        let safeLabel = label.replacingOccurrences(of: "*", with: "\\*").replacingOccurrences(of: "_", with: "\\_")
+        return "\(safeLabel): \(InlineMarkupCleanup.clean(out as String))"
+    }
 
     // MARK: - Actions
 
@@ -121,8 +210,8 @@ struct PerFileItemCardView: View {
 
     private func actionLabel(_ label: String, systemImage: String, tint: Color) -> some View {
         HStack(spacing: 5) {
-            Image(systemName: systemImage).font(.system(size: 10))
-            Text(label).font(DS.sans(11.5, weight: .medium))
+            Image(systemName: systemImage).font(DS.font(.caption2))
+            Text(label).font(DS.font(.caption, weight: .medium))
         }
         .foregroundStyle(tint)
         .padding(.horizontal, 12)

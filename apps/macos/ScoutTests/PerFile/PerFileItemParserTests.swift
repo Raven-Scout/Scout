@@ -57,6 +57,152 @@ struct PerFileItemParserTests {
         #expect(item.date == "2026-06-16")   // from filename prefix
     }
 
+    /// A retired research lane annotated its keyword fields with YAML inline
+    /// comments. Read verbatim, `status` became an unknown value — which counts
+    /// as active — so a done 200 KB item rendered on the Research tab and its
+    /// comment-length status pill pushed the card off-screen.
+    @Test func keywordFieldsIgnoreInlineYAMLComments() throws {
+        let text = """
+        ---
+        title: "standing: the demo lane"
+        status: done   # ⏹️ RETIRED 2026-10-09 `dreaming` — `expires:` reached; see §Expiry ("regardless of state").
+        priority: medium   # 🔻 DEMOTED from `urgent` 2026-10-03 on Alex's direction
+        date: 2026-08-25 # first logged
+        area: demo
+        ---
+
+        Body.
+        """
+        let item = try #require(PerFileItemParser.parseFile(contents: text, fileURL: url("x.md")))
+        #expect(item.status == .done)
+        #expect(item.isActive == false)
+        #expect(item.priority == .medium)
+        #expect(item.date == "2026-08-25")
+    }
+
+    @Test func keywordFieldIsBlankWhenWhollyAComment() throws {
+        let text = "---\ntitle: T\nstatus: # TODO decide\npriority: #high\n---\n\nbody"
+        let item = try #require(PerFileItemParser.parseFile(contents: text, fileURL: url("x.md")))
+        #expect(item.status == .open)        // blank -> open, as when missing
+        #expect(item.priority == .medium)
+    }
+
+    private func status(_ line: String) throws -> ItemStatus {
+        try #require(PerFileItemParser.parseFile(contents: "---\ntitle: T\nstatus: \(line)\n---\n\nbody",
+                                                 fileURL: url("x.md"))).status
+    }
+
+    /// In YAML a `#` inside quotes is content, not a comment. A quoted
+    /// `"done # pending review"` is not `done`, so it is an unknown status and
+    /// stays active (#85) — reading it as done would hide unfinished work.
+    @Test func quotedKeywordKeepsItsHash() throws {
+        #expect(try status(#""done # pending review""#) == .unknown("done # pending review"))
+        #expect(try status("'done # pending review'") == .unknown("done # pending review"))
+        #expect(try status(#""done # pending review""#).isActive)
+    }
+
+    /// After a closing quote, the rest of the line is a comment.
+    @Test func quotedKeywordWithTrailingComment() throws {
+        #expect(try status(#""done" # retired"#) == .done)
+        #expect(try status("'done' # retired") == .done)
+        #expect(try status("'in-progress'") == .inProgress)
+        #expect(try status(#""done"#) == .unknown(#""done"#))   // unterminated: verbatim, so active
+    }
+
+    /// The engine (`plugin/engine/scout/scripts/heartbeat.py` `_item_status`)
+    /// reads a status as the first non-space token after `status:`. Where the
+    /// value is a bare keyword, with or without a spaced comment, both sides
+    /// must read the same status. Known differences are pinned below.
+    @Test func agreesWithEngineFirstToken() throws {
+        func engineToken(_ value: String) -> String {
+            String(value.drop(while: \.isWhitespace).prefix(while: { !$0.isWhitespace })).lowercased()
+        }
+        for value in ["done   # retired, expires reached", "open # c", "in-progress # c",
+                      "dropped", "Done", "p#1", "dropped#x"] {
+            #expect(try status(value) == ItemStatus.parse(engineToken(value)), "status: \(value)")
+        }
+    }
+
+    /// Where the app departs from the engine's first-token rule, on purpose:
+    /// it follows YAML, which the engine only approximates.
+    @Test func knownDifferencesFromEngine() throws {
+        // A value that is wholly a comment is blank (engine reads `#`): open.
+        #expect(try status("# TODO decide") == .open)
+        // A spaced keyword is whole (engine reads `in`).
+        #expect(try status("in progress # c") == .inProgress)
+        // Quotes are YAML quoting (engine keeps them, so `"open"` isn't open there).
+        #expect(try status(#""open""#) == .open)
+    }
+
+    /// Free-text fields keep their `#`: `Pattern #197` and `C#` are content,
+    /// and the app has always shown these values verbatim.
+    @Test func freeTextFieldsKeepHashes() throws {
+        let text = """
+        ---
+        title: C# notes for issue #42
+        status: open
+        source: Pattern #197, logged by the evening run
+        area: build #2
+        ---
+
+        Body.
+        """
+        let item = try #require(PerFileItemParser.parseFile(contents: text, fileURL: url("x.md")))
+        #expect(item.title == "C# notes for issue #42")
+        #expect(item.source == "Pattern #197, logged by the evening run")
+        #expect(item.area == "build #2")
+    }
+
+    /// A quoted title is read as YAML reads it, so its escapes don't show
+    /// (UI audit T3: a Research title showed `\"bigger than …\"`).
+    @Test func quotedTitlesLoseTheirEscapes() throws {
+        let text = """
+        ---
+        title: "Is the \\"bigger\\" plan worth it? C:\\\\demo"
+        area: 'Sam''s lane'
+        ---
+        Body.
+        """
+        let item = try #require(PerFileItemParser.parseFile(contents: text, fileURL: url("2026-06-12-plan.md")))
+        #expect(item.title == #"Is the "bigger" plan worth it? C:\demo"#)
+        #expect(item.area == "Sam's lane")
+    }
+
+    @Test(arguments: [
+        (#""tab\there""#, "tab\there"),
+        (#""caf\u00e9""#, "café"),
+        (#""keeps \q as written""#, #"keeps \q as written"#),
+        (#""unterminated"#, #""unterminated"#),
+        ("plain value", "plain value"),
+        (#""""#, ""),
+    ])
+    func yamlUnquoting(_ raw: String, _ value: String) {
+        #expect(PerFileItemParser.yamlUnquoted(raw) == value)
+    }
+
+    @Test func aCardTitleShowsNoMarkup() throws {
+        let text = """
+        ---
+        title: "**Cut-off bold title with `code`"
+        ---
+        """
+        let item = try #require(PerFileItemParser.parseFile(contents: text, fileURL: url("x.md")))
+        // `title` keeps the file's text; the card and the undo label show `displayTitle`.
+        #expect(item.title == "**Cut-off bold title with `code`")
+        #expect(item.displayTitle == "Cut-off bold title with code")
+    }
+
+    @Test("a title's leading > or # is its own words, not a quote or a heading", arguments: [
+        "> 1000 rows dropped",
+        "# of runs doubled",
+        "a | b split",
+    ])
+    func aTitleKeepsBlockSyntax(_ title: String) throws {
+        let text = "---\ntitle: \"\(title)\"\n---\n"
+        let item = try #require(PerFileItemParser.parseFile(contents: text, fileURL: url("x.md")))
+        #expect(item.displayTitle == title)
+    }
+
     @Test func returnsNilWhenNoFrontmatter() {
         #expect(PerFileItemParser.parseFile(contents: "# Just a heading\n\ntext", fileURL: url("a.md")) == nil)
     }

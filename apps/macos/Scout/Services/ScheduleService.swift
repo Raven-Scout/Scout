@@ -50,6 +50,14 @@ final class ScheduleService: ObservableObject {
         pollTimer = nil
     }
 
+    /// The engine lists each slot's next fire inside the window, once. A
+    /// 24-hour window left out every slot that fires later in the week (the
+    /// weekend briefing on a Monday, a weekly research slot), so "Next up"
+    /// and the research and dreaming warnings read a slot that exists as one
+    /// that doesn't (finding #17). Eight days covers every weekday a slot can
+    /// name, with a day to spare for a clock change.
+    static let lookAheadHours = 8 * 24
+
     /// Internal refresh hook. Called by `start()` on the 60 s tick.
     /// `nonisolated` flavoured: it calls `await runner.run` (off-actor) and
     /// only writes `self.upcoming` while back on `@MainActor`. Errors are
@@ -60,13 +68,16 @@ final class ScheduleService: ObservableObject {
     /// order (by slot, not by time). The Control Center wants strict
     /// chronological order with past entries dropped, so every consumer
     /// (NowStripView.nextColumn, UpcomingStripView, StatusBarView) can take
-    /// `upcoming.first` and get the soonest fire.
+    /// `upcoming.first` and get the soonest fire. The window is
+    /// `lookAheadHours`, so every configured slot is in the list.
     func refresh() async {
         let output: ProcessResult
         do {
             output = try await runner.run(
                 executable: scoutctl,
-                arguments: argumentsPrefix + ["schedule", "list-upcoming", "--window", "24", "--json"],
+                arguments: argumentsPrefix + [
+                    "schedule", "list-upcoming", "--window", String(Self.lookAheadHours), "--json",
+                ],
                 environment: [:],
                 workingDirectory: nil
             )
@@ -162,11 +173,12 @@ final class ScheduleService: ObservableObject {
 }
 
 extension UpcomingRun {
-    /// Decode an entry from the engine JSON contract. Returns nil if the
-    /// `slot_key` doesn't map to a known `RunType` or if the timestamp can't
-    /// be parsed — the caller filters via `compactMap`.
+    /// Decode an entry from the engine JSON contract. A slot key the app
+    /// doesn't know (one made in the app) takes its type from `slot_type`.
+    /// Returns nil only for a `slot_type` this build doesn't know or a
+    /// timestamp that can't be parsed — the caller filters via `compactMap`.
     init?(slotKey: String, slotType: String, scheduledAtUTC: String) {
-        guard let type = RunType(slotKey: slotKey) else { return nil }
+        guard let type = RunType(slotKey: slotKey, slotType: slotType) else { return nil }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         guard let date = formatter.date(from: scheduledAtUTC) else { return nil }

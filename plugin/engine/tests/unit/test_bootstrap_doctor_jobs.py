@@ -20,7 +20,7 @@ def _populate_minimal_vault(vault: Path) -> None:
     """The files a healthy vault has after bootstrap (as in test_bootstrap_doctor.py)."""
     (vault / ".scout-state" / "last-assembled").mkdir(parents=True)
     (vault / ".scout-state" / "schedule.yaml").write_text("schema_version: 1\nslots: {}\n")
-    for name in ("SKILL", "DREAMING", "RESEARCH"):
+    for name in ("SKILL", "DREAMING", "RESEARCH", "RESPOND"):
         (vault / f"{name}.md").write_text(f"# {name}\n")
         (vault / ".scout-state" / "last-assembled" / f"{name}.md").write_text(f"# {name}\n")
     (vault / "scout-config.yaml").write_text(
@@ -188,3 +188,21 @@ def test_other_platforms_check_no_scheduler(tmp_path, monkeypatch):
     report = run_doctor(vault=tmp_path, check_jobs=True, home=tmp_path)
     assert _job_findings(report) == []
     assert not _ran(calls, "launchctl") and not _ran(calls, "crontab")
+
+
+def test_macos_doctor_completes_when_launchctl_cant_start(tmp_path, monkeypatch):
+    """Inside a scheduled run's write sandbox launchctl isn't allowed to start (PermissionError): the doctor still
+    finishes, with a skipped-check warning, not a missing-jobs error (spec 2026-11-15 §8)."""
+    _populate_minimal_vault(tmp_path)
+
+    def fake_run(args, **_kwargs):
+        if args[:1] == ["launchctl"]:
+            raise PermissionError(1, "Operation not permitted", "launchctl")
+        return CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("scout.scripts.bootstrap_doctor.subprocess.run", fake_run)
+    monkeypatch.setattr("scout.scripts.bootstrap_doctor.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("scout.scripts.bootstrap_doctor.os.name", "posix")
+    report = run_doctor(vault=tmp_path, check_jobs=True, home=tmp_path)
+    assert _job_findings(report) == ["launchctl unavailable — skipped job registration check"]
+    assert not any("not registered" in e for e in report.errors)

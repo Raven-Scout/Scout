@@ -1,0 +1,133 @@
+{
+  "_note": "Captured 2026-11-18 from the GitHub API. branch_runs is that workflow's runs on the same branch and event, as of when this attempt completed.",
+  "_source": "https://github.com/Raven-Scout/Scout/actions/runs/44228722234/attempts/1",
+  "annotations": {
+    "134548261742": [
+      {
+        "annotation_level": "failure",
+        "message": "Canceling since a higher priority waiting request for ci-refs/pull/690/merge exists"
+      }
+    ],
+    "134548261820": [
+      {
+        "annotation_level": "failure",
+        "message": "Canceling since a higher priority waiting request for ci-refs/pull/690/merge exists"
+      }
+    ],
+    "134554909015": []
+  },
+  "branch_runs": [
+    {
+      "created_at": "2026-11-18T03:29:15Z",
+      "head_sha": "e830f6f4849a01499e25faf8974076425a13b6f9",
+      "id": 44230752465,
+      "run_number": 942
+    },
+    {
+      "created_at": "2026-11-18T03:12:09Z",
+      "head_sha": "846342ec6ddf22259811733cf355ba143baa0484",
+      "id": 44228722234,
+      "run_number": 939
+    }
+  ],
+  "jobs": [
+    {
+      "completed_at": "2026-11-18T03:12:18Z",
+      "conclusion": "success",
+      "created_at": "2026-11-18T03:12:10Z",
+      "id": 134548211281,
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "name": "changes",
+      "run_attempt": 1,
+      "runner_name": "GitHub Actions 1000018010",
+      "started_at": "2026-11-18T03:12:12Z",
+      "status": "completed",
+      "steps": [
+        {
+          "conclusion": "success",
+          "name": "Set up job"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run actions/checkout@v4"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run .github/scripts/changed-paths.sh '^(apps/macos/|plugin/\\.claude-plugin/plugin\\.json$|\\.github/workflows/app-ci\\.yml$|\\.github/scripts/(changed-paths|version-bump-only)\\.sh$)'"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run .github/scripts/version-bump-only.sh"
+        },
+        {
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v4"
+        },
+        {
+          "conclusion": "success",
+          "name": "Complete job"
+        }
+      ]
+    },
+    {
+      "completed_at": "2026-11-18T03:29:16Z",
+      "conclusion": "cancelled",
+      "created_at": "2026-11-18T03:12:18Z",
+      "id": 134548261742,
+      "labels": [
+        "xcode-27"
+      ],
+      "name": "ScoutTests (Xcode 27, non-blocking)",
+      "run_attempt": 1,
+      "runner_name": "",
+      "started_at": "2026-11-18T03:12:18Z",
+      "status": "completed",
+      "steps": []
+    },
+    {
+      "completed_at": "2026-11-18T03:29:16Z",
+      "conclusion": "cancelled",
+      "created_at": "2026-11-18T03:12:18Z",
+      "id": 134548261820,
+      "labels": [
+        "macos-15"
+      ],
+      "name": "ScoutTests",
+      "run_attempt": 1,
+      "runner_name": "",
+      "started_at": "2026-11-18T03:12:18Z",
+      "status": "completed",
+      "steps": []
+    },
+    {
+      "completed_at": "2026-11-18T03:29:16Z",
+      "conclusion": "cancelled",
+      "created_at": "2026-11-18T03:29:17Z",
+      "id": 134554909015,
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "name": "app-ci",
+      "run_attempt": 1,
+      "runner_name": null,
+      "started_at": "2026-11-18T03:29:17Z",
+      "status": "completed",
+      "steps": []
+    }
+  ],
+  "run": {
+    "conclusion": "cancelled",
+    "created_at": "2026-11-18T03:12:09Z",
+    "event": "pull_request",
+    "head_branch": "claude/r1-health-truth",
+    "head_sha": "846342ec6ddf22259811733cf355ba143baa0484",
+    "id": 44228722234,
+    "name": "app-ci",
+    "run_attempt": 1,
+    "run_number": 939,
+    "status": "completed",
+    "workflow_id": 374875398
+  }
+}

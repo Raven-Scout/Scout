@@ -1,5 +1,5 @@
 {
-  "engine_version": "0.18.6",
+  "engine_version": "0.18.18",
   "policy": {
     "federation": {
       "enabled": false
@@ -42,9 +42,12 @@
         ".pytest_cache/**",
         ".mcp.json",
         ".env*",
-        ".scout-state/**"
+        ".scout-state/**",
+        ".scout-inbox/agents/**"
       ],
-      "default": [],
+      "default": [
+        ".scout-inbox/agents/**"
+      ],
       "sync_allow": [
         ".scout-state/schedule.yaml",
         ".scout-state/id-map.json",
@@ -84,6 +87,9 @@
         "glob": ".scout-inbox/**",
         "visibility": "private"
       }
+    ],
+    "visibility_forced_private": [
+      "knowledge-base/lab/*/experiments/*/**"
     ]
   },
   "schema_version": 1

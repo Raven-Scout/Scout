@@ -25,39 +25,110 @@ struct SessionsHeader: View {
     /// published, so the line ticks without re-rendering the page.
     let service: SessionIndexService
 
+    @State private var showingPRProblems = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Sessions")
-                        .font(DS.serif(28, weight: .medium))
-                        .foregroundStyle(DS.Ink.p1)
-                    TimelineView(.periodic(from: .now, by: 10)) { context in
-                        Text(SessionsFormat.freshness(
-                            lastRefreshAt: service.lastRefreshAt,
-                            prFinishedAt: service.prStatus?.finishedAt,
-                            prErrors: service.prStatus?.errors.map(\.message) ?? [],
-                            now: context.date))
-                            .font(DS.sans(12))
-                            .foregroundStyle(DS.Ink.p3)
-                            .help(service.prStatus?.errors.map(\.message).joined(separator: "\n") ?? "")
-                    }
+            // One row when the title, freshness line and controls fit beside
+            // each other; otherwise the controls drop to a second row. Never
+            // squeeze the title: at 1280 pt it wrapped as "Session" / "s", at
+            // 1100 pt it disappeared (UI audit C6).
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    titleBlock(freshnessLines: 1)
+                    Spacer(minLength: 12)
+                    controls(searchWidth: 190)
                 }
-                Spacer()
-                TextField("Search sessions", text: $filter.search)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 190)
-                projectMenu
-                optionsMenu
-                EditorialSegmentedControl(
-                    selection: $viewMode,
-                    options: SessionsViewMode.allCases.map { ($0.label, $0) }
-                )
+                VStack(alignment: .leading, spacing: 10) {
+                    titleBlock(freshnessLines: 2)
+                    controls(searchWidth: nil)
+                }
             }
             stateChips
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
+    }
+
+    private func titleBlock(freshnessLines: Int) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Sessions")
+                .dsFont(.display, .serif, weight: .medium)
+                .foregroundStyle(DS.Ink.p1)
+                .lineLimit(1)
+                .fixedSize()
+                .glossaryHelp(.session)
+            TimelineView(.periodic(from: .now, by: 10)) { context in
+                freshnessLine(now: context.date, lines: freshnessLines)
+            }
+        }
+    }
+
+    /// "updated 10s ago · PRs checked 2m ago". When the PR check had
+    /// problems, its half is a button that lists them (UI audit R4).
+    @ViewBuilder
+    private func freshnessLine(now: Date, lines: Int) -> some View {
+        let errors = service.prStatus?.errors ?? []
+        let updated = SessionsFormat.updatedPart(lastRefreshAt: service.lastRefreshAt, now: now)
+        let prPart = SessionsFormat.prCheckPart(
+            prFinishedAt: service.prStatus?.finishedAt, prErrors: errors.map(\.message), now: now)
+        if let prPart, !errors.isEmpty {
+            HStack(spacing: 0) {
+                if let updated {
+                    Text("\(updated) · ").foregroundStyle(DS.Ink.p3).fixedSize()
+                }
+                Button { showingPRProblems = true } label: {
+                    HStack(spacing: 3) {
+                        Text(prPart).lineLimit(lines).truncationMode(.tail)
+                        Image(systemName: "chevron.down").imageScale(.small)
+                    }
+                    .foregroundStyle(DS.Status.warn)
+                }
+                .buttonStyle(.plainHit)
+                .accessibilityLabel(prPart)
+                .accessibilityHint("Shows which pull requests couldn't be checked")
+                .help("Show the problems")
+                .popover(isPresented: $showingPRProblems, arrowEdge: .bottom) {
+                    PRCheckProblemsView(
+                        errors: errors,
+                        finishedAt: service.prStatus?.finishedAt,
+                        now: now,
+                        onCheckAgain: {
+                            showingPRProblems = false
+                            Task { await service.refreshPRs() }
+                        })
+                }
+            }
+            .font(DS.font(.label))
+        } else {
+            Text(SessionsFormat.freshness(
+                lastRefreshAt: service.lastRefreshAt,
+                prFinishedAt: service.prStatus?.finishedAt,
+                prErrors: [],
+                now: now))
+                .font(DS.font(.label))
+                .foregroundStyle(DS.Ink.p3)
+                .lineLimit(lines)
+                .truncationMode(.tail)
+        }
+    }
+
+    /// Search, project and option menus, Board/Table. `searchWidth` nil lets
+    /// the search field take what the row has left (the stacked layout).
+    private func controls(searchWidth: CGFloat?) -> some View {
+        HStack(spacing: 12) {
+            TextField("Search sessions", text: $filter.search)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: searchWidth ?? 100, idealWidth: searchWidth ?? 220,
+                       maxWidth: searchWidth ?? 280)
+            projectMenu
+            optionsMenu
+            EditorialSegmentedControl(
+                selection: $viewMode,
+                options: SessionsViewMode.allCases.map { ($0.label, $0) }
+            )
+            .fixedSize()
+        }
     }
 
     private var projectMenu: some View {
@@ -68,11 +139,22 @@ struct SessionsHeader: View {
                 Button(project.name) { filter.projectKey = project.key }
             }
         } label: {
-            Text(projects.first { $0.key == filter.projectKey }?.name ?? "All projects")
-                .font(DS.sans(12.5))
+            Text(Self.menuTitle(projects.first { $0.key == filter.projectKey }?.name ?? "All projects"))
+                .font(DS.font(.label))
+                .lineLimit(1)
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+        .help(projects.first { $0.key == filter.projectKey }?.name ?? "Show sessions from every project")
+    }
+
+    /// A long project name is shortened in the middle, so choosing it can't
+    /// widen the header past the page; the full name is in the tooltip.
+    nonisolated static func menuTitle(_ name: String, limit: Int = 22) -> String {
+        guard name.count > limit, limit > 1 else { return name }
+        let head = (limit - 1) / 2 + (limit - 1) % 2
+        let tail = (limit - 1) / 2
+        return String(name.prefix(head)) + "…" + String(name.suffix(tail))
     }
 
     private var optionsMenu: some View {
@@ -111,17 +193,10 @@ struct SessionsHeader: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 if let state { SessionStateDot(state: state) }
-                Text(label).font(DS.sans(12, weight: .medium))
-                Text("\(count)")
-                    .font(DS.mono(11))
-                    .foregroundStyle(isSelected ? DS.Paper.base.opacity(0.85) : DS.Ink.p3)
+                Text(label)
+                DSChipCount(count)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(Capsule().fill(isSelected ? DS.Ink.p1 : DS.Paper.raised))
-            .foregroundStyle(isSelected ? DS.Paper.base : DS.Ink.p2)
         }
-        .buttonStyle(.plainHit)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .buttonStyle(.dsChip(selected: isSelected))
     }
 }

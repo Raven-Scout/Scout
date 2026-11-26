@@ -35,13 +35,35 @@ struct ActivityHeatmapView: View {
     private var header: some View {
         HStack(alignment: .center) {
             Text("Activity — last \(range.shortLabel)".uppercased())
-                .font(DS.sans(11, weight: .medium))
+                .font(DS.font(.caption, weight: .medium))
                 .tracking(0.06 * 11)
                 .foregroundStyle(DS.Ink.p4)
             Spacer()
+            if let day = dayFilter {
+                dayFilterChip(day)
+            }
             rangeSegment
         }
         .padding(.bottom, 14)
+    }
+
+    /// The day the run list is filtered to, as a removable token: clicking a
+    /// day only outlined its cell, so a filtered list looked like a short one
+    /// (UI audit R10, #22).
+    private func dayFilterChip(_ day: Date) -> some View {
+        Button {
+            dayFilter = nil
+        } label: {
+            Label(Self.dayFilterLabel(day), systemImage: "xmark.circle.fill")
+        }
+        .buttonStyle(.ds(.secondary, size: .small))
+        .help("Show runs from every day")
+        .accessibilityLabel("Showing only \(day.formatted(.dateTime.weekday(.wide).month(.wide).day())). Show every day")
+    }
+
+    /// "Runs on Nov 12". Pure.
+    nonisolated static func dayFilterLabel(_ day: Date) -> String {
+        "Runs on \(day.formatted(.dateTime.month(.abbreviated).day()))"
     }
 
     private var rangeSegment: some View {
@@ -51,7 +73,7 @@ struct ActivityHeatmapView: View {
                     rangeRaw = r.rawValue
                 } label: {
                     Text(r.segmentLabel)
-                        .font(DS.sans(10.5, weight: .medium))
+                        .font(DS.font(.caption2, weight: .medium))
                         .foregroundStyle(rangeRaw == r.rawValue ? DS.Ink.p1 : DS.Ink.p3)
                         .padding(.horizontal, 8)
                         .frame(height: 20)
@@ -148,7 +170,7 @@ struct ActivityHeatmapView: View {
             HStack(spacing: gap) {
                 ForEach(0..<7, id: \.self) { i in
                     Text(weekdayNames[i])
-                        .font(DS.mono(9.5, weight: .medium))
+                        .font(DS.font(.micro, .mono, weight: .medium))
                         .foregroundStyle(DS.Ink.p4)
                         .frame(maxWidth: .infinity)
                 }
@@ -180,7 +202,7 @@ struct ActivityHeatmapView: View {
                 .frame(maxWidth: .infinity)
             // Day-of-month numeral, top-left
             Text("\(dayNum)")
-                .font(DS.mono(9, weight: .medium))
+                .font(DS.font(.micro, .mono, weight: .medium))
                 .foregroundStyle(total == 0 ? DS.Ink.p4 : (cell.successes >= 5 ? .white : DS.Ink.p1))
                 .padding(.top, 3)
                 .padding(.leading, 4)
@@ -203,6 +225,7 @@ struct ActivityHeatmapView: View {
         }
         .keyWindowPointingHand(enabled: total > 0)
         .help(tooltip(for: cell))
+        .modifier(dayCellAccessibility(cell, isSelected: isSelected))
     }
 
     private func cellView(_ cell: HeatmapCell, size: CGFloat) -> some View {
@@ -230,6 +253,27 @@ struct ActivityHeatmapView: View {
             }
             .keyWindowPointingHand(enabled: total > 0)
             .help(tooltip(for: cell))
+            .modifier(dayCellAccessibility(cell, isSelected: isSelected))
+    }
+
+    /// A day cell is a tap target with no text of its own; for VoiceOver it is
+    /// one button that says the day and its runs, reports Selected while it
+    /// filters the run list, and toggles that filter when activated.
+    private func dayCellAccessibility(_ cell: HeatmapCell, isSelected: Bool) -> HeatmapDayAccessibility {
+        HeatmapDayAccessibility(
+            label: Self.accessibilityLabel(date: cell.date, successes: cell.successes, failures: cell.failures),
+            isSelected: isSelected,
+            toggle: { dayFilter = isSelected ? nil : cell.date })
+    }
+
+    /// "Wednesday, November 12, 3 runs, 1 failed" / "…, no runs". Pure.
+    nonisolated static func accessibilityLabel(date: Date, successes: Int, failures: Int) -> String {
+        let day = date.formatted(.dateTime.weekday(.wide).month(.wide).day())
+        let runs = successes + failures
+        guard runs > 0 else { return "\(day), no runs" }
+        var label = "\(day), \(runs) run\(runs == 1 ? "" : "s")"
+        if failures > 0 { label += ", \(failures) failed" }
+        return label
     }
 
     private func tooltip(for cell: HeatmapCell) -> String {
@@ -255,17 +299,17 @@ struct ActivityHeatmapView: View {
     private func legend(totalShown: Int) -> some View {
         HStack(spacing: 6) {
             Text("Less")
-                .font(DS.mono(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
             ForEach(legendSwatches, id: \.0) { _, c in
                 RoundedRectangle(cornerRadius: 2).fill(c).frame(width: 10, height: 10)
             }
             Text("More")
-                .font(DS.mono(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
             Spacer()
-            Text("\(totalShown) session\(totalShown == 1 ? "" : "s") · \(range.shortLabel)")
-                .font(DS.mono(11))
+            Text("\(totalShown) run\(totalShown == 1 ? "" : "s") · \(range.shortLabel)")
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p3)
         }
     }
@@ -309,15 +353,18 @@ struct ActivityHeatmapView: View {
         runs: [Run], dayCount: Int, calendar: Calendar, today: Date
     ) -> [HeatmapCell] {
         let start = calendar.date(byAdding: .day, value: -(dayCount - 1), to: today)!
-        let failStatuses: Set<RunStatus> = [.failure, .timeout, .rateLimited]
         // Single O(runs) pass: tally each run into its start-of-day bucket.
+        // A run before the first shown day can't land in a cell, so it is
+        // dropped with a date compare before any calendar call: the 1-month
+        // default shows a few dozen of a vault's thousands of runs.
+        let firstDay = calendar.startOfDay(for: start)
         var byDay: [Date: (succ: Int, fail: Int, cost: Decimal)] = [:]
-        for run in runs {
+        for run in runs where run.startedAt >= firstDay {
             let key = calendar.startOfDay(for: run.startedAt)
             var bucket = byDay[key] ?? (0, 0, Decimal(0))
             if run.status == .success {
                 bucket.succ += 1
-            } else if failStatuses.contains(run.status) {
+            } else if RunOutcomeDisplay.isFailure(run.status) {
                 bucket.fail += 1
             }
             if let c = run.cost { bucket.cost += c }
@@ -385,4 +432,20 @@ enum HeatmapRange: String, CaseIterable, Identifiable {
     }
 
     var shortLabel: String { segmentLabel }
+}
+
+private struct HeatmapDayAccessibility: ViewModifier {
+    let label: String
+    let isSelected: Bool
+    let toggle: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(label)
+            .accessibilityAddTraits(.isButton)
+            .accessibilitySelected(isSelected)
+            .accessibilityHint(isSelected ? "Shows runs from every day" : "Shows only this day's runs")
+            .accessibilityAction { toggle() }
+    }
 }

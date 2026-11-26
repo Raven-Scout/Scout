@@ -21,6 +21,22 @@ accounting: ``SCOUT_MODE`` unset, and no run mode named in the prompt of a
 session inside a vault (``run_context``). Writes to $SCOUT_DATA_DIR, else
 the vault containing the payload's ``cwd``, else ~/Scout. Never raises —
 hooks must never block a session.
+
+Two things the first version missed, both measured in a live vault on
+2026-11-22:
+
+- **Subagent calls.** A subagent's tool calls are not in the session's own
+  transcript; Claude Code writes them to ``<transcript-stem>/subagents/*.jsonl``.
+  Those files are replayed too, so a connector a run reaches only through a
+  subagent (``gh``, WebFetch, an MCP server) is no longer reported as not called.
+- **Repeat Stops.** Stop can fire more than once in a session (a background
+  subagent finishing wakes the session, which then stops again), and every
+  firing replayed the whole transcript: one session's 201 calls were logged
+  again as 211. Each row now carries the call's ``tool_use`` id as ``id``, and a
+  call whose id is already in the ledger for this session is skipped. The
+  PostToolUse hook writes the same ``id``, so a vault that still wires it is no
+  longer counted twice either. The same check covers a transcript that repeats
+  a ``tool_use`` block (one measured transcript held 101 blocks for 56 calls).
 """
 
 from __future__ import annotations
@@ -30,7 +46,7 @@ import os
 import sys
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import IO, Any
 
@@ -49,6 +65,7 @@ class ToolCallRecord:
     tool_name: str
     tool_input: dict[str, Any]
     tool_response: dict[str, Any]
+    tool_use_id: str = ""
 
 
 # ----- transcript discovery ------------------------------------------------
@@ -89,6 +106,18 @@ def _resolve_transcript_path(payload: dict[str, Any]) -> Path | None:
             if candidate.is_file():
                 return candidate
     return None
+
+
+def subagent_transcripts(transcript_path: Path) -> list[Path]:
+    """The session's subagent transcripts: ``<transcript-stem>/subagents/*.jsonl``.
+
+    Sorted by name so a replay is deterministic. Empty when the session started
+    no subagent, or the directory can't be listed.
+    """
+    try:
+        return sorted((transcript_path.with_suffix("") / "subagents").glob("*.jsonl"))
+    except OSError:
+        return []
 
 
 # ----- JSONL parsing -------------------------------------------------------
@@ -170,6 +199,7 @@ def extract_tool_calls(rows: Iterable[dict[str, Any]]) -> list[ToolCallRecord]:
                     tool_name=str(block.get("name") or "unknown"),
                     tool_input=dict(block.get("input") or {}),
                     tool_response={},
+                    tool_use_id=tool_id,
                 )
                 pending[tool_id] = rec
                 order[tool_id] = len(order)
@@ -190,6 +220,7 @@ def extract_tool_calls(rows: Iterable[dict[str, Any]]) -> list[ToolCallRecord]:
                     tool_name=prior.tool_name,
                     tool_input=prior.tool_input,
                     tool_response=_tool_response_from_result(block),
+                    tool_use_id=tool_id,
                 )
                 completed.append((order[tool_id], paired))
 
@@ -231,6 +262,38 @@ def _is_error(tool_response: dict[str, Any]) -> tuple[bool, str]:
     return is_error, err_snippet
 
 
+def logged_call_ids(log_dir: Path, session_id: str, today: str) -> set[str]:
+    """The ``id`` of every row already in the ledger for ``session_id``.
+
+    Reads today's file and the day before's (a session can cross midnight, and
+    its earlier rows are then in yesterday's file). A row without an ``id``
+    (written by an older engine) is not counted, so it can't hide a call.
+    """
+    days = [today]
+    try:
+        days.append((date.fromisoformat(today) - timedelta(days=1)).isoformat())
+    except ValueError:
+        pass
+    seen: set[str] = set()
+    for day in days:
+        try:
+            with connector_calls.day_path(log_dir, day).open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if session_id not in line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(row, dict) and row.get("session_id") == session_id:
+                        call_id = row.get("id")
+                        if isinstance(call_id, str) and call_id:
+                            seen.add(call_id)
+        except OSError:
+            continue
+    return seen
+
+
 def write_records(
     records: Iterable[ToolCallRecord],
     *,
@@ -238,15 +301,26 @@ def write_records(
     session_id: str,
     log_dir: Path,
 ) -> int:
-    """Append one JSONL row per record. Returns the number written."""
+    """Append one JSONL row per record not yet in the ledger. Returns the number written.
+
+    A record whose ``tool_use_id`` is already logged for this session (by an
+    earlier Stop, or by the PostToolUse hook) is skipped, and so is a repeat of
+    an id within ``records``.
+    """
     if not records:
         return 0
     log_dir.mkdir(parents=True, exist_ok=True)
-    out_path = connector_calls.day_path(log_dir, _local_date())
+    today = _local_date()
+    out_path = connector_calls.day_path(log_dir, today)
+    seen = logged_call_ids(log_dir, session_id, today)
     bash_connectors = _custom_bash_connectors()  # computed once per batch, not once per record (#perf)
     ts_utc = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
     lines: list[str] = []
     for rec in records:
+        if rec.tool_use_id:
+            if rec.tool_use_id in seen:
+                continue
+            seen.add(rec.tool_use_id)
         is_err, err_snippet = _is_error(rec.tool_response)
         connector = classify(rec.tool_name, rec.tool_input, bash_connectors=bash_connectors)
         row: dict[str, Any] = {
@@ -259,6 +333,8 @@ def write_records(
         }
         if err_snippet:
             row["err"] = err_snippet
+        if rec.tool_use_id:
+            row["id"] = rec.tool_use_id
         lines.append(json.dumps(row) + "\n")
     try:
         # Same lock as the PostToolUse hook, which may be appending to this
@@ -301,6 +377,8 @@ def run(*, stdin: IO[str] | None = None) -> Event | None:
     log_dir = ctx.vault / ".scout-logs"
 
     records = extract_tool_calls(_iter_rows(transcript_path))
+    for sub_path in subagent_transcripts(transcript_path):
+        records.extend(extract_tool_calls(_iter_rows(sub_path)))
     count = write_records(records, mode=mode, session_id=session_id, log_dir=log_dir)
 
     return Event(
@@ -328,7 +406,9 @@ def main() -> int:
 __all__ = [
     "ToolCallRecord",
     "extract_tool_calls",
+    "logged_call_ids",
     "main",
     "run",
+    "subagent_transcripts",
     "write_records",
 ]

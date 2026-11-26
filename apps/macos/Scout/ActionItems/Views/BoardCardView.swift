@@ -13,6 +13,7 @@ struct BoardCardView: View {
     var fields = ActionItemsDisplay.Fields()
 
     @State private var launchError: String?
+    @Environment(\.openKBNote) private var openKBNote
 
     /// Same rule as the list card's action row: Launch Claude on open tasks only.
     static func showsLaunchMenu(for task: ActionTask) -> Bool { !task.done }
@@ -23,9 +24,9 @@ struct BoardCardView: View {
         VStack(alignment: .leading, spacing: 8) {
             header
             InlineMarkdownText(task.subject)
-                .font(DS.serif(13.5, weight: .medium))
+                .dsFont(.body, .serif, weight: .medium)
                 .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p1)
-                .strikethrough(task.done, color: DS.Ink.p4)
+                .strikethrough(task.done, color: DS.Ink.decorative)
                 .lineLimit(density == .compact ? 2 : 3)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -34,32 +35,21 @@ struct BoardCardView: View {
                 .textSelection(.enabled)
             if let launchError {
                 Text(launchError)
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Status.err)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
         }
-        .padding(density == .compact ? 8 : 12)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(DS.Paper.raised)
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-        )
-        .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(DS.priorityColor(effectiveKind))
-                .frame(width: 3)
-                .padding(.vertical, 6)
-                .opacity(task.done ? 0.5 : 1)
-        }
+        .editorialCard(padding: density == .compact ? 8 : 12,
+                       accentBar: DS.priorityColor(effectiveKind).opacity(task.done ? 0.5 : 1))
     }
 
     private var header: some View {
         HStack(spacing: 6) {
             if let prefix = task.shortPrefix {
                 Text("#\(prefix)")
-                    .font(DS.mono(10.5, weight: .medium))
+                    .font(DS.font(.caption2, .mono, weight: .medium))
                     .foregroundStyle(DS.Ink.p4)
                     .textSelection(.enabled)
             }
@@ -86,12 +76,7 @@ struct BoardCardView: View {
         if !links.isEmpty || commentCount > 0 {
             HStack(spacing: 8) {
                 ForEach(links) { link in
-                    HStack(spacing: 3) {
-                        Image(systemName: linkGlyph(link))
-                            .imageScale(.small)
-                        Text(link.displayLabel)
-                            .lineLimit(1)
-                    }
+                    linkView(link)
                 }
                 if commentCount > 0 {
                     HStack(spacing: 3) {
@@ -102,8 +87,35 @@ struct BoardCardView: View {
                     .accessibilityLabel("\(commentCount) comments")
                 }
             }
-            .font(DS.mono(10))
+            .font(DS.font(.caption2, .mono))
             .foregroundStyle(DS.Ink.p3)
+        }
+    }
+
+    /// A reference that opens: a KB note in the Knowledge Base tab, an
+    /// external link in its app (audit #49: they were plain text). A ref with
+    /// nowhere to go stays text.
+    @ViewBuilder
+    private func linkView(_ link: TaskDeepLink) -> some View {
+        let label = HStack(spacing: 3) {
+            Image(systemName: linkGlyph(link))
+                .imageScale(.small)
+                .accessibilityHidden(true)
+            Text(link.displayLabel)
+                .lineLimit(1)
+        }
+        if case .entity(let target, _) = link, let openKBNote {
+            Button { openKBNote(target) } label: { label.underline(pattern: .dot) }
+                .buttonStyle(.plainHit)
+                .help("Open \(link.displayLabel) in the Knowledge Base")
+                .accessibilityLabel("Open \(link.displayLabel) in the Knowledge Base")
+        } else if let url = link.openURL {
+            Button { NSWorkspace.shared.open(url) } label: { label.underline(pattern: .dot) }
+                .buttonStyle(.plainHit)
+                .help(url.absoluteString)
+                .accessibilityLabel("Open \(link.displayLabel)")
+        } else {
+            label
         }
     }
 

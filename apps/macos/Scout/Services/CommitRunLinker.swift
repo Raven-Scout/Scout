@@ -12,6 +12,8 @@ nonisolated enum CommitFamily: String, CaseIterable, Sendable {
     case briefing
     case dreaming
     case research
+    /// `respond [HH:MM]: tg:<ids> — …`, from a Telegram reply.
+    case respond
 
     static func of(subject: String) -> CommitFamily? {
         for family in allCases where subject.hasPrefix(family.rawValue) {
@@ -28,6 +30,7 @@ nonisolated enum CommitFamily: String, CaseIterable, Sendable {
         case .weekendBriefing, .briefing, .consolidation: return "run-scout.sh"
         case .dreaming: return "run-dreaming.sh"
         case .research: return "run-research.sh"
+        case .respond:  return "run-respond.sh"
         }
     }
 
@@ -38,6 +41,7 @@ nonisolated enum CommitFamily: String, CaseIterable, Sendable {
         case .consolidation:   return "Consolidation"
         case .dreaming:        return "Dreaming"
         case .research:        return "Research"
+        case .respond:         return DisplayName.runType(.respond)
         }
     }
 }
@@ -59,11 +63,11 @@ extension Run {
     }
 
     /// True when the commit's subject names a family this run's runner makes.
-    /// Concurrency/budget skips never start Claude, so they make no commits —
-    /// and since they start after the run that blocked them, they'd otherwise
-    /// win the reverse link's latest-start tie-break.
+    /// Skipped runs never start Claude, so they make no commits — and since
+    /// they start after the run that blocked them, they'd otherwise win the
+    /// reverse link's latest-start tie-break.
     nonisolated func claims(_ commit: Commit) -> Bool {
-        guard status != .skippedConcurrency, status != .skippedBudget else { return false }
+        guard !status.isSkip else { return false }
         return CommitFamily.of(subject: commit.subject)?.runnerScript == runnerScript
     }
 }

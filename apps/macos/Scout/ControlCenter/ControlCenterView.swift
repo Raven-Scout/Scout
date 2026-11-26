@@ -11,6 +11,18 @@ struct ControlCenterView: View {
     @EnvironmentObject var state: AppState
     @State private var dayFilter: Date? = nil
     @State private var detail: DetailPresentation? = nil
+    /// The page's width, for `railBelow(pageWidth:)`.
+    @State private var pageWidth: CGFloat?
+
+    /// Below this page width the rail moves under the main column. Beside it,
+    /// a 320 pt rail left the Now / Today / Next strip about 450 pt at the
+    /// minimum window, which cut each value to a few letters (UI audit C6).
+    static let railBesideFrom: CGFloat = 1000
+
+    nonisolated static func railBelow(pageWidth: CGFloat?) -> Bool {
+        guard let pageWidth else { return false }
+        return pageWidth < railBesideFrom
+    }
 
     /// How the right-side detail panel is being shown — collapsed (alongside
     /// the rail), side (alongside the primary column), or full (overlays the
@@ -46,14 +58,14 @@ struct ControlCenterView: View {
         .background(
             Group {
                 Button("") { closeDetail() }
-                    .keyboardShortcut(".", modifiers: .command)
+                    .keyboardShortcut(AppShortcut.closeDetail)
                 Button("") { toggleExpansion() }
-                    .keyboardShortcut("f", modifiers: [.command, .shift])
+                    .keyboardShortcut(AppShortcut.expandDetail)
             }
             .opacity(0)
             .frame(width: 0, height: 0)
         )
-        .animation(.easeInOut(duration: 0.18), value: detail)
+        .motionAnimation(.easeInOut(duration: 0.18), value: detail)
         .task { openPendingRunIfNeeded() }
         .onChange(of: state.pendingRunToOpen) { _, _ in openPendingRunIfNeeded() }
     }
@@ -64,17 +76,32 @@ struct ControlCenterView: View {
             VStack(alignment: .leading, spacing: 0) {
                 PowerStateBanner(service: state.powerStateService)
                 ConnectorAlertBanner()
+                RunHealthBanner(health: state.runLedgerService.health,
+                                firstSeen: state.runLedgerService.firstSeen) {
+                    state.requestedSidebar = .health
+                }
                 header
-                HStack(alignment: .top, spacing: 28) {
-                    primaryColumn
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    // The side run-detail is rendered inside primaryColumn next
-                    // to the Sessions list (issue #54) so it tracks that section
-                    // rather than anchoring to the top of the whole column. The
-                    // rail therefore shows whenever a side detail isn't open.
-                    if !isShowingSideDetail {
-                        rail
-                            .frame(width: 320)
+                if Self.railBelow(pageWidth: pageWidth) {
+                    VStack(alignment: .leading, spacing: 28) {
+                        primaryColumn
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if !isShowingSideDetail {
+                            rail
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                } else {
+                    HStack(alignment: .top, spacing: 28) {
+                        primaryColumn
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        // The side run-detail is rendered inside primaryColumn next
+                        // to the Sessions list (issue #54) so it tracks that section
+                        // rather than anchoring to the top of the whole column. The
+                        // rail therefore shows whenever a side detail isn't open.
+                        if !isShowingSideDetail {
+                            rail
+                                .frame(width: 320)
+                        }
                     }
                 }
             }
@@ -85,6 +112,7 @@ struct ControlCenterView: View {
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(DS.Paper.base)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
     }
 
     // MARK: - Detail panels
@@ -96,7 +124,7 @@ struct ControlCenterView: View {
             RunDetailView(run: run)
         }
         .background(
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: 12)  // ds-guard: not a card — the side detail panel, which floats with a shadow
                 .fill(DS.Paper.raised)
                 .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
                 .shadow(color: DS.Neumorphic.shadow.opacity(0.4), radius: 8, x: -2, y: 4)
@@ -118,25 +146,27 @@ struct ControlCenterView: View {
         HStack(alignment: .center, spacing: 10) {
             Button { closeDetail() } label: {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(DS.font(.label, weight: .medium))
             }
             .buttonStyle(.plainHit)
             .foregroundStyle(DS.Ink.p3)
-            .help("Close (⌘.)")
+            .help(ShortcutLabel.help("Close", AppShortcut.closeDetail))
+            .accessibilityLabel("Close run details")
 
             Text(run.displayName)
-                .font(DS.serif(16, weight: .medium))
+                .dsFont(.headline, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
             Spacer()
             Button { toggleExpansion() } label: {
                 Image(systemName: isExpanded
                       ? "arrow.down.right.and.arrow.up.left"
                       : "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 12))
+                    .font(DS.font(.label))
                     .foregroundStyle(DS.Ink.p3)
             }
             .buttonStyle(.plainHit)
-            .help(isExpanded ? "Collapse (⌘⇧F)" : "Expand to full screen (⌘⇧F)")
+            .help(ShortcutLabel.help(isExpanded ? "Collapse" : "Expand to full screen", AppShortcut.expandDetail))
+            .accessibilityLabel(isExpanded ? "Collapse run details" : "Expand run details")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -171,10 +201,10 @@ struct ControlCenterView: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text("Control Center")
-                .font(DS.serif(28, weight: .medium))
+                .dsFont(.display, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
-            Text("Status · Activity · Sessions")
-                .font(DS.sans(14))
+            Text("Status · Activity · Runs")
+                .font(DS.font(.headline))
                 .foregroundStyle(DS.Ink.p3)
             Spacer()
         }
@@ -190,8 +220,8 @@ struct ControlCenterView: View {
             NowStripView()
             UpcomingStripView()
             ActivityHeatmapView(dayFilter: $dayFilter)
-            // Sessions list + side detail share their own row so the detail
-            // panel sits beside the Sessions section instead of spanning the
+            // Run list + side detail share their own row so the detail
+            // panel sits beside the Runs section instead of spanning the
             // full content height from the top (issue #54).
             HStack(alignment: .top, spacing: 28) {
                 SessionsListView(
@@ -226,7 +256,7 @@ struct RailCardHeader: View {
     let title: String
     var body: some View {
         Text(title.uppercased())
-            .font(DS.sans(11, weight: .medium))
+            .font(DS.font(.caption, weight: .medium))
             .tracking(0.06 * 11)
             .foregroundStyle(DS.Ink.p4)
             .padding(.bottom, 10)
@@ -240,10 +270,31 @@ struct RepoStateRailCard: View {
         VStack(alignment: .leading, spacing: 6) {
             RailCardHeader(title: "Repo state")
             row("path",     Self.displayPath(state.scoutDirectory, home: FileManager.default.homeDirectoryForCurrentUser), DS.Ink.p1)
-            row("branch",   "main",     DS.Ink.p1)
-            row("obsidian", "mirrored", DS.Status.ok)
+            // Read from the vault's own .git/HEAD; no row when there is no
+            // repository. (The hard-coded "branch main" and "obsidian
+            // mirrored" rows were placeholders: card C3.)
+            if let branch = Self.currentBranch(vault: state.scoutDirectory) {
+                row("branch", branch, DS.Ink.p1)
+            }
         }
         .editorialCard(padding: 16)
+    }
+
+    /// The vault repository's checked-out branch, from `.git/HEAD`: the
+    /// branch name, or a short commit id when HEAD is detached; nil without
+    /// a readable repository. No `git` process, so it's cheap on every render.
+    nonisolated static func currentBranch(vault: URL) -> String? {
+        let head = vault.appendingPathComponent(".git/HEAD")
+        guard let raw = try? String(contentsOf: head, encoding: .utf8) else { return nil }
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("ref: ") {
+            let ref = String(text.dropFirst("ref: ".count))
+            let name = ref.hasPrefix("refs/heads/") ? String(ref.dropFirst("refs/heads/".count)) : ref
+            return name.isEmpty ? nil : name
+        }
+        let hex = CharacterSet(charactersIn: "0123456789abcdef")
+        guard text.count >= 7, text.unicodeScalars.allSatisfy(hex.contains) else { return nil }
+        return "detached at \(text.prefix(7))"
     }
 
     /// The vault path as the card shows it: `~`-abbreviated when it lives
@@ -259,11 +310,11 @@ struct RepoStateRailCard: View {
     private func row(_ key: String, _ value: String, _ color: Color) -> some View {
         HStack {
             Text(key)
-                .font(DS.sans(12))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p3)
             Spacer()
             Text(value)
-                .font(DS.mono(12))
+                .font(DS.font(.label, .mono))
                 .foregroundStyle(color)
                 // A real vault path can be long; keep the rail one line per row.
                 .lineLimit(1)
@@ -275,13 +326,21 @@ struct RepoStateRailCard: View {
 /// One signal row backed by computed state. The whole card was previously
 /// hard-coded — every signal here is now derived from the live services so
 /// rows appear/disappear as conditions actually change.
-private struct Signal: Identifiable {
-    enum Severity { case ok, warn, err }
+struct ControlCenterSignal: Identifiable, Equatable {
+    enum Severity: Equatable { case ok, warn, err }
+    /// Where the row's button goes.
+    enum Action: Equatable {
+        case openHealth
+        var title: String { "Open Health" }
+    }
     let id: String
     let severity: Severity
     let tag: String
     let body: String
+    var action: Action? = nil
 }
+
+private typealias Signal = ControlCenterSignal
 
 struct SignalsRailCard: View {
     @EnvironmentObject var state: AppState
@@ -292,7 +351,7 @@ struct SignalsRailCard: View {
             let signals = computeSignals()
             if signals.isEmpty {
                 Text("All clear.")
-                    .font(DS.sans(13))
+                    .font(DS.font(.body))
                     .foregroundStyle(DS.Ink.p3)
                     .italic()
                     .padding(.top, 2)
@@ -315,13 +374,24 @@ struct SignalsRailCard: View {
             HStack(spacing: 6) {
                 Circle().fill(color(for: signal.severity)).frame(width: 6, height: 6)
                 Text(signal.tag)
-                    .font(DS.mono(11, weight: .medium))
+                    .font(DS.font(.caption, .mono, weight: .medium))
                     .foregroundStyle(color(for: signal.severity))
             }
             Text(signal.body)
-                .font(DS.sans(13))
+                .font(DS.font(.body))
                 .foregroundStyle(DS.Ink.p2)
                 .fixedSize(horizontal: false, vertical: true)
+            if let action = signal.action {
+                Button(action.title) { perform(action) }
+                    .buttonStyle(.ds(.link, size: .small))
+                    .padding(.top, 2)
+            }
+        }
+    }
+
+    private func perform(_ action: Signal.Action) {
+        switch action {
+        case .openHealth: state.requestedSidebar = .health
         }
     }
 
@@ -338,59 +408,25 @@ struct SignalsRailCard: View {
     private func computeSignals() -> [Signal] {
         var out: [Signal] = []
         let runs = state.sessionLogService.runs
-        let cal = Calendar.current
         let now = Date()
 
-        // Anthropic API: surfaces only when there's an actual rate-limit /
-        // 429 / overload signal in the last 24h. No live state? No row.
-        let dayAgo = now.addingTimeInterval(-24 * 3600)
-        let recentRateLimited = runs.first { run in
-            run.startedAt >= dayAgo && (
-                run.status == .rateLimited ||
-                run.errorsDetected.contains { err in
-                    let p = err.pattern.lowercased()
-                    return p.contains("429") || p.contains("rate") ||
-                           p.contains("overload") || p.contains("throttle") ||
-                           p.contains("quota")
-                }
-            )
-        }
-        if let r = recentRateLimited {
-            out.append(Signal(
-                id: "anthropic",
-                severity: .err,
-                tag: "ANTHROPIC API",
-                body: "Rate-limited \(r.startedAt.formatted(.relative(presentation: .named))) — check live status, top-up may be needed."
-            ))
-        }
+        if let limit = Self.usageLimitSignal(runs: runs, now: now) { out.append(limit) }
 
         // Research: only call this out if no schedule is configured. Once the
-        // user adds a research plist, the row disappears.
+        // user adds a research schedule, the row disappears.
         let hasResearchSchedule = state.scheduleService.upcoming.contains { $0.type == .research }
         if !hasResearchSchedule {
             out.append(Signal(
                 id: "research-missing",
                 severity: .warn,
                 tag: "RESEARCH",
-                body: "No schedule configured — heartbeat skips research every dispatch."
+                body: "Research isn't scheduled, so Scout doesn't look outward for news about your projects. Add it on the Schedules page."
             ))
         }
 
-        // Failed runs today: surfaces a count rather than a static message,
-        // so the row reflects the day's actual situation.
-        let failedToday = runs.filter {
-            cal.isDateInToday($0.startedAt) &&
-            [.failure, .timeout].contains($0.status)
-        }
-        if !failedToday.isEmpty {
-            let n = failedToday.count
-            out.append(Signal(
-                id: "failures",
-                severity: .err,
-                tag: "FAILED RUNS",
-                body: "\(n) run\(n == 1 ? "" : "s") failed today — open Sessions to triage."
-            ))
-        }
+        // The same day and the same rule as the Today tile beside it.
+        let today = NowStripView.todayRuns(runs, today: state.scoutUsageService.summary?.today, now: now)
+        if let failed = Self.failedTodaySignal(todayRuns: today) { out.append(failed) }
 
         // Dreaming: report on the most recent dreaming run within the last
         // 36h so the message tracks reality (success vs. miss vs. failure).
@@ -417,7 +453,7 @@ struct SignalsRailCard: View {
                     id: "dreaming",
                     severity: .err,
                     tag: "DREAMING",
-                    body: "Last run \(when) ended in \(d.status.rawValue) — investigate."
+                    body: "Last run \(when): \(d.status.displayName). Open it in the list below to see why."
                 ))
             default:
                 break
@@ -429,35 +465,71 @@ struct SignalsRailCard: View {
                 id: "dreaming",
                 severity: .warn,
                 tag: "DREAMING",
-                body: "No overnight run in the last 36h — check launchd."
+                body: "No overnight run in the last 36 hours. Check Settings ▸ Engine to see whether scheduled runs are installed."
             ))
         }
 
-        // Connector roster fallback: ConnectorHealthService publishes a
-        // reason when it can't read the canonical roster — surface it here
-        // so the user knows why the matrix may be stale.
-        if let reason = state.connectorHealthService.rosterFallbackReason {
-            out.append(Signal(
-                id: "connectors",
-                severity: .warn,
-                tag: "CONNECTORS",
-                body: "Roster fallback: \(reason)"
-            ))
-        }
+        // The connector roster fallback is said once, on the Connector
+        // health card it affects (UI audit R10, #30), not here as well.
 
         return out
     }
+
+    /// A Claude usage limit in the last day, as the engine classified it: a
+    /// run whose ledger `failure_class` is `rate_limited` (or, before its
+    /// ledger row lands, whose runner logged "Rate limit detected"). Never a
+    /// log line that merely mentions "rate" or "429": a sign-in race
+    /// (`auth_race`) or a session talking about limits isn't a usage limit.
+    static func usageLimitSignal(runs: [Run], now: Date) -> ControlCenterSignal? {
+        let dayAgo = now.addingTimeInterval(-24 * 3600)
+        guard let r = runs.first(where: { $0.startedAt >= dayAgo && $0.status == .rateLimited }) else { return nil }
+        return ControlCenterSignal(
+            id: "usage-limit",
+            severity: .warn,
+            tag: "USAGE LIMIT",
+            body: "\(r.displayName) hit your Claude plan's usage limit \(r.startedAt.formatted(.relative(presentation: .named))). Scout tries again after it resets.")
+    }
+
+    /// Today's failed runs (`RunOutcomeDisplay.isFailure`, the Today tile's
+    /// rule), with their reason when they share one, and the Health page,
+    /// where each has its log and what to do. A day whose failures all clear
+    /// by themselves (`Problem.softFailureClasses`: a usage limit, a busy
+    /// login, the network, a busy folder) is amber, as the Health page has them.
+    static func failedTodaySignal(todayRuns: [Run]) -> ControlCenterSignal? {
+        let failed = todayRuns.filter { RunOutcomeDisplay.isFailure($0.status) }
+        guard !failed.isEmpty else { return nil }
+        let n = failed.count
+        let reasons = Set(failed.map { RunOutcomeDisplay.failureReason($0) ?? "" })
+        var body = "\(n) run\(n == 1 ? "" : "s") failed today"
+        // The reason keeps its own capitals: it can start with a name ("Claude").
+        if reasons.count == 1, let reason = reasons.first, !reason.isEmpty {
+            body += " (\(reason))"
+        }
+        body += "."
+        let soft = failed.allSatisfy { RunOutcomeDisplay.failureClass($0).map(Problem.isSoftFailureClass) ?? false }
+        return ControlCenterSignal(id: "failures", severity: soft ? .warn : .err, tag: "FAILED RUNS",
+                                   body: body, action: .openHealth)
+    }
 }
 
+/// Only shortcuts that exist on this page (bound in `ControlCenterView`'s
+/// background buttons), plus the system Settings one. The card used to list
+/// ⌘1, ⌘2, ⌘R, ⌘K and ⌘↵, none of which were bound (card C3). Each row's
+/// keys come from the `AppShortcut` its button binds.
 struct KeyboardRailCard: View {
+    static let rows: [(shortcut: KeyboardShortcut, label: String)] = [
+        (AppShortcut.closeDetail, "Close run details"),
+        (AppShortcut.expandDetail, "Expand run details"),
+        (AppShortcut.settings, "Settings"),
+    ]
+    static var shortcuts: [(keys: String, label: String)] {
+        rows.map { (ShortcutLabel.text($0.shortcut), $0.label) }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             RailCardHeader(title: "Keyboard")
-            kb("⌘1", "Control Center")
-            kb("⌘2", "Action Items")
-            kb("⌘R", "Run briefing now")
-            kb("⌘K", "Quick find")
-            kb("⌘↵", "Mark done (on task)")
+            ForEach(Self.shortcuts, id: \.keys) { kb($0.keys, $0.label) }
         }
         .editorialCard(padding: 16)
     }
@@ -465,11 +537,11 @@ struct KeyboardRailCard: View {
     private func kb(_ keys: String, _ label: String) -> some View {
         HStack(spacing: 10) {
             Text(keys)
-                .font(DS.mono(12, weight: .medium))
+                .font(DS.font(.label, .mono, weight: .medium))
                 .foregroundStyle(DS.Ink.p2)
                 .frame(width: 32, alignment: .leading)
             Text(label)
-                .font(DS.sans(12.5))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p3)
             Spacer()
         }

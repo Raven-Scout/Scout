@@ -18,7 +18,7 @@ struct StepTagsView: View {
         HStack(spacing: 10) {
             if let label = Self.priorityLabel(task.fields.priority) {
                 Text(label)
-                    .font(DS.sans(11.5, weight: .medium))
+                    .font(DS.font(.caption, weight: .medium))
                     .foregroundStyle(task.fields.priority == 1 ? DS.Status.err : DS.Ink.p2)
             }
             if !step.item.hasTicketOrThread {
@@ -31,7 +31,7 @@ struct StepTagsView: View {
                 Text("\(step.blockedCount) blocked")
             }
         }
-        .font(DS.sans(11.5))
+        .font(DS.font(.caption))
         .foregroundStyle(DS.Ink.p3)
         .lineLimit(1)
         .fixedSize()

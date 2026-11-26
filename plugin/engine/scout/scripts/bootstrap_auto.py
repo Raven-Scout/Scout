@@ -12,6 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from scout.plural import noun
 from scout.scripts.bootstrap import (
     BootstrapConfig,
     InstallResult,
@@ -71,7 +72,8 @@ def detect(vault: Path) -> Plan:
     if sidecars:
         return Plan(
             AutoAction.REFUSED,
-            f"unresolved proposed-merge sidecar(s): {sidecars} — edit each, `mv X.proposed-merge X`, then re-run",
+            f"unresolved proposed-merge {noun(len(sidecars), 'sidecar')}: {sidecars} — edit each, "
+            "`mv X.proposed-merge X`, then re-run",
         )
     if install_incomplete(vault):
         return Plan(AutoAction.INSTALL, "resuming an interrupted install")
@@ -98,6 +100,11 @@ def doctor_dict(report: DoctorReport | None) -> dict[str, Any] | None:
         "warnings": list(getattr(report, "warnings", None) or []),
         "notes": list(getattr(report, "notes", None) or []),
         "run_health": rh.to_dict() if (rh := getattr(report, "run_health", None)) else None,
+        # Warnings that stand for many files of one kind (#505): each summary is in "warnings" too.
+        "warning_groups": [g.to_dict() for g in getattr(report, "warning_groups", None) or []],
+        # Every warning ranked by risk (high, medium, low), open or reviewed by the owner (UI audit R13):
+        # a reviewed one has `reviewed_at` and is in neither "warnings" nor "warning_groups".
+        "warning_triage": [e.to_dict() for e in getattr(report, "warning_triage", None) or []],
     }
 
 
@@ -130,6 +137,7 @@ def result_dict(
         "snapshots_recorded": list(getattr(result, "snapshots_recorded", None) or []),
         "skipped": list(getattr(result, "skipped", None) or []),
         "conflict_markers": list(getattr(result, "conflict_markers", None) or []),
+        "installed": list(getattr(result, "installed", None) or []),
         "vault_edits": [
             {
                 "path": e.path,

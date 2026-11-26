@@ -42,6 +42,25 @@ struct SessionsBoardSmokeTests {
         }
     }
 
+    /// UI audit T4: lanes wrap whole cards rather than scroll sideways and cut the last one off.
+    /// A wrapping board fits the page it is given, at every window width the audit used.
+    @Test("the board's lanes wrap within the page at every window width")
+    func boardWrapsWithinThePage() throws {
+        let index = try SessionsFixture.index()
+        var everything = SessionsFilter()
+        everything.showScoutRuns = true
+        everything.showRecentlyDone = true
+        let board = SessionsBoardView(index: index, filter: everything, now: now, selectedID: .constant(nil))
+        for window in LayoutSize.windowWidths {
+            let page = LayoutSize.pageWidth(window: window)
+            ViewHost.render(board, size: CGSize(width: page, height: 1200))
+            let laidOut = LayoutHarness.size(of: board, proposing: CGSize(width: page, height: 4000))
+            #expect(laidOut.width <= page + 0.5, "board is \(laidOut.width) pt on a \(page) pt page")
+        }
+        // A lane offers each card at least its minimum, so the narrowest page still fits one whole card.
+        #expect(SessionsLane.minCardWidth + 2 * 24 <= LayoutSize.pageWidth(window: MainWindowSize.minWidth) - DetailPaneLayout.regularWidth)
+    }
+
     @Test("the table renders every row")
     func tableRenders() throws {
         let index = try SessionsFixture.index()
@@ -76,6 +95,46 @@ struct SessionsBoardSmokeTests {
             counts: SessionsLayout.stateCounts(index: index, filter: filter, now: now),
             projects: SessionsLayout.menuProjects(index: index),
             service: service))
+    }
+
+    @Test("the header renders its PR-problems button, and the popover renders")
+    func headerWithPRProblemsRenders() async throws {
+        var object = try SessionsFixture.object()
+        object["source_errors"] = [
+            ["source": "gh", "message": "pr view failed: example-org/example-repo#98"],
+            ["source": "gh", "message": "pr view failed: example-org/example-repo#102"],
+        ]
+        let data = try SessionsFixture.encode(object)
+        let service = await SessionsFixture.loadedService(answering: .ok(data))
+        await service.refreshPRs()
+        let errors = try #require(service.prStatus?.errors)
+        #expect(errors.count == 2)
+        let index = try #require(service.index)
+        ViewHost.render(SessionsHeader(
+            viewMode: .constant(.board),
+            filter: .constant(SessionsFilter()),
+            counts: SessionsLayout.stateCounts(index: index, filter: SessionsFilter(), now: now),
+            projects: SessionsLayout.menuProjects(index: index),
+            service: service))
+        ViewHost.render(PRCheckProblemsView(errors: errors, finishedAt: now, now: now, onCheckAgain: {}),
+                        size: CGSize(width: 380, height: 360))
+    }
+
+    @Test("a Now card renders with its project name")
+    func nowCardRenders() throws {
+        let session = try #require(SessionsFixture.session("local_A", in: SessionsFixture.index()))
+        ViewHost.render(SessionCardView(session: session, now: now, projectName: "Scout (code/Scout)"),
+                        size: CGSize(width: 260, height: 180))
+    }
+
+    @Test("the detail pane renders with its Resume and Copy handoff actions")
+    func detailRenders() throws {
+        let index = try SessionsFixture.index()
+        for id in ["local_A", "local_U"] {
+            ViewHost.render(SessionDetailView(session: SessionsFixture.session(id, in: index), index: index,
+                                              now: now, onSelect: { _ in }),
+                            size: CGSize(width: 380, height: 900))
+        }
     }
 
     @Test("every state renders as a pill")

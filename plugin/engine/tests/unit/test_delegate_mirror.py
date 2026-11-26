@@ -1,0 +1,2351 @@
+"""scoutctl delegate link | sync | preview | status | unlink (#550 V2): per-delegate filtered mirrors.
+
+The remote is a local bare repository, so git runs for real. The vault is the
+anonymised privacy fixture vault (``privacy_vault_helpers``) with two delegates:
+``grok-personal`` (normal notes only) and ``duet`` (``include_private: true``).
+Every blob of every mirror commit is read to prove what never reaches it.
+"""
+
+from __future__ import annotations
+
+import base64
+import dataclasses
+import json
+import shutil
+import struct
+import subprocess
+import zlib
+from pathlib import Path
+
+import pytest
+import yaml
+from typer.testing import CliRunner
+
+from scout import delegate_mirror as dm
+from scout import repo_sync as rs
+from scout.cli import app, delegate_write_refusal
+from scout.kb.outbound import PrivateTerms, clear_cache, find_mentions, note_from_text, terms_of
+from scout.kb.privacy import load_frontmatter_yaml, load_policy, policy_from_config_text
+from scout.scripts import privacy_migrate
+
+from . import office_fixtures as of
+from .privacy_vault_helpers import CANARIES, build_privacy_vault, git, git_env
+
+runner = CliRunner()
+
+DELEGATES_BLOCK = """\
+  delegates:
+    grok-personal: {}
+    duet:
+      include_private: true
+"""
+PROVENANCE = "knowledge-base/topics/from-priya.md"
+PROVENANCE_CANARY = "CANARY-SHARED-9Q2W"
+INBOX_CANARY = CANARIES[".scout-inbox/phone-notifications-2026-10-01.jsonl"]
+TRADING_CANARY = CANARIES["trading/positions.md"]
+BROKEN_CANARY = CANARIES["knowledge-base/topics/misc/broken.md"]
+PRIYA = "knowledge-base/people/priya.md"
+
+
+def _png(kind: bytes, body: bytes, tail: bytes = b"") -> bytes:
+    """A PNG with one chunk of ``kind`` holding ``body``, then IEND, then ``tail``."""
+
+    def chunk(k: bytes, b: bytes) -> bytes:
+        return struct.pack(">L", len(b)) + k + b + struct.pack(">L", zlib.crc32(k + b))
+
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", b"\x00" * 13) + chunk(kind, body) + chunk(b"IEND", b"") + tail
+
+
+def _commit(vault: Path, rel: str, text: str, subject: str) -> None:
+    p = vault / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+    git(vault, "add", "-A")
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", subject)
+
+
+@pytest.fixture
+def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    clear_cache()
+    home = tmp_path / "home"  # the state-signing key and any secrets go here, never to the real home
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    v = build_privacy_vault(tmp_path / "v").resolve()
+    for key, value in git_env().items():
+        if key.startswith("GIT_"):
+            monkeypatch.setenv(key, value)
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(v))
+    monkeypatch.setenv(rs.TEST_VAULT_ENV, str(v))
+    monkeypatch.delenv("SCOUT_MODE", raising=False)
+    monkeypatch.delenv("SCOUT_READER", raising=False)
+    config = v / "scout-config.yaml"
+    config.write_text(config.read_text(encoding="utf-8") + DELEGATES_BLOCK, encoding="utf-8")
+    (v / PROVENANCE).write_text(
+        "---\ntitle: From Priya\nvisibility: normal\n"
+        "source: shared:priya@example.com:knowledge-base/topics/plan.md\n---\n\n"
+        f"Notes from Priya's shared plan. {PROVENANCE_CANARY}\n",
+        encoding="utf-8",
+    )
+    with (v / ".gitignore").open("a", encoding="utf-8") as gi:
+        gi.write(".scout-logs/\n")  # as templates/.gitignore.tmpl has it: run-health events stay out of commits
+    git(v, "add", "-A")
+    git(v, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "list delegates")
+    privacy_migrate.accept(v)
+    return v
+
+
+def _bare(tmp_path: Path, name: str) -> Path:
+    bare = tmp_path / f"{name}.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
+    return bare
+
+
+def _bare_git(bare: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(bare), *args], check=True, capture_output=True, text=True).stdout
+
+
+def _all_blobs(bare: Path) -> dict[str, str]:
+    """``{"<commit>:<path>": text}`` for every file in every commit of the mirror's main."""
+    out: dict[str, str] = {}
+    for rev in _bare_git(bare, "rev-list", "main").split():
+        for rel in _bare_git(bare, "ls-tree", "-r", "--name-only", rev).splitlines():
+            out[f"{rev}:{rel}"] = subprocess.run(
+                ["git", "-C", str(bare), "show", f"{rev}:{rel}"], check=True, capture_output=True
+            ).stdout.decode("utf-8", "replace")
+    return out
+
+
+def _head_files(bare: Path) -> set[str]:
+    return set(_bare_git(bare, "ls-tree", "-r", "--name-only", "main").splitlines())
+
+
+def _show(bare: Path, rel: str, rev: str = "main") -> str:
+    return _bare_git(bare, "show", f"{rev}:{rel}")
+
+
+def _link(vault: Path, delegate: str, bare: Path, **kw: object) -> dm.Result:
+    return dm.link(vault, delegate, str(bare), account_unshared=True, **kw)  # type: ignore[arg-type]
+
+
+class GitHubRepo:
+    """``gh api`` for one repository: its visibility, owner and collaborators."""
+
+    def __init__(
+        self,
+        visibility: str = "private",
+        owner_type: str = "User",
+        collaborators: tuple[str, ...] = ("someone",),
+        fork: str = "false",
+    ) -> None:
+        self.visibility = visibility
+        self.owner_type = owner_type
+        self.fork = fork
+        self.collaborators = collaborators
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args: object) -> subprocess.CompletedProcess[str]:
+        a = list(args)  # type: ignore[call-overload]
+        self.calls.append(a)
+        if a[-1].endswith("@tsv"):
+            out = f"{self.visibility}\t{self.owner_type}\tsomeone\t{self.fork}\n"
+            return subprocess.CompletedProcess(["gh"], 0, out, "")
+        if any(x.endswith("/collaborators") for x in a):
+            return subprocess.CompletedProcess(["gh"], 0, "".join(f"{c}\n" for c in self.collaborators), "")
+        raise AssertionError(f"unexpected gh call {a}")
+
+
+# ----- what a mirror holds ---------------------------------------------------------------
+
+
+def test_a_normal_only_mirror_has_no_canary_no_local_only_path_and_a_label_per_file(
+    vault: Path, tmp_path: Path
+) -> None:
+    bare = _bare(tmp_path, "grok")
+    result = _link(vault, "grok-personal", bare)
+    assert result.pushed and result.files > 0 and result.withheld > 0
+    blobs = _all_blobs(bare)
+    for key, text in blobs.items():
+        assert "CANARY-" not in text, key
+    files = _head_files(bare)
+    assert not any(f.startswith(("trading/", ".scout-inbox/")) for f in files)
+    assert PROVENANCE not in files and "knowledge-base/people/sam.md" not in files
+    policy = json.loads(_show(bare, rs.POLICY_PATH))
+    labelled = {lb["path"] for lb in policy["labels"]}
+    assert labelled == files - dm.GENERATED
+    assert list(policy["policy"]["delegates"]) == ["grok-personal"]
+
+
+def test_a_lab_experiments_folder_never_reaches_a_normal_only_mirror(vault: Path, tmp_path: Path) -> None:
+    """The shipped policy forces an experiment folder's files private (#761 review item 3), whatever their own
+    frontmatter says: its scripts, outputs and run logs reach no normal-only mirror, while the experiment's note
+    beside it does."""
+    folder = "knowledge-base/lab/drift/experiments/drift-E1-hash"
+    note = f"{folder}.md"
+    (vault / folder).mkdir(parents=True)
+    (vault / note).write_text("---\ntype: lab-experiment\nid: E1\nvisibility: normal\n---\n## Method\nHash.\n", "utf-8")
+    names = ("run.py", "out.csv", "run-1.log", "claims-normal.md", "claims-normal.txt")
+    outputs = {f"{folder}/{name}": f"CANARY-LAB-{i}" for i, name in enumerate(names)}
+    for rel, canary in outputs.items():
+        # The last two label themselves normal, as a script copying private text out could write them.
+        head = "---\nvisibility: normal\n---\n" if "claims-normal" in rel else ""
+        (vault / rel).write_text(f"{head}{canary}\n", "utf-8")
+    git(vault, "add", "-A")
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "lab experiment")
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert note in files
+    assert not any(f.startswith(f"{folder}/") for f in files)
+    text = "\n".join(_all_blobs(bare).values())
+    assert not any(canary in text for canary in outputs.values())
+
+
+def test_a_delegate_with_private_sees_private_notes_but_never_the_inbox_provenance_trading_or_broken(
+    vault: Path, tmp_path: Path
+) -> None:
+    bare = _bare(tmp_path, "duet")
+    _link(vault, "duet", bare)
+    files = _head_files(bare)
+    assert "knowledge-base/people/sam.md" in files
+    text = "\n".join(_all_blobs(bare).values())
+    assert CANARIES["knowledge-base/people/sam.md"] in text
+    for canary in (INBOX_CANARY, TRADING_CANARY, BROKEN_CANARY, PROVENANCE_CANARY):
+        assert canary not in text
+
+
+def test_include_private_spelled_yes_widens_nothing(vault: Path, tmp_path: Path) -> None:
+    config = vault / "scout-config.yaml"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace("include_private: true", "include_private: yes"), "utf-8"
+    )
+    _commit(vault, "scout-config.yaml", config.read_text(encoding="utf-8"), "yes")
+    bare = _bare(tmp_path, "duet")
+    _link(vault, "duet", bare)
+    assert not any("CANARY-PRIV" in t for t in _all_blobs(bare).values())
+
+
+def test_a_normal_note_loses_the_lines_that_link_or_name_a_hidden_note(vault: Path, tmp_path: Path) -> None:
+    bare = _bare(tmp_path, "grok")
+    result = _link(vault, "grok-personal", bare)
+    priya = _show(bare, PRIYA)
+    assert "[[sam]]" not in priya and "Sammy" not in priya
+    assert "Engineer at example-org" not in priya  # that line links [[sam]]
+    fm = load_frontmatter_yaml(priya.split("---\n")[1])
+    assert fm["relationships"] == [{"type": "works_on", "target": "[[widget]]"}]
+    assert fm["name"] == "priya"
+    manifest = json.loads(_show(bare, dm.MANIFEST_PATH))
+    assert manifest["redacted_lines"][PRIYA] == 3
+    assert manifest["delegate"] == "grok-personal"
+    assert result.redacted_files >= 1
+
+
+def test_the_mirror_config_lists_only_its_delegate_and_the_engine_there_reads_it(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    config = yaml.safe_load(_show(bare, "scout-config.yaml"))
+    assert config["privacy"]["delegates"] == {"grok-personal": {}}
+    assert (
+        "local_only_add" not in config["privacy"] or config["privacy"]["local_only_add"] == []
+    )  # names no hidden path
+    assert "trading" not in _show(bare, "scout-config.yaml") and "trading" not in _show(bare, rs.POLICY_PATH)
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", str(bare), str(clone)], check=True)
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(clone))
+    result = runner.invoke(
+        app, ["kb", "files", "--json", "--repo", str(clone)], env={"SCOUT_READER": "delegate:grok-personal"}
+    )
+    assert result.exit_code == 0, result.output
+    listed = {f["path"] for f in json.loads(result.stdout)}
+    assert PRIYA in listed and "knowledge-base/people/sam.md" not in listed
+
+
+def test_a_duet_mirror_config_keeps_include_private_literally_true(vault: Path, tmp_path: Path) -> None:
+    bare = _bare(tmp_path, "duet")
+    _link(vault, "duet", bare)
+    text = _show(bare, "scout-config.yaml")
+    from scout.kb.privacy import policy_from_config_text
+
+    rule = policy_from_config_text(text).delegate("delegate:duet")
+    assert rule is not None and rule.include_private
+
+
+def test_a_symlink_to_a_mirrored_folder_stays_and_one_to_a_hidden_note_goes(vault: Path, tmp_path: Path) -> None:
+    (vault / "sam-link.md").symlink_to("knowledge-base/people/sam.md")
+    git(vault, "add", "-A")
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "links")
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert "knowledge_base" in files
+    assert "sam-link.md" not in files
+
+
+def test_another_text_file_that_names_a_hidden_note_is_left_out_whole(vault: Path, tmp_path: Path) -> None:
+    _commit(vault, "notes/data.json", '{"who": "[[sam]]"}\n', "data")
+    _commit(vault, "notes/list.csv", "who,what\n[[sam]],x\npriya,y\n", "csv")
+    bare = _bare(tmp_path, "grok")
+    result = _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert "notes/data.json" not in files and result.left_out >= 1
+    assert _show(bare, "notes/list.csv") == "who,what\npriya,y\n"
+
+
+# ----- sync ---------------------------------------------------------------------------------
+
+
+def test_sync_pushes_one_generic_commit_per_change_and_nothing_when_unchanged(vault: Path, tmp_path: Path) -> None:
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    assert dm.sync(vault, "grok-personal").unchanged
+    _commit(vault, "knowledge-base/topics/misc/new.md", "---\ntitle: New\n---\n\nA new normal note.\n", "add new")
+    _commit(vault, "knowledge-base/people/sam.md", "---\nname: sam\nvisibility: private\n---\n\nX\n", "sam edit")
+    result = dm.sync(vault, "grok-personal")
+    assert result.pushed
+    log = _bare_git(bare, "log", "--format=%an <%ae>|%s", "main").splitlines()
+    assert log == ["Scout <scout@localhost>|Scout delegate mirror: sync"] * 2
+    assert "knowledge-base/topics/misc/new.md" in _head_files(bare)
+    assert dm.load_links(vault)["grok-personal"].last_mirror == result.pushed
+
+
+def test_a_private_only_change_pushes_nothing(vault: Path, tmp_path: Path) -> None:
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    git(vault, "add", "-A")  # link's .gitignore line
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "ignore state")
+    dm.sync(vault, "grok-personal")
+    before = _bare_git(bare, "rev-parse", "main")
+    _commit(vault, "knowledge-base/people/sam.md", "---\nname: sam\nvisibility: private\n---\n\nY\n", "sam")
+    assert dm.sync(vault, "grok-personal").unchanged
+    assert _bare_git(bare, "rev-parse", "main") == before
+
+
+def test_a_note_that_turns_private_leaves_head_and_the_owner_is_told_about_history(vault: Path, tmp_path: Path) -> None:
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    rel = "knowledge-base/topics/billing/rollout.md"
+    assert rel in _head_files(bare)
+    text = (
+        (vault / rel)
+        .read_text(encoding="utf-8")
+        .replace("title: Billing rollout", "title: Billing rollout\nvisibility: private")
+    )
+    _commit(vault, rel, text, "private now")
+    result = dm.sync(vault, "grok-personal")
+    assert rel not in _head_files(bare)
+    assert result.in_history == 1 and any("--replace-remote" in n for n in result.notes)
+
+
+def test_replace_remote_starts_the_mirror_over_with_one_commit(vault: Path, tmp_path: Path) -> None:
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    _commit(vault, "knowledge-base/topics/misc/new.md", "---\ntitle: New\n---\n\nnew\n", "new")
+    dm.sync(vault, "grok-personal")
+    _link(vault, "grok-personal", bare, replace_remote=True)
+    assert len(_bare_git(bare, "rev-list", "main").split()) == 1
+
+
+def test_a_remote_that_moved_is_refused_and_nothing_is_replayed(vault: Path, tmp_path: Path) -> None:
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", str(bare), str(other)], check=True)
+    (other / "x.md").write_text("from the agent\n", encoding="utf-8")
+    git(other, "add", "-A")
+    git(other, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "agent write")
+    git(other, "push", "-q", "origin", "HEAD:main")
+    _commit(vault, "knowledge-base/topics/misc/new.md", "---\ntitle: New\n---\n\nnew\n", "new")
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.sync(vault, "grok-personal")
+    assert e.value.code == "mirror_diverged"
+    assert not (vault / "x.md").exists()
+
+
+def test_sync_all_keeps_going_past_a_failing_delegate(vault: Path, tmp_path: Path) -> None:
+    _link(vault, "grok-personal", _bare(tmp_path, "grok"))
+    duet = _bare(tmp_path, "duet")
+    _link(vault, "duet", duet)
+    subprocess.run(["rm", "-rf", str(duet)], check=True)
+    _commit(vault, "knowledge-base/topics/misc/new.md", "---\ntitle: New\n---\n\nnew\n", "new")
+    done, failed = dm.sync_all(vault)
+    assert [r.delegate for r in done] == ["grok-personal"] and set(failed) == {"duet"}
+
+
+# ----- refusals -----------------------------------------------------------------------------
+
+
+def test_link_refuses_an_unlisted_delegate_a_bad_id_and_no_account_confirmation(vault: Path, tmp_path: Path) -> None:
+    bare = _bare(tmp_path, "x")
+    with pytest.raises(rs.RepoSyncError) as e:
+        _link(vault, "someone-else", bare)
+    assert e.value.code == "delegate_not_listed"
+    with pytest.raises(rs.RepoSyncError) as e:
+        _link(vault, "Bad_Id", bare)
+    assert e.value.code == "bad_delegate_id"
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.link(vault, "duet", str(bare), account_unshared=False)
+    assert e.value.code == "account_unconfirmed"
+    assert _bare_git(bare, "branch", "--list") == ""
+
+
+def test_a_delegate_listed_only_in_the_uncommitted_config_is_refused(vault: Path, tmp_path: Path) -> None:
+    config = vault / "scout-config.yaml"
+    config.write_text(config.read_text(encoding="utf-8") + "    later: {}\n", encoding="utf-8")
+    with pytest.raises(rs.RepoSyncError) as e:
+        _link(vault, "later", _bare(tmp_path, "later"))
+    assert e.value.code == "delegate_not_listed"
+
+
+def test_link_refuses_a_scheduled_run(vault: Path, tmp_path: Path) -> None:
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.link(vault, "duet", str(_bare(tmp_path, "d")), account_unshared=True, env={"SCOUT_MODE": "briefing"})
+    assert e.value.code == "headless_refused"
+
+
+def test_link_refuses_a_remote_with_history_unless_replacing(vault: Path, tmp_path: Path) -> None:
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    dm.unlink(vault, "grok-personal")
+    with pytest.raises(rs.RepoSyncError) as e:
+        _link(vault, "grok-personal", bare)
+    assert e.value.code == "remote_not_empty"
+
+
+def test_a_trading_path_that_is_not_local_only_blocks_the_mirror(vault: Path, tmp_path: Path) -> None:
+    _commit(vault, "TRADING.md", "# Positions\n", "trading file")
+    with pytest.raises(rs.RepoSyncError) as e:
+        _link(vault, "grok-personal", _bare(tmp_path, "grok"))
+    assert e.value.code == "trading_paths_not_local_only"
+
+
+@pytest.mark.parametrize(
+    "remote",
+    ["https://gitlab.com/o/r.git", "git@example.com:o/r.git", "relative/path", "https://github.com/o"],
+)
+def test_only_github_and_local_remotes_are_accepted(remote: str, vault: Path) -> None:
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.check_remote(remote, vault=vault, gh=GitHubRepo())
+    assert e.value.code == "remote_unsupported"
+
+
+@pytest.mark.parametrize(
+    "remote",
+    ["https://github.com/o/r", "https://github.com/o/r.git", "git@github.com:o/r.git", "ssh://git@github.com/o/r"],
+)
+def test_a_github_remote_must_be_private_personal_and_unshared(remote: str, vault: Path) -> None:
+    gh = GitHubRepo()
+    dm.check_remote(remote, vault=vault, gh=gh)
+    assert gh.calls == [
+        ["api", "repos/o/r", "--jq", "[.visibility, .owner.type, .owner.login, .fork] | @tsv"],
+        ["api", "--paginate", "repos/o/r/collaborators", "--jq", ".[].login"],
+    ]
+    for repo, code in (
+        (GitHubRepo(visibility="public"), "remote_public"),
+        (GitHubRepo(visibility="internal"), "remote_public"),
+        (GitHubRepo(owner_type="Organization"), "remote_org_owned"),
+        (GitHubRepo(collaborators=("someone", "teammate")), "remote_shared"),
+        (GitHubRepo(fork="true"), "remote_fork"),
+    ):
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.check_remote(remote, vault=vault, gh=repo)
+        assert e.value.code == code
+    for out, rc in (("", 1), ("garbled\n", 0), ("private\tUser\tsomeone\tmaybe\n", 0)):
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.check_remote(
+                remote, vault=vault, gh=lambda _a, o=out, r=rc: subprocess.CompletedProcess(["gh"], r, o, "")
+            )
+        assert e.value.code == "remote_unverified"
+
+
+def test_check_tree_refuses_a_commit_that_holds_a_hidden_note(vault: Path) -> None:
+    head = rs._head(vault)
+    blobs = rs.BlobReader(vault)
+    try:
+        the_plan = dm.plan(vault, head, "grok-personal", blobs)[0]
+    finally:
+        blobs.close()
+    sam = rs._blob_at(vault, head, "knowledge-base/people/sam.md")
+    assert sam is not None
+    the_plan.files.append(dm.MirrorFile(sam.path, sam.mode, None, sam.sha))
+    tree = dm.write_tree(vault, the_plan)
+    commit = git(vault, "commit-tree", tree, "-m", "x").strip()
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.check_tree(vault, commit, "grok-personal", head)
+    assert e.value.code == "delegate_mirror_unsafe"
+
+
+# ----- redaction ------------------------------------------------------------------------------
+
+
+def _terms() -> object:
+    return terms_of([note_from_text("people/sam-lee.md", "---\nname: Sam Lee\naliases: [Sammy]\n---\n")])
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            '---\nname: x\nrelationships:\n  - type: knows\n    target: "[[sam-lee]]"\n'
+            "  - type: on\n    target: w\n---\nbody\n",
+            "---\nname: x\nrelationships:\n  - type: on\n    target: w\n---\nbody\n",
+        ),
+        (
+            '---\nname: x\nrelationships:\n- type: knows\n  target: "[[sam-lee]]"\n- type: on\n---\n',
+            "---\nname: x\nrelationships:\n- type: on\n---\n",
+        ),
+        ("---\nname: x\nsummary: >\n  met Sammy\n  today\nkind: y\n---\n", "---\nname: x\nkind: y\n---\n"),
+        ("---\naliases: [Sam Lee]\nname: x\n---\n", "---\nname: x\n---\n"),
+        ("# Note\n\nSee [[sam-lee|him]].\nKeep this.\n", "# Note\n\nKeep this.\n"),
+    ],
+)
+def test_redaction_keeps_frontmatter_whole(text: str, expected: str) -> None:
+    out = dm.redact_lines(text, _terms(), markdown=True)  # type: ignore[arg-type]
+    assert out is not None and out[0] == expected
+
+
+def test_a_term_split_across_a_removed_line_is_caught_on_the_next_pass() -> None:
+    out = dm.redact_lines("a\nSam\n[[sam-lee]]\nLee b\nc\n", _terms(), markdown=True)  # type: ignore[arg-type]
+    assert out is not None
+    assert "Sam" not in out[0] and "Lee" not in out[0] and out[0].startswith("a\n")
+
+
+# ----- CLI and state ----------------------------------------------------------------------------
+
+
+def test_the_cli_links_previews_syncs_lists_and_unlinks(vault: Path, tmp_path: Path) -> None:
+    bare = _bare(tmp_path, "grok")
+    r = runner.invoke(app, ["delegate", "preview", "grok-personal", "--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.stdout)["files"] > 0
+    assert _bare_git(bare, "branch", "--list") == ""
+    r = runner.invoke(app, ["delegate", "link", "grok-personal", "--remote", str(bare)])
+    assert r.exit_code == 2 and "--confirm-account-unshared" in r.output
+    r = runner.invoke(app, ["delegate", "link", "grok-personal", "--remote", str(bare), "--confirm-account-unshared"])
+    assert r.exit_code == 0, r.output
+    assert "pushed a mirror commit" in r.stdout
+    r = runner.invoke(app, ["delegate", "sync", "--all", "--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.stdout)["synced"][0]["unchanged"]
+    r = runner.invoke(app, ["delegate", "status"])
+    assert "grok-personal:" in r.stdout
+    assert git(vault, "check-ignore", dm.STATE_REL).strip() == dm.STATE_REL
+    r = runner.invoke(app, ["delegate", "unlink", "grok-personal"])
+    assert r.exit_code == 0, r.output
+    assert dm.load_links(vault) == {}
+    assert git(vault, "for-each-ref", dm.REF_PREFIX).strip() == ""
+
+
+def test_sync_needs_one_delegate_or_all() -> None:
+    assert runner.invoke(app, ["delegate", "sync"]).exit_code == 2
+    assert runner.invoke(app, ["delegate", "sync", "duet", "--all"]).exit_code == 2
+
+
+def test_a_delegate_reader_cannot_run_delegate_commands() -> None:
+    env = {"SCOUT_READER": "delegate:duet"}
+    for argv in (["delegate", "sync", "--all"], ["delegate", "link", "duet"], ["delegate", "status"]):
+        assert delegate_write_refusal(argv, env) is not None
+
+
+def test_the_agnes_link_state_is_untouched(vault: Path, tmp_path: Path) -> None:
+    _link(vault, "grok-personal", _bare(tmp_path, "grok"))
+    assert not rs.state_path(vault).exists()
+    assert git(vault, "for-each-ref", "refs/scout-mirror/").strip() == ""
+    assert load_policy(vault).delegate("delegate:grok-personal") is not None
+
+
+# ----- edges: unreadable state, odd files, failures on the way --------------------------------
+
+
+def test_an_unreadable_link_state_is_refused(vault: Path) -> None:
+    dm.state_path(vault).parent.mkdir(parents=True, exist_ok=True)
+    dm.state_path(vault).write_text("{not json", encoding="utf-8")
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.load_links(vault)
+    assert e.value.code == "state_unreadable"
+
+
+def test_the_real_gh_runner_runs_gh(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "true\n", "")
+
+    monkeypatch.setattr(dm.subprocess, "run", fake_run)
+    assert dm._gh(["api", "x"]).stdout == "true\n"
+    assert seen == [["gh", "api", "x"]]
+
+
+def test_a_missing_gh_is_a_refusal(vault: Path) -> None:
+    def gh(_args: object) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("gh")
+
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.check_remote("https://github.com/someone/grok-mirror.git", vault=vault, gh=gh)
+    assert e.value.code == "remote_unverified"
+
+
+def test_head_without_a_committed_config_or_with_a_broken_one_is_refused(vault: Path) -> None:
+    config = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    _commit(vault, "scout-config.yaml", "user: [unclosed\n", "break it")
+    (vault / "scout-config.yaml").write_text(config, encoding="utf-8")
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.preview(vault, "grok-personal")
+    assert e.value.code == "privacy_overlay_unreadable"
+    git(vault, "rm", "-q", "--cached", "scout-config.yaml")
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "untrack")
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.preview(vault, "grok-personal")
+    assert e.value.code == "delegate_not_listed"
+
+
+def test_a_vault_with_no_commits_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    v = tmp_path / "empty"
+    v.mkdir()
+    for key, value in git_env().items():
+        if key.startswith("GIT_"):
+            monkeypatch.setenv(key, value)
+    git(v, "init", "-q")
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.preview(v, "grok-personal")
+    assert e.value.code == "no_commits"
+
+
+def test_a_local_only_config_means_no_mirror(vault: Path, tmp_path: Path) -> None:
+    config = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    _commit(
+        vault, "scout-config.yaml", config.replace('- "trading/**"', '- "trading/**"\n    - scout-config.yaml'), "x"
+    )
+    with pytest.raises(rs.RepoSyncError) as e:
+        _link(vault, "grok-personal", _bare(tmp_path, "grok"))
+    assert e.value.code == "config_not_mirrored"
+
+
+def test_odd_files_binary_undecodable_absolute_links_lookalikes_and_label_changes(vault: Path, tmp_path: Path) -> None:
+    files = {
+        "notes/pic.png": _png(b"IDAT", b"binary [[sam]]"),  # the image data itself isn't read
+        "notes/latin1.txt": b"caf\xe9 [[sam]]\n",
+        "notes/clean.json": b'{"ok": true}\n',
+        "notes/bare.md": b"# Bare\n\nWith [[sam]] here.\nKept line.\n",
+        "knowledge-base/personal/ok.md": b"---\nvisibility: normal  # mentions [[sam]]\n---\n\nfine\n",
+        ".SCOUT-STATE/Delegate-Mirror.json": b"{}\n",
+    }
+    for rel, data in files.items():
+        (vault / rel).parent.mkdir(parents=True, exist_ok=True)
+        (vault / rel).write_bytes(data)
+    (vault / "abs-link").symlink_to("/etc/hosts")
+    git(vault, "add", "-A")
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "odd files")
+    bare = _bare(tmp_path, "grok")
+    result = _link(vault, "grok-personal", bare)
+    head = _head_files(bare)
+    assert {"notes/pic.png", "notes/clean.json"} <= head
+    assert "notes/latin1.txt" not in head  # not UTF-8, so it can't be scanned: left out
+    assert _show(bare, "notes/bare.md") == "# Bare\n\nKept line.\n"
+    assert "knowledge-base/personal/ok.md" not in head  # its label would turn private without that line
+    assert "abs-link" not in head and ".SCOUT-STATE/Delegate-Mirror.json" not in head
+    assert result.left_out >= 1
+
+
+def test_frontmatter_edges() -> None:
+    terms = _terms()
+    assert dm.redact_lines("---\nname: x\n[[sam-lee]]\n", terms, markdown=True) == ("---\nname: x\n", 1)  # type: ignore[arg-type]
+    nested = '---\nrelationships:\n  - type: knows\n    note: a\n    target: "[[sam-lee]]"\n  - type: on\n---\n'
+    assert dm.redact_lines(nested, terms, markdown=True) == ("---\nrelationships:\n  - type: on\n---\n", 3)  # type: ignore[arg-type]
+    odd = '---\n  odd: "[[sam-lee]]"\nname: x\n---\n'
+    assert dm.redact_lines(odd, terms, markdown=True) == ("---\nname: x\n---\n", 1)  # type: ignore[arg-type]
+    assert dm._frontmatter_parses("---\nkey: [\n---\n") is False
+    assert dm._frontmatter_parses("no frontmatter\n") is True
+
+
+def test_redaction_that_never_settles_gives_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dm, "find_mentions", lambda *_a, **_k: [1])
+    assert dm.redact_lines("a\nb\nc\nd\ne\nf\ng\nh\n", _terms(), markdown=False) is None  # type: ignore[arg-type]
+
+
+def test_an_unreadable_shared_reads_ledger_stops_the_build(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.kb.shared_reads import SharedReadsUnreadable
+
+    def boom(*_a: object) -> object:
+        raise SharedReadsUnreadable("bad ledger")
+
+    monkeypatch.setattr(dm, "with_shared", boom)
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.preview(vault, "grok-personal")
+    assert e.value.code == "shared_reads_unreadable"
+
+
+def _planned(vault: Path) -> tuple[dm.Plan, str]:
+    head = rs._head(vault)
+    blobs = rs.BlobReader(vault)
+    try:
+        the_plan = dm.plan(vault, head, "grok-personal", blobs)[0]
+    finally:
+        blobs.close()
+    return the_plan, head
+
+
+def test_check_tree_refuses_missing_generated_files_local_only_paths_mentions_and_stray_links(vault: Path) -> None:
+    the_plan, head = _planned(vault)
+    bare_tree = rs._write_tree(vault, [f"{f.mode} {f.sha}\t{f.path}" for f in the_plan.files if f.data is None])
+    commit = git(vault, "commit-tree", bare_tree, "-m", "x").strip()
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.check_tree(vault, commit, "grok-personal", head)
+    assert e.value.code == "policy_missing"
+    trading = rs._blob_at(vault, head, "trading/positions.md")
+    priya = rs._blob_at(vault, head, PRIYA)
+    assert trading is not None and priya is not None
+    for extra in (
+        dm.MirrorFile(trading.path, trading.mode, None, trading.sha),
+        dm.MirrorFile("notes/raw-priya.md", priya.mode, None, priya.sha),  # unredacted: links [[sam]]
+        dm.MirrorFile("stray", "120000", b"knowledge-base/people/sam.md", ""),
+    ):
+        p, _ = _planned(vault)
+        p.files.append(extra)
+        commit = git(vault, "commit-tree", dm.write_tree(vault, p), "-m", "x").strip()
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.check_tree(vault, commit, "grok-personal", head)
+        assert e.value.code == "delegate_mirror_unsafe", extra.path
+
+
+def test_the_cli_reports_failures_and_the_other_commands(vault: Path, tmp_path: Path) -> None:
+    r = runner.invoke(app, ["delegate", "status"])
+    assert "no delegate mirrors" in r.stdout
+    r = runner.invoke(app, ["delegate", "preview", "unlisted", "--json"])
+    assert r.exit_code == 2 and json.loads(r.stdout)["code"] == "delegate_not_listed"
+    r = runner.invoke(app, ["delegate", "sync", "duet"])
+    assert r.exit_code == 2 and "has no mirror" in r.output
+    r = runner.invoke(app, ["delegate", "unlink", "duet"])
+    assert r.exit_code == 2
+    r = runner.invoke(
+        app, ["delegate", "link", "duet", "--remote", "https://gitlab.com/o/r", "--confirm-account-unshared"]
+    )
+    assert r.exit_code == 2 and "private GitHub repository" in r.output
+    grok, duet = _bare(tmp_path, "grok"), _bare(tmp_path, "duet")
+    _link(vault, "grok-personal", grok)
+    _link(vault, "duet", duet)
+    r = runner.invoke(app, ["delegate", "sync", "grok-personal"])
+    assert r.exit_code == 0 and "up to date" in r.stdout
+    r = runner.invoke(app, ["delegate", "status", "--json"])
+    linked = {x["id"]: x for x in json.loads(r.stdout)["delegates"] if x["linked"]}
+    assert sorted(linked) == ["duet", "grok-personal"]
+    assert linked["grok-personal"]["last_result"] == "ok" and linked["grok-personal"]["counts"]["files"] > 0
+    assert dm.load_links(vault)["grok-personal"].last_counts == linked["grok-personal"]["counts"]
+    shutil.rmtree(duet)
+    git(vault, "add", "-A")  # link's .gitignore line: a change both mirrors carry
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "ignore state")
+    r = runner.invoke(app, ["delegate", "sync", "--all"])
+    assert r.exit_code == 2 and "duet:" in r.output and "grok-personal: pushed" in r.stdout
+    r = runner.invoke(app, ["delegate", "sync", "--all", "--json"])
+    assert r.exit_code == 2 and set(json.loads(r.stdout)["failed"]) == {"duet"}
+
+
+def test_a_file_redaction_cannot_settle_is_left_out(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    full = dm.preview(vault, "grok-personal")
+    monkeypatch.setattr(dm, "redact_lines", lambda *_a, **_k: None)
+    result = dm.preview(vault, "grok-personal")
+    assert result.left_out > 0 and result.files < full.files
+
+
+def test_the_cli_refuses_an_unreadable_state(vault: Path) -> None:
+    dm.state_path(vault).parent.mkdir(parents=True, exist_ok=True)
+    dm.state_path(vault).write_text("[]", encoding="utf-8")
+    for argv in (["delegate", "status"], ["delegate", "sync", "--all"]):
+        r = runner.invoke(app, argv)
+        assert r.exit_code == 2 and "wasn't written by Scout" in r.output  # valid JSON, but not signed
+
+
+# ----- review of #632 (coordinator, 2026-11-13) ---------------------------------------------------
+
+
+def _commit_files(vault: Path, files: dict[str, bytes], subject: str) -> None:
+    for rel, data in files.items():
+        (vault / rel).parent.mkdir(parents=True, exist_ok=True)
+        (vault / rel).write_bytes(data)
+    git(vault, "add", "-A")
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", subject)
+
+
+def test_text_that_is_not_utf8_is_left_out_not_kept_as_binary(vault: Path, tmp_path: Path) -> None:
+    _commit_files(
+        vault,
+        {
+            "notes/latin1.md": "---\ntitle: Café\n---\n\nSee [[sam]] and Sammy.\n".encode("latin-1"),
+            "notes/latin1.txt": "café Sammy\n".encode("latin-1"),
+            "notes/nul.txt": b"Sammy\x00\n",
+        },
+        "latin-1",
+    )
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    assert not {"notes/latin1.md", "notes/latin1.txt", "notes/nul.txt"} & _head_files(bare)
+    assert not any("Sammy" in t for t in _all_blobs(bare).values())
+
+
+def test_the_config_and_policy_document_name_no_hidden_folder_or_note(vault: Path, tmp_path: Path) -> None:
+    config = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    config = config.replace(
+        'local_only_add:\n    - "trading/**"',
+        'local_only_add:\n    - "trading/**"\n    - "hush-folder/**"\n'
+        '  visibility_defaults:\n    - {glob: "secret-garden/**", visibility: private}\n'
+        "  unknown_key: [hush-folder]",
+    )
+    config += "projects:\n  - Sammy\nteam: [Priya]\n"
+    _commit_files(
+        vault,
+        {"scout-config.yaml": config.encode(), "secret-garden/plan.md": b"# Plan\n\nquiet\n"},
+        "private folders",
+    )
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    mirrored = _show(bare, "scout-config.yaml")
+    policy_doc = _show(bare, rs.POLICY_PATH)
+    for name in ("hush-folder", "secret-garden", "trading", "Sammy", "unknown_key"):
+        assert name not in mirrored and name not in policy_doc, name
+    assert set(yaml.safe_load(mirrored)) <= {"privacy", "user", "kb_structure"}  # team, projects stay home
+    assert "secret-garden/plan.md" not in _head_files(bare)
+
+
+def test_a_file_whose_path_names_a_hidden_note_is_left_out(vault: Path, tmp_path: Path) -> None:
+    _commit_files(vault, {"notes/Sammy plans.md": b"# Plans\n\nnothing private here\n"}, "named after")
+    (vault / "Sammy-folder").symlink_to("knowledge-base")
+    git(vault, "add", "-A")
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "link")
+    bare = _bare(tmp_path, "grok")
+    result = _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert "notes/Sammy plans.md" not in files and "Sammy-folder" not in files
+    assert "Sammy" not in _show(bare, rs.POLICY_PATH)
+    assert result.left_out >= 1
+
+
+def test_a_name_spelled_with_combining_accents_still_matches() -> None:
+    terms = terms_of([note_from_text("people/jose-ruiz.md", "---\nname: José Ruiz\n---\n")])
+    nfd = "Met José Ruiz today.\nOther.\n"
+    assert find_mentions(nfd, terms, allow_markers=False) == [1]
+    assert dm.redact_lines(nfd, terms, markdown=True) == ("Other.\n", 1)  # type: ignore[arg-type]
+    assert find_mentions("JOSÉ RUIZ\n", terms, allow_markers=False) == [1]
+    fullwidth = "ｊｏｓé ｒｕｉｚ\n"  # NFKC folds it to the plain spelling
+    assert find_mentions(fullwidth, terms, allow_markers=False) == [1]
+
+
+def test_every_link_form_and_a_bare_path_are_redacted(vault: Path, tmp_path: Path) -> None:
+    lines = [
+        "keep 0",
+        "embed ![[sam]]",
+        "alias [[Sammy]]",
+        "heading [[sam#Open questions]]",
+        "piped [[people/sam|someone]]",
+        "md [who](../people/sam.md)",
+        "md2 [who](<knowledge-base/people/sam.md#x>)",
+        "encoded [who](../people/s%61m.md)",
+        "[ref]: knowledge-base/people/sam.md",
+        "bare knowledge-base/people/sam.md",
+        "keep 1 [web](https://example.com/sam.md) and [plain](widget.md)",
+    ]
+    _commit_files(vault, {"knowledge-base/topics/links.md": ("\n".join(lines) + "\n").encode()}, "links")
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    assert _show(bare, "knowledge-base/topics/links.md") == "keep 0\n" + lines[-1] + "\n"
+
+
+def test_a_local_remote_inside_the_vault_or_the_vault_itself_is_refused(vault: Path, tmp_path: Path) -> None:
+    inner = vault / "inner.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(inner)], check=True)
+    before = git(vault, "rev-parse", "HEAD")
+    for remote in (inner, vault, vault.parent):
+        with pytest.raises(rs.RepoSyncError) as e:
+            _link(vault, "grok-personal", remote, replace_remote=True)
+        assert e.value.code == "remote_in_vault", remote
+    assert git(vault, "rev-parse", "HEAD") == before
+
+
+@pytest.mark.parametrize("kind", ["insteadOf", "pushInsteadOf"])
+def test_a_remote_git_rewrites_is_refused(vault: Path, tmp_path: Path, kind: str) -> None:
+    bare = _bare(tmp_path, "elsewhere")
+    git(vault, "config", f"url.{bare}/.{kind}", "https://github.com/someone/")
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.check_remote("https://github.com/someone/grok-mirror.git", vault=vault, gh=GitHubRepo())
+    assert e.value.code == "remote_rewritten"
+
+
+def test_the_github_check_runs_before_the_push(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+    remote = "https://github.com/someone/grok-mirror.git"
+    monkeypatch.setattr(dm, "remote_head", lambda *_a: None)
+    monkeypatch.setattr(dm, "push", lambda *_a: events.append("push"))
+    gh = GitHubRepo()
+
+    def watched(args: object) -> subprocess.CompletedProcess[str]:
+        events.append("gh")
+        return gh(args)
+
+    result = dm.link(vault, "grok-personal", remote, account_unshared=True, gh=watched)
+    # link's check, the build's (before anything is built on the remote), the push's, then the push
+    assert result.pushed and events == ["gh"] * 6 + ["push"]
+    events.clear()
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.link(vault, "duet", remote, account_unshared=True, gh=GitHubRepo(visibility="internal"))
+    assert e.value.code == "remote_public" and events == []
+
+
+def test_a_sync_that_died_after_its_push_adopts_the_pushed_commit(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    _commit(vault, "knowledge-base/topics/misc/new.md", "---\ntitle: New\n---\n\nnew\n", "new")
+    real_push = dm.push
+
+    def push_then_die(*a: object) -> None:
+        real_push(*a)  # type: ignore[arg-type]
+        raise rs.RepoSyncError("push_failed", "connection dropped after the push landed")
+
+    monkeypatch.setattr(dm, "push", push_then_die)
+    with pytest.raises(rs.RepoSyncError):
+        dm.sync(vault, "grok-personal")
+    pending = dm.load_links(vault)["grok-personal"].pending_mirror
+    assert pending == _bare_git(bare, "rev-parse", "main").strip()
+    monkeypatch.setattr(dm, "push", real_push)
+    result = dm.sync(vault, "grok-personal")
+    assert result.unchanged
+    link = dm.load_links(vault)["grok-personal"]
+    assert link.last_mirror == pending and link.pending_mirror is None
+
+
+def test_a_pending_commit_the_remote_never_took_is_dropped(vault: Path, tmp_path: Path) -> None:
+    _link(vault, "grok-personal", _bare(tmp_path, "grok"))
+    links = dm.load_links(vault)
+    links["grok-personal"] = dataclasses.replace(links["grok-personal"], pending_mirror="0" * 40)
+    dm.save_links(vault, links)
+    dm.sync(vault, "grok-personal")
+    assert dm.load_links(vault)["grok-personal"].pending_mirror is None
+
+
+def test_a_pending_commit_with_a_moved_remote_still_refuses(vault: Path, tmp_path: Path) -> None:
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", str(bare), str(other)], check=True)
+    (other / "x.md").write_text("agent\n", encoding="utf-8")
+    git(other, "add", "-A")
+    git(other, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "agent write")
+    git(other, "push", "-q", "origin", "HEAD:main")
+    links = dm.load_links(vault)
+    links["grok-personal"] = dataclasses.replace(links["grok-personal"], pending_mirror="0" * 40)
+    dm.save_links(vault, links)
+    _commit(vault, "knowledge-base/topics/misc/new.md", "---\ntitle: New\n---\n\nnew\n", "new")
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.sync(vault, "grok-personal")
+    assert e.value.code == "mirror_diverged"
+
+
+def test_a_second_sync_while_one_holds_the_lock_is_refused(vault: Path, tmp_path: Path) -> None:
+    _link(vault, "grok-personal", _bare(tmp_path, "grok"))
+    with dm.locked(vault):
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.sync(vault, "grok-personal")
+        assert e.value.code == "busy"
+    assert git(vault, "check-ignore", dm.LOCK_REL).strip() == dm.LOCK_REL
+
+
+def test_a_byte_order_mark_keeps_frontmatter_redaction_working() -> None:
+    text = '﻿---\nname: x\nrelationships:\n  - target: "[[sam-lee]]"\n---\nbody\n'
+    expected = "﻿---\nname: x\nrelationships:\n---\nbody\n"
+    assert dm.redact_lines(text, _terms(), markdown=True) == (expected, 1)  # type: ignore[arg-type]
+
+
+def test_gh_asks_github_com_whatever_the_environment_says(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[dict[str, str]] = []
+
+    def fake_run(argv: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+        seen.append(dict(kw["env"]))  # type: ignore[arg-type]
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setenv("GH_HOST", "ghe.example.com")
+    monkeypatch.setenv("GH_REPO", "someone/elsewhere")
+    monkeypatch.setattr(dm.subprocess, "run", fake_run)
+    dm._gh(["api", "x"])
+    assert seen[0]["GH_HOST"] == "github.com" and "GH_REPO" not in seen[0]
+
+
+def test_config_values_that_name_a_hidden_note_are_dropped_but_a_broken_privacy_block_refuses(vault: Path) -> None:
+    scan = dm.Scanner(_terms())  # type: ignore[arg-type]
+    text = "privacy:\n  surfaces: {owner_only: [x]}\nSammy: 1\nnotes: [Sam Lee]\nok: yes\nuser: {name: Sam Lee}\n"
+    out = yaml.safe_load(dm.mirror_config(text, "d", False, [], scan))
+    assert out == {"privacy": {"delegates": {"d": {}}}}
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.mirror_config("privacy:\n  local_only_add: [x/Sammy/**]\n", "d", False, ["x/Sammy/a.md"], scan)
+    assert e.value.code == "config_names_hidden"
+    two = "privacy:\n  local_only_add: [a/**, b/**]\n"
+    scoped = yaml.safe_load(dm.mirror_config(two, "d", False, ["a/1.md"], scan))
+    assert scoped["privacy"]["local_only_add"] == ["a/**"]
+
+
+def test_the_mirror_config_drops_unknown_privacy_keys_and_fields(vault: Path) -> None:
+    """Only what the policy reads goes, at every level: a note or an address beside a setting stays home."""
+    scan = dm.Scanner(_terms())  # type: ignore[arg-type]
+    text = (
+        "privacy:\n"
+        "  federation: {enabled: false, note: token-ABC123 ops@example.com}\n"
+        "  surfaces: {owner_only: [x], shared: [], comment: ops@example.com}\n"
+        "  visibility_defaults: [{glob: a/**, visibility: private, why: token-ABC123}]\n"
+        "  sync_only: [a/**]\n"
+        "  notes: token-ABC123\n"
+    )
+    for privacy_only in (False, True):
+        out = dm.mirror_config(text, "d", False, ["a/1.md"], scan, privacy_only=privacy_only)
+        assert b"token" not in out and b"example.com" not in out, out
+        block = yaml.safe_load(out)["privacy"]
+        assert set(block) == {"visibility_defaults", "delegates"}, block
+        assert block["visibility_defaults"] == [{"glob": "a/**", "visibility": "private"}]
+
+
+# ----- the mirror's config is an allowlist, at every level --------------------------------------------------
+
+_JUNK_CONFIG = """\
+timezone: Europe/Prague
+shared: {secret: token-ABC123}
+api_key: sk-live-ABC123
+connectors:
+  inputs: {github_username: example-bot, user_slack_id: U0123456789}
+  slack: {token: xoxb-ABC123, channel: C0123456789}
+models: {briefing: {model: x, key: token-ABC123}}
+user:
+  name: Alex
+  display_name: Alex P
+  email: alex@example.com
+  slack_user_id: U0123456789
+  password: token-ABC123
+  extra: {nested: token-ABC123}
+kb_structure:
+  projects_dir: kb/projects/
+  skip_projects: [widget, gone, ../up, a/b, 7]
+  required_sections: [token-ABC123]
+  narration_markers: [{pattern: x, label: token-ABC123}]
+privacy:
+  visibility_defaults: [{glob: "kb/**", visibility: normal, note: token-ABC123}]
+  surfaces: {owner_only: ["telegram:123456789"], shared: [alex@example.com]}
+  federation: {enabled: true}
+  federation_defaults: [{glob: "kb/**", scope: ["person:alex@example.com"]}]
+  federation_ceilings: [{glob: "kb/**", ceiling: org}]
+  delegates: {d: {include_private: true, token: token-ABC123}, other: {}}
+  notes: {deep: {deeper: token-ABC123}}
+"""
+_JUNK_MIRRORED = ["kb/projects/widget/widget.md", "kb/projects/widget/notes.md", "kb/a.md"]
+_LEAKS = (b"token", b"example.com", b"example-bot", b"U0123", b"C0123", b"xoxb", b"sk-live", b"telegram", b"other")
+
+
+@pytest.mark.parametrize("privacy_only", [False, True])
+def test_the_mirror_config_holds_only_the_allowlisted_keys(vault: Path, privacy_only: bool) -> None:
+    """Junk and secret-looking keys, at the top level and nested, never reach the mirror, in either mode."""
+    scan = dm.Scanner(_terms())  # type: ignore[arg-type]
+    out = dm.mirror_config(_JUNK_CONFIG, "d", False, _JUNK_MIRRORED, scan, privacy_only=privacy_only)
+    assert not [leak for leak in _LEAKS if leak in out], out
+    privacy = {"visibility_defaults": [{"glob": "kb/**", "visibility": "normal"}], "delegates": {"d": {}}}
+    expected: dict[str, object] = {"privacy": privacy}
+    if not privacy_only:
+        expected["user"] = {"timezone": "Europe/Prague", "name": "Alex", "display_name": "Alex P"}
+        expected["kb_structure"] = {"projects_dir": "kb/projects", "skip_projects": ["widget"]}
+    assert yaml.safe_load(out) == expected
+    # The engine in the clone reads it as the owner's engine reads those keys.
+    assert policy_from_config_text(out.decode()).delegate("delegate:d") is not None
+
+
+def test_the_mirror_config_keeps_a_zone_only_when_it_is_one(vault: Path) -> None:
+    scan = dm.Scanner(_terms())  # type: ignore[arg-type]
+
+    def user(text: str) -> object:
+        return yaml.safe_load(dm.mirror_config(text, "d", False, [], scan)).get("user")
+
+    assert user("timezone: Europe/Prague\n") == {"timezone": "Europe/Prague"}  # the legacy key, as load_config
+    assert user("user: {timezone: UTC}\ntimezone: Europe/Prague\n") == {"timezone": "UTC"}
+    # Not a zone: the engine falls back to the host's, and so does the clone, so the value stays home.
+    assert user("user: {timezone: token-ABC123}\ntimezone: Europe/Prague\n") is None
+    assert user("user: {timezone: ../../etc/passwd}\n") is None
+    assert user("user: nope\ntimezone: [x]\n") is None
+
+
+def test_the_mirror_config_keeps_kb_structure_only_for_mirrored_folders(vault: Path) -> None:
+    scan = dm.Scanner(_terms())  # type: ignore[arg-type]
+
+    def structure(text: str, mirrored: list[str]) -> object:
+        return yaml.safe_load(dm.mirror_config(text, "d", False, mirrored, scan)).get("kb_structure")
+
+    widget = ["knowledge-base/projects/widget/widget.md"]
+    assert structure("kb_structure: {skip_projects: [widget, hidden]}\n", widget) == {"skip_projects": ["widget"]}
+    assert structure("kb_structure: {projects_dir: clients/secret/projects}\n", widget) is None
+    assert structure("kb_structure: {projects_dir: ../out, skip_projects: [widget]}\n", widget) is None
+    assert structure("kb_structure: {page_budget_bytes: 1, skip_projects: [gone]}\n", widget) is None
+    sammy = ["knowledge-base/projects/Sammy/Sammy.md"]  # a folder named for a hidden note: the name stays home
+    assert structure("kb_structure: {skip_projects: [Sammy]}\n", sammy) is None
+    assert structure("kb_structure: [projects_dir]\n", widget) is None
+
+
+@pytest.mark.parametrize("allowlist", [False, True])
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"shared": {"secret": "token-ABC123"}},
+        {"user": {"name": "Alex", "email": "alex@example.com"}},
+        {"privacy_note": "x"},
+    ],
+    ids=["top-level", "nested", "plain"],
+)
+def test_check_tree_refuses_a_mirror_config_with_a_key_the_allowlist_drops(
+    vault: Path, allowlist: bool, extra: dict[str, object]
+) -> None:
+    if allowlist:
+        _sync_only_kb(vault)
+    head = rs._head(vault)
+    blobs = rs.BlobReader(vault)
+    try:
+        planned = dm.plan(vault, head, "grok-personal", blobs)[0]
+        mirrored = next(f for f in planned.files if f.path == "scout-config.yaml")
+    finally:
+        blobs.close()
+    commit, head = _tampered(vault, "grok-personal", {})
+    dm.check_tree(vault, commit, "grok-personal", head)  # the control: the regenerated config passes
+    edited = {**yaml.safe_load(mirrored.data or b""), **extra}
+    commit, head = _tampered(vault, "grok-personal", {"scout-config.yaml": yaml.safe_dump(edited).encode()})
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.check_tree(vault, commit, "grok-personal", head)
+    assert e.value.code == "delegate_mirror_unsafe"
+
+
+def test_a_junk_vault_config_links_a_mirror_with_only_the_allowlisted_keys(vault: Path, tmp_path: Path) -> None:
+    """End to end: the owner's connectors, tokens and addresses stay home; the clone reads its delegate."""
+    config = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    junk = (
+        "shared: {secret: token-ABC123}\n"
+        "connectors: {slack: {token: xoxb-ABC123}}\n"
+        "user_extra: {email: alex@example.com}\n"
+    )
+    config = config.replace("user:\n  name: Alex\n", "user:\n  name: Alex\n  email: alex@example.com\n") + junk
+    config = config.replace("privacy:\n", 'privacy:\n  surfaces: {owner_only: ["telegram:123456789"]}\n', 1)
+    _commit_files(vault, {"scout-config.yaml": config.encode()}, "junk in the config")
+    privacy_migrate.accept(vault)
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    text = _show(bare, "scout-config.yaml")
+    assert not [leak for leak in ("token", "example.com", "telegram", "xoxb") if leak in text], text
+    mirrored = yaml.safe_load(text)
+    assert set(mirrored) == {"privacy", "user"} and mirrored["user"] == {"name": "Alex"}
+    assert mirrored["privacy"]["delegates"] == {"grok-personal": {}}
+    # A later sync checks the mirror again (check_tree) and passes.
+    _commit(vault, "knowledge-base/topics/later.md", "---\ntitle: Later\n---\n\nA later note.\n", "later")
+    assert not dm.sync(vault, "grok-personal").unchanged
+    assert yaml.safe_load(_show(bare, "scout-config.yaml")) == mirrored
+
+
+def _tampered(vault: Path, delegate: str, swap: dict[str, bytes]) -> tuple[str, str]:
+    """A mirror commit of HEAD for ``delegate`` with some files' contents swapped; (commit, head)."""
+    head = rs._head(vault)
+    blobs = rs.BlobReader(vault)
+    try:
+        the_plan = dm.plan(vault, head, delegate, blobs)[0]
+    finally:
+        blobs.close()
+    the_plan.files = [dm.MirrorFile(f.path, f.mode, swap[f.path], "") if f.path in swap else f for f in the_plan.files]
+    return git(vault, "commit-tree", dm.write_tree(vault, the_plan), "-m", "x").strip(), head
+
+
+def test_check_tree_refuses_an_unredacted_file_a_config_that_hides_or_relabels(vault: Path) -> None:
+    raw_priya = (vault / PRIYA).read_bytes()
+    config = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    unlisted = yaml.safe_dump({**config, "privacy": {"delegates": {}}}).encode()
+    relabel = {
+        **config,
+        "privacy": {
+            "delegates": {"duet": {"include_private": True}},
+            "visibility_defaults": [{"glob": "knowledge-base/topics/**", "visibility": "private"}],
+        },
+    }
+    for delegate, swap in (
+        ("grok-personal", {PRIYA: raw_priya}),
+        ("grok-personal", {"scout-config.yaml": unlisted}),
+        ("duet", {"scout-config.yaml": yaml.safe_dump(relabel).encode()}),
+    ):
+        commit, head = _tampered(vault, delegate, swap)
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.check_tree(vault, commit, delegate, head)
+        assert e.value.code == "delegate_mirror_unsafe", (delegate, list(swap))
+
+
+def test_a_file_the_clone_would_label_differently_is_left_out(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    full = dm.preview(vault, "duet")
+    real = dm.policy_from_config_text
+
+    def stricter(text: str) -> object:
+        policy = real(text)
+        if text.startswith("#"):  # the vault's own config keeps its comments; the mirror's is generated
+            return policy
+        return dataclasses.replace(
+            policy, visibility_defaults=(("knowledge-base/topics/**", "private"), *policy.visibility_defaults)
+        )
+
+    monkeypatch.setattr(dm, "policy_from_config_text", stricter)
+    result = dm.preview(vault, "duet")
+    assert result.left_out > full.left_out and result.files < full.files
+
+
+def test_an_unrelated_url_rewrite_is_fine(vault: Path) -> None:
+    git(vault, "config", "url.https://example.org/.insteadOf", "https://elsewhere.example/")
+    dm.check_remote("https://github.com/someone/grok-mirror.git", vault=vault, gh=GitHubRepo())
+
+
+# ----- V2b: the repository, the agent's deploy key, the push token ------------------------------
+
+GITHUB = "https://github.com/someone/grok-mirror.git"
+
+
+class FakeGh:
+    """``gh`` for one private repository: records every call, answers like GitHub."""
+
+    def __init__(
+        self,
+        *,
+        read_only: str = "true",
+        create_ok: bool = True,
+        delete_ok: bool = True,
+        delete_404: bool = False,
+        can_list: bool = True,
+    ) -> None:
+        self.calls: list[list[str]] = []
+        self.keys: dict[int, str] = {}
+        self.titles: dict[int, str] = {}  # key id -> title; a key added outside the fake defaults to ours
+        self.read_only = read_only
+        self.create_ok = create_ok
+        self.delete_ok = delete_ok
+        self.delete_404 = delete_404  # DELETE answers 404 without deleting: the repository isn't visible to this gh
+        self.can_list = can_list
+
+    def __call__(self, args: object) -> subprocess.CompletedProcess[str]:
+        a = list(args)  # type: ignore[call-overload]
+        self.calls.append(a)
+        ok = subprocess.CompletedProcess(["gh"], 0, "", "")
+        if a[:2] == ["repo", "create"]:
+            return ok if self.create_ok else subprocess.CompletedProcess(["gh"], 1, "", "GraphQL: name already exists")
+        if a[:2] == ["api", "-X"] and a[2] == "POST":
+            new = 100 + len(self.keys)
+            self.keys[new] = next(x[4:] for x in a if x.startswith("key="))
+            self.titles[new] = next(x[6:] for x in a if x.startswith("title="))
+            return subprocess.CompletedProcess(["gh"], 0, f"{new}\t{self.read_only}\n", "")
+        if a[:2] == ["api", "-X"] and a[2] == "DELETE":
+            if not self.delete_ok:
+                return subprocess.CompletedProcess(["gh"], 1, "", "HTTP 500")
+            if self.delete_404:
+                return subprocess.CompletedProcess(["gh"], 1, "", "gh: Not Found (HTTP 404)")
+            key_id = int(a[3].rsplit("/", 1)[1])
+            if key_id not in self.keys:
+                return subprocess.CompletedProcess(["gh"], 1, "", "gh: Not Found (HTTP 404)")
+            del self.keys[key_id]
+            return ok
+        if a[:2] == ["api", "--paginate"] and a[2].endswith("/keys"):
+            if not self.can_list:
+                return subprocess.CompletedProcess(["gh"], 1, "", "gh: Not Found (HTTP 404)")
+            rows = {
+                ".[].id": [f"{k}" for k in self.keys],
+                ".[].title": [self._title(k) for k in self.keys],
+                ".[] | [.id, .title] | @tsv": [f"{k}\t{self._title(k)}" for k in self.keys],
+            }[a[-1]]
+            return subprocess.CompletedProcess(["gh"], 0, "".join(f"{r}\n" for r in rows), "")
+        if a[0] == "api" and "/keys/" in a[1] and a[-1] == ".title":
+            key_id = int(a[1].rsplit("/", 1)[1])
+            if self.delete_404 or key_id not in self.keys:
+                return subprocess.CompletedProcess(["gh"], 1, "", "gh: Not Found (HTTP 404)")
+            return subprocess.CompletedProcess(["gh"], 0, self._title(key_id) + "\n", "")
+        if a[:2] == ["api", "user"]:
+            return subprocess.CompletedProcess(["gh"], 0, "someone\n", "")
+        if a[-1].endswith("@tsv"):
+            return subprocess.CompletedProcess(["gh"], 0, "private\tUser\tsomeone\tfalse\n", "")
+        if any(x.endswith("/collaborators") for x in a):
+            return subprocess.CompletedProcess(["gh"], 0, "someone\n", "")
+        raise AssertionError(f"unexpected gh call {a}")
+
+
+FakeGh._title = lambda self, k: self.titles.get(k, "scout-delegate-grok-personal")  # type: ignore[attr-defined]
+
+
+def _fake_keygen(path: Path, comment: str) -> None:
+    path.write_text("PRIVATE-KEY-STAND-IN\n", encoding="utf-8")
+    path.with_name(path.name + ".pub").write_text(f"ssh-ed25519 AAAAstandin {comment}\n", encoding="utf-8")
+
+
+@pytest.fixture
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    h = tmp_path / "home"
+    h.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(h))
+    return h
+
+
+@pytest.fixture
+def github_link(vault: Path, tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A link pushed to a local bare repository, then pointed at a GitHub URL as if it lived there.
+
+    Asking the GitHub URL for its main reads the local bare repository instead, so no test reaches the network.
+    """
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    real = dm.remote_head
+    monkeypatch.setattr(dm, "remote_head", lambda v, r: real(v, str(bare) if r == GITHUB else r))
+    links = dm.load_links(vault)
+    links["grok-personal"] = dataclasses.replace(links["grok-personal"], remote=GITHUB)
+    dm.save_links(vault, links)
+    return vault
+
+
+def test_a_deploy_key_is_added_read_only_and_its_private_half_kept_outside_the_vault(github_link: Path) -> None:
+    gh = FakeGh()
+    result = dm.deploy_key(github_link, "grok-personal", gh=gh, keygen=_fake_keygen)
+    post = next(c for c in gh.calls if c[:3] == ["api", "-X", "POST"])
+    assert post[3] == "repos/someone/grok-mirror/keys"
+    assert "read_only=true" in post and "title=scout-delegate-grok-personal" in post
+    key = dm.key_path(github_link, "grok-personal")
+    assert key.read_text(encoding="utf-8") == "PRIVATE-KEY-STAND-IN\n"
+    assert key.stat().st_mode & 0o777 == 0o600 and key.parent.stat().st_mode & 0o777 == 0o700
+    assert not str(key).startswith(str(github_link))
+    assert dm.load_links(github_link)["grok-personal"].deploy_key_id == 100
+    assert any("git clone --depth 1 git@github.com:someone/grok-mirror.git" in n for n in result.notes)
+    assert all("PRIVATE-KEY" not in n for n in result.notes)
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.deploy_key(github_link, "grok-personal", gh=gh, keygen=_fake_keygen)
+    assert e.value.code == "key_exists"
+
+
+def test_rotate_replaces_the_key_and_revoke_deletes_it(github_link: Path) -> None:
+    gh = FakeGh()
+    dm.deploy_key(github_link, "grok-personal", gh=gh, keygen=_fake_keygen)
+    dm.deploy_key(github_link, "grok-personal", rotate=True, gh=gh, keygen=_fake_keygen)
+    assert list(gh.keys) == [101]
+    assert dm.load_links(github_link)["grok-personal"].deploy_key_id == 101
+    dm.deploy_key(github_link, "grok-personal", revoke=True, gh=gh)
+    assert gh.keys == {} and not dm.key_path(github_link, "grok-personal").exists()
+    assert dm.load_links(github_link)["grok-personal"].deploy_key_id is None
+
+
+def test_a_key_github_records_as_writable_is_deleted_and_refused(github_link: Path) -> None:
+    gh = FakeGh(read_only="false")
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.deploy_key(github_link, "grok-personal", gh=gh, keygen=_fake_keygen)
+    assert e.value.code == "key_not_read_only"
+    assert gh.keys == {} and not dm.key_path(github_link, "grok-personal").exists()
+    assert dm.load_links(github_link)["grok-personal"].deploy_key_id is None
+
+
+def test_a_key_needs_a_github_mirror_and_the_owner(vault: Path, tmp_path: Path, home: Path) -> None:
+    _link(vault, "grok-personal", _bare(tmp_path, "grok"))
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.deploy_key(vault, "grok-personal", gh=FakeGh(), keygen=_fake_keygen)
+    assert e.value.code == "key_needs_github"
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.deploy_key(vault, "grok-personal", env={"SCOUT_MODE": "briefing"}, gh=FakeGh(), keygen=_fake_keygen)
+    assert e.value.code == "headless_refused"
+
+
+def test_unlink_revokes_the_key_and_keeps_the_link_when_it_cannot(github_link: Path) -> None:
+    added = FakeGh()
+    dm.deploy_key(github_link, "grok-personal", gh=added, keygen=_fake_keygen)
+    stubborn = FakeGh(delete_ok=False)
+    stubborn.keys, stubborn.titles = dict(added.keys), dict(added.titles)  # the key is live on GitHub
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.unlink(github_link, "grok-personal", gh=stubborn)
+    assert e.value.code == "key_revoke_failed"
+    assert "grok-personal" in dm.load_links(github_link)
+    gh = stubborn
+    gh.delete_ok = True
+    result = dm.unlink(github_link, "grok-personal", gh=gh)
+    assert ["api", "-X", "DELETE", "repos/someone/grok-mirror/keys/100"] in gh.calls
+    assert "revoked the agent's deploy key" in result.notes
+    assert dm.load_links(github_link) == {} and not dm.key_path(github_link, "grok-personal").exists()
+
+
+@pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="needs ssh-keygen")
+def test_the_real_keygen_makes_an_ed25519_pair(tmp_path: Path) -> None:
+    dm._keygen(tmp_path / "k", "scout-delegate-x")
+    assert (tmp_path / "k.pub").read_text(encoding="utf-8").startswith("ssh-ed25519 ")
+    assert (tmp_path / "k.pub").read_text(encoding="utf-8").strip().endswith("scout-delegate-x")
+
+
+def test_make_repo_creates_a_private_repository(home: Path) -> None:
+    gh = FakeGh()
+    assert dm.make_repo("someone/grok-mirror", gh=gh) == GITHUB
+    assert gh.calls == [
+        ["api", "user", "--jq", ".login"],
+        ["repo", "create", "someone/grok-mirror", "--private", "--description", "Scout delegate mirror"],
+    ]
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.make_repo("acme/grok-mirror", gh=FakeGh())
+    assert e.value.code == "remote_org_owned"
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.make_repo("someone/grok-mirror", gh=FakeGh(create_ok=False))
+    assert e.value.code == "repo_create_failed" and "already exists" in e.value.message
+    for bad in ("grok-mirror", "a/b/c", "a/b c", "--private/x", "o/--public", "o/.x"):
+        with pytest.raises(rs.RepoSyncError):
+            dm.make_repo(bad, gh=gh)
+
+
+def test_link_creates_the_repository_only_after_its_checks_pass(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    made: list[str] = []
+    bare = _bare(tmp_path, "grok")
+
+    def fake_make(repo: str, *, gh: object) -> str:
+        made.append(repo)
+        return str(bare)
+
+    monkeypatch.setattr(dm, "make_repo", fake_make)
+    for kw in ({"account_unshared": False}, {"env": {"SCOUT_MODE": "briefing"}}):
+        with pytest.raises(rs.RepoSyncError):
+            dm.link(vault, "grok-personal", "", **{"account_unshared": True, **kw, "create_repo": "o/r"})  # type: ignore[arg-type]
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.link(vault, "unlisted", "", account_unshared=True, create_repo="o/r")
+    assert e.value.code == "delegate_not_listed"
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.link(vault, "grok-personal", str(bare), account_unshared=True, create_repo="o/r")
+    assert e.value.code == "bad_arguments"
+    assert made == []
+    result = dm.link(vault, "grok-personal", "", account_unshared=True, create_repo="o/r")
+    assert made == ["o/r"] and result.pushed
+    assert dm.load_links(vault)["grok-personal"].remote == str(bare)
+
+
+def test_the_push_token_goes_to_git_in_its_environment_for_github_only(vault: Path, home: Path) -> None:
+    assert dm.auth_env(vault, GITHUB) == {}
+    dm.save_push_token(vault, "github_pat_STANDIN\n")
+    p = dm.push_token_path(vault)
+    assert p.stat().st_mode & 0o777 == 0o600 and str(p).startswith(str(home))
+    env = dm.auth_env(vault, GITHUB)
+    assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
+    assert base64.b64decode(env["GIT_CONFIG_VALUE_0"].split()[-1]).decode() == "x-access-token:github_pat_STANDIN"
+    assert dm.auth_env(vault, "/some/local/path.git") == {}
+    assert dm.auth_env(vault, "git@github.com:o/r.git") == {}
+    p.chmod(0o644)
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.auth_env(vault, GITHUB)
+    assert e.value.code == "token_insecure"
+    with pytest.raises(rs.RepoSyncError):
+        dm.save_push_token(vault, "  ")
+
+
+def test_link_to_github_points_at_the_key_command(vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dm, "github_repo", lambda _r: "someone/grok-mirror")
+    monkeypatch.setattr(dm, "check_remote", lambda *_a, **_k: None)
+    result = dm.link(vault, "grok-personal", str(_bare(tmp_path, "grok")), account_unshared=True, gh=FakeGh())
+    assert any("scoutctl delegate key grok-personal" in n for n in result.notes)
+
+
+def test_not_linked_and_no_key_refusals(vault: Path, home: Path) -> None:
+    for call in (
+        lambda: dm.sync(vault, "duet"),
+        lambda: dm.unlink(vault, "duet"),
+        lambda: dm.deploy_key(vault, "duet", gh=FakeGh(), keygen=_fake_keygen),
+    ):
+        with pytest.raises(rs.RepoSyncError) as e:
+            call()
+        assert e.value.code == "not_linked"
+
+
+def test_key_failures(github_link: Path, tmp_path: Path) -> None:
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.deploy_key(github_link, "grok-personal", revoke=True, gh=FakeGh())
+    assert e.value.code == "no_key"
+
+    def failing(args: object) -> subprocess.CompletedProcess[str]:
+        a = list(args)  # type: ignore[call-overload]
+        if "POST" in a:
+            return subprocess.CompletedProcess(["gh"], 1, "", "HTTP 422: key is already in use")
+        return FakeGh()(a)
+
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.deploy_key(github_link, "grok-personal", gh=failing, keygen=_fake_keygen)
+    assert e.value.code == "key_add_failed" and "already in use" in e.value.message
+
+    def garbled(args: object) -> subprocess.CompletedProcess[str]:
+        a = list(args)  # type: ignore[call-overload]
+        return subprocess.CompletedProcess(["gh"], 0, "{}\n", "") if "POST" in a else FakeGh()(a)
+
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.deploy_key(github_link, "grok-personal", gh=garbled, keygen=_fake_keygen)
+    assert e.value.code == "key_add_failed"
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm._keygen(tmp_path / "no-such-dir" / "k", "x")
+    assert e.value.code == "keygen_failed"
+
+
+def test_the_cli_key_command_and_an_unreadable_state(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, bool, bool]] = []
+
+    def fake_key(_vault: Path, delegate: str, *, rotate: bool, revoke: bool) -> dm.Result:
+        calls.append((delegate, rotate, revoke))
+        return dm.Result(delegate=delegate, action="key", notes=["added a read-only deploy key on o/r"])
+
+    monkeypatch.setattr(dm, "deploy_key", fake_key)
+    r = runner.invoke(app, ["delegate", "key", "duet", "--rotate"])
+    assert r.exit_code == 0 and "added a read-only deploy key" in r.stdout and calls == [("duet", True, False)]
+    dm.state_path(vault).parent.mkdir(parents=True, exist_ok=True)
+    dm.state_path(vault).write_text("[]", encoding="utf-8")
+    for argv in (["delegate", "status"], ["delegate", "sync", "--all"]):
+        r = runner.invoke(app, argv)
+        assert r.exit_code == 2 and "wasn't written by Scout" in r.output  # valid JSON, but not signed
+
+
+def test_the_cli_key_and_push_token_commands(vault: Path, tmp_path: Path, home: Path) -> None:
+    r = runner.invoke(app, ["delegate", "key", "duet", "--rotate", "--revoke"])
+    assert r.exit_code == 2
+    r = runner.invoke(app, ["delegate", "key", "duet"])
+    assert r.exit_code == 2 and "has no mirror" in r.output
+    token = tmp_path / "token"
+    token.write_text("github_pat_STANDIN\n", encoding="utf-8")
+    r = runner.invoke(app, ["delegate", "push-token", "--token-file", str(token)])
+    assert r.exit_code == 0 and str(dm.push_token_path(vault)) in r.stdout
+    r = runner.invoke(app, ["delegate", "push-token"], input="github_pat_OTHER\n")
+    assert r.exit_code == 0 and "OTHER" in dm.push_token_path(vault).read_text(encoding="utf-8")
+    r = runner.invoke(app, ["delegate", "push-token", "--token-file", str(tmp_path / "missing")])
+    assert r.exit_code == 2
+    blank = tmp_path / "blank"
+    blank.write_text("  \n", encoding="utf-8")
+    r = runner.invoke(app, ["delegate", "push-token", "--token-file", str(blank)])
+    assert r.exit_code == 2 and "no token" in r.output
+
+
+def test_create_repo_link_checks_the_new_repository_too(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    remote = "https://github.com/someone/grok-mirror.git"
+    pushed: list[str] = []
+    monkeypatch.setattr(dm, "remote_head", lambda *_a: None)
+    monkeypatch.setattr(dm, "push", lambda *a: pushed.append(a[1]))
+    gh = FakeGh()
+    result = dm.link(vault, "grok-personal", "", account_unshared=True, create_repo="someone/grok-mirror", gh=gh)
+    assert result.pushed and pushed == [remote]
+    kinds = [c[0] if c[0] == "repo" else c[1] for c in gh.calls]
+    assert kinds[:3] == ["user", "repo", "repos/someone/grok-mirror"]
+
+
+# ----- second review of #632 (coordinator, 2026-11-14) --------------------------------------------
+
+
+def test_a_private_root_note_with_a_generic_name_neither_blocks_nor_over_redacts(vault: Path, tmp_path: Path) -> None:
+    private = "---\nvisibility: private\n---\n\nquiet\n"
+    _commit_files(
+        vault,
+        {
+            "Personal.md": private.encode(),
+            "labels.md": private.encode(),
+            "health.md": private.encode(),
+            "notes/routine.md": b"# Routine\n\nA health check.\nMy personal best.\nSee health.md for more.\n",
+        },
+        "generic root names",
+    )
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)  # neither config_names_hidden nor delegate_mirror_unsafe
+    assert not {"Personal.md", "labels.md", "health.md"} & _head_files(bare)
+    # the bare stems are ordinary words; a root file's full name still counts as naming it
+    assert _show(bare, "notes/routine.md") == "# Routine\n\nA health check.\nMy personal best.\n"
+
+
+def test_a_folder_path_is_still_a_term_as_written() -> None:
+    scan = dm.Scanner(terms_of([]), ["clients/acme-renewal.md", "health.md"])
+    assert scan.lines("see clients/acme-renewal for it\nhealth\nhealth.md\n") == [1, 3]
+
+
+def test_a_case_variant_of_the_vault_path_is_refused(vault: Path) -> None:
+    variant = vault.parent / vault.name.swapcase()
+    if not variant.exists():
+        pytest.skip("this volume is case-sensitive")
+    inner = vault / "mirror2.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(inner)], check=True)
+    with pytest.raises(rs.RepoSyncError) as e:
+        _link(vault, "grok-personal", variant / "mirror2.git")
+    assert e.value.code == "remote_in_vault"
+
+
+def test_overlap_is_decided_by_file_identity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    real = dm._inode
+    assert real(tmp_path / "missing") is None
+    ids = {"/v/Vault": (1, 7), "/v/vault": (1, 7), "/v": (1, 2), "/v/Up": (1, 2)}
+    monkeypatch.setattr(dm, "_inode", lambda p: ids.get(str(p)))
+    assert dm._overlaps(Path("/v/Vault/m.git"), Path("/v/vault"))  # inside, by another spelling
+    assert dm._overlaps(Path("/v/Up"), Path("/v/vault"))  # a folder above, by another spelling
+    assert not dm._overlaps(Path("/v/other/m.git"), Path("/v/vault"))
+
+
+def test_text_with_a_binary_extension_is_scanned(vault: Path, tmp_path: Path) -> None:
+    _commit_files(
+        vault,
+        {
+            "attachments/summary.pdf": b"Notes on Sammy, see [[sam]]\n",
+            "attachments/plain.pdf": b"nothing private\n",
+            "attachments/real.pdf": b"%PDF-1.4\n\xe2\xe3\xcf\xd3\n\x00Weekly figures\n",
+            "attachments/author.pdf": b"%PDF-1.4\n\xe2\xe3\xcf\xd3\n\x00<< /Author (Sammy) >>\n",  # its metadata
+        },
+        "pdfs",
+    )
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert not {"attachments/summary.pdf", "attachments/author.pdf"} & files
+    assert {"attachments/plain.pdf", "attachments/real.pdf"} <= files  # a real binary: kept on its label
+    commit, head = _tampered(vault, "grok-personal", {"attachments/plain.pdf": b"Sammy [[sam]]\n"})
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.check_tree(vault, commit, "grok-personal", head)
+    assert e.value.code == "delegate_mirror_unsafe"
+
+
+def test_a_symlink_whose_folder_empties_at_the_last_check_goes_too(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _commit_files(vault, {"solo/only.md": b"# Only\n\nfine\n"}, "solo")
+    (vault / "solo-link").symlink_to("solo")
+    git(vault, "add", "-A")
+    git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "link")
+    real = dm._same_label
+    monkeypatch.setattr(dm, "_same_label", lambda a, b: not a.path.startswith("solo/") and real(a, b))
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)  # check_tree passes: no dangling link reached it
+    assert not {"solo/only.md", "solo-link"} & _head_files(bare)
+
+
+def test_check_tree_refuses_generated_files_the_tree_does_not_imply(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    the_plan, head = _planned(vault)
+    real_doc, real_manifest = dm.Plan.policy_document, dm.Plan.manifest
+    for attr, real, fake in (
+        (
+            "policy_document",
+            real_doc,
+            lambda self: real_doc(self).replace(b'"labels"', b'"extra": "Sammy",\n  "labels"', 1),
+        ),
+        ("manifest", real_manifest, lambda self: real_manifest(self)[:-3] + b',\n  "note": "Sammy"\n}\n'),
+    ):
+        monkeypatch.setattr(dm.Plan, attr, fake)
+        commit = git(vault, "commit-tree", dm.write_tree(vault, the_plan), "-m", "x").strip()
+        monkeypatch.setattr(dm.Plan, attr, real)
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.check_tree(vault, commit, "grok-personal", head)
+        assert e.value.code == "delegate_mirror_unsafe", attr
+
+
+def test_the_manifest_check_accepts_only_what_a_sync_writes(vault: Path) -> None:
+    mark = dm._vault_mark(vault)
+    the_plan, _ = _planned(vault)
+    good = json.loads(the_plan.manifest())
+    paths = {f.path for f in the_plan.files}
+
+    def canonical(doc: object) -> bytes:
+        return (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode()
+
+    assert dm._manifest_ok(canonical(good), "grok-personal", paths, mark)
+    for bad in (
+        b"not json",
+        canonical([]),
+        canonical({**good, "delegate": "duet"}),
+        canonical({**good, "files": -1}),
+        canonical({**good, "files": True}),
+        canonical({**good, "redacted_lines": {"knowledge-base/people/sam.md": 1}}),
+        canonical({**good, "redacted_lines": ["x"]}),
+    ):
+        assert not dm._manifest_ok(bad, "grok-personal", paths, mark), bad
+
+
+# ----- final review of #632 (coordinator, 2026-11-14) ---------------------------------------------
+
+
+def test_sync_only_with_the_knowledge_base_symlink_keeps_every_kb_note(vault: Path, tmp_path: Path) -> None:
+    """The standard layout: an allowlist of the KB and the config, and the ``knowledge_base`` symlink."""
+    config = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    config += '  sync_only: ["knowledge-base/**", "scout-config.yaml"]\n'
+    _commit_files(vault, {"scout-config.yaml": config.encode()}, "sync only the KB")
+    privacy_migrate.accept(vault)
+    full = dm.preview(vault, "grok-personal")
+    assert full.left_out < 3 and not full.notes, full
+    bare = _bare(tmp_path, "grok")
+    result = _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    kb = {f for f in files if f.startswith("knowledge-base/")}
+    assert kb and "knowledge_base" not in files and result.left_out == 0
+    assert not [n for n in result.notes if n.startswith("warning")]
+    assert all(
+        f.startswith(("knowledge-base/", ".scout-state/")) or f == "scout-config.yaml" or f in dm.GUIDE_PATHS
+        for f in files
+    ), files
+    # The allowlist lists the config, so the mirror's keeps the other keys the clone reads, never the allowlist.
+    mirrored = yaml.safe_load(_show(bare, "scout-config.yaml"))
+    assert mirrored["user"] == {"name": "Alex"} and "sync_only" not in mirrored["privacy"]
+
+
+def _sync_only_kb(vault: Path) -> None:
+    """An allowlist of the KB alone: the config isn't on it."""
+    config = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    config += '  sync_only: ["knowledge-base/**"]\n'
+    _commit_files(vault, {"scout-config.yaml": config.encode()}, "sync only the KB")
+    privacy_migrate.accept(vault)
+
+
+def test_sync_only_without_the_config_mirrors_its_privacy_block_alone(vault: Path, tmp_path: Path) -> None:
+    """The config is the one file sync_only can't keep home, and then the mirror's holds only privacy."""
+    _sync_only_kb(vault)
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert "scout-config.yaml" in files
+    assert any(f.startswith("knowledge-base/") for f in files)
+    assert all(
+        f.startswith(("knowledge-base/", ".scout-state/")) or f == "scout-config.yaml" or f in dm.GUIDE_PATHS
+        for f in files
+    ), files
+    text = _show(bare, "scout-config.yaml")
+    mirrored = yaml.safe_load(text)
+    assert set(mirrored) == {"privacy"}, mirrored
+    assert mirrored["privacy"]["delegates"] == {"grok-personal": {}}
+    assert "Alex" not in text and "user" not in mirrored
+    assert "sync_only" not in mirrored["privacy"]  # the allowlist is for uploads; no label depends on it
+    # A later sync checks the mirror again (check_tree) and passes.
+    _commit(vault, "knowledge-base/topics/later.md", "---\ntitle: Later\n---\n\nA later note.\n", "later")
+    assert not dm.sync(vault, "grok-personal").unchanged
+    assert set(yaml.safe_load(_show(bare, "scout-config.yaml"))) == {"privacy"}
+
+
+WIDGET_ONLY = '  sync_only: ["knowledge-base/projects/widget/**"]\n'
+
+
+def _widget_only(vault: Path, grok_flag: str | None) -> None:
+    """An allowlist of the widget project alone, and grok-personal with ``ignore_sync_only: <grok_flag>``."""
+    config = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    if grok_flag is not None:
+        config = config.replace("    grok-personal: {}\n", f"    grok-personal:\n      ignore_sync_only: {grok_flag}\n")
+    _commit_files(vault, {"scout-config.yaml": (config + WIDGET_ONLY).encode()}, "sync only the widget project")
+    privacy_migrate.accept(vault)
+
+
+def test_ignore_sync_only_lets_one_delegate_past_the_upload_allowlist(vault: Path, tmp_path: Path) -> None:
+    """``sync_only`` keeps everything else home from Agnes; a delegate set to ignore it sees the rest of the vault.
+
+    Never a local-only path or the phone inbox, never a private note without include_private, and never
+    for another delegate.
+    """
+    _widget_only(vault, "true")
+    bare = _bare(tmp_path, "grok")
+    result = _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert {"knowledge-base/projects/widget/notes.md", "knowledge-base/topics/misc/plain.md", "inbox.md"} <= files
+    assert "trading/positions.md" not in files and result.left_out == 0
+    blobs = "\n".join(_all_blobs(bare).values())
+    assert TRADING_CANARY not in blobs and INBOX_CANARY not in blobs
+    assert not [c for rel, c in CANARIES.items() if c in blobs], "a private or local-only file reached the mirror"
+    # Past the allowlist, the config is a full mirror config again, and the flag itself stays home.
+    mirrored = yaml.safe_load(_show(bare, "scout-config.yaml"))
+    assert mirrored["user"] == {"name": "Alex"}
+    assert "sync_only" not in mirrored["privacy"] and mirrored["privacy"]["delegates"] == {"grok-personal": {}}
+    # A later sync checks the mirror again (check_tree) under the same rules, and passes.
+    _commit(vault, "knowledge-base/topics/later.md", "---\ntitle: Later\n---\n\nA later note.\n", "later")
+    assert not dm.sync(vault, "grok-personal").unchanged
+    assert "knowledge-base/topics/later.md" in _head_files(bare)
+    # duet, not set to ignore it, still gets the allowlist alone.
+    duet = _bare(tmp_path, "duet")
+    _link(vault, "duet", duet)
+    assert not [f for f in _head_files(duet) if f.startswith("knowledge-base/topics/")]
+
+
+@pytest.mark.parametrize("flag", ["yes", '"true"', None])
+def test_ignore_sync_only_not_written_as_true_keeps_the_allowlist(vault: Path, flag: str | None) -> None:
+    _widget_only(vault, flag)
+    allowlisted = dm.preview(vault, "grok-personal")
+    assert allowlisted.files < 10  # the widget project and the config
+
+
+def test_ignore_sync_only_needs_both_the_live_and_the_committed_config(vault: Path) -> None:
+    """A flag written to the live config but not committed (or the reverse) widens nothing."""
+    _widget_only(vault, None)
+    allowlisted = dm.preview(vault, "grok-personal").files
+    config = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    flagged = config.replace("    grok-personal: {}\n", "    grok-personal:\n      ignore_sync_only: true\n")
+    (vault / "scout-config.yaml").write_text(flagged, encoding="utf-8")  # live only
+    assert dm.preview(vault, "grok-personal").files == allowlisted
+    _commit_files(vault, {"scout-config.yaml": flagged.encode()}, "flag it")
+    (vault / "scout-config.yaml").write_text(config, encoding="utf-8")  # committed only
+    assert dm.preview(vault, "grok-personal").files == allowlisted
+
+
+def test_ignore_sync_only_leaves_the_agnes_upload_list_as_it_was(vault: Path) -> None:
+    """The flag widens one delegate's mirror, never what repo sync may send to Agnes."""
+    _widget_only(vault, "true")
+    policy = load_policy(vault)
+    assert policy.delegates and any(d.ignore_sync_only for d in policy.delegates)
+    scope = rs.sync_scope(vault, policy)
+    assert scope.outside_sync_only("knowledge-base/topics/misc/plain.md")
+    assert not scope.outside_sync_only("knowledge-base/projects/widget/notes.md")
+    assert rs.scoped_policy_json(policy, scope, [])["sync_only"] == ["knowledge-base/projects/widget/**"]
+
+
+def test_check_tree_refuses_a_full_config_where_sync_only_keeps_it_home(vault: Path) -> None:
+    _sync_only_kb(vault)
+    config = yaml.safe_load((vault / "scout-config.yaml").read_text(encoding="utf-8"))
+    head = rs._head(vault)
+    blobs = rs.BlobReader(vault)
+    try:
+        planned = dm.plan(vault, head, "grok-personal", blobs)[0]
+        mirrored = next(f for f in planned.files if f.path == "scout-config.yaml")
+    finally:
+        blobs.close()
+    widened = {**yaml.safe_load(mirrored.data or b""), "user": config["user"]}
+    commit, head = _tampered(vault, "grok-personal", {"scout-config.yaml": yaml.safe_dump(widened).encode()})
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.check_tree(vault, commit, "grok-personal", head)
+    assert e.value.code == "delegate_mirror_unsafe"
+
+
+def _with_heads_config(vault: Path, delegate: str) -> tuple[str, str]:
+    """A mirror commit of HEAD for ``delegate`` holding HEAD's own config blob, its policy file made to match."""
+    head = rs._head(vault)
+    raw = (vault / "scout-config.yaml").read_bytes()
+    theirs = policy_from_config_text(raw.decode("utf-8"))
+    blobs = rs.BlobReader(vault)
+    try:
+        the_plan = dm.plan(vault, head, delegate, blobs)[0]
+        the_plan.files = [
+            dm.MirrorFile(f.path, f.mode, raw, "") if f.path == "scout-config.yaml" else f for f in the_plan.files
+        ]
+        the_plan.labels = [
+            dm._classify(f.path, dm._note_head(f.path, f.data if f.data is not None else blobs.read(f.sha)), theirs)
+            for f in the_plan.files
+        ]
+    finally:
+        blobs.close()
+    the_plan.mirror_policy = theirs
+    return git(vault, "commit-tree", dm.write_tree(vault, the_plan), "-m", "x").strip(), head
+
+
+def test_check_tree_refuses_heads_own_config_unchanged(vault: Path) -> None:
+    """The config is always regenerated: HEAD's blob as it is (every delegate, every glob) never passes."""
+    for allowlist in (False, True):
+        if allowlist:
+            _sync_only_kb(vault)
+        commit, head = _with_heads_config(vault, "grok-personal")
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.check_tree(vault, commit, "grok-personal", head)
+        assert e.value.code == "delegate_mirror_unsafe", allowlist
+
+
+def test_a_hidden_note_named_scout_keeps_the_config_in_the_mirror(vault: Path, tmp_path: Path) -> None:
+    """scout-config.yaml is Scout's own name for it, so a hidden note titled Scout doesn't keep it out."""
+    page = "---\ntitle: Scout\nvisibility: private\n---\n\nThe project page.\n"
+    _commit(vault, "knowledge-base/projects/scout/scout.md", page, "a private Scout page")
+    bare = _bare(tmp_path, "grok")
+    _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert "scout-config.yaml" in files and "knowledge-base/projects/scout/scout.md" not in files
+
+
+def test_path_terms_match_exactly_and_skip_symlinks_and_bare_root_names() -> None:
+    hidden = ["notes/my_plan.md", "knowledge_base", "clients/acme-link", "budget.xlsx"]
+    scan = dm.Scanner(terms_of([]), hidden, links={"clients/acme-link"})
+    text = "notes/my-plan\nnotes/my_plan\nknowledge_base\nclients/acme-link\nsee budget.xlsx\n[x](knowledge_base)\n"
+    assert scan.lines(text) == [2, 5, 6]  # an exact link still counts
+    assert not scan.names("knowledge-base/people/sam.md")
+
+
+def test_the_scanner_keeps_the_citation_and_shared_path_pre_check() -> None:
+    from scout.kb.outbound import _CITATION
+
+    terms = PrivateTerms(notes=(_CITATION,), any_term=_CITATION.pattern)
+    scan = dm.Scanner(terms, ["clients/acme-renewal.md"])
+    assert scan.lines("Filed from Priya's shared note today.\nclients/acme-renewal\nnothing\n") == [1, 2]
+
+
+def test_a_sync_that_drops_most_files_says_so(vault: Path) -> None:
+    the_plan, _ = _planned(vault)
+    assert dm._drop_warning("grok-personal", the_plan) == []
+    files = len(the_plan.files)
+    the_plan.left_out = max(dm.DROP_WARN_MIN, files + 1)
+    (note,) = dm._drop_warning("grok-personal", the_plan)
+    assert note.startswith(
+        f"warning: {the_plan.left_out} of the {files + the_plan.left_out} files grok-personal may see were"
+    )
+    the_plan.left_out = dm.DROP_WARN_MIN - 1
+    the_plan.files = the_plan.files[:1]
+    assert dm._drop_warning("grok-personal", the_plan) == []  # a few, even of a small mirror: no warning
+
+
+def test_the_manifest_must_be_the_exact_bytes_a_sync_writes(vault: Path) -> None:
+    mark = dm._vault_mark(vault)
+    the_plan, _ = _planned(vault)
+    good = the_plan.manifest()
+    paths = {f.path for f in the_plan.files}
+    assert dm._manifest_ok(good, "grok-personal", paths, mark)
+    dup = good.replace(b'  "delegate": "grok-personal"', b'  "delegate": "Sam Lee",\n  "delegate": "grok-personal"', 1)
+    assert dup != good and json.loads(dup)["delegate"] == "grok-personal"
+    assert not dm._manifest_ok(dup, "grok-personal", paths, mark)
+    assert not dm._manifest_ok(json.dumps(json.loads(good)).encode(), "grok-personal", paths)  # not canonical
+
+
+# ----- review of #633 (coordinator, 2026-11-14) ----------------------------------------------------
+
+
+def test_a_404_on_delete_counts_as_gone_only_when_the_key_list_shows_it_gone(github_link: Path) -> None:
+    gh = FakeGh()
+    dm.deploy_key(github_link, "grok-personal", gh=gh, keygen=_fake_keygen)
+    key = dm.key_path(github_link, "grok-personal")
+    for blind in (FakeGh(delete_404=True), FakeGh(delete_404=True, can_list=False)):
+        blind.keys = dict(gh.keys)  # the key is still live on GitHub
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.unlink(github_link, "grok-personal", gh=blind)
+        assert e.value.code == "key_revoke_failed"
+        assert dm.load_links(github_link)["grok-personal"].deploy_key_id == 100 and key.exists()
+    assert "gh auth status" in e.value.message
+    gone = FakeGh(delete_404=True)  # 404, and the list confirms it: deleted in the settings already
+    result = dm.unlink(github_link, "grok-personal", gh=gone)
+    assert "revoked the agent's deploy key" in result.notes and dm.load_links(github_link) == {}
+
+
+def test_an_old_key_a_rotation_couldnt_delete_stays_on_record_until_it_goes(github_link: Path) -> None:
+    gh = FakeGh()
+    dm.deploy_key(github_link, "grok-personal", gh=gh, keygen=_fake_keygen)
+    gh.delete_ok = False
+    result = dm.deploy_key(github_link, "grok-personal", rotate=True, gh=gh, keygen=_fake_keygen)
+    assert any(n.startswith("warning: couldn't delete deploy key 100") and "stays on record" in n for n in result.notes)
+    link = dm.load_links(github_link)["grok-personal"]
+    assert (link.deploy_key_id, link.stale_key_ids) == (101, [100])
+    out = runner.invoke(app, ["delegate", "status"], env={"SCOUT_DATA_DIR": str(github_link)})
+    assert "1 old key still live" in out.output
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.unlink(github_link, "grok-personal", gh=gh)
+    assert e.value.code == "key_revoke_failed" and dm.load_links(github_link)["grok-personal"].deploy_key_id == 101
+
+    def only_old_fails(args: object) -> subprocess.CompletedProcess[str]:
+        a = list(args)  # type: ignore[call-overload]
+        if a[:3] == ["api", "-X", "DELETE"] and a[3].endswith("/100"):
+            return subprocess.CompletedProcess(["gh"], 1, "", "HTTP 500")
+        gh.delete_ok = True
+        return gh(a)
+
+    with pytest.raises(rs.RepoSyncError) as e:  # the current key goes; the old one is still live
+        dm.unlink(github_link, "grok-personal", gh=only_old_fails)
+    assert e.value.code == "key_revoke_failed" and "100" in e.value.message
+    link = dm.load_links(github_link)["grok-personal"]
+    assert (link.deploy_key_id, link.stale_key_ids) == (None, [100])
+    result = dm.unlink(github_link, "grok-personal", gh=gh)
+    assert "deleted old deploy key 100 on someone/grok-mirror" in result.notes
+    assert gh.keys == {} and dm.load_links(github_link) == {}
+
+
+def test_key_and_sync_retry_an_old_key(github_link: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    gh = FakeGh()
+    dm.deploy_key(github_link, "grok-personal", gh=gh, keygen=_fake_keygen)
+    gh.delete_ok = False
+    dm.deploy_key(github_link, "grok-personal", rotate=True, gh=gh, keygen=_fake_keygen)
+    with pytest.raises(rs.RepoSyncError):
+        dm.deploy_key(github_link, "grok-personal", revoke=True, gh=gh)
+    gh.delete_ok = True
+    result = dm.deploy_key(github_link, "grok-personal", revoke=True, gh=gh)
+    assert "deleted old deploy key 100 on someone/grok-mirror" in result.notes
+    link = dm.load_links(github_link)["grok-personal"]
+    assert (link.deploy_key_id, link.stale_key_ids) == (None, [])
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.deploy_key(github_link, "grok-personal", revoke=True, gh=gh)
+    assert e.value.code == "no_key"
+    links = dm.load_links(github_link)
+    links["grok-personal"] = dataclasses.replace(links["grok-personal"], stale_key_ids=[7])
+    dm.save_links(github_link, links)
+    gh.keys[7] = "old"
+    gh.delete_ok = False
+    result = dm.deploy_key(github_link, "grok-personal", revoke=True, gh=gh)  # only an old key: retried, no raise
+    assert any(n.startswith("warning:") for n in result.notes)
+    monkeypatch.setattr(dm, "_build_and_push", lambda _v, link, **_k: (dm.Result("grok-personal", "sync"), link))
+    assert any(n.startswith("warning:") for n in dm.sync(github_link, "grok-personal", gh=gh).notes)
+    assert dm.load_links(github_link)["grok-personal"].stale_key_ids == [7]
+    gh.delete_ok = True
+    assert "deleted old deploy key 7 on someone/grok-mirror" in dm.sync(github_link, "grok-personal", gh=gh).notes
+    assert dm.load_links(github_link)["grok-personal"].stale_key_ids == []
+    assert dm.sync(github_link, "grok-personal", gh=gh).notes == []
+
+
+def test_relinking_to_another_remote_needs_the_key_revoked_first(github_link: Path, tmp_path: Path) -> None:
+    dm.deploy_key(github_link, "grok-personal", gh=FakeGh(), keygen=_fake_keygen)
+    for kw in ({"remote": str(_bare(tmp_path, "other"))}, {"remote": "", "create_repo": "someone/other"}):
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.link(github_link, "grok-personal", account_unshared=True, gh=FakeGh(), **kw)  # type: ignore[arg-type]
+        assert e.value.code == "key_on_record" and "--revoke" in e.value.message
+    assert dm.load_links(github_link)["grok-personal"].deploy_key_id == 100
+
+
+def test_remote_git_forces_certificate_checks_and_carries_the_token(
+    vault: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dm.save_push_token(vault, "github_pat_STANDIN")
+    monkeypatch.setenv("GIT_SSL_NO_VERIFY", "1")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "http.sslVerify")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "false")
+    env = dm.remote_env(vault, GITHUB)
+    assert "GIT_SSL_NO_VERIFY" not in env
+    pairs = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"] for i in range(int(env["GIT_CONFIG_COUNT"]))}
+    assert pairs["http.sslVerify"] == "true" and pairs[f"http.{GITHUB}.sslVerify"] == "true"
+    assert (
+        base64.b64decode(pairs["http.https://github.com/.extraheader"].split()[-1])
+        == b"x-access-token:github_pat_STANDIN"
+    )
+    assert set(dm.remote_env(vault, "/some/local.git")) >= {"GIT_CONFIG_COUNT"}
+    assert dm.remote_env(vault, "/some/local.git")["GIT_CONFIG_COUNT"] == "3"  # TLS and stall limits, no token
+    assert pairs["http.lowSpeedLimit"] == "1000" and pairs["http.lowSpeedTime"] == "60"
+
+
+def test_push_passes_the_token_in_the_environment_not_the_arguments(
+    vault: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dm.save_push_token(vault, "github_pat_STANDIN")
+    monkeypatch.setenv("GIT_SSL_NO_VERIFY", "1")
+    seen: list[tuple[list[str], dict[str, str]]] = []
+
+    def fake_run(args: list[str], **kw: object) -> subprocess.CompletedProcess[bytes]:
+        seen.append((list(args), dict(kw["env"])))  # type: ignore[call-overload]
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+
+    monkeypatch.setattr(dm.subprocess, "run", fake_run)
+    dm.push(vault, GITHUB, "abc123", None)
+    dm.remote_head(vault, GITHUB)
+    assert len(seen) == 2
+    for args, env in seen:
+        assert not any("STANDIN" in a or "extraheader" in a for a in args)
+        assert "GIT_SSL_NO_VERIFY" not in env and env["GIT_CONFIG_COUNT"] == "5"
+    monkeypatch.setattr(dm.subprocess, "run", lambda args, **_k: subprocess.CompletedProcess(args, 1, b"", b"boom"))
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.remote_head(vault, GITHUB)
+    assert e.value.code == "git_failed"
+
+
+def test_a_missing_gh_is_a_refusal_for_unlink_and_the_key(github_link: Path) -> None:
+    dm.deploy_key(github_link, "grok-personal", gh=FakeGh(), keygen=_fake_keygen)
+
+    def missing(_args: object) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("gh")
+
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.unlink(github_link, "grok-personal", gh=missing)
+    assert e.value.code == "remote_unverified"
+
+    def no_post(args: object) -> subprocess.CompletedProcess[str]:
+        a = list(args)  # type: ignore[call-overload]
+        if "POST" in a:
+            raise FileNotFoundError("gh")
+        return FakeGh()(a)
+
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.deploy_key(github_link, "grok-personal", rotate=True, gh=no_post, keygen=_fake_keygen)
+    assert e.value.code == "remote_unverified"
+
+
+def test_a_failed_create_says_how_to_link_the_repository_it_made() -> None:
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.make_repo("someone/grok-mirror", gh=FakeGh(create_ok=False))
+    assert e.value.code == "repo_create_failed"
+    assert "--remote https://github.com/someone/grok-mirror.git" in e.value.message
+
+    def forbidden(args: object) -> subprocess.CompletedProcess[str]:
+        a = list(args)  # type: ignore[call-overload]
+        return subprocess.CompletedProcess(["gh"], 1, "", "HTTP 403") if a[:2] == ["repo", "create"] else FakeGh()(a)
+
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.make_repo("someone/grok-mirror", gh=forbidden)
+    assert e.value.message.endswith("HTTP 403")
+
+
+def test_the_key_file_is_recorded_and_a_known_hosts_pin_written(github_link: Path, tmp_path: Path) -> None:
+    result = dm.deploy_key(github_link, "grok-personal", gh=FakeGh(), keygen=_fake_keygen)
+    key = dm.key_path(github_link, "grok-personal")
+    link = dm.load_links(github_link)["grok-personal"]
+    assert link.key_file == str(key)
+    known = key.with_name(key.name + ".known_hosts")
+    assert known.read_text(encoding="utf-8") == dm.GITHUB_KNOWN_HOSTS + "\n"
+    assert dm.GITHUB_KNOWN_HOSTS.startswith("github.com ssh-ed25519 ")
+    assert any("StrictHostKeyChecking=yes" in n and "UserKnownHostsFile" in n for n in result.notes)
+    # the vault moved: its path no longer gives the key file, but the link still names it in the secrets folder
+    moved = key.with_name("0123456789abcdef-grok-personal")
+    for suffix in ("", ".pub", ".known_hosts"):
+        Path(str(key) + suffix).rename(str(moved) + suffix)
+    outside = tmp_path / "id_ed25519"  # a key file recorded anywhere else is never deleted
+    outside.write_text("the owner's own key\n", encoding="utf-8")
+    links = dm.load_links(github_link)
+    for recorded in (str(outside), str(moved)):
+        links["grok-personal"] = dataclasses.replace(link, key_file=recorded)
+        assert [
+            p
+            for p in dm._key_files(github_link, "grok-personal", links["grok-personal"])
+            if p.name.startswith(Path(recorded).name)
+        ] == ([] if recorded == str(outside) else [Path(recorded + s) for s in ("", ".pub", ".known_hosts")])
+    dm.save_links(github_link, links)
+    dm.unlink(github_link, "grok-personal", gh=FakeGh())
+    assert not any(Path(str(moved) + suffix).exists() for suffix in ("", ".pub", ".known_hosts"))
+    assert outside.exists()
+
+
+def test_the_rewrite_check_reads_the_config_the_push_uses(
+    vault: Path, tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rewrite hidden in the config git reads only under one environment can't pass the check (#633 review)."""
+    (home / ".gitconfig").write_text('[url "https://evil.example/"]\n\tinsteadOf = https://github.com/\n')
+    clean = tmp_path / "clean.gitconfig"
+    clean.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(clean))
+    env = dm.remote_env(vault, GITHUB)
+    assert env["GIT_CONFIG_GLOBAL"] == str(clean) and env["GIT_CONFIG_NOSYSTEM"] == "1"
+
+    def push_url() -> str:
+        return dm._remote_git(vault, GITHUB, "ls-remote", "--get-url", GITHUB).stdout.strip()
+
+    dm._check_rewrites(vault, GITHUB)  # the config git will push with has no rewrite...
+    assert push_url() == GITHUB  # ...and the push goes where the check looked
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(home / ".gitconfig"))
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm._check_rewrites(vault, GITHUB)
+    assert e.value.code == "remote_rewritten"
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(clean))
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'url.https://evil.example/.insteadof'='https://github.com/'")
+    assert "GIT_CONFIG_PARAMETERS" not in dm.remote_env(vault, GITHUB)
+    dm._check_rewrites(vault, GITHUB)  # dropped for the check and the push alike
+    assert push_url() == GITHUB
+
+
+# ----- Office files and archives (content-scanning gap, 2026-11-15) ---------------------------
+
+
+def _allow_unscanned(vault: Path, globs: str, *, commit: bool = True) -> None:
+    config = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    assert "    grok-personal: {}\n" in config
+    config = config.replace("    grok-personal: {}\n", f"    grok-personal:\n      allow_unscanned: {globs}\n")
+    if commit:
+        _commit_files(vault, {"scout-config.yaml": config.encode()}, "allow unscanned")
+    else:
+        (vault / "scout-config.yaml").write_text(config, encoding="utf-8")
+    privacy_migrate.accept(vault)
+
+
+def _raw(bare: Path, rel: str) -> bytes:
+    return subprocess.run(["git", "-C", str(bare), "show", f"main:{rel}"], check=True, capture_output=True).stdout
+
+
+SPLIT_NAME = "<w:p><w:r><w:t>Call Sam</w:t></w:r><w:r><w:rPr><w:i/></w:rPr><w:t>my today</w:t></w:r></w:p>"
+# Each names sam (private, hidden from grok-personal) in one place only.
+LEFT_OUT_OFFICE = {
+    "attachments/body.docx": of.docx(SPLIT_NAME),
+    "attachments/header.docx": of.docx(
+        extra={"word/header1.xml": of.word_part("hdr", "<w:p><w:r><w:t>Prepared for Sammy</w:t></w:r></w:p>")}
+    ),
+    "attachments/footer.docx": of.docx(
+        extra={"word/footer1.xml": of.word_part("ftr", "<w:p><w:r><w:t>Sam CANARY-PRIV-2S4M</w:t></w:r></w:p>")}
+    ),
+    "attachments/comments.docx": of.docx(
+        extra={
+            "word/comments.xml": of.word_part(
+                "comments", '<w:comment w:id="0" w:author="Sammy"><w:p><w:r><w:t>ok</w:t></w:r></w:p></w:comment>'
+            )
+        }
+    ),
+    "attachments/metadata.docx": of.docx(creator="Sammy"),
+    "attachments/custom.docx": of.docx(extra={"customXml/item1.xml": "<props><owner>[[sam]]</owner></props>"}),
+    "attachments/strings.xlsx": of.xlsx(strings=("Budget", "Sammy rate")),
+    "attachments/inline.xlsm": of.xlsx(inline="see [[sam]]"),
+    "attachments/notes.pptx": of.pptx(notes="Ask Sammy"),
+    "attachments/slide.pptx": of.pptx(slide="Sammy roadmap"),
+    "attachments/letter.odt": of.odt("Dear Sammy,"),
+}
+UNSCANNABLE = {
+    "attachments/macro.docm": of.docx(extra={"word/vbaProject.bin": b"\xd0\xcf\x11\xe0 macro"}),
+    "attachments/locked.docx": of.mark_encrypted(of.docx()),
+    "attachments/protected.xlsx": b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1\x00 a password-protected workbook",
+    "attachments/corrupt.pptx": of.pptx()[:-40],
+    "attachments/nested.docx": of.docx(extra={"word/embeddings/sheet.xlsx": of.xlsx()}),
+    "attachments/bundle.zip": of.zipped({"plan.txt": "budget notes"}),
+    "attachments/backup.tar.gz": b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03 compressed",
+    "attachments/photos.7z": b"7z\xbc\xaf\x27\x1c\x00\x04 archive",
+    "attachments/old.doc": b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1\x00 an old Word file",
+}
+CLEAN_OFFICE = {
+    "attachments/clean.docx": of.docx(),
+    "attachments/clean.xlsx": of.xlsx(),
+    "attachments/clean.pptx": of.pptx(),
+    "attachments/clean.odt": of.odt(),
+    "attachments/clean.docm": of.docx(),  # a macro-enabled type with no macros in it
+}
+
+
+def test_office_files_are_scanned_inside_kept_when_clean_and_left_out_whole_when_they_name_a_hidden_note(
+    vault: Path, tmp_path: Path
+) -> None:
+    _commit_files(vault, {**CLEAN_OFFICE, **LEFT_OUT_OFFICE}, "attachments")
+    bare = _bare(tmp_path, "grok")
+    result = _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert set(CLEAN_OFFICE) <= files
+    assert not set(LEFT_OUT_OFFICE) & files
+    assert {p: result.left_out_files.get(p) for p in LEFT_OUT_OFFICE} == dict.fromkeys(LEFT_OUT_OFFICE, "names_hidden")
+    assert all(_raw(bare, rel) == data for rel, data in CLEAN_OFFICE.items())  # kept byte for byte
+
+
+def test_unscannable_files_and_archives_are_left_out_and_listed_with_why(vault: Path, tmp_path: Path) -> None:
+    _commit_files(vault, UNSCANNABLE, "attachments")
+    bare = _bare(tmp_path, "grok")
+    result = _link(vault, "grok-personal", bare)
+    assert not set(UNSCANNABLE) & _head_files(bare)
+    assert {p: result.left_out_files[p] for p in UNSCANNABLE} == {
+        "attachments/macro.docm": "macros",
+        "attachments/locked.docx": "encrypted",
+        "attachments/protected.xlsx": "unreadable",
+        "attachments/corrupt.pptx": "unreadable",
+        "attachments/nested.docx": "nested_archive",
+        "attachments/bundle.zip": "archive",
+        "attachments/backup.tar.gz": "archive",
+        "attachments/photos.7z": "archive",
+        "attachments/old.doc": "legacy_office",
+    }
+    note = next(n for n in result.notes if n.startswith("left out of grok-personal's mirror"))
+    assert "attachments/macro.docm (holds macros)" in note and "allow_unscanned" in note
+    r = runner.invoke(app, ["delegate", "preview", "grok-personal"])
+    assert "attachments/bundle.zip (an archive)" in r.stdout
+    r = runner.invoke(app, ["delegate", "preview", "grok-personal", "--json"])
+    assert json.loads(r.stdout)["left_out_files"]["attachments/old.doc"] == "legacy_office"
+    assert "bundle.zip" not in _show(bare, dm.MANIFEST_PATH)  # the list is the owner's; the mirror holds counts
+
+
+def test_a_long_left_out_list_names_the_first_few(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _commit_files(vault, UNSCANNABLE, "attachments")
+    monkeypatch.setattr(dm, "LEFT_OUT_LISTED", 2)
+    note = next(n for n in dm.preview(vault, "grok-personal").notes if n.startswith("left out"))
+    assert f"and {len(UNSCANNABLE) - 2} more (--json lists them all)" in note
+
+
+def test_a_zip_bomb_is_left_out_not_unpacked(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout import delegate_containers
+
+    bomb = of.docx(extra={"word/fill.xml": "<x>" + "a" * 3_000_000 + "</x>"})
+    _commit_files(vault, {"attachments/bomb.docx": bomb}, "bomb")
+    monkeypatch.setattr(delegate_containers, "MAX_UNPACKED_BYTES", 1_000_000)
+    assert dm.preview(vault, "grok-personal").left_out_files["attachments/bomb.docx"] == "too_large"
+
+
+def test_allow_unscanned_ships_what_cant_be_scanned_but_never_an_office_file_that_names_a_hidden_note(
+    vault: Path, tmp_path: Path
+) -> None:
+    _commit_files(
+        vault,
+        {
+            "attachments/bundle.zip": UNSCANNABLE["attachments/bundle.zip"],
+            "attachments/other.zip": UNSCANNABLE["attachments/bundle.zip"],
+            "attachments/macro.docm": UNSCANNABLE["attachments/macro.docm"],
+            "attachments/body.docx": LEFT_OUT_OFFICE["attachments/body.docx"],
+        },
+        "attachments",
+    )
+    _allow_unscanned(vault, '["attachments/bundle.zip", "attachments/*.doc?"]')
+    bare = _bare(tmp_path, "grok")
+    result = _link(vault, "grok-personal", bare)
+    files = _head_files(bare)
+    assert {"attachments/bundle.zip", "attachments/macro.docm"} <= files  # the owner's choice, on its label
+    assert "attachments/other.zip" not in files  # no glob names it
+    assert "attachments/body.docx" not in files and result.left_out_files["attachments/body.docx"] == "names_hidden"
+    assert "allow_unscanned" not in _show(bare, "scout-config.yaml")  # the clone doesn't need it
+
+
+def test_allow_unscanned_never_ships_a_refused_office_file_that_names_a_hidden_note(vault: Path) -> None:
+    """A macro, an embedded file or a DOCTYPE doesn't stop the scan: what can be read is still read (#639 review)."""
+    named = of.docx(SPLIT_NAME, extra={"word/vbaProject.bin": b"\xd0\xcf\x11\xe0 macro"})
+    _commit_files(
+        vault,
+        {
+            "attachments/macro-named.docm": named,
+            "attachments/embedded-named.docm": of.docx(SPLIT_NAME, extra={"word/embeddings/a.xlsx": of.xlsx()}),
+            "attachments/dtd-named.docm": of.docx(
+                extra={"customXml/i.xml": '<!DOCTYPE x [<!ENTITY a "b">]><x>Sammy</x>'}
+            ),
+            "attachments/macro-clean.docm": UNSCANNABLE["attachments/macro.docm"],
+        },
+        "docm",
+    )
+    _allow_unscanned(vault, '["attachments/*.docm"]')
+    the_plan, _head = _planned(vault)
+    assert {f.path for f in the_plan.files if f.path.endswith(".docm")} == {"attachments/macro-clean.docm"}
+    assert {p: w for p, w in the_plan.left_out_files.items() if p.endswith(".docm")} == {
+        "attachments/macro-named.docm": "names_hidden",
+        "attachments/embedded-named.docm": "names_hidden",
+        "attachments/dtd-named.docm": "names_hidden",
+    }
+
+
+def test_an_archive_or_office_file_named_as_an_image_or_pdf_is_left_out(vault: Path) -> None:
+    disguised = {
+        "attachments/scan.png": CLEAN_OFFICE["attachments/clean.docx"],
+        "attachments/scan.pdf": UNSCANNABLE["attachments/bundle.zip"],
+        "attachments/scan.jpg": UNSCANNABLE["attachments/old.doc"],
+    }
+    _commit_files(vault, {**disguised, "attachments/real.png": b"\x89PNG\r\n\x1a\n\x00\x00"}, "disguised")
+    the_plan, head = _planned(vault)
+    assert {p: the_plan.left_out_files.get(p) for p in disguised} == dict.fromkeys(disguised, "mislabeled")
+    assert "attachments/real.png" in {f.path for f in the_plan.files}
+    commit, head = _tampered(vault, "grok-personal", {"attachments/real.png": CLEAN_OFFICE["attachments/clean.docx"]})
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.check_tree(vault, commit, "grok-personal", head)
+    assert e.value.code == "delegate_mirror_unsafe"
+
+
+def test_allow_unscanned_never_ships_a_name_inside_an_embedded_or_renamed_document(vault: Path) -> None:
+    """Round 2 of the #639 review: what a zip holds, or a picture's metadata, is read under the glob too."""
+    named = of.docx(SPLIT_NAME)
+    files = {
+        "attachments/embeds.docx": of.docx(extra={"word/embeddings/Document1.docx": named}),
+        "attachments/media.docx": of.docx(extra={"word/media/image1.png": named}),
+        "attachments/renamed.png": named,
+        "attachments/glued.png": _png(b"IDAT", b"\x00") + named,
+        "attachments/tagged.png": _png(b"tEXt", b"Author\x00Sammy"),
+        "attachments/named.zip": of.zipped({"plan.txt": "Sammy"}),
+    }
+    _commit_files(vault, {**files, "attachments/plain.png": _png(b"tEXt", b"Title\x00Holiday")}, "nested")
+    _allow_unscanned(vault, '["attachments/*"]')
+    the_plan, _head = _planned(vault)
+    kept = {f.path for f in the_plan.files}
+    assert not set(files) & kept and "attachments/plain.png" in kept
+    assert {p: the_plan.left_out_files.get(p) for p in files} == dict.fromkeys(files, "names_hidden")
+
+
+def test_allow_unscanned_only_in_the_uncommitted_config_ships_nothing(vault: Path) -> None:
+    _commit_files(vault, {"attachments/bundle.zip": UNSCANNABLE["attachments/bundle.zip"]}, "zip")
+    _allow_unscanned(vault, '["attachments/*.zip"]', commit=False)
+    assert dm.preview(vault, "grok-personal").left_out_files["attachments/bundle.zip"] == "archive"
+
+
+def test_check_tree_refuses_a_mirror_that_carries_a_now_left_out_office_file_or_an_archive(vault: Path) -> None:
+    _commit_files(
+        vault,
+        {
+            "attachments/clean.docx": CLEAN_OFFICE["attachments/clean.docx"],
+            "attachments/bundle.zip": UNSCANNABLE["attachments/bundle.zip"],
+        },
+        "attachments",
+    )
+    commit, head = _tampered(vault, "grok-personal", {})
+    dm.check_tree(vault, commit, "grok-personal", head)  # the honest build passes
+    for swap in (
+        LEFT_OUT_OFFICE["attachments/metadata.docx"],  # names a hidden note in its metadata
+        UNSCANNABLE["attachments/macro.docm"],  # holds macros
+        UNSCANNABLE["attachments/locked.docx"],  # encrypted
+    ):
+        commit, head = _tampered(vault, "grok-personal", {"attachments/clean.docx": swap})
+        with pytest.raises(rs.RepoSyncError) as e:
+            dm.check_tree(vault, commit, "grok-personal", head)
+        assert e.value.code == "delegate_mirror_unsafe"
+    the_plan, head = _planned(vault)
+    assert "attachments/bundle.zip" not in {f.path for f in the_plan.files}
+    zipped = rs._blob_at(vault, head, "attachments/bundle.zip")
+    assert zipped is not None
+    the_plan.files.append(dm.MirrorFile(zipped.path, zipped.mode, None, zipped.sha))  # an old or tampered mirror
+    commit = git(vault, "commit-tree", dm.write_tree(vault, the_plan), "-m", "x").strip()
+    with pytest.raises(rs.RepoSyncError) as e:
+        dm.check_tree(vault, commit, "grok-personal", head)
+    assert e.value.code == "delegate_mirror_unsafe"
+    _allow_unscanned(vault, '["attachments/*.zip"]')
+    the_plan, head = _planned(vault)
+    assert "attachments/bundle.zip" in {f.path for f in the_plan.files}
+    commit = git(vault, "commit-tree", dm.write_tree(vault, the_plan), "-m", "x").strip()
+    dm.check_tree(vault, commit, "grok-personal", head)  # opted in: the check agrees

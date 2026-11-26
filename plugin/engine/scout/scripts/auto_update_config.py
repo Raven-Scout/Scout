@@ -17,14 +17,13 @@ too, nothing is written.
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from scout import paths
+from scout import paths, safe_write
 from scout.yaml_safe import load_yaml, yaml_problem
 
 # The channels a vault may subscribe to. Only `stable` ships today.
@@ -273,12 +272,9 @@ def write_auto_update(
         if _mtime_ns(config_path) != mtime_at_read:
             continue
 
-        tmp = config_path.with_name(f"{config_path.name}.{os.getpid()}.tmp")
         try:
-            tmp.write_text(updated, encoding="utf-8")
-            os.replace(tmp, config_path)
+            safe_write.atomic_write_text(config_path, updated)
         except OSError as e:
-            tmp.unlink(missing_ok=True)
             raise AutoUpdateWriteError(f"cannot write {config_path}: {e}") from e
         return _payload(config_path, updated, changed=True)
 

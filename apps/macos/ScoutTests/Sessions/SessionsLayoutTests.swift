@@ -19,8 +19,9 @@ struct SessionsLayoutTests {
         let index = try SessionsFixture.index()
         let rows = SessionsLayout.rows(index: index, filter: SessionsFilter(), now: now)
         #expect(rows.map(\.name) == ["Example Repo", "other-repo"])
-        // needs_you → running → parked (open first, then closed); stale collapses.
-        #expect(ids(rows[0].active) == ["local_A", "local_R", "local_C", "local_U"])
+        // Parked open first, then closed; stale collapses. The needs-you and
+        // running cards are in the Now strip, not here (UI audit R4).
+        #expect(ids(rows[0].active) == ["local_C", "local_U"])
         #expect(ids(rows[0].stale) == ["local_S"])
         #expect(rows[0].done.isEmpty)
         #expect(ids(rows[1].active) == ["local_W", "local_Q", "cli:aaaaaaaa-0000-0000-0000-000000000007"])
@@ -45,6 +46,24 @@ struct SessionsLayoutTests {
         #expect(rows.first { $0.name == "other-repo" }?.done.isEmpty == true)
         #expect(SessionsLayout.stateCounts(index: index, filter: filter, now: now)[.done] == 1)
         #expect(SessionsLayout.stateCounts(index: index, filter: SessionsFilter(), now: now)[.done] == nil)
+    }
+
+    /// T4 hand check: with "Show recently done" on, the Done chip left every lane
+    /// empty, its cards folded behind "Done (1)". A chip that picks the state opens them.
+    @Test func theDoneChipOpensDoneCards() throws {
+        let index = try SessionsFixture.index()
+        var filter = SessionsFilter()
+        filter.showRecentlyDone = true
+        #expect(!SessionsLayout.opens(.done, filter: filter) && !SessionsLayout.opens(.stale, filter: filter))
+        filter.states = [.done]
+        #expect(SessionsLayout.opens(.done, filter: filter) && !SessionsLayout.opens(.stale, filter: filter))
+        let rows = SessionsLayout.rows(index: index, filter: filter, now: now)
+        // Every card the chip leaves is a done one, so all of them would have been folded.
+        #expect(rows.allSatisfy { $0.active.isEmpty && $0.stale.isEmpty })
+        #expect(ids(rows.flatMap(\.done)) == ["local_D"])
+        filter.states = [.stale, .running]
+        #expect(SessionsLayout.opens(.stale, filter: filter))
+        #expect(!SessionsLayout.opens(.running, filter: filter))   // never folded
     }
 
     @Test func scoutRunsAppearOnlyWhenAskedFor() throws {

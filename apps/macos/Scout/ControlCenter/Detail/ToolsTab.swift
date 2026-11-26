@@ -55,9 +55,9 @@ struct ToolsTab: View {
     private func chip(name: String, count: Int, isSelected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                Text(name).font(.system(.callout, design: .monospaced))
+                Text(name).font(DS.font(.label, .mono))
                 Text("\(count)")
-                    .font(.caption.monospaced())
+                    .font(DS.font(.caption2, .mono))
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 10)
@@ -103,18 +103,18 @@ struct ToolsTab: View {
     private func callRow(_ call: ClaudeSessionActivity.ToolCall) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(call.name)
-                .font(.system(.caption, design: .monospaced).weight(.semibold))
+                .font(DS.font(.caption2, .mono, weight: .semibold))
                 .foregroundStyle(color(for: call.name))
                 .frame(width: 90, alignment: .leading)
             Text(call.summary)
-                .font(.system(.callout, design: .monospaced))
+                .font(DS.font(.label, .mono))
                 .lineLimit(2)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if let ts = call.timestamp {
                 Text(ts, format: .dateTime.hour().minute().second())
-                    .font(.caption.monospaced())
+                    .font(DS.font(.caption2, .mono))
                     .foregroundStyle(.secondary)
             }
         }
@@ -123,14 +123,11 @@ struct ToolsTab: View {
 
     private func color(for name: String) -> Color {
         switch name {
-        case "Bash":        return .orange
-        case "Read":        return .blue
-        case "Edit":        return .yellow
-        case "Write":       return .green
-        case "Grep", "Glob": return .purple
-        case "WebFetch", "WebSearch": return .pink
-        case "TodoWrite":   return .gray
-        default:            return .secondary
+        case "Bash":        return DS.Status.warn     // runs commands
+        case "Edit":        return DS.Accent.ink      // changes a file
+        case "Write":       return DS.Status.ok       // creates one
+        case "Read", "Grep", "Glob", "WebFetch", "WebSearch": return DS.Ink.p2
+        default:            return DS.Ink.p3
         }
     }
 }

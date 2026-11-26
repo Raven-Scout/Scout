@@ -5,7 +5,8 @@
 #
 #   plugin/scripts/eval.sh build <dest> [--scenario NAME] [--today YYYY-MM-DD]
 #   plugin/scripts/eval.sh kb-gate [--max-growth BYTES] [--opus] [--report PATH]   # the KB-writing release gate:
-#       ONE consolidation session on your Claude login; exit 0 pass, 1 fail, 2 unscored. Never in CI.
+#       ONE consolidation session on your Claude login; exit 0 pass, 1 fail, 2 unscored,
+#       3 void (it finished but did nothing; the report's "void" lists the denied calls: rerun). Never in CI.
 #   plugin/scripts/eval.sh kb-score <vault> [--max-growth BYTES]   # re-score a kept run; starts no session
 #   plugin/scripts/eval.sh run|compare|compare-models …   # see --help
 set -euo pipefail

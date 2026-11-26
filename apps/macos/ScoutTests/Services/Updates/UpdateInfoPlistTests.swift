@@ -25,8 +25,12 @@ struct UpdateInfoPlistTests {
         #expect(info["SUEnableAutomaticChecks"] as? Bool == true)
     }
 
-    @Test func checkIntervalIsDaily() {
-        #expect((info["SUScheduledCheckInterval"] as? NSNumber)?.intValue == 86400)
+    @Test func checkIntervalIsHourly() {
+        // A release used to go unnoticed for up to a day. 3600 is the
+        // shortest interval Sparkle accepts in a Release build
+        // (`SUMinimumUpdateCheckInterval`); the feed is one small GitHub
+        // asset, so an hourly fetch costs nothing.
+        #expect((info["SUScheduledCheckInterval"] as? NSNumber)?.intValue == 3600)
     }
 
     @Test func noSilentAutoDownload() {

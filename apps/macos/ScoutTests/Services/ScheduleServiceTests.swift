@@ -129,8 +129,54 @@ struct ScheduleServiceTests {
         #expect(calls.count == 1)
         #expect(calls[0].executable.path == "/usr/bin/env")
         #expect(calls[0].arguments == [
-            "scoutctl", "schedule", "list-upcoming", "--window", "24", "--json",
+            "scoutctl", "schedule", "list-upcoming", "--window", "192", "--json",
         ])
+    }
+
+    /// Finding #17: a 24-hour window left out every slot that fires later
+    /// in the week, so the look-ahead covers more than a whole week.
+    @Test func lookAheadCoversAWholeWeek() {
+        #expect(ScheduleService.lookAheadHours > 7 * 24)
+    }
+
+    /// Finding #17: a schedule made in the app (a key the app doesn't know)
+    /// takes its type from `slot_type` and keeps its own name.
+    @Test func refreshKeepsSlotsMadeInTheApp() async {
+        let json = """
+        [
+          {"slot_key": "late-research", "slot_type": "research",
+           "scheduled_at_local": "2026-05-09T21:00:00-04:00",
+           "scheduled_at_utc": "2026-05-10T01:00:00Z"},
+          {"slot_key": "saturday-weekend-briefing", "slot_type": "briefing",
+           "scheduled_at_local": "2026-05-09T09:00:00-04:00",
+           "scheduled_at_utc": "2026-05-09T13:00:00Z"},
+          {"slot_key": "focus-hour", "slot_type": "consolidation",
+           "scheduled_at_local": "2026-05-08T14:00:00-04:00",
+           "scheduled_at_utc": "2026-05-08T18:00:00Z"},
+          {"slot_key": "evening-consolidation", "slot_type": "consolidation",
+           "scheduled_at_local": "2026-05-07T19:00:00-04:00",
+           "scheduled_at_utc": "2026-05-07T23:00:00Z"}
+        ]
+        """
+        let service = ScheduleService(
+            scoutctl: URL(fileURLWithPath: "/usr/bin/env"),
+            runner: StubScheduleRunner(stdout: json),
+            argumentsPrefix: ["scoutctl"],
+            clock: FixedScheduleClock()
+        )
+        await service.refresh()
+        let byKey = Dictionary(uniqueKeysWithValues: service.upcoming.map { ($0.slotKey, $0) })
+        #expect(service.upcoming.count == 4)
+        #expect(byKey["late-research"]?.type == .research)
+        #expect(byKey["late-research"]?.displayName == "Late research")
+        #expect(byKey["saturday-weekend-briefing"]?.type == .weekendBriefing)
+        #expect(byKey["focus-hour"]?.type == .consolidation)
+        #expect(byKey["focus-hour"]?.displayName == "Focus hour")
+        // A default schedule is named from its slot key too, as the Runs list
+        // names its finished runs: not its type's "Consolidation".
+        #expect(byKey["evening-consolidation"]?.displayName == "Evening consolidation")
+        #expect(byKey["evening-consolidation"]?.displayName
+                == DisplayName.ledgerRun(slot: "evening-consolidation", mode: "scout"))
     }
 
     @Test func refreshWithEmptyJSONProducesEmptyUpcoming() async {
@@ -236,7 +282,9 @@ struct ScheduleServiceTests {
         // implementation's invalidate-before-reassign guard.
     }
 
-    @Test func refreshSkipsUnknownSlotKeys() async {
+    /// Only a `slot_type` this build doesn't know is dropped; an unknown
+    /// key alone no longer is (finding #17).
+    @Test func refreshSkipsUnknownSlotTypes() async {
         let mixedJSON = """
         [
           {"slot_key": "morning-briefing", "slot_type": "briefing",
@@ -255,7 +303,7 @@ struct ScheduleServiceTests {
             clock: FixedScheduleClock()
         )
         await service.refresh()
-        // Only the known slot key survives compactMap.
+        // The slot with the unknown type is dropped by compactMap.
         #expect(service.upcoming.count == 1)
         #expect(service.upcoming[0].slotKey == "morning-briefing")
     }

@@ -17,20 +17,20 @@ struct WindowSummaryRow: View {
         if let summary = window.summary(in: tasks) {
             HStack(spacing: 8) {
                 Text(summary)
-                    .font(DS.mono(11, weight: .medium))
+                    .font(DS.font(.caption, weight: .medium))
                     .foregroundStyle(DS.Ink.p4)
                 Text("·")
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p4)
                     .accessibilityHidden(true)
                 Button(action: action) {
                     Text("Show \(window.nextPageCount(in: tasks)) more")
-                        .font(DS.sans(11.5, weight: .medium))
+                        .font(DS.font(.caption, weight: .medium))
                 }
                 .buttonStyle(.borderless)
                 if let showAll, window.canShowAll(in: tasks) {
                     Button("Show all", action: showAll)
-                        .font(DS.sans(11.5, weight: .medium))
+                        .font(DS.font(.caption, weight: .medium))
                         .buttonStyle(.borderless)
                 }
                 Spacer(minLength: 0)
