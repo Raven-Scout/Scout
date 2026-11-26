@@ -35,6 +35,7 @@ from pathlib import Path
 import pytest
 
 from scout.hooks import kb_read_gate as gate
+from scout.kb.raw_read import join_continuations
 from tests.integration.test_kb_read_gate_zsh import OPTIONS
 from tests.unit.test_hooks_kb_read_gate import RUN, _denied, _payload
 
@@ -285,6 +286,18 @@ MUST_DENY += [
 ]
 
 
+# The re-check's L1: a comment ends at its raw newline, a backslash before it and all (main leaks these too).
+MUST_DENY += [
+    ("true # \\\ncat context/x.md", "action-items", True),
+    ("true #\\\ncat context/x.md", "action-items", True),
+    ("echo ok # it's \\\ncat context/x.md", "action-items", True),
+    ("true # \\\ncat k*/a.md", "", True),
+    ("true # \\\ngrep -r TODO .", "", True),
+    ("true # \\\ntar -cf - .", "", True),
+    ("true # a \\\n # b \\\ncat context/x.md", "action-items", True),
+]
+
+
 @pytest.mark.parametrize(("command", "where", "zsh_reads"), MUST_DENY)
 def test_a_read_zsh_runs_past_a_prefix_or_a_quote_is_denied(
     home: Path, command: str, where: str, zsh_reads: bool | str
@@ -369,6 +382,11 @@ def test_a_ugrep_only_form_is_denied(home: Path, command: str, where: str, plain
         "ls \\\n  docs",
         "printf 'a\\nb\\n'",
         "$'gr\\x65p' -n x file.py",
+        # the re-check's false denies
+        "zcat < app.log.gz",
+        "gzcat < app.log.gz",
+        "gzip -c knowledge-base/a.md > knowledge-base/a.md.gz",  # a copy into the KB, as tar's and zip's are
+        "echo a \\\nb",
     ],
 )
 def test_an_ordinary_command_is_still_allowed(home: Path, command: str) -> None:
@@ -417,3 +435,16 @@ def test_a_command_with_no_inner_quote_stays_in_the_shell(command: str) -> None:
 )
 def test_an_inner_quote_or_a_decompressing_read_reaches_python(command: str) -> None:
     assert _reaches_python(command)
+
+
+def test_a_continuation_still_joins_and_a_comment_keeps_its_newline() -> None:
+    assert join_continuations("echo a \\\nb") == "echo a b"
+    assert join_continuations("gr\\\nep -r .") == "grep -r ."
+    assert join_continuations("true # x \\\ncat y") == "true # x \\\ncat y"  # cat runs: the comment ends there
+    assert join_continuations("a#b \\\nc") == "a#b c"  # `a#b` is a word, no comment
+
+
+@pytest.mark.parametrize("command", ["zgrep -r TODO docs", "grep -rZ TODO docs"])
+def test_a_recursive_decompressing_search_of_a_vault_folder_is_denied(home: Path, command: str) -> None:
+    """A known cost, failing closed: no KB note sits in docs/, but an archive could (no replayed run does this)."""
+    assert _denied(_gate(home, command))

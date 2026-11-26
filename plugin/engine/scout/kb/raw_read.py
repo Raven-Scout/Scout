@@ -1425,10 +1425,13 @@ def _raw_kb_read(command: str, in_kb: bool, cwd: str | None, vault: str | None, 
     return _judge_recursive(command, in_kb, cwd, vault, env) or _judge_other(command, in_kb, cwd, vault, env)
 
 
+_COMMENT_STARTS = ("", " ", "\t", "\n", ";", "&", "|", "(")  # what may come before a `#` that starts a word
+
+
 def join_continuations(command: str) -> str:
     """``command`` with each backslash-newline outside single quotes (and ``$'…'``) removed, as zsh reads a line
-    continuation: ``gr\\<NL>ep`` is ``grep``. Comments and here-documents are not told apart, so callers judge the
-    written command too."""
+    continuation: ``gr\\<NL>ep`` is ``grep``. A ``#`` comment is left as written up to its raw newline (a backslash
+    in it is literal). Here-documents are not told apart, so callers judge the written command too."""
     if "\\\n" not in command:
         return command
     out: list[str] = []
@@ -1453,6 +1456,14 @@ def join_continuations(command: str) -> str:
                 out.append(command[i : i + 2])
             i += 2  # `\<newline>`: both go, in double quotes too
         else:
+            if quote is None and c == "#" and (not out or out[-1][-1:] in _COMMENT_STARTS):
+                # A comment ends at the next raw newline, a backslash before it and all: zsh's lexer cuts it
+                # before any continuation, so `true # \<NL>cat x` runs cat.
+                end = command.find("\n", i)
+                end = n if end < 0 else end
+                out.append(command[i:end])
+                i = end
+                continue
             if quote == '"':
                 quote = None if c == '"' else quote
             elif command.startswith("$'", i):
@@ -1545,7 +1556,7 @@ def _judge(command: str, in_kb: bool, cwd: str | None, vault: str | None, env: M
                         return True
                     if _decompresses(words[0], name, args) and not _searches_folders(name, args):
                         # An archive's members, which the gate can't name (`grep -Z x kb.tgz`, `zcat kb.tgz`).
-                        files = [_unquoted(f) for f in read_operands(name, args) or []]
+                        files = read_operands(name, _plain_args(args)) or []  # `< file` is stdin, not a file
                         if not files and (name in _DECOMPRESSING_READERS or _bare(words[0]) in _DECOMPRESSING):
                             files = [_stdin_source(segment) or "\0stdin"]  # `zcat < kb.tgz`, `… | zcat`
                         always = name in _DECOMPRESSING_READERS or _bare(words[0]) in _DECOMPRESSING
@@ -1694,8 +1705,13 @@ def _shell_split(command: str) -> tuple[list[list[str]], list[str]]:
             i += 1
             continue
         if c == "\\" and i + 1 < n:
-            buf.append(command[i : i + 2])
+            if command[i + 1] != "\n":  # `\<newline>` joins the words around it (`gr\<NL>ep`)
+                buf.append(command[i : i + 2])
             i += 2
+            continue
+        if quote is None and c == "#" and (not buf or buf[-1][-1:] in _COMMENT_STARTS):
+            end = command.find("\n", i)  # a comment, to the raw newline: a backslash in it continues nothing
+            i = n if end < 0 else end
             continue
         if command.startswith("$(", i) or c == "`":
             end = _substitution_end(command, i)
@@ -1907,10 +1923,9 @@ def _judge_other(
                 continue
             seg_in_kb = in_kb if stripped.chdir is None else _names_kb(stripped.chdir)
             where = here if stripped.chdir is None else _cd(here, stripped.chdir, env, local)
-            relative = [d for d in other.dests if not d.startswith(("/", "~"))]
-            into_kb = into_kb_counts(other) and (
-                any(_names_kb(d) for d in other.dests) or (seg_in_kb and bool(relative))
-            )
+            dests = [*other.dests, *compressor_stdout_dests(name, args, _stdout_targets(piece))]
+            relative = [d for d in dests if not d.startswith(("/", "~"))]
+            into_kb = into_kb_counts(other) and (any(_names_kb(d) for d in dests) or (seg_in_kb and bool(relative)))
             reads = [] if into_kb else other.reads
             if any(_names_kb(w) or _glob_names_kb(w) for w, _how in reads) or any(
                 _names_kb(p) for p in [*other.literal, *other.folders]
@@ -1926,6 +1941,23 @@ def _judge_other(
                 if raw_kb_read(program, in_kb=seg_in_kb, cwd=where, vault=vault, env=env):
                     return True
     return False
+
+
+_STDOUT_TO = re.compile(r"(?:^|(?<=\s))(?:1|&)?>>?\|?\s*([^\s;&|<>]+)")
+
+
+def _stdout_targets(piece: str) -> list[str]:
+    """The files a piece's standard output goes to (``> f``, ``>> f``, ``1> f``, ``&> f``), unquoted."""
+    return [_unquoted(m.group(1)) for m in _STDOUT_TO.finditer(piece)]
+
+
+def compressor_stdout_dests(name: str, args: list[str], stdout: list[str]) -> list[str]:
+    """Where a compressor writing to stdout (``gzip -c``, ``--stdout``) puts its copy: the files stdout goes to, so
+    ``gzip -c knowledge-base/a.md > knowledge-base/a.md.gz`` is a copy into the KB, as tar's and zip's are."""
+    if name not in _COMPRESSORS:
+        return []
+    to_stdout = any(re.fullmatch(r"-[A-Za-z0-9]*c[A-Za-z0-9]*", a) or a in ("--stdout", "--to-stdout") for a in args)
+    return stdout if to_stdout else []
 
 
 def _covers(

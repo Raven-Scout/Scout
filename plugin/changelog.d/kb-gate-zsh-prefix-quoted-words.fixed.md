@@ -9,7 +9,8 @@
     prefix or program spelled with quotes (`no''glob`, `c''at`) is read without them.
   - A quote or backslash inside the command word (`gr''ep -r TODO .`, `g\rep -R TODO`, `fi''nd . -exec cat {} +`),
     a backslash-newline that joins a word (`ca\<newline>t knowledge-base/a.md`, `gr\<newline>ep -r TODO .`, which
-    main let through too), and ANSI-C quoting (`$'gr\x65p' -r TODO .`). The shell pre-filter now sends any of them
+    main let through too) but never a comment (`true # \<newline>cat context/x.md` runs cat, as zsh ends a comment
+    at its raw newline), and ANSI-C quoting (`$'gr\x65p' -r TODO .`). The shell pre-filter now sends any of them
     to Python, which judges the word unquoted, joined and decoded, as well as the command as written. A command
     with an apostrophe inside a word (`-m "don't"`) now starts Python too; it is still allowed.
   - Reads of what an archive holds, which no file name shows: BSD grep's `-Z`, ugrep's `-z`, `rg -z`,

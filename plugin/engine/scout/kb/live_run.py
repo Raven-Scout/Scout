@@ -1655,7 +1655,14 @@ def _secret_read(words: list[str], reads: list[str], cwd: str) -> str | None:
     return None
 
 
-def _kb_read(words: list[str], reads: list[str], cwd: str, fed: str | None, oldpwd: str | None = None) -> str | None:
+def _kb_read(
+    words: list[str],
+    reads: list[str],
+    cwd: str,
+    fed: str | None,
+    oldpwd: str | None = None,
+    writes: list[str] | None = None,
+) -> str | None:
     """Ask _KB_READ about each file a reading command reads (scout.kb.raw_read's readers, past their prefixes),
     and each input redirect, as the shell hands them over: brace lists expanded, the command's own variables put
     in, from the folder it runs in (``cd``, ``env -C``). An ``xargs`` reader also reads what it is fed: the words
@@ -1689,7 +1696,7 @@ def _kb_read(words: list[str], reads: list[str], cwd: str, fed: str | None, oldp
                     if listed and any(marker in o and o != marker for o in stripped.words[1:]):
                         operands.append(UNSEEN_INPUT)  # a listed path inside a longer word: not one the gate can judge
             targets += [(word, where, how) for word in operands]
-        targets += _other_targets(name, stripped, cwd, fed, oldpwd)
+        targets += _other_targets(name, stripped, cwd, fed, oldpwd, writes or [])
         if (name in raw_read._ARCHIVERS or name in raw_read._COMPRESSORS) and not raw_read._other_models(name):
             # What it archives or compresses, placed as a lister's root (`tar -cf - .`, `zip -r x.zip ~/link`).
             where = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
@@ -1703,7 +1710,7 @@ def _kb_read(words: list[str], reads: list[str], cwd: str, fed: str | None, oldp
 
 
 def _other_targets(
-    name: str, stripped: _Stripped, cwd: str, fed: str | None, oldpwd: str | None
+    name: str, stripped: _Stripped, cwd: str, fed: str | None, oldpwd: str | None, writes: list[str] | None = None
 ) -> list[tuple[str, str, str]]:
     """What :mod:`scout.kb.other_reads` says the command reads beyond its operands, as ``_kb_read`` targets: a
     copy's sources (none when it copies into the KB), the files a stdin list names, the paths a program opens
@@ -1719,7 +1726,10 @@ def _other_targets(
     program = other_reads(name, [_unshield(w) for w in args]) or other  # a program's text as the shell passes it
     where = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
     out: list[tuple[str, str, str]] = []
-    into_kb = any(_judge_read(dest, where, "dest", oldpwd) == KB_READ for dest in other.dests)
+    from scout.kb.raw_read import compressor_stdout_dests
+
+    dests = [*other.dests, *compressor_stdout_dests(name, args, writes or [])]  # `gzip -c a > knowledge-base/a.gz`
+    into_kb = any(_judge_read(dest, where, "dest", oldpwd) == KB_READ for dest in dests)
     if not (into_kb and into_kb_counts(other)):
         out += [(word, where, how) for word, how in other.reads]
         if other.stdin_list:
@@ -2523,7 +2533,9 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
     if split:
         command, bodies = _split_heredocs(command, start=len(_STATE["bodies"]))
         _STATE["bodies"].extend(bodies)
-    command = _strip_comments(_ansi_c(command.replace("\\\n", " ")))
+    # Comments first, each to its raw newline (a backslash in one continues nothing: `true # \\<NL>cat x` runs
+    # cat), then the line continuations, as zsh's lexer reads them.
+    command = _strip_comments(_ansi_c(command)).replace("\\\n", " ")
     if _KB_READ is not None:
         command = _zsh_groups(command)
     # Every verdict with where it sits in the command, so the first form in the text names the deny
@@ -2596,7 +2608,7 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
                 literal_words = _tokens(kb_clean)
             found = _secret_read(literal_words, literal_reads, cwd)
             if found is None and _KB_READ is not None:
-                found = _kb_read(literal_words, literal_reads, cwd, fed, oldpwd)
+                found = _kb_read(literal_words, literal_reads, cwd, fed, oldpwd, targets)
             if found is None and _KB_READ is not None:
                 for program in _other_programs(words):  # awk's system("…"), perl's backticks: commands too
                     # It runs in this segment's folder: `cd action-items; awk 'BEGIN{system("cat context/x")}'`.
