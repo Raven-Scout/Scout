@@ -2130,17 +2130,43 @@ def kb_name_lookup(
 
 @kb_app.command("export")
 def kb_export(
+    fmt: str = typer.Option(
+        "json",
+        "--format",
+        help="Export format: json (entity frontmatter + ontology edges) or jsonl (property graph with body wikilinks).",
+    ),
+    no_body: bool = typer.Option(False, "--no-body", help="With --format jsonl, omit note markdown bodies."),
+    body_scope: str = typer.Option(
+        "knowledge-base/",
+        "--body-scope",
+        help="With --format jsonl, include bodies only under this vault-relative prefix ('' = every visible note).",
+    ),
     reader: str | None = _R,
     as_json: bool = _J,
     repo: Path | None = _REPO,
     kb_root: str | None = _KBR,
     schema: str | None = _SCH,
 ) -> None:
-    """The whole graph as JSON, each entity with its _label (parser.py export)."""
-    args = _kb_args("export", dict(locals()))
+    """The whole graph as JSON, or as a canonical JSONL property graph (--format jsonl)."""
+    params = dict(locals())
+    if fmt == "json":
+        del params["fmt"]
+    if not no_body:
+        del params["no_body"]
+    if body_scope == "knowledge-base/":
+        del params["body_scope"]
+    args = _kb_args("export", params)
     from scout.kb.read import cmd_export
 
-    _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, lambda g, _v: cmd_export(g))
+    _kb_graph_cmd(
+        args,
+        reader,
+        repo,
+        kb_root,
+        schema,
+        as_json,
+        lambda g, vault: cmd_export(g, vault, fmt=fmt, include_body=not no_body, body_scope=body_scope),
+    )
 
 
 @kb_app.command("stats")
