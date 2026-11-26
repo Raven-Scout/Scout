@@ -256,7 +256,9 @@ IN_PLACE = [
 def test_an_edit_in_place_of_kb_notes_and_vault_files_is_recorded(home: Path, program: str) -> None:
     assert _run(home, _py(program)) is None, program
     (row,) = [r for r in _events(home) if r["kind"] == "kb_read_gate.kb_edit"]
-    assert row["payload"] == {"mode": RUN["SCOUT_MODE"], "targets": 2 if "D =" in program else 1}
+    # an action-items file rewritten alongside a KB note: counted apart, since the note's text may now be in it
+    kb, outside = (2, 0) if "D =" in program else (1, 1)
+    assert row["payload"] == {"mode": RUN["SCOUT_MODE"], "targets": kb, "non_kb_targets": outside}
 
 
 @pytest.mark.parametrize(

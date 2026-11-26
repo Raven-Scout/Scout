@@ -23,8 +23,10 @@
   per run (`.scout-logs/.kb-read-gate-scripts.json` keeps hashes, never names), and one elsewhere as `program_path`.
 - A program that reads a KB note and writes only into the KB (an edit in place, `ruby -i -pe`, `perl -pi -e`
   included), or that edits KB notes and vault files in place (each file it reads it writes back, and each it writes
-  outside the KB it read), is allowed and recorded as a `kb_read_gate.kb_edit` event (`{"mode", "targets"}`, no
-  paths). `DENY_INTERPRETER_KB_EDITS` in `scout/hooks/kb_read_gate.py`, off for now, denies them. A program that
+  outside the KB it read), is allowed and recorded as a `kb_read_gate.kb_edit` event:
+  `{"mode", "targets", "non_kb_targets"}`, counts only, no paths. `non_kb_targets` counts the files outside the KB it
+  rewrote alongside the notes, which may now hold what it read there. `DENY_INTERPRETER_KB_EDITS` in
+  `scout/hooks/kb_read_gate.py`, off for now, denies them. A program that
   reads a note and writes outside the KB anything but a file it edits in place is denied as the copy it is. Listing
   a KB folder (`os.listdir`, `os.scandir`, `glob`, `Path.iterdir`, `os.walk`, `Dir.glob`, `fs.readdirSync`,
   `list.files`), there or after a `chdir` into it, is denied as `ls knowledge-base` is; testing a name

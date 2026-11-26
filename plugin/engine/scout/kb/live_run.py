@@ -545,7 +545,8 @@ UNSEEN_INPUT = "$__scout_input__"
 # `open(F, $f)`): unresolved too (scout.kb.other_reads, OtherReads.built).
 PROGRAM_PATH = "$__scout_program__"
 # How _other_targets marks an interpreter program that reads KB notes and writes only into the KB: the gate records
-# it as a `kb_read_gate.kb_edit` (kb_read_gate.DENY_INTERPRETER_KB_EDITS). Its word is how many files it writes.
+# it as a `kb_read_gate.kb_edit` (kb_read_gate.DENY_INTERPRETER_KB_EDITS). Its word is `N:M`: how many KB files it
+# writes, and how many files outside the KB it edits in place alongside them.
 KB_EDIT = "kb_edit"
 # How _other_targets asks the gate about the script file an interpreter runs (`python3 x.py`): TRUSTED_SCRIPT when it
 # is Scout's own (scout.kb.trusted_scripts), and nothing of the command is judged; else None, and the gate records
@@ -1814,7 +1815,8 @@ def _other_targets(
         out.append((PROGRAM_PATH, where, "file"))
     count = _kb_edit_count(program, other, where, oldpwd) if program.writes_something else None
     if count is not None and any(_judge_read(word, at, how, oldpwd) == KB_READ for word, at, how in out):
-        return [(str(count or 1), where, "kb_edit")]  # an edit of KB notes: recorded, not judged as a read
+        kb, outside = count
+        return [(f"{kb or 1}:{outside}", where, "kb_edit")]  # an edit of KB notes: recorded, not judged as a read
     if program.unaccounted or other.unaccounted:
         out.append(("", where, "deny"))
     elif program.opaque and re.search(r"knowledge[-_]base|action-items/context", _STATE.get("command", segment)):
@@ -1849,22 +1851,22 @@ def _fed_operands(args: list[str], stripped: _Stripped, fed: str | None, words: 
     return [a.replace(marker, n) for a in args for n in (given if marker in a else [""])]
 
 
-def _kb_edit_count(program: OtherReads, other: OtherReads, where: str, oldpwd: str | None) -> int | None:
-    """How many KB files a program that edits files writes, or None when it writes outside the KB in a way an edit
-    doesn't. Each file is judged where it lands (``..``, a symlink): the paths its text writes, and its operands when
-    it rewrites them in place. Every one must be in the KB, or be a file it reads and writes back (an edit in place,
-    ``s = open(p).read(); open(p, "w").write(s.replace(…))``) when all it reads is spelled out and each KB file it
-    reads it writes back too: one it reads in the KB and doesn't write is a copy out. One it builds is nowhere the
-    gate can tell."""
+def _kb_edit_count(program: OtherReads, other: OtherReads, where: str, oldpwd: str | None) -> tuple[int, int] | None:
+    """How many KB files a program that edits files writes, and how many files outside the KB it edits in place
+    alongside them; None when it writes outside the KB in a way an edit doesn't. Each file is judged where it lands
+    (``..``, a symlink): the paths its text writes, and its operands when it rewrites them in place. Every one must
+    be in the KB, or be a file it reads and writes back (an edit in place, ``s = open(p).read(); open(p,
+    "w").write(s.replace(…))``) when all it reads is spelled out and each KB file it reads it writes back too: one it
+    reads in the KB and doesn't write is a copy out. One it builds is nowhere the gate can tell."""
     if program.writes_built:
         return None
     if program.operand_writes:
         if not all(_judge_read(word, where, "dest", oldpwd) == KB_READ for word, _how in other.reads):
             return None
-        return len(program.writes) + len(other.reads)
+        return len(program.writes) + len(other.reads), 0
     in_kb = [_judge_read(_shield_single(w), where, "dest", oldpwd) == KB_READ for w in program.writes]
     if all(in_kb):
-        return len(in_kb)
+        return len(in_kb), 0
     if program.built or program.spelled or other.reads or program.unaccounted:
         return None  # reads it doesn't spell out: what it writes outside the KB may be what it read there
 
@@ -1878,7 +1880,7 @@ def _kb_edit_count(program: OtherReads, other: OtherReads, where: str, oldpwd: s
     kb_reads = [p for p in program.literal if _judge_read(_shield_single(p), where, "file", oldpwd) == KB_READ]
     if any(at(p) not in written for p in kb_reads):
         return None  # a KB file it reads and doesn't write back: a copy out
-    return sum(in_kb)
+    return sum(in_kb), len(in_kb) - sum(in_kb)
 
 
 def _prefix_assignments(stripped: _Stripped) -> dict[str, str]:

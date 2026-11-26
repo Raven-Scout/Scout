@@ -255,7 +255,10 @@ DENY_UNRESOLVED_READS = False
 # it also is. Off for now (Jordan's call, #824's review): a replay of real runs found about one per run, keeping the
 # KB up to date, and runs have no sanctioned edit path yet. So each is allowed and recorded as a
 # `kb_read_gate.kb_edit` event, once per command: {"mode": <SCOUT_MODE>, "targets": <how many KB files it
-# writes>}, no paths. What the program does with what it read isn't followed: a file name, an exit code or an
+# writes>, "non_kb_targets": <how many files outside the KB it rewrites in place alongside them>}, counts only, no
+# paths. A program that edits a KB note and a vault file in place (each file it reads it writes back, each file it
+# writes outside the KB it read) is one too: non_kb_targets > 0 tells it apart, since what it read in the KB may
+# now be in that file. What the program does with what it read isn't followed: a file name, an exit code or an
 # exception carries data, so the record is the safety net until runs get a sanctioned edit command. Neither switch
 # touches the other's reads. Every other interpreter read of a KB note is denied either way: read-only, or read
 # there and written outside the KB (a copy out).
@@ -420,10 +423,12 @@ def _first_in_run(vault: Path, run: object, scripts: set[str]) -> bool:
     return True
 
 
-def _record_kb_edit(vault: Path, targets: int, mode: str | None) -> None:
+def _record_kb_edit(vault: Path, targets: int, non_kb_targets: int, mode: str | None) -> None:
     """Queue an allowed interpreter edit of KB notes (see :data:`DENY_INTERPRETER_KB_EDITS`): how many KB files the
-    command writes and the run's mode, never the command or a path."""
-    _PENDING_AUDIT.append((vault, "kb_read_gate.kb_edit", {"mode": mode, "targets": targets}))
+    command writes, how many files outside the KB it rewrites in place alongside them, and the run's mode, never the
+    command or a path."""
+    payload = {"mode": mode, "targets": targets, "non_kb_targets": non_kb_targets}
+    _PENDING_AUDIT.append((vault, "kb_read_gate.kb_edit", payload))
 
 
 def flush_audit() -> None:
@@ -550,7 +555,8 @@ def decide(
             if how == "kb_edit":  # an interpreter's edit of KB notes (live_run.KB_EDIT); ``raw``: how many it writes
                 if DENY_INTERPRETER_KB_EDITS:
                     return KB_READ
-                edits.append(int(raw) if raw.isdigit() else 1)
+                kb, _, outside = raw.partition(":")
+                edits.append((int(kb) if kb.isdigit() else 1, int(outside) if outside.isdigit() else 0))
                 return None
             if target is None:
                 if DENY_UNRESOLVED_READS:
@@ -595,7 +601,9 @@ def decide(
         memo: dict[str, list[str] | None] = {}
         unresolved: set[str] = set()
         scripts: set[str] = set()  # the vault scripts it runs that aren't Scout's own (vault-relative)
-        edits: list[int] = []  # each interpreter edit of KB notes the command runs: how many files it writes
+        # each interpreter edit of KB notes the command runs: how many KB files it writes, and how many files outside
+        # the KB it rewrites in place alongside them
+        edits: list[tuple[int, int]] = []
 
         def globs(target: str) -> list[str] | None:
             if target not in memo:
@@ -630,7 +638,7 @@ def decide(
         if unresolved:
             _record_unresolved_read(vault, sorted(unresolved), mode)
         if edits:
-            _record_kb_edit(vault, sum(edits), mode)
+            _record_kb_edit(vault, sum(kb for kb, _ in edits), sum(outside for _, outside in edits), mode)
         return None
     if tool in ("Grep", "Glob"):
         raw = tool_input.get("path")

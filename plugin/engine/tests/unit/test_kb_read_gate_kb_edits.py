@@ -1,5 +1,6 @@
 """An interpreter program that reads a KB note and writes only into the KB is an edit in place: kb-read-gate allows
-it and records one ``kb_read_gate.kb_edit`` event per command (``{"mode", "targets"}``, no paths), unless
+it and records one ``kb_read_gate.kb_edit`` event per command (``{"mode", "targets", "non_kb_targets"}``, counts
+only, no paths), unless
 ``DENY_INTERPRETER_KB_EDITS`` is on. What it does with what it read isn't followed (a file name, an exit code or an
 exception carries data), so the record is the safety net. Every other interpreter read of a KB note is denied:
 read-only, or read there and written outside the KB (a copy out), or written somewhere the gate can't place.
@@ -107,7 +108,7 @@ def test_an_edit_of_kb_notes_is_allowed_and_recorded(home: Path, command: str, t
     assert gate.DENY_INTERPRETER_KB_EDITS is False
     assert _run(home, command) is None, command
     (row,) = _events(home, "kb_read_gate.kb_edit")
-    assert row["payload"] == {"mode": RUN["SCOUT_MODE"], "targets": targets}
+    assert row["payload"] == {"mode": RUN["SCOUT_MODE"], "targets": targets, "non_kb_targets": 0}
     assert row["source"] == "hook:kb-read-gate"
     assert "knowledge" not in json.dumps(row["payload"])  # no paths
 
