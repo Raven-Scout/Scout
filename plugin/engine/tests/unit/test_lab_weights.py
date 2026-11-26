@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import sys
+import threading
 import urllib.parse
 import urllib.request
 from collections.abc import Iterator
@@ -353,8 +354,21 @@ def test_a_wait_for_another_fetch_still_hears_a_stop(root: Path) -> None:
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)  # another supervisor's fetch, still going
         hub = FakeHub(GOOD)
-        with pytest.raises(LabError, match=r"\Astopped by the owner\Z"):
-            _fetch(root, hub, should_stop=lambda: "stopped by the owner")
+        raised: list[BaseException] = []
+
+        def fetch() -> None:
+            try:
+                _fetch(root, hub, should_stop=lambda: "stopped by the owner")
+            except BaseException as e:  # noqa: BLE001 - handed to the test's thread
+                raised.append(e)
+
+        # A daemon thread with a bound: a wait that never hears the stop fails here instead of hanging the suite.
+        waiter = threading.Thread(target=fetch, daemon=True)
+        waiter.start()
+        waiter.join(10)
+        assert not waiter.is_alive(), "the wait for another fetch never heard the stop"
+        [error] = raised
+        assert isinstance(error, LabError) and str(error) == "stopped by the owner"
         assert hub.calls == []
     finally:
         os.close(fd)
