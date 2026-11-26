@@ -110,6 +110,9 @@ class GitRead:
     # The targets of the links the command made before (`ln -s Vault V2`), each placed from the session's folder
     # (a relative one is from the link's own folder): one that is the vault, or in or above it, makes a copy of it.
     links: list[str] = field(default_factory=list)
+    # False for a call that prints no file's contents (`git status`, `git log --oneline`): only the repository it
+    # runs in is judged, by its config (:func:`config_runs`).
+    reads: bool = True
 
 
 def split_global(args: list[str]) -> tuple[list[str], str | None, str | None, int]:
@@ -355,11 +358,15 @@ def find_repo(start: Path, git_dir: Path | None, work_tree: Path | None) -> tupl
     given alone). ``unsure`` when its config includes another file the gate doesn't read. None when there is no
     repository."""
     found_at: Path | None = None
+    bare: Path | None = None
     if git_dir is None:
         for folder in (start, *start.parents):
             dot = folder / ".git"
             if dot.is_dir() or dot.is_file():
                 git_dir, found_at = _gitdir_of(dot), folder
+                break
+            if is_git_dir(folder):  # a bare repository, or a git folder git runs in (`git -C .git …`)
+                git_dir = bare = folder
                 break
         else:
             return None
@@ -367,35 +374,113 @@ def find_repo(start: Path, git_dir: Path | None, work_tree: Path | None) -> tupl
             return None
     common = _common(git_dir)
     configured, unsure = _core_worktree(git_dir, common)
-    top = work_tree or configured or found_at or start
+    top = work_tree or configured or found_at or bare or start
     return top, common, unsure
 
 
+# Values of command keys that run only the tools a person installs for every repository: Git LFS's filters, and
+# fsmonitor's switch for git's own daemon.
+_SAFE_COMMANDS = re.compile(r"^\s*(?:git-lfs|git lfs)\s")
+_BOOLEANS = {"true", "false", "yes", "no", "on", "off", "1", "0", ""}
+
+
+def config_runs(common: Path, sub: str) -> str | None:
+    """The first key in another repository's config that may run a command for ``git <sub>`` (a run's allowed
+    forms run its fsmonitor, filters, textconv and external diff; ``remote`` its transports and credential
+    helpers), else None. A run can't write the vault's own config, but it can write one of a repository it builds
+    by hand (a ``.git`` file pointing at a folder of its own): so such a repository's config must run nothing
+    (review of #817, round 6). A config git can't read, or one with an ``includeIf``, is refused too."""
+    from scout.kb.live_run import _COMMAND_KEY_SUFFIXES, _COMMAND_KEYS
+
+    files = [common / "config", common / "config.worktree", *sorted(common.glob("worktrees/*/config.worktree"))]
+    for config in files:
+        if not config.is_file():
+            continue
+        entries = read_config(config)
+        if entries is None:
+            return "an unreadable config"
+        for key, value in entries:
+            if key.startswith("includeif."):
+                return key
+            if key.startswith("credential.") or key.endswith(".helper") or key.startswith("protocol."):
+                if sub == "remote":
+                    return key
+                continue
+            if key == "core.fsmonitor" and value.strip().lower() in _BOOLEANS:
+                continue
+            runs = key in _COMMAND_KEYS or key.endswith(_COMMAND_KEY_SUFFIXES) or key.startswith("pager.")
+            if runs and not _SAFE_COMMANDS.match(value) and not key.endswith(".path"):
+                return key
+    return None
+
+
 def _core_worktree(git_dir: Path, common: Path) -> tuple[Path | None, bool]:
-    """A repository's ``core.worktree`` (its folder, from the git folder) and whether its config includes others."""
+    """A repository's ``core.worktree`` (its folder, from the git folder) and whether its config includes others,
+    as git reads its config files (:func:`read_config`: comments, quotes and continued lines are git's to parse,
+    review of #817, round 6). A config git can't read is unsure."""
     worktree: Path | None = None
     unsure = False
     for config in (common / "config", git_dir / "config.worktree"):
-        try:
-            text = config.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        if not config.is_file():
             continue
-        section = ""
-        for line in text.splitlines():
-            line = line.strip()
-            m = re.match(r'^\[\s*([A-Za-z0-9.-]+)(?:\s+"[^"]*")?\s*\](.*)$', line)
-            if m:
-                section, line = m[1].lower(), m[2].strip()
-                if section in ("include", "includeif"):
-                    unsure = True
-                if not line:
-                    continue
-            kv = re.match(r"^([A-Za-z][A-Za-z0-9-]*)\s*=\s*(.*)$", line)
-            if section == "core" and kv and kv[1].lower() == "worktree":
-                value = kv[2].strip().strip('"')
+        entries = read_config(config)
+        if entries is None:
+            unsure = True
+            continue
+        for key, value in entries:
+            if key.startswith(("include.", "includeif.")):
+                unsure = True
+            elif key == "core.worktree":
                 target = Path(os.path.expanduser(value))
-                worktree = (target if target.is_absolute() else common / target).resolve()
+                worktree = (target if target.is_absolute() else git_dir / target).resolve()
     return worktree, unsure
+
+
+def is_git_dir(folder: Path) -> bool:
+    """Whether ``folder`` is a git folder itself, as git tells one (a ``HEAD`` file, ``objects/`` and ``refs/``)."""
+    return (folder / "HEAD").is_file() and (folder / "objects").is_dir() and (folder / "refs").is_dir()
+
+
+_CONFIG_CACHE: dict[tuple[str, int, int], list[tuple[str, str]] | None] = {}
+
+
+def read_config(path: Path) -> list[tuple[str, str]] | None:
+    """The ``(key, value)`` entries of a git config file and the files it includes, as git itself parses them
+    (``git config --file … --includes --list``; keys lowercased as git gives them), else None when git can't
+    read it. Nothing in a config runs when git only lists it."""
+    import subprocess
+
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    cache_key = (str(path), stat.st_mtime_ns, stat.st_size)
+    if cache_key in _CONFIG_CACHE:
+        return _CONFIG_CACHE[cache_key]
+    env = {
+        "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+        "HOME": os.environ.get("HOME", "/nonexistent"),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "LC_ALL": "C",
+    }
+    try:
+        done = subprocess.run(
+            ["git", "config", "--file", str(path), "--includes", "--null", "--list"],
+            env=env, capture_output=True, timeout=5, check=False,
+        )  # fmt: skip
+    except (OSError, subprocess.SubprocessError):
+        found = None
+    else:
+        found = None
+        if done.returncode == 0:
+            found = []
+            for entry in done.stdout.decode("utf-8", "replace").split("\0"):
+                if entry:
+                    key, _, value = entry.partition("\n")
+                    found.append((key.lower(), value))
+    _CONFIG_CACHE[cache_key] = found
+    return found
 
 
 def _gitdir_of(dot: Path) -> Path | None:

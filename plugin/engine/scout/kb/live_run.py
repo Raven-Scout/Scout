@@ -1433,7 +1433,8 @@ MAX_LITERAL_READS = 4096
 MAX_DEPTH = 6
 _STATE: dict[str, Any] = {
     "checked": 0, "secrets": 0, "reads": 0, "literal": 0, "vars": {}, "bodies": [], "unparsed": False, "capped": False,
-    "parsing": False, "fs_changed": "", "links": [], "expanded": set(), "lists": [],
+    "parsing": False, "fs_changed": "", "links": [], "expanded": set(), "lists": [], "git_env": False,
+    "command": "",
 }  # fmt: skip
 _VAR = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 # An interpreter given its program inline or on stdin.
@@ -1937,8 +1938,14 @@ def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | No
         return None
     read = git_read.parse([_unshield(w) for w in git])
     if read is None:
-        return None
-    if stripped.fed:  # `… | xargs git cat-file -p`: its objects or paths come from stdin, which the gate can't see
+        # It prints no file's contents: only its repository is judged, by its config (git_read.config_runs).
+        chdirs, git_dir_, work_tree_, at = git_read.split_global([_unshield(w) for w in git])
+        if at >= len(git):
+            return None
+        read = git_read.GitRead(
+            sub=raw_read.fold(_unshield(git[at])), chdirs=chdirs, git_dir=git_dir_, work_tree=work_tree_, reads=False
+        )
+    elif stripped.fed:  # `… | xargs git cat-file -p`: its objects or paths come from stdin, which the gate can't see
         read.trees, read.pathspecs, read.maybe_paths, read.files, read.no_index = [SUBST], [], [], [], False
     start = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
     given = {}
@@ -2007,7 +2014,7 @@ def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | No
                 one = git_read.GitRead(
                     sub=read.sub, git_dir=gd, work_tree=wt, trees=lists[0], pathspecs=lists[1],
                     maybe_paths=lists[2], unbounded=read.unbounded, fs_changed=_STATE["fs_changed"],
-                    links=list(_STATE["links"]),
+                    links=list(_STATE["links"]), reads=read.reads,
                 )  # fmt: skip
                 found = _GIT_READ(one, where)
                 if found is not None:
@@ -2150,6 +2157,109 @@ def _git_run_form(words: list[str]) -> str | None:
         if _STATE["vars"].get(name):
             return name
     return None
+
+
+# A run's git calls are judged by scout.kb.git_allow's lists: any other form is refused under this name.
+GIT_FORM = "git form not allowed in a run"
+# A command that sets what decides which git runs or how: a GIT_* variable (GIT_EXEC_PATH, GIT_SSH_COMMAND,
+# GIT_EDITOR, GIT_OBJECT_DIRECTORY…), an editor or pager (EDITOR, VISUAL, PAGER, LESSOPEN), PATH or zsh's `path`,
+# the command table zsh keeps (`commands`, `aliases`, `functions`, `hash`, `alias`), or a function named git. Read
+# from the whole command's text, set by any means (`read -r GIT_SSH_COMMAND`, `print -v`, an export): a git call in
+# it is refused (review of #817, round 6).
+_GIT_ENV_TEXT = re.compile(
+    r"(?<![A-Za-z0-9_])(?:GIT_[A-Za-z0-9_]+|PATH|EDITOR|VISUAL|PAGER|MANPAGER|LESSOPEN|LESSCLOSE)(?![A-Za-z0-9_])"
+    r"|(?<![\w/.-])(?:path|commands|aliases|galiases|saliases|functions|alias|unalias|hash|unhash|enable|disable)"
+    r"(?![\w/.-])"
+    r"|(?<![\w/.-])git\s*\(\s*\)|\bfunction\s+\S*git"
+)
+
+
+def _array_set(name: str) -> bool:
+    """Whether the command makes ``name`` an array (``A=(…)``, ``A+=(…)``, ``set -A``, ``read -A``/``-a``…), whose
+    value the gate doesn't keep as words."""
+    text = _STATE["command"]
+    n = re.escape(name)
+    return bool(
+        re.search(rf"(?<![\w$]){n}(?:\[[^\]]*\])?\+?=\(", text)
+        or re.search(
+            rf"(?:^|[\s;&|({{])(?:set|read|typeset|declare|local|readonly|vared|zparseopts)\b[^;&|\n]*"
+            rf"\s-[A-Za-z]*[aAH][A-Za-z]*\s[^;&|\n]*(?<![\w$]){n}(?!\w)",
+            text,
+        )
+    )
+
+
+def _git_allowlist_form(words: list[str]) -> str | None:
+    """:data:`GIT_FORM` (with what broke it) for a git call that isn't one of the forms a run may use
+    (:mod:`scout.kb.git_allow`), else None. ``words`` are the segment's, quoted glob characters shielded: the
+    program git in any spelling (or ``git-<subcommand>``), at most ``-C <dir>`` before the subcommand, and no
+    GIT_*/PATH set anywhere in the command. A program the command builds (``$G``) is judged with each value the
+    command gives it; one the gate can't know, followed by a git subcommand, is refused."""
+    from scout.kb import git_allow, raw_read
+
+    stripped = raw_read._strip(words)
+    if not stripped.words:
+        return None
+    head = stripped.words[0]
+    if _dynamic(head):
+        for alt in _substitute(head)[:MAX_CHECKED_PATHS]:
+            if _dynamic(alt):
+                after = _unshield(stripped.words[1]) if len(stripped.words) > 1 else ""
+                if raw_read.fold(after) in _GIT_KNOWN_SUBCOMMANDS:
+                    return f"{GIT_FORM} (a program the gate can't read)"
+                continue
+            found = _git_allowlist_form([alt, *stripped.words[1:]])
+            if found is not None:
+                return found
+        return None
+    name = raw_read.fold(_program(_unshield(head)))
+    if name == "git":
+        args = stripped.words[1:]
+    elif name.startswith("git-") and name[4:] in _GIT_KNOWN_SUBCOMMANDS:
+        args = [name[4:], *stripped.words[1:]]
+    elif name in _GIT_WRAPPERS:  # `nohup git …`, `find … -exec git …`
+        for at, word in enumerate(stripped.words[1:], 1):
+            inner = raw_read.fold(_program(_unshield(word)))
+            if inner == "git" or (inner.startswith("git-") and inner[4:] in _GIT_KNOWN_SUBCOMMANDS):
+                if name in ("xargs", "parallel"):
+                    return f"{GIT_FORM} (words from {name})"  # its input becomes git's options
+                return _git_allowlist_form(stripped.words[at:])
+        return None
+    else:
+        return None
+    if stripped.fed:
+        return f"{GIT_FORM} (words from xargs)"  # its input becomes git's options
+    if _STATE["git_env"]:
+        return f"{GIT_FORM} (GIT_*, PATH or the command table set)"
+    i = 0
+    while i < len(args) and args[i] == "-C":
+        i += 2
+    if i >= len(args):
+        return f"{GIT_FORM} (no subcommand)" if i == 0 else None
+    sub = _unshield(args[i])
+    if sub.startswith("-") or _dynamic(sub) or sub not in git_allow.ALLOWED:
+        return f"{GIT_FORM} ({sub.split('=', 1)[0] if sub.startswith('-') else 'git ' + sub})"
+
+    def dynamic(word: str) -> bool:
+        return _dynamic(word) or word[:1] in "*?[{"
+
+    def expand(word: str) -> list[str] | None:
+        if word[:1] in "*?[{":
+            return None  # a glob or brace list may match (or make) a word like `-p`
+        if word[:1] not in "$`":
+            return [_unshield(word)]  # it starts with a letter of its own: no option, whatever follows
+        names = [m[1] or m[2] for m in _VAR.finditer(word)] + [m[1] for m in _PARAM.finditer(word)]
+        if any(_array_set(name) for name in names):
+            return None  # zsh hands each element over as a word of its own: `A=(-p x); git log $A`
+        out: list[str] = []
+        for alt in _substitute(word)[:MAX_CHECKED_PATHS]:
+            if _dynamic(alt):
+                return None
+            out += [w for w in re.split(r"[\s()]+", _unshield(alt)) if w]
+        return out
+
+    reason = git_allow.judge(sub, args[i + 1 :], dynamic=dynamic, expand=expand, plain=_unshield)
+    return None if reason is None else f"{GIT_FORM} ({sub} {reason})"
 
 
 def _local_path(word: str) -> bool:
@@ -2844,6 +2954,8 @@ def run_escape(
             links=[],
             expanded=set(),
             lists=[],
+            git_env=bool(_GIT_ENV_TEXT.search(command)),
+            command=command,
         )
     try:
         found = _run_escape(command, depth)
@@ -3021,6 +3133,8 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
                 found = _git_read(literal_words, cwd, oldpwd)
             if found is None and _GIT_READ is not None and _KB_READ is not None:
                 found = _git_run_form(words)
+            if found is None and _GIT_READ is not None and _KB_READ is not None:
+                found = _git_allowlist_form(literal_words)
             if found is None and _GIT_READ is not None and _KB_READ is not None:
                 programs = _git_programs(words, cwd)
                 if _EMBEDDED is not None:

@@ -129,7 +129,8 @@ def test_a_detach_word_in_any_case_is_denied(vault: Path, command: str) -> None:
     ],
 )
 def test_a_recursive_read_from_the_vault_root_in_any_case_is_denied(vault: Path, command: str) -> None:
-    assert "skips the privacy labels" in _denied(_run(vault, command))
+    reason = _denied(_run(vault, command))
+    assert "skips the privacy labels" in reason or "uses git only in a few read forms" in reason  # grep: off the list
 
 
 @pytest.mark.parametrize(
@@ -198,8 +199,8 @@ def test_a_writer_in_any_case_into_git_hooks_is_denied(vault: Path) -> None:
     [
         "echo FIND",
         "echo NOHUP",
-        "git commit -m 'NOHUP note'",
-        "git commit -m 'Run FIND and RG'",
+        "scripts/git-safe-commit.sh 'NOHUP note' docs/a.md",
+        "scripts/git-safe-commit.sh 'Run FIND and RG' docs/a.md",
         "printf '%s\\n' RG",
         "cat Find.md",
         "cat docs/a.md",
@@ -256,7 +257,7 @@ def test_a_program_folded_the_unicode_way_is_denied(vault: Path, command: str) -
 
 @pytest.mark.parametrize(
     "command",
-    ["echo 'naïve café'", "git commit -m 'Fix the — dash'", "cat docs/a.md # ä", "ls docs"],
+    ["echo 'naïve café'", "scripts/git-safe-commit.sh 'Fix the — dash' docs/a.md", "cat docs/a.md # ä", "ls docs"],
 )
 def test_a_non_ascii_argument_is_allowed(vault: Path, command: str) -> None:
     assert _run(vault, command) is None

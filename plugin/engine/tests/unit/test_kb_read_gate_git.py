@@ -75,6 +75,9 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return h
 
 
+GIT_FORMS_MESSAGE = "uses git only in a few read forms"
+
+
 def _run(home: Path, command: str, *, cwd: Path | None = None, env: dict | None = None):
     full = {**RUN, "HOME": str(home), **(env or {})}
     return gate.run(stdin=_payload("Bash", {"command": command}, cwd or home / "Vault"), env=full)
@@ -452,17 +455,18 @@ EMBEDDED_CORPUS = [
 
 
 @pytest.mark.parametrize("command", EMBEDDED_CORPUS)
-def test_a_command_git_runs_is_judged_as_the_same_command_run_directly(home: Path, command: str) -> None:
+def test_a_command_git_would_run_is_refused_with_the_call(home: Path, command: str) -> None:
+    """Round 3 judged the commands git runs (rebase -x, bisect run, --upload-pack) as the same commands run
+    directly; round 6 refuses the subcommands and options that run them, whatever the command."""
     import shlex
 
-    direct = _run(home, command) is not None
     for wrapped in (
         f"git rebase -q -x {shlex.quote(command)} HEAD",
         f"git rebase -q --exe={shlex.quote(command)} HEAD",
         f"git bisect run sh -c {shlex.quote(command)}",
         f"git ls-remote --upload-pack={shlex.quote(command)} .",
     ):
-        assert (_run(home, wrapped) is not None) is direct, wrapped
+        _denied(_run(home, wrapped))
 
 
 @pytest.mark.parametrize("command", STRICT_DENIES)
@@ -512,7 +516,7 @@ def test_a_git_read_after_the_command_changes_folders_is_denied(home: Path, comm
 @pytest.mark.parametrize("command", MUST_DENY)
 def test_a_git_read_of_a_kb_note_is_denied(home: Path, command: str) -> None:
     reason = _denied(_run(home, command))
-    assert "knowledge-base/" in reason
+    assert "knowledge-base/" in reason or GIT_FORMS_MESSAGE in reason  # a KB read, or a form off the allowlist
 
 
 @pytest.mark.parametrize(
@@ -575,17 +579,43 @@ ALLOWED = [
     "git show --name-only HEAD",
     "git show -s --format=%H HEAD",
     "git -C action-items log --oneline context/",
-    "git -C action-items cat-file -t HEAD:./context/x.md",
-    "git -C action-items cat-file -s HEAD:./context/x.md",
     "git rev-parse HEAD",
     "git ls-files docs",
     "git add docs/a.md",
-    "git add docs/a.md && git commit -m 'update docs'",
-    'git commit -m "update docs" -- docs/a.md',
-    "git add -A docs scripts && git commit -q -m x",
     # review round 5: config writes on the allowlist, in the repository or the user's own config
     "git config user.name A",
     "git config user.email a@example.com",
+    "git config --get remote.origin.url",
+    "git config --list",
+    "git config --get-regexp '^remote\\.'",
+    # reads of other files
+    "git diff HEAD -- docs/a.md",
+    "git -C docs show HEAD:./a.md",
+    "git show HEAD:docs/a.md",
+    "git show HEAD:action-items/action-items-2026-11-23.md",
+    "git -C action-items show HEAD:./action-items-2026-11-23.md",
+    "git show --stat HEAD -- ':(exclude)docs'",
+    "git diff HEAD~1:docs HEAD:docs",
+    "git show HEAD:",  # a tree's names
+    "git show HEAD:action-items",
+    "git -C action-items show HEAD:context/x.md",  # from the top: `context/x.md`, no such file
+    # other repositories, and no repository
+    "git -C ~/plain/action-items show HEAD:./context/x.md",
+    # no path: the whole repository, recorded and allowed (DENY_GIT_WHOLE_REPO_READS off)
+    "git diff",
+    "git diff HEAD~1",
+    "git show HEAD",
+]
+
+
+# Forms the gate allowed or recorded before round 6 of #817's review, refused now: a run's git is an allowlist
+# (scout.kb.git_allow). Commits go through scripts/git-safe-commit.sh; KB notes are read with scoutctl kb.
+REFUSED_IN_A_RUN = [
+    "git -C action-items cat-file -t HEAD:./context/x.md",
+    "git -C action-items cat-file -s HEAD:./context/x.md",
+    "git add docs/a.md && git commit -m 'update docs'",
+    'git commit -m "update docs" -- docs/a.md',
+    "git add -A docs scripts && git commit -q -m x",
     "git config set user.name A",
     "git config --local user.name A",
     "git config --unset user.name",
@@ -606,55 +636,47 @@ ALLOWED = [
     "git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'",
     "git config branch.autoSetupRebase always",
     "git config --rename-section color.x color.y",
-    "git config --get remote.origin.url",
-    "git config --list",
-    "git config --get-regexp '^remote\\.'",
     "git -c color.ui=always log --oneline -1 -- docs",
     "git -c core.quotepath=off status --short",
     "git -c advice.detachedHead=false log -1 --oneline -- docs",
     "git push -q origin main",
-    # reads of other files
-    "git diff HEAD -- docs/a.md",
     "git log -p -- docs/a.md",
     "git log -p -- '*.py'",
     "git -C docs log -p a.md",
-    "git -C docs show HEAD:./a.md",
-    "git show HEAD:docs/a.md",
-    "git show HEAD:action-items/action-items-2026-11-23.md",
-    "git -C action-items show HEAD:./action-items-2026-11-23.md",
     "git -C action-items log -p action-items-2026-11-23.md",
     "git -C action-items grep x -- action-items-2026-11-23.md",
-    "git -C action-items grep x -- ':!context'",  # grep's exclusions apply below its folder
+    "git -C action-items grep x -- ':!context'",
     "git grep x -- ':!knowledge-base' ':!knowledge_base' ':!knowledge-base.md' ':!action-items/context'",
     "git -C docs grep x -- ':!x'",
     "git -C docs archive HEAD -- ':(exclude)x' > /dev/null",
     "git log -p -- docs ':(exclude)docs/x'",
-    "git show --stat HEAD -- ':(exclude)docs'",
     "git -C docs grep x HEAD:./",
-    "git diff HEAD~1:docs HEAD:docs",
-    "git show HEAD:",  # a tree's names
-    "git show HEAD:action-items",
     "git grep x docs/",
     "git grep x -- scripts",
     "git -C scripts grep x -- '*.py'",
     "git -C docs grep x",
     "git -C docs archive HEAD > /dev/null",
     "git -C scripts blame run.py",
-    "git -C action-items show HEAD:context/x.md",  # from the top: `context/x.md`, no such file
-    "git -C action-items --git-dir=../.git show HEAD:./context/x.md",  # top is action-items: `context/x.md` again
-    "export GIT_DIR=$PWD/.git; git -C action-items show HEAD:./context/x.md",  # top is action-items
-    # other repositories, and no repository
+    "git -C action-items --git-dir=../.git show HEAD:./context/x.md",
+    "export GIT_DIR=$PWD/.git; git -C action-items show HEAD:./context/x.md",
     "git -C ~/other/action-items show HEAD:./context/x.md",
     "git -C ~/other log -p",
-    "git -C ~/plain/action-items show HEAD:./context/x.md",
-    # no path: the whole repository, recorded and allowed (DENY_GIT_WHOLE_REPO_READS off)
-    "git diff",
-    "git diff HEAD~1",
-    "git show HEAD",
     "git log -p -3",
     "git stash show -p",
     "git format-patch --stdout -1",
     "git cat-file -p HEAD",
+    "git show --stat $(git rev-parse HEAD:docs/a.md)",
+    "git request-pull -p HEAD . HEAD",
+    "git ls-tree -r HEAD | git cat-file --batch",
+    "git -C `echo action-items` log -p context/",
+    "git --git-dir=$UNSET_X show HEAD:./context/x.md",
+    "GIT_WORK_TREE=$UNSET_X git show HEAD:./context/x.md",
+    "git -C action-items log -p -- $UNSET_X",
+    "git ls-tree -r HEAD | xargs -n1 git cat-file -p",
+    "git ls-tree -r HEAD | xargs -n1 git show",
+    "git ls-tree -r HEAD | parallel git cat-file -p",
+    "cp docs/a.md docs/b.md && git log -p -- docs",
+    "G=$UNSET_G; $G show HEAD:./x.md",
 ]
 
 
@@ -663,21 +685,339 @@ def test_ordinary_git_use_is_allowed(home: Path, command: str) -> None:
     assert _run(home, command) is None
 
 
+@pytest.mark.parametrize("command", REFUSED_IN_A_RUN)
+def test_a_form_off_the_allowlist_is_refused(home: Path, command: str) -> None:
+    _denied(_run(home, command))
+
+
+# ----- round 6: the allowlist ----------------------------------------------------------------------------------
+
+# Every git form 50 scheduled runs used (log 80, config 22 reads, show 17, status 16, diff 7, add 5, remote 1), with
+# the options they used, and the forms the phases tell a run to use (git-setup's Step 0 and restore, the count
+# guard, claude-sessions' repo checks). Pinned: a change to git_allow that refuses one is a new false deny.
+RUN_USAGE = [
+    "git log --oneline -10",
+    "git log --since='2026-11-24 06:00' --oneline",
+    "git log --since=\"2 days ago\" --date=short --format='%h %ad %s'",
+    "git log --pretty=format:'%h %s' --no-merges -n 20",
+    "git log --grep=fix -E --name-only -5",
+    "git log --all --diff-filter=A --name-status --stat",
+    "git log -n 5 --stat -- docs",
+    "git log -1 --format=%H",
+    "git log --format='%h %an %s' --author=alex --reverse --first-parent --decorate --graph",
+    "git log --max-count=3 --shortstat",
+    "git log --until=yesterday --oneline",
+    "git -C docs log --oneline -3",
+    "cd docs && git status --porcelain && git log --since='2026-11-24' --oneline",
+    "git -C ~/other log --since='2026-11-24' --oneline --shortstat",
+    "git show --stat HEAD",
+    "git show --format=%s --stat HEAD~1",
+    "git show --name-only --oneline HEAD",
+    "git show -s --format=%H HEAD",
+    "git show --no-patch --pretty=%B HEAD",
+    "git show HEAD:docs/a.md",
+    "git show HEAD:docs/a.md > docs/a.md",  # git-setup: restore a file
+    "git -C ~/Vault show HEAD:action-items/action-items-2026-11-23.md",  # the count guard's form
+    "git status",
+    "git status --short",
+    "git status -sb",
+    "git status --porcelain=v2 --branch --untracked-files=no",
+    "git diff --stat",
+    "git diff --cached --name-only",
+    "git diff --stat HEAD~1 -- docs",
+    "git diff --numstat --shortstat",
+    "git diff --check -- docs",
+    "git diff -- docs/a.md",
+    "git add docs/a.md",
+    "git add -A docs",
+    "git add -u",
+    "git add -- docs/a.md",
+    "git config user.name",
+    "git config --get user.email",
+    "git config --get-regexp '^remote\\.'",
+    "git config --list",
+    "git config -l --show-origin",
+    "git config get user.name",
+    "git config list",
+    'git config user.email "alex@example.com"',  # Step 0, outside the write sandbox
+    'git config user.name "Scout Bot"',
+    "git remote -v",
+    "git remote",
+    "git remote get-url origin",
+    "git remote show -n origin",
+    "git rev-parse --show-toplevel",
+    "git rev-parse --abbrev-ref HEAD",
+    "git rev-parse --short HEAD",
+    "git rev-parse HEAD",
+    "git ls-files docs",
+    "git ls-files -co --exclude-standard",
+    "git branch",
+    "git branch -a -v",
+    "git branch --show-current",
+    "git branch --list 'scout/*'",
+    "git branch --contains HEAD",
+    "git tag",
+    "git tag -l 'v*'",
+    "git tag --sort=-creatordate -n3",
+    "git describe --tags --always",
+    "git merge-base --is-ancestor HEAD~1 HEAD",
+    "git merge-base HEAD main",
+    "git rev-list --count HEAD",
+    "git rev-list --count --since='1 week ago' HEAD",
+    "git shortlog -sn --since='1 month ago' HEAD",
+    "git shortlog -s -n HEAD",
+    "scripts/git-safe-commit.sh 'update docs' docs/a.md",
+    "GIT log --oneline",
+    "/usr/bin/git log --oneline",
+    'F=docs/a.md; git log --oneline -- "$F"',
+    'N=5; git log -n "$N"',
+    'git log --since="$(date +%F)" --oneline',
+    "G=git; $G log --oneline",
+]
+
+
+@pytest.mark.parametrize("command", RUN_USAGE)
+def test_the_git_runs_use_is_allowed(home: Path, command: str) -> None:
+    assert _run(home, command) is None
+
+
+# Round 6 of the review: forms the denylists missed, all off the allowlist. `~/out` is a folder of the run's.
+ROUND_6 = [
+    # config writes read as reads, and option prefixes or glued values
+    "git config core.sshCommand 'sh -c \"cat act*/cont*/x.md >&2\"' get && git ls-remote ssh://x/y",
+    "git config core.sshCommand 'sh -c \"cat act*/cont*/x.md >&2\"' list && git ls-remote ssh://x/y",
+    "git config --comment get core.sshCommand x && git ls-remote ssh://x/y",
+    "git config set --comment get core.sshCommand x && git ls-remote ssh://x/y",
+    "git config --replace-all core.sshCommand x get && git ls-remote ssh://x/y",
+    "git config --add core.fsmonitor 'sh -c \"cat act*/cont*/x.md >&2\"; false' get && git status --short",
+    "git config --comm user.name core.sshCommand x && git ls-remote ssh://x/y",
+    "git config set --value user.name core.sshCommand x && git ls-remote ssh://x/y",
+    "git config set --val user.name core.sshCommand x && git ls-remote ssh://x/y",
+    "git config --ty bool --add core.fsmonitor x && git status --short",
+    "git config --type=bool --add core.fsmonitor x",
+    "git config --null core.sshCommand x",
+    "git config -z core.sshCommand x",
+    "git config -- core.sshCommand x",
+    "git config set -- core.sshCommand x",
+    "git config --show-origin core.sshCommand x",
+    "git config --fixed-value --replace-all core.sshCommand x y",
+    "GIT_EDITOR='sh -c \"cat act*/cont*/x.md >&2\"' git config -e",
+    "EDITOR=x git config --edit",
+    "VISUAL=x git config edit",
+    "git config edit",
+    'e=x; export GIT_EDITOR="$e"; git config -e',
+    "read -r GIT_EDITOR <<< x; export GIT_EDITOR; git config -e",
+    "git config --get-urlmatch http https://x",
+    "git config unset user.name",
+    "git config --unset user.name",
+    "git config --glob user.name A",
+    "git config --glo user.name A",
+    "git config --sys user.name A",
+    "git config -f~/out/x user.name A",
+    "git config --fil=~/out/x user.name A",
+    "git config --fi ~/out/x user.name A",
+    "git config --work user.name A",
+    "git config -f$HOME/.zshenv user.name '$(cat ~/Vault/act*/cont*/x.md >&2)'",
+    "git config --file=$HOME/.bash_profile user.name x",
+    "git config --global user.name x",
+    "git -C ~/out config --glob user.email x",
+    "git -c \"user.name=a\n[core]\n\tsshCommand = sh -c 'cat act*/cont*/x.md >&2'\" ls-remote ssh://x/y",
+    "git config user.name \"a\n[core]\n\tsshCommand = sh -c 'cat act*/cont*/x.md >&2'\"",
+    "git config pull.rebase interactive",
+    "git config core.excludesFile action-items/context/x.md && git check-ignore -v --no-index x",
+    "git -c core.excludesFile=action-items/context/x.md check-ignore -v --no-index x",
+    "git -c remote.x.url='ext::sh -c cat% act*/cont*/x.md% >&2' ls-remote x",
+    "git -c format.pretty='%H %(describe)' log -1",
+    "git -c rerere.enabled=true rerere diff",
+    # clone -c plants config
+    "git clone -q -c core.fsmonitor='sh -c \"cat ~/V*t/act*/cont*/x.md >&2\"; false' ~/other ~/out/c",
+    "git clone -q --config=core.sshCommand=x ~/other ~/out/c",
+    "git -c user.name=x clone -q -c core.fsmonitor=y . ~/out/c",
+    # subcommands the pre-filter's word class skipped (autocorrect), aliases, lfs, help pagers
+    "git _rep x",
+    "git +rep x",
+    "git .rep x",
+    "git grpe x",
+    "git _how HEAD:action-items/context/x.md",
+    "git gui",
+    "git citool",
+    "git ci",
+    "git lfs env",
+    "git lfs pointer --file=action-items/context/x.md",
+    "git lfs ls-files",
+    "MANPAGER='sh -c \"cat act*/cont*/x.md >&2\"' git help log",
+    "PAGER=x git log --help",
+    "git help -a",
+    "git log --help",
+    "GIT_PAGER=x git -p log -1 -- docs",
+    "git --paginate log -1 -- docs",
+    # vault copies into other repositories, and object stores
+    "git -C ~/out/r --work-tree=$HOME/Vault add -A",
+    "git --git-dir=~/out/r/.git add -A",
+    "GIT_DIR=~/out/r/.git git add -A",
+    "git -C ~/out/r fetch -q ~/Vault main",
+    "git -C ~/out/r remote add v ~/Vault && git -C ~/out/r fetch -q v",
+    "git remote add o ~/out/b.git && git push -q o HEAD:refs/heads/main",
+    "git config remote.o.url ~/out/b.git && git push -q o HEAD:refs/heads/main",
+    "GIT_COMMON_DIR=$HOME/Vault/.git git -C ~/other show main:action-items/context/x.md",
+    "GIT_OBJECT_DIRECTORY=$HOME/Vault/.git/objects git -C ~/other cat-file -p 0123abcd",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES=$HOME/Vault/.git/objects git -C ~/other show 0123abcd",
+    "git init -q ~/out/r",
+    "git -C ~/other remote add x 'ext::sh -c x'",
+    # the program's environment: set by read or print -v, exec-path, PATH
+    "read -r GIT_SSH_COMMAND <<< 'sh -c \"cat act*/cont*/x.md >&2\"'; export GIT_SSH_COMMAND; git ls-remote ssh://x/y",
+    "print -v GIT_SSH_COMMAND x; export GIT_SSH_COMMAND; git ls-remote ssh://x/y",
+    "git --exec-path=~/out/bin ls-remote .",
+    "GIT_EXEC_PATH=~/out/bin git ls-remote .",
+    "export GIT_EXEC_PATH=~/out/bin; git ls-remote .",
+    "PATH=~/out/bin:$PATH git log --oneline",
+    "path=(~/out/bin $path); git status",
+    "functions[git]='cat x'; git status",
+    "git() { cat x; }; git status",
+    # words the shell fills in or splits before git sees them
+    "X=-p; git log $X -- docs",
+    "A=(-p docs); git log $A",
+    'git log "$(echo -p)"',
+    "git log *",
+    "git log {-p,docs}",
+    "echo -p | xargs git log",
+    "$UNSET_G log --oneline",
+]
+
+
+@pytest.mark.parametrize("command", ROUND_6)
+def test_round_6_forms_are_refused(home: Path, command: str) -> None:
+    _denied(_run(home, command))
+
+
+def test_the_allowlist_refuses_every_other_subcommand_and_option() -> None:
+    """Completeness: any subcommand git knows but the allowlist doesn't list, any option a listed subcommand
+    doesn't list (or a prefix of one it does), and any short letter it doesn't list is refused."""
+    import string
+
+    from scout.kb import git_allow, live_run
+
+    def judge(sub: str, *args: str) -> str | None:
+        return git_allow.judge(sub, list(args), dynamic=lambda w: False, expand=lambda w: [w], plain=lambda w: w)
+
+    for sub in sorted(live_run._GIT_KNOWN_SUBCOMMANDS - set(git_allow.ALLOWED)):
+        assert judge(sub) is not None, sub
+    others = {name for spec in git_allow.SPECS.values() for name in spec.longs} | {
+        "--patch", "--output", "--exec", "--upload-pack", "--no-index", "--follow", "--textconv", "--ext-diff",
+        "--open-files-in-pager", "--git-dir", "--work-tree", "--config", "--template", "--force", "--interactive",
+    }  # fmt: skip
+    for sub, spec in git_allow.SPECS.items():
+        assert judge(sub, "--zzz") is not None, sub
+        for name in others - set(spec.longs):
+            assert judge(sub, name) is not None, (sub, name)
+            assert judge(sub, f"{name}=x") is not None, (sub, name)
+        for name, kind in spec.longs.items():
+            assert judge(sub, name, "x") is None or kind == git_allow.FLAG, (sub, name)
+            prefix = name[:-1]
+            if prefix not in spec.longs and len(prefix) > 2:
+                assert judge(sub, prefix) is not None, (sub, prefix)
+            if kind == git_allow.FLAG:
+                assert judge(sub, f"{name}=x") is not None, (sub, name)
+        for letter in string.ascii_letters:
+            if letter not in spec.shorts and (sub, letter) != ("tag", "n"):  # `tag -n<N>`: its own rule
+                assert judge(sub, f"-{letter}") is not None, (sub, letter)
+    for sub in ("config", "remote"):
+        assert judge(sub, "--zzz") is not None
+
+
+def test_a_foreign_repository_holding_the_vaults_history_is_judged_by_the_paths_it_names(home: Path) -> None:
+    r = home / "fetched"
+    r.mkdir()
+    _git(r, "init", "-q")
+    _git(r, "fetch", "-q", str(home / "Vault"), "main")
+    for command in (
+        "git -C ~/fetched show FETCH_HEAD:action-items/context/x.md",
+        "git -C ~/fetched show FETCH_HEAD:knowledge-base/a.md",
+        "git -C ~/fetched diff FETCH_HEAD -- knowledge-base/a.md",
+        "git -C ~/fetched/. show FETCH_HEAD:./knowledge-base.md",
+    ):
+        _denied(_run(home, command))
+    for command in (
+        "git -C ~/fetched log --oneline FETCH_HEAD",
+        "git -C ~/fetched log --stat FETCH_HEAD -- docs",
+        "git -C ~/fetched show FETCH_HEAD:docs/a.md",
+        "git -C ~/fetched diff --stat FETCH_HEAD",
+    ):
+        assert _run(home, command) is None, command
+
+
+def _hand_made(folder: Path, config: str, linked: Path | None = None) -> None:
+    """A repository built with file writes alone (as a run could: `git init` is off its list)."""
+    (folder / "objects").mkdir(parents=True)
+    (folder / "refs").mkdir()
+    (folder / "HEAD").write_text("ref: refs/heads/main\n")
+    (folder / "config").write_text(config)
+    if linked is not None:
+        linked.mkdir(parents=True)
+        (linked / ".git").write_text(f"gitdir: {folder}\n")
+
+
+def test_a_hand_made_repository_whose_config_runs_commands_is_refused(home: Path) -> None:
+    fsmonitor = '[core]\n\tfsmonitor = sh -c "cat ~/Vault/act*/cont*/x.md >&2"\n'
+    _hand_made(home / "out" / "d", fsmonitor, home / "out" / "w")
+    _hand_made(home / "out" / "b", "[core]\n\tbare = false\n" + fsmonitor[7:])
+    _hand_made(home / "out" / "t", '[diff "x"]\n\ttextconv = cat\n', home / "out" / "tw")
+    _hand_made(home / "out" / "i", '[includeIf "gitdir:/"]\n\tpath = /tmp/x\n', home / "out" / "iw")
+    _hand_made(home / "out" / "s", "[remote \"o\"]\n\turl = https://example.com/x\n[credential]\n\thelper = x\n",
+               home / "out" / "sw")  # fmt: skip
+    for command in (
+        "git -C ~/out/w status --short",
+        "git -C ~/out/b status",
+        "cd ~/out/b && git log --oneline",
+        "git -C ~/out/tw diff --stat",
+        "git -C ~/out/iw status",
+        "git -C ~/out/sw remote show o",
+    ):
+        assert "config runs commands" in _denied(_run(home, command)), command
+    # The tools a person installs for every repository run nothing of a run's.
+    lfs = '[filter "lfs"]\n\tclean = git-lfs clean -- %f\n\tprocess = git-lfs filter-process\n'
+    lfs += "[core]\n\tfsmonitor = true\n"
+    _hand_made(home / "out" / "l", lfs, home / "out" / "lw")
+    assert _run(home, "git -C ~/out/lw status") is None
+    assert _run(home, "git -C ~/out/sw log --oneline") is None  # a credential helper runs only for the network
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "\tworktree = {v} ; note",
+        "\tworktree = {v} # note",
+        '\tworktree = "{v}"',
+        "\tworktree = {head}\\\n{tail}",
+        "worktree={v}",
+    ],
+)
+def test_find_repo_reads_core_worktree_as_git_does(tmp_path: Path, line: str) -> None:
+    vault = (tmp_path / "Vault").resolve()
+    vault.mkdir()
+    repo = tmp_path / "r"
+    _hand_made(repo / ".git", "[core]\n" + line.format(v=vault, head=str(vault)[:-2], tail=str(vault)[-2:]) + "\n")
+    found = git_read.find_repo(repo, None, None)
+    assert found is not None and found[0] == vault
+
+
+def test_find_repo_finds_a_bare_repository_and_a_git_folder(tmp_path: Path) -> None:
+    bare = tmp_path / "b.git"
+    _hand_made(bare, "[core]\n\tbare = true\n")
+    assert git_read.find_repo(bare / "refs", None, None) == (bare, bare.resolve(), False)
+    _git(tmp_path, "init", "-q", "w")
+    found = git_read.find_repo(tmp_path / "w" / ".git" / "objects", None, None)
+    assert found is not None and found[1] == (tmp_path / "w" / ".git").resolve()
+
+
 @pytest.mark.parametrize(
     ("command", "subcommand"),
     [
         ("git diff", "diff"),
         ("git diff HEAD~1", "diff"),
         ("git show HEAD", "show"),
-        ("git log -p -3", "log"),
-        ("git stash show -p", "stash"),
-        ("git format-patch --stdout -1", "format-patch"),
-        ("git cat-file -p HEAD", "cat-file"),
         ("git -C action-items diff", "diff"),
         ("git show --stat 0123abcd", "show"),  # an object id may be a blob
-        ("git show --stat $(git rev-parse HEAD:docs/a.md)", "show"),  # so may a substituted rev
-        ("git request-pull -p HEAD . HEAD", "request-pull"),
-        ("git ls-tree -r HEAD | git cat-file --batch", "cat-file"),
     ],
 )
 def test_a_whole_repository_read_is_recorded_with_its_subcommand(home: Path, command: str, subcommand: str) -> None:
@@ -721,18 +1061,9 @@ def test_with_the_switch_on_a_whole_repository_read_is_denied(home: Path, monkey
 UNRESOLVED_GIT = [
     "git -C $UNSET_X show HEAD:./context/x.md",
     "git -C $(echo docs) show HEAD:./context/x.md",
-    "git -C `echo action-items` log -p context/",
-    "git --git-dir=$UNSET_X show HEAD:./context/x.md",
-    "GIT_WORK_TREE=$UNSET_X git show HEAD:./context/x.md",
     "git -C action-items show HEAD:./$UNSET_X",
-    "git -C action-items log -p -- $UNSET_X",
     "git -C action-i* show HEAD:./context/x.md",
-    "git ls-tree -r HEAD | xargs -n1 git cat-file -p",  # review of #817: objects from stdin
-    "git ls-tree -r HEAD | xargs -n1 git show",
-    "git ls-tree -r HEAD | parallel git cat-file -p",
     "git -C /nonexistent show HEAD:./context/x.md",  # review round 2: a folder not on disk
-    "cp docs/a.md docs/b.md && git log -p -- docs",  # review round 2: after a copy, names nothing of the KB
-    "G=$UNSET_G; $G show HEAD:./x.md",  # review round 2: a program the gate can't know
 ]
 
 

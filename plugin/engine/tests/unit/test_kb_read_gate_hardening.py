@@ -184,7 +184,7 @@ def test_the_shell_sends_them_to_python(vault, tmp_path, command: str) -> None: 
     assert res.returncode == 2  # Python was needed (and, missing here, fails closed)
 
 
-@pytest.mark.parametrize("command", ["ls notes", "ls -la", "git status", "cat notes/a.md"])
+@pytest.mark.parametrize("command", ["ls notes", "ls -la", "cat notes/a.md"])
 def test_ordinary_commands_still_exit_in_the_shell(vault, tmp_path, command: str) -> None:  # noqa: F811
     payload = _payload("Bash", {"command": command}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")

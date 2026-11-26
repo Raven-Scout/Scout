@@ -14,8 +14,8 @@
   git works from the top (`git -C .git grep x HEAD`). Folders count by file identity, so letter case and symlinks
   don't matter (a folder made earlier in the same command is compared by its spelling), and only the vault's own
   repository holds the KB (a linked worktree of it too, and the vault's git folder with another work tree).
-  Names-only calls (`git status`, `git log --oneline`, `git diff --stat`, `git show --stat`) and commits of
-  other files are unchanged. Two kinds are recorded in the
+  Names-only calls (`git status`, `git log --oneline`, `git diff --stat`, `git show --stat`) stay allowed.
+  Two kinds are recorded in the
   `kb_read_gate.unresolved_read` event rather than denied, each behind its own switch in `kb_read_gate.py` (off):
   a git read from a folder, repository or path the gate can't work out (`git_unresolved`,
   `DENY_UNRESOLVED_GIT_READS`), and a content read of the vault's repository with no path to bound it, such as
@@ -51,9 +51,28 @@
   plain keys (`user.*`, `color.*`, `advice.*`, `pull.rebase`, `push.default`, `branch.*.remote`, `remote.*.url`,
   …; `live_run.CONFIG_ALLOWED`), and only in the repository's own config: `--global`, `--system`,
   `--worktree` and `--file` writes are refused for every key, so a run never changes the user's `~/.gitconfig`.
-  Any other key, and a section renamed or removed unless it is a plain one, is refused, and a test checks every key `git help --config` lists against the list. An option's value may be
+  Any other key, and a section renamed or removed unless it is a plain one, is refused, and a test checks every
+  key `git help --config` lists against the list. An option's value may be
   `--`, as git allows (`git rebase -s -- -x 'cmd'`). A git subcommand that isn't git's own (an alias, or a typo
   `help.autocorrect` may run) is refused in a run, as are `send-email`, `instaweb`, `imap-send` and `daemon`;
   `git grep -O` counts as a command git runs; and a repository whose `core.worktree` is the vault, or a folder in
-  or above it, holds the KB. The shell pre-filter sends any git call to the gate but those whose subcommand is a
-  plain one (`status`, `add`, `commit`, `rev-parse`, `branch`, `checkout`, …).
+  or above it, holds the KB.
+- **In a scheduled run, git is an allowlist** (new `engine/scout/kb/git_allow.py`). Fifty runs used only `log`,
+  `config` reads, `show`, `status`, `diff`, `add` and `remote`, with display options, so a run may use those and a
+  few more read forms (`rev-parse`, `ls-files`, `branch`/`tag` listings, `describe`, `merge-base`, `rev-list`,
+  `shortlog`), each with a listed set of options spelled out in full (no prefixes) and at most `-C <dir>` before
+  the subcommand. Any other subcommand, option or global option (`-c`, `--exec-path`, `--no-pager`, `-p`), and
+  any git call in a command that sets a `GIT_*` variable, `PATH` or zsh's `path`, an editor or pager, or zsh's
+  command table (`commands`, `functions`, `alias`, `hash`), is refused with a message naming the forms a run may
+  use. Commits go through `scripts/git-safe-commit.sh`, which a run's `git commit` now gets pointed to. `git config`
+  may only read (`<key>`, `--get`, `--get-regexp`, `--list`, `get`, `list`) or set `user.email` and `user.name`
+  in the repository's config (Step 0 of every run outside the write sandbox). A word the shell fills in before
+  `--` must be one the command sets (`X=-p; git log $X` is read as `-p`), and a glob, brace list, zsh array or
+  `xargs` input there is refused, since it may make an option. The content-read judging stays for the allowed
+  forms. A repository other than the vault's whose own config runs a command (fsmonitor, a filter, textconv, an
+  external diff, a credential helper for `remote`; Git LFS's filters and fsmonitor's `true` excepted), or holds
+  an `includeIf`, is refused: a run can build one by hand with a `.git` file. Such a repository's
+  `<rev>:<path>` and pathspecs that name a KB path are refused too, since it may hold the vault's history. The
+  repository search now reads config files as git parses them (`git config --file … --list`), so comments,
+  quotes and continued lines in `core.worktree` count, and it finds bare repositories and git folders. The shell
+  pre-filter sends every git call to the gate.

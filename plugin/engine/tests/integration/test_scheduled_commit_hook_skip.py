@@ -71,7 +71,6 @@ EVERYDAY = [
     "git log -n 5 --oneline",
     "git show --stat HEAD",
     "git diff --stat HEAD",
-    "git grep -n -e --no-verify -- notes || true",
     "cat .git/hooks/pre-commit",
     "cat < .git/config",
     "wc -l < .git/hooks/pre-commit",
@@ -175,13 +174,14 @@ def test_every_form_is_denied_and_recorded_and_the_move_never_lands(vault: Path)
     ]
 
 
-def test_the_plain_commit_still_reaches_the_hook_which_refuses_it(vault: Path) -> None:
+def test_a_plain_commit_is_refused_by_the_gate_as_a_form_off_the_allowlist(vault: Path) -> None:
+    """Round 6 of #817's review: a run commits only through scripts/git-safe-commit.sh, so the gate refuses a plain
+    `git commit` before the hook sees it (the hook refused this one anyway: it widens a note's privacy)."""
     head = git(vault, "rev-parse", "HEAD")
     (row,) = _session(vault, [f"git commit {MOVE}"])
-    assert not row["denied"] and row["rc"] != 0
-    assert "[privacy-widening]" in row["output"] and "local-only" in row["output"]
+    assert row["denied"] and "git-safe-commit.sh" in row["reason"]
     assert git(vault, "rev-parse", "HEAD") == head
-    assert _events(vault) == []
+    assert [e["payload"]["form"] for e in _events(vault)] == ["git form not allowed in a run (git commit)"]
 
 
 def test_what_a_run_does_every_day_passes_the_gate_and_runs(vault: Path) -> None:
@@ -200,8 +200,7 @@ def test_the_helper_and_a_message_naming_the_forms_commit_through_the_gate(vault
         vault,
         [
             "scripts/git-safe-commit.sh 'kb: never --no-verify, never -n' notes/helper.md",
-            "git add notes/direct.md",
-            'git commit -q -m "kb: don\'t use git commit --no-verify" -- notes/direct.md',
+            'scripts/git-safe-commit.sh "kb: don\'t use git commit --no-verify" notes/direct.md',
         ],
     )
     for row in results:

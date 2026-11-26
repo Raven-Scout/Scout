@@ -352,7 +352,7 @@ def test_a_ugrep_only_form_is_denied(home: Path, command: str, where: str, plain
         "grep -rZ --include='*.py' TODO .",
         "zgrep -r --include='*.py' TODO .",
         "grep -r --include='*.md.gz' TODO .",  # no decompression: compressed bytes, no note's text
-        'git commit -m "don\'t"',
+        'scripts/git-safe-commit.sh "don\'t" docs/a.md',
         "echo it''s fine",
         # archives outside the vault, compressed files that hold no note, archives written
         "unzip -p ../outside.zip",
@@ -401,11 +401,9 @@ def test_an_ordinary_command_is_still_allowed(home: Path, command: str) -> None:
         "grep -n x file.py",
         "ls plugin",
         "ls docs",
-        "git status",
         "cat 'docs/a.md'",
         'grep -n "a b" file.py',
         "ls docs\nls\tplugin",  # JSON's \n and \t are no backslash in the command
-        "git commit -q -m 'fix the docs'",  # git log now reaches Python, which allows it (#817's GIT_READS)
     ],
 )
 def test_a_command_with_no_inner_quote_stays_in_the_shell(command: str) -> None:

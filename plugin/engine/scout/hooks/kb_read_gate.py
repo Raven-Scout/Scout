@@ -349,8 +349,22 @@ def _deny_title_rewrites(form: str) -> str:
     )
 
 
+def _deny_git_form(form: str) -> str:
+    from scout.kb import git_allow
+
+    return (
+        f"{MARK} A scheduled run uses git only in a few read forms, and this isn't one ({form}). The forms: "
+        f"{git_allow.forms()}. Commit with `scripts/git-safe-commit.sh` in the vault; read KB notes with "
+        "`scoutctl kb …`. If the run needs another git form, say so in the run notes."
+    )
+
+
 def _deny_skip_form(form: str) -> str:
     from scout.kb import hook_paths as hp
+    from scout.kb.live_run import GIT_FORM
+
+    if form.startswith(GIT_FORM):
+        return _deny_git_form(form)
 
     by_form = {
         hp.TOO_MANY: _deny_too_many,
@@ -425,6 +439,7 @@ def _decide_bash(
     from scout.kb import hook_paths
     from scout.kb.live_run import (
         DELEGATE_FORM,
+        GIT_FORM,
         HOME_FORM,
         KB_READ,
         UNRESOLVED_READ,
@@ -521,6 +536,8 @@ def _decide_bash(
     def git_read(read: GitRead, where: str) -> str | None:
         """A git call's reads (:func:`_git_reads_kb`), from the folder ``where`` it runs in."""
         found = _git_reads_kb(read, where, vault, env, resolve, text_of, names_vault)
+        if found is not None and found.startswith("config:"):
+            return f"{GIT_FORM} (a repository whose config runs commands: {found[7:]})"
         if found == "unresolved":
             if DENY_UNRESOLVED_GIT_READS:
                 return UNRESOLVED_READ
@@ -652,8 +669,10 @@ def _git_reads_kb(
     Then the read is "unresolved", or "kb" when the command names the vault or a KB folder (``names_vault``), or
     copied the repository it runs in, the vault's (``git worktree add``, ``git clone .``)."""
     found = _git_tree_reads_kb(read, where, vault, env, resolve, text_of)
-    if found == "kb":
+    if found == "kb" or (found or "").startswith("config:"):
         return found
+    if not read.reads:
+        return None
     folder = resolve(where or ".")
     missing = folder is None or not os.path.lexists(folder)
     if read.git_dir is not None and not missing:
@@ -749,15 +768,28 @@ def _git_tree_reads_kb(
     ours = git_read.find_repo(home, None, None)
     vault_at: str | None  # the vault's place below the repository's top, "" when it is the top
     top_in: str | None = None  # or the top's place in the vault, when the top is inside it
+    foreign = False  # a repository with no tie to the vault's: judged by the paths it names, as if laid out so
     if ours is not None and git_read.same_folder(repo[1], ours[1]):
         vault_at = git_read.rel_to(ours[0], home) or ""
     else:
+        runs = git_read.config_runs(repo[1], read.sub)
+        if runs is not None:
+            return f"config:{runs}"
         # Another repository whose work tree is the vault, or in or above it (`core.worktree`, `--work-tree`):
         # its index and history hold the vault's files at the same places (review of #817, round 5).
         vault_at = git_read.rel_to(repo[0], home)
         top_in = None if vault_at is not None else git_read.rel_to(home, repo[0])
         if vault_at is None and top_in is None:
-            return "unresolved" if repo[2] else None  # its config includes a file that may move its work tree
+            if repo[2]:
+                return "unresolved"  # its config includes a file that may move its work tree
+            if not read.reads:
+                return None
+            # It may still hold the vault's history (a fetch from it, an alternate, objects copied in): a tree path
+            # or pathspec that names a KB path is refused there too (review of #817, round 6). Only one that names
+            # it: a folder above the KB, a wildcard or no path at all is any repository's ordinary use.
+            foreign, vault_at = True, ""
+    if not read.reads:
+        return None  # the call reads no tree (`git status`): only its repository's config was in question
     vault_at = (vault_at or "").casefold()
     top_in = None if top_in is None else top_in.casefold()
 
@@ -791,6 +823,8 @@ def _git_tree_reads_kb(
         return rest is not None and rest != "" and is_kb_path(rest)
 
     def covers(tree: str) -> bool:  # a pathspec matches every path below it
+        if foreign:
+            return in_kb(tree)
         tree = tree.casefold()
         if top_in is None and vault_at and (tree == "" or vault_at.startswith(tree + "/")):
             return True  # a folder above the vault
@@ -801,6 +835,8 @@ def _git_tree_reads_kb(
         """A pathspec matches a KB path: it is one, or a folder above one, or a wildcard (whose ``*`` crosses
         folders, as git's does) that matches a KB folder or a note on disk."""
         fixed = git_read.fixed_part(spec)
+        if foreign:
+            return in_kb(fixed)
         if fixed == spec:
             return covers(spec)
         if in_kb(fixed):
@@ -815,6 +851,8 @@ def _git_tree_reads_kb(
     def left_in(root: str, excluded: list[str]) -> bool:
         """Whether everything below ``root`` but the ``excluded`` paths still holds a KB path (a wildcard
         exclusion is taken as excluding nothing)."""
+        if foreign:
+            return False
         root = root.casefold()
 
         def out(path: str) -> bool:
@@ -862,6 +900,8 @@ def _git_tree_reads_kb(
         if left_in(prefix if read.sub in git_read.PREFER_CWD else "", excluded):
             return "kb"
         bounded = True
+    if foreign:
+        return None
     if unresolved:
         return "unresolved"
     if bounded or read.unbounded is None:

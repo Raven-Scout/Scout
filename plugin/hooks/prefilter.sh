@@ -215,17 +215,11 @@ bash_pattern() {
     # -- A git call that picks its repository or top itself: `git --git-dir=~/V/.git --work-tree=/tmp/w -C
     #    /tmp/w/a show HEAD:./context/x.md` reads a note from the vault's history without naming the KB.
     alt '--git-dir|--work-tree|GIT_DIR|GIT_WORK_TREE'
-    #    And any git subcommand that prints file contents, whatever its paths: they can cover the KB without
-    #    naming it (`git log -p -- .`, `git grep x HEAD:`, `git archive HEAD`), and with no path it reads the
-    #    whole repository (the gate records that). Also -p/-v hunks of add, checkout, reset, restore, commit,
-    #    status and stash, and an exclusion pathspec (`:!docs` leaves everything else).
-    git_reads='git[^;&|]* (show|diff|diff-tree|diff-index|diff-files|log|whatchanged|reflog|grep|blame|annotate|archive|cat-file|format-patch|fast-export|difftool|range-diff|merge-tree|merge-file|request-pull|unpack-file|stash (show|list))([^A-Za-z0-9_-]|$)'
-    git_reads="$git_reads"'|git[^;&|]* (add|checkout|reset|restore|commit|status|stash)[^;&|]* (-p|--patch|-v|-vv|--verbose)([^A-Za-z0-9_-]|$)'
-    git_reads="$git_reads"'|git[^;&|]*:[!^]'
-    alt "$git_reads"
-    # The git subcommands that stay in the shell when nothing else here sends the call to Python: they print
-    # no file's contents and run no command of the caller's (prefilter's last stage sends any other).
-    git_plain='status add commit rev-parse branch ls-files ls-tree checkout switch restore reset rm mv tag merge stash init version help describe shortlog rev-list count-objects gc fsck symbolic-ref for-each-ref show-ref name-rev merge-base cherry var check-ignore check-attr worktree remote notes maintenance'
+    #    And any git call at all: in a run git is judged by an allowlist of subcommands and options (Python's
+    #    scout.kb.git_allow, review of #817, round 6), so every call goes to Python. `git` as a word or a
+    #    path's last part (`/usr/bin/git`), and the dashed forms (`git-upload-pack`); not `.git/`, `digit`.
+    git_word='(^|[^A-Za-z0-9_.-])git($|[^A-Za-z0-9_])'
+    alt "$git_word"
     # -- HOME. The gates expand `~` and `$HOME` with the run's own HOME, so a command that points HOME
     #    elsewhere first (`HOME=x cmd`, `unset HOME`, `export HOME=…`) names files they never check.
     #    Every mention goes to Python, which denies a change and lets `HOME=$HOME` or a read through.
@@ -371,21 +365,10 @@ bash_needs_python() {
     # `export SCOUT_MO\DE=x`).
     matches 'HOME|SCOUT_(MODE|READER)'
     [ "$?" -ne 1 ] && return 0
-    # The git reads above, in any letter case (`GIT ARCHIVE` runs git-archive on a case-insensitive disk) and
-    # spelled through quotes, backslashes, a tab or a line break (`git 'log' -p -- .`,
-    # `g\it grep x`, `git<TAB>grep x`, `git \<newline>log -p`): Python judges what git reads.
-    matches_i "$git_reads"
+    # A git call in any letter case (`GIT log` runs git on a case-insensitive disk) and spelled through quotes
+    # or backslashes (`g''it`, `g\it`, `"git"`): Python judges it.
+    matches_i "$git_word"
     [ "$?" -ne 1 ] && return 0
-    # And any git call whose subcommand isn't a plain one: an alias, a typo help.autocorrect may run as
-    # another subcommand, or one that runs a command (rebase -x, fetch --upload-pack, submodule).
-    git_calls=$(printf '%s' "$v" | "$tr" 'A-Z' 'a-z' |
-        "$GREP" -oE '(^|[^a-z0-9_.-])git( +-[c] +[^ ;&|]+| +-[^ ;&|]*)* +[a-z0-9][a-z0-9-]*') || git_calls=
-    while IFS= read -r git_call; do
-        [ -n "$git_call" ] || continue
-        case " $git_plain " in *" ${git_call##* } "*) ;; *) return 0 ;; esac
-    done <<EOF
-$git_calls
-EOF
     # A builtin that sets or unsets the variables it names, anywhere in the command, its own name perhaps
     # quoted or escaped (`"read" HOM?`, `\export`, `r''ead`): its target need not spell HOME (`export
     # $v=…`, `read H$v`, `read HOM?` with a file named HOME), so Python reads every one, and denies a

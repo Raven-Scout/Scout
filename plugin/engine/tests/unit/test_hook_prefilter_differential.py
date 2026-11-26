@@ -26,12 +26,11 @@ differ from the old command only by now reaching Python where the old one let it
 alternatives match. And a run's payload over ``MAX_PAYLOAD`` bytes is blocked before either stage (no corpus case
 is that long).
 
-The git-read change added four more alternatives at the end: any ``--git-dir``, ``--work-tree``, ``GIT_DIR`` or
-``GIT_WORK_TREE`` (a git call that picks its own repository or top); any git subcommand that prints file contents
-(its paths can cover the KB without naming it, and with none it reads the whole repository); the ``-p``/``-v`` hunks
-of add, checkout, reset, restore, commit and status; and an exclusion pathspec (``:!x``, ``:^x``). Every form
-``test_kb_read_gate_git.py`` must deny or record reaches Python (``GIT_FORMS``), so ``git log --oneline -5`` and
-``git diff HEAD~3`` now reach it too (it allows them).
+The git-read change added two more alternatives at the end: any ``--git-dir``, ``--work-tree``, ``GIT_DIR`` or
+``GIT_WORK_TREE`` (a git call that picks its own repository or top), and any git call at all (``GIT_WORD``: in a
+run git is judged by an allowlist of subcommands and options, so ``git status`` and ``git log --oneline -5`` reach
+Python too, which allows them). Every form ``test_kb_read_gate_git.py`` must deny or record reaches Python
+(``GIT_FORMS``), and so does ordinary git use (``GIT_ORDINARY``).
 
 And because the gates expand ``~`` and ``$HOME`` with the run's own HOME, and a command that points HOME
 elsewhere first names files they never check, the pattern also gained ``ADDED_ALTERNATIVES`` (any mention of
@@ -87,25 +86,9 @@ INTENDED_DIFFERENCES: dict[str, str] = {}
 # The alternatives appended to the Bash pattern after the move, as prefilter.sh assembles them: a word the shell
 # rewrites before the program sees it (so its text need not spell the KB path it becomes), a program that takes
 # its paths from another's output, and a change of directory into action-items/.
-# The git reads prefilter.sh sends to Python ($git_reads): a subcommand that prints file contents, the -p/-v hunks,
-# an exclusion pathspec. Also matched once quotes and backslashes are gone (_expansion_matches).
-GIT_READS = (
-    "git[^;&|]* (show|diff|diff-tree|diff-index|diff-files|log|whatchanged|reflog|grep|blame|annotate|archive"
-    "|cat-file|format-patch|fast-export|difftool|range-diff|merge-tree|merge-file|request-pull|unpack-file"
-    "|stash (show|list))([^A-Za-z0-9_-]|$)"
-    "|git[^;&|]* (add|checkout|reset|restore|commit|status|stash)[^;&|]* (-p|--patch|-v|-vv|--verbose)"
-    "([^A-Za-z0-9_-]|$)"
-    "|git[^;&|]*:[!^]"
-)
-
-# The git subcommands prefilter.sh keeps in the shell ($git_plain); its last stage sends any other git call to Python
-# (review of #817, round 5: an alias or a typo help.autocorrect runs may be any subcommand).
-GIT_PLAIN = frozenset(
-    "status add commit rev-parse branch ls-files ls-tree checkout switch restore reset rm mv tag merge stash init"
-    " version help describe shortlog rev-list count-objects gc fsck symbolic-ref for-each-ref show-ref name-rev"
-    " merge-base cherry var check-ignore check-attr worktree remote notes maintenance".split()
-)
-GIT_CALL = re.compile(r"(?:^|[^a-z0-9_.-])git(?: +-[c] +[^ ;&|]+| +-[^ ;&|]*)* +([a-z0-9][a-z0-9-]*)")
+# Any git call goes to Python (prefilter.sh's $git_word): a run's git is judged by an allowlist (scout.kb.git_allow,
+# review of #817, round 6). Also matched once quotes and backslashes are gone, in any letter case (_expansion_matches).
+GIT_WORD = r"(^|[^A-Za-z0-9_.-])git($|[^A-Za-z0-9_])"
 
 EXPANSION_ALTERNATIVES = (
     r"\*",
@@ -122,7 +105,7 @@ EXPANSION_ALTERNATIVES = (
     r"\(",
     # a git call that picks its repository or top, or whose paths cover the KB without naming it
     "--git-dir|--work-tree|GIT_DIR|GIT_WORK_TREE",
-    GIT_READS,
+    GIT_WORD,
 )
 EXPANSION_PATTERN = "|".join(EXPANSION_ALTERNATIVES)
 # Then the readers that reach the KB from a folder holding it with no path naming it (scout.kb.other_reads): a
@@ -490,7 +473,7 @@ KNOWN_MISSED_FORMS: tuple[tuple[str, bool], ...] = (
     ("exec -a x bash -c ls", True),
     ("unset $v", True),  # expansion: `$`
     ("$'SCOUT\\x5fMODE'= git commit -m x", True),  # expansion: `$`
-    ("git ci -m x", True),  # an alias, or a typo: Python judges any subcommand off the plain list (#817)
+    ("git ci -m x", True),  # any git call: Python judges it by the allowlist (#817)
     ("make commit", False),
     ("./commit.sh", False),
     ("coproc sleep 9", False),
@@ -510,9 +493,9 @@ KNOWN_MISSED_FORMS: tuple[tuple[str, bool], ...] = (
     ("git -C $R $SUB", True),  # expansion: `$`
     ("git rebase --exec 'git commit --no-verify' HEAD~1", True),
     ("timeout 5 rm .git/hooks/x", True),
-    ("git stash create", False),
-    ("git branch -f main abc123", False),
-    ("git merge --ff-only abc123", False),
+    ("git stash create", True),  # any git call reaches Python (#817 round 6)
+    ("git branch -f main abc123", True),  # any git call reaches Python (#817 round 6)
+    ("git merge --ff-only abc123", True),
     ("cd .git/hooks && ls > ../../out", True),
     # #611: persistence through a shell rc file
     ("echo x >> ~/.zshrc", True),
@@ -625,6 +608,23 @@ GATE_FORMS = (
 
 # Every git read the Python gate denies or records (test_kb_read_gate_git.py), and a few more like them: git finds
 # the note through a folder (-C, a cd, --git-dir/--work-tree, GIT_DIR/GIT_WORK_TREE) or a path that covers it.
+# Ordinary git use reaches Python too (round 6 of #817's review: every git call is judged by the allowlist).
+GIT_ORDINARY = (
+    "git status",
+    "git add docs/a.md",
+    "git add docs/a.md && git commit -m 'update docs'",
+    "git commit -qam x",
+    "git rev-parse --show-toplevel",
+    "git branch -a",
+    "git ls-files docs",
+    "git status --short && git rev-parse HEAD",
+    "/usr/bin/git log --oneline",
+    "G''IT log",
+    "g\\it log",
+    "git-upload-pack .",
+    "scripts/git-safe-commit.sh 'x' notes/a.md",
+)
+
 GIT_FORMS = (
     *GIT_MUST_DENY,
     *UNRESOLVED_GIT,
@@ -705,6 +705,7 @@ EXPANSION_FORMS = (
     "pushd action-items; cat context/x.md",
     "git -C action-items show HEAD:context/x.md",
     *GIT_FORMS,
+    *GIT_ORDINARY,
     # the same over two lines
     "true\ncat k*/a.md",
     "true\n~/Vault/kno",
@@ -714,7 +715,6 @@ EXPANSION_FORMS = (
 
 # Their harmless neighbours, which must stay in the shell: no expansion, or one that cannot make a path.
 NOT_EXPANSIONS = (
-    "git status",
     "echo $?",
     "echo done; exit $?",
     "[ -f notes/a.md ] && echo yes",
@@ -725,15 +725,8 @@ NOT_EXPANSIONS = (
     "scripts/scoutctl kb search widgets",
     "cat notes/a.md",
     "ls action-items",
-    # ordinary git use in a run that prints no file's contents
-    "git add docs/a.md",
-    "git add docs/a.md && git commit -m 'update docs'",
-    "git add action-items/action-items-2026-11-23.md && git commit -qm x",
-    "git commit -qam x",
-    "git rev-parse --show-toplevel",
-    "git branch -a",
-    "git ls-files docs",
-    "git status --short && git rev-parse HEAD",
+    "echo legit digits",  # `git` inside a word is no git call
+    "cat .gitignore",
 )
 
 # Readers the KB read gate judges since the #790 follow-up (scout.kb.other_reads, and raw_read's plain readers):
@@ -804,7 +797,6 @@ READER_FORMS = (
 
 # Their harmless neighbours, which must stay in the shell.
 NOT_READERS = (
-    "git status --short",  # `git diff … --stat` now reaches Python, which allows it (GIT_READS)
     "diff -u notes/a.md notes/b.md",
     "join notes/a.md notes/b.md",
     "awk '{print 1}' notes/a.md",
@@ -956,8 +948,7 @@ def _expansion_matches(commands: list[str]) -> set[str]:
             ADDED_PATTERN_RE.search(value)
             or re.search(STRIPPED_NAMES, home_stripped)
             or STRIPPED_NAMERS.search(home_stripped)
-            or re.search(GIT_READS, home_stripped, re.I)  # the git reads, any case, through quotes, \ or a tab
-            or any(m[1] not in GIT_PLAIN for m in GIT_CALL.finditer(home_stripped.lower()))
+            or re.search(GIT_WORD, home_stripped, re.I)  # a git call, any case, through quotes or \
         ):
             matched.add(command)
     return matched
@@ -1404,7 +1395,7 @@ CASE_FOLD_FORMS = tuple(
     )
 )
 # A word in another letter case that names no program the pattern knows, or only as part of a word.
-CASE_NEIGHBOURS = ("cat Find.md", "echo Hello", "ls Notes", "git Status", "cat Rgb.txt", "wc -l Notes.md", "Make all")
+CASE_NEIGHBOURS = ("cat Find.md", "echo Hello", "ls Notes", "cat Rgb.txt", "wc -l Notes.md", "Make all")
 
 
 def test_every_program_word_reaches_python_in_lower_case() -> None:
