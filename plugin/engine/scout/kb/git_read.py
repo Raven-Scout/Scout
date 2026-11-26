@@ -115,6 +115,10 @@ class GitRead:
     reads: bool = True
     # A write a run may make only in the vault's own repository (Step 0's `git config user.email|user.name`).
     vault_only: bool = False
+    # A form of the engine-change flow (scout.kb.git_allow.engine_form): "worktree" or "push", allowed only in a
+    # repository whose top is under ~/.scout-worktrees and isn't the vault's; and the clones the command made first.
+    engine: str = ""
+    cloned: list[str] = field(default_factory=list)
 
 
 def split_global(args: list[str]) -> tuple[list[str], str | None, str | None, int]:

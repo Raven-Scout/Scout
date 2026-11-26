@@ -1434,7 +1434,7 @@ MAX_DEPTH = 6
 _STATE: dict[str, Any] = {
     "checked": 0, "secrets": 0, "reads": 0, "literal": 0, "vars": {}, "bodies": [], "unparsed": False, "capped": False,
     "parsing": False, "fs_changed": "", "links": [], "expanded": set(), "lists": [], "git_env": False,
-    "command": "",
+    "command": "", "home": None, "engine_clones": [],
 }  # fmt: skip
 _VAR = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 # An interpreter given its program inline or on stdin.
@@ -1946,9 +1946,12 @@ def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | No
 
         sub = raw_read.fold(_unshield(git[at]))
         rest = [_unshield(w) for w in git[at + 1 :]]
+        engine = _engine_kind(sub, git[at + 1 :])
+        engine = engine if engine in (git_allow.WORKTREE, git_allow.PUSH) else ""
         read = git_read.GitRead(
             sub=sub, chdirs=chdirs, git_dir=git_dir_, work_tree=work_tree_, reads=False,
-            vault_only=sub == "config" and git_allow.config_write(rest),
+            vault_only=sub == "config" and git_allow.config_write(rest), engine=engine,
+            files=git_allow.commit_files(rest) if engine else [], cloned=list(_STATE["engine_clones"]),
         )  # fmt: skip
     elif stripped.fed:  # `… | xargs git cat-file -p`: its objects or paths come from stdin, which the gate can't see
         read.trees, read.pathspecs, read.maybe_paths, read.files, read.no_index = [SUBST], [], [], [], False
@@ -2020,6 +2023,7 @@ def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | No
                     sub=read.sub, git_dir=gd, work_tree=wt, trees=lists[0], pathspecs=lists[1],
                     maybe_paths=lists[2], unbounded=read.unbounded, fs_changed=_STATE["fs_changed"],
                     links=list(_STATE["links"]), reads=read.reads, vault_only=read.vault_only,
+                    engine=read.engine, cloned=read.cloned,
                 )  # fmt: skip
                 found = _GIT_READ(one, where)
                 if found is not None:
@@ -2244,7 +2248,8 @@ def _git_allowlist_form(words: list[str]) -> str | None:
     if i >= len(args):
         return f"{GIT_FORM} (no subcommand)" if i == 0 else None
     sub = _unshield(args[i])
-    if sub.startswith("-") or _dynamic(sub) or sub not in git_allow.ALLOWED:
+    listed = sub in git_allow.ALLOWED or sub in git_allow.ENGINE_SUBCOMMANDS
+    if sub.startswith("-") or _dynamic(sub) or not listed:
         return f"{GIT_FORM} ({sub.split('=', 1)[0] if sub.startswith('-') else 'git ' + sub})"
 
     def dynamic(word: str) -> bool:
@@ -2266,7 +2271,41 @@ def _git_allowlist_form(words: list[str]) -> str | None:
         return out
 
     reason = git_allow.judge(sub, args[i + 1 :], dynamic=dynamic, expand=expand, plain=_unshield)
+    if reason is not None and _engine_kind(sub, args[i + 1 :], record=True) is not None:
+        return None  # the engine-change flow: the gate checks the repository it runs in (git_read.GitRead.engine)
+    if reason is not None and sub not in git_allow.ALLOWED:
+        return f"{GIT_FORM} (git {sub})"
     return None if reason is None else f"{GIT_FORM} ({sub} {reason})"
+
+
+def _engine_kind(sub: str, args: list[str], *, record: bool = False) -> str | None:
+    """:func:`scout.kb.git_allow.engine_form` for a call's words (shielded), with the command's variables put in. A
+    clone's folder must be in ~/.scout-worktrees (``record``: kept for the calls after it in the command)."""
+    from scout.kb import git_allow
+
+    words: list[str] = []
+    for word in args:
+        alts = _substitute(word)
+        if len(alts) != 1:
+            return None
+        words.append(_unshield(alts[0]))
+    kind = git_allow.engine_form(sub, words)
+    if kind != git_allow.CLONE:
+        return kind
+    dest, home = words[-1], _STATE["home"]
+    if not home:
+        return None
+    for start in ("~/", "$HOME/", "${HOME}/", home.rstrip("/") + "/"):
+        if dest.startswith(start + git_allow.WORKTREES + "/"):
+            rest = dest[len(start) + len(git_allow.WORKTREES) + 1 :]
+            break
+    else:
+        return None
+    if not rest or any(part in ("", ".", "..") for part in rest.rstrip("/").split("/")):
+        return None
+    if record:
+        _STATE["engine_clones"].append(f"{home.rstrip('/')}/{git_allow.WORKTREES}/{rest}")
+    return kind
 
 
 def _local_path(word: str) -> bool:
@@ -2921,6 +2960,7 @@ def run_escape(
     kb_read: Callable[[str, str], str | None] | None = None,
     git_read: Callable[[GitRead, str], str | None] | None = None,
     embedded: list[str] | None = None,
+    home: str | None = None,
 ) -> str | None:
     """Whether a run's shell command gets around the commit hook's checks: "env" (changes SCOUT_MODE/SCOUT_READER
     or clears the environment), "detach" (backgrounds or hands work to another process), else the name of the form
@@ -2942,6 +2982,7 @@ def run_escape(
     judges what each git call reads, given as a :class:`scout.kb.git_read.GitRead` and the folder it runs in
     (see :func:`_git_read`), returning the same. The commands git runs for the call (:func:`_git_programs`) are
     added to ``embedded``, each with a ``cd`` to git's folder, for the caller to judge as commands of their own.
+    ``home`` (the run's HOME) places the engine-change flow's folders (:func:`_engine_kind`).
     """
     global _PROTECT, _SECRET, _KB_READ, _GIT_READ, _EMBEDDED
     outer = depth == 0
@@ -2963,6 +3004,8 @@ def run_escape(
             lists=[],
             git_env=bool(_GIT_ENV_TEXT.search(command)),
             command=command,
+            home=home,
+            engine_clones=[],
         )
     try:
         found = _run_escape(command, depth)
@@ -3012,10 +3055,71 @@ _HEREDOC_CAT = re.compile(r"^\s*cat\s+<<-?__scout_hd_(\d+)__\s*$")
 _PLAIN_PATH = re.compile(r"[A-Za-z0-9_./@%+=:,-]+")
 
 
+# The engine-change flow's two substitutions, as phases/core/git-setup.md spells them: the engine checkout's folder
+# (from ~/.local/state/scout/engine.json) and its origin's URL, with Scout's remote as the fallback. The gate works
+# out what each prints itself, so a clone's source can be checked as Scout's remote (review of #817, round 6).
+_ENGINE_ROOT_BODY = (
+    "python3 -I -c 'import json,os;print(json.load(open(os.path.expanduser("
+    '"~/.local/state/scout/engine.json")))["engine_root"])\''
+)
+_ORIGIN_URL_BODY = re.compile(
+    r'git -C (?:"(\$\{?ROOT\}?)"|(\$\{?ROOT\}?)|(/[A-Za-z0-9_./@%+=:,-]+)) remote get-url origin'
+    r"(?: 2>/dev/null)?(?: \|\| echo (\S+))?"
+)
+
+
+def _engine_root() -> str | None:
+    """The engine checkout's folder, as ~/.local/state/scout/engine.json names it, else None."""
+    import json
+
+    home = _STATE["home"]
+    if not home:
+        return None
+    try:
+        root = json.loads((Path(home) / ".local/state/scout/engine.json").read_text(encoding="utf-8"))["engine_root"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return root if isinstance(root, str) and root.startswith("/") and _PLAIN_PATH.fullmatch(root) else None
+
+
+def _engine_output(body: str) -> str | None:
+    """What one of the engine-change flow's substitutions prints, where the gate can be sure, else None: the engine
+    folder, or Scout's remote URL (its origin, when that is Scout's; the fallback, when it has none). ``$ROOT``
+    counts only when the command sets it once, from the engine folder's substitution."""
+    from scout.kb import git_allow, git_read
+
+    text = body.strip()
+    if text == _ENGINE_ROOT_BODY:
+        return _engine_root()
+    m = _ORIGIN_URL_BODY.fullmatch(text)
+    if m is None:
+        return None
+    if m[3]:
+        root: str | None = m[3]
+    else:
+        command = _STATE["command"]
+        sets = re.findall(r"(?<![\w${])ROOT(?!\w)", command)
+        ok = len(sets) == 1 and re.search(r'(?<![\w$])ROOT="?\$\(' + re.escape(_ENGINE_ROOT_BODY) + r"\)", command)
+        root = _engine_root() if ok else None
+    if root is None:
+        return None
+    fallback = m[4] if m[4] in git_allow.SCOUT_REMOTES else None
+    repo = git_read.find_repo(Path(root), None, None)
+    if repo is None:
+        return fallback  # `git -C` fails: the fallback is printed
+    urls = [v for k, v in git_read.read_config(repo[1] / "config") or [] if k == "remote.origin.url"]
+    if not urls:
+        return fallback
+    return urls[-1] if urls[-1] in git_allow.SCOUT_REMOTES else None
+
+
 def _known_output(body: str) -> str | None:
     """What a substitution prints, where the gate can know it: ``$(mktemp …)`` is a new file in the template's
     folder (``-p DIR``, else the temp folder), ``$(cat <<'EOF'`` the line its here-document holds. Anything else
     is unknown (None)."""
+    engine = _engine_output(body)
+    if engine is not None:
+        return engine
     cat = _HEREDOC_CAT.match(body)
     if cat is not None and int(cat[1]) < len(_STATE["bodies"]):
         text, _expands = _STATE["bodies"][int(cat[1])]

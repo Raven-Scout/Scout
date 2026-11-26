@@ -212,6 +212,74 @@ def _option(
     return None, None
 
 
+# The engine-change flow (phases/core/git-setup.md): a run outside the write sandbox clones Scout's own repository
+# into ~/.scout-worktrees/<name>, branches, commits and pushes there for a draft PR. Only these forms, and only there:
+# the gate checks where each runs (a repository whose top is under ~/.scout-worktrees and isn't the vault's) and, for
+# a push, that origin is Scout's (review of #817, round 6; the owner's call: the flow stays, narrowly).
+SCOUT_REMOTES = ("https://github.com/Raven-Scout/Scout.git", "git@github.com:Raven-Scout/Scout.git")
+WORKTREES = ".scout-worktrees"
+_ENGINE_BRANCH = re.compile(r"^scout/[A-Za-z0-9._$-]+(?:/[A-Za-z0-9._$-]+)*$")
+CLONE, WORKTREE, PUSH = "clone", "worktree", "push"
+ENGINE_SUBCOMMANDS = ("clone", "switch", "checkout", "commit", "push")
+
+
+def engine_form(sub: str, args: list[str]) -> str | None:
+    """:data:`CLONE`, :data:`WORKTREE` or :data:`PUSH` for a form of the engine-change flow, else None. ``args`` as
+    git gets them, with the command's own variables put in (a ``$NAME`` it doesn't set stays, and may only follow
+    ``scout/`` or ``.scout-worktrees/``). A clone's source must be Scout's own remote, spelled out, and its folder
+    one in ``~/.scout-worktrees``; the caller checks the folder."""
+    quiet = [a for a in args if a not in ("-q", "--quiet")]
+    if sub == "clone":
+        if len(quiet) == 2 and quiet[0] in SCOUT_REMOTES and not quiet[1].startswith("-"):
+            return CLONE
+        return None
+    if sub in ("switch", "checkout"):
+        flag = ("-c", "--create") if sub == "switch" else ("-b",)
+        ok = len(quiet) == 2 and quiet[0] in flag and _ENGINE_BRANCH.match(quiet[1]) is not None
+        return WORKTREE if ok else None
+    if sub == "commit":
+        return WORKTREE if _commit_args(quiet) else None
+    if sub == "push":
+        rest = [a for a in quiet if a not in ("-u", "--set-upstream")]
+        ok = len(rest) == 2 and rest[0] == "origin" and _ENGINE_BRANCH.match(rest[1]) is not None
+        return PUSH if ok else None
+    return None
+
+
+def _commit_args(args: list[str]) -> bool:
+    """``commit`` with a message (``-m``/``--message``, ``-F``/``--file``) and nothing else but ``--`` paths."""
+    i, message = 0, False
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            return message
+        if a in ("-m", "--message", "-F", "--file"):
+            if i + 1 >= len(args):
+                return False
+            message, i = True, i + 2
+            continue
+        if a.startswith(("--message=", "--file=")) or (a.startswith(("-m", "-F")) and len(a) > 2):
+            message, i = True, i + 1
+            continue
+        if a.startswith("-"):
+            return False  # --template, -c, --cleanup, --amend, -a, …: not the flow's
+        return False  # a path before `--`
+    return message
+
+
+def commit_files(args: list[str]) -> list[str]:
+    """The files a ``commit -F <file>`` reads its message from (``-`` is stdin), for the read checks."""
+    out = []
+    for i, a in enumerate(args):
+        if a in ("-F", "--file") and i + 1 < len(args):
+            out.append(args[i + 1])
+        elif a.startswith("--file="):
+            out.append(a.split("=", 1)[1])
+        elif a.startswith("-F") and len(a) > 2:
+            out.append(a[2:])
+    return [f for f in out if f != "-"]
+
+
 def config_write(args: list[str]) -> bool:
     """Whether ``git config <args>`` is one of Step 0's two writes (allowed only in the vault's repository)."""
     return len(args) == 2 and args[0].casefold() in WRITE_KEYS

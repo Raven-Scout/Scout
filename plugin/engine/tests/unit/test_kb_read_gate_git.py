@@ -974,7 +974,7 @@ def test_step_0s_config_writes_are_for_the_vaults_repository_only(home: Path, co
     "command",
     [
         "git clone -q https://github.com/example-org/repo.git ~/.scout-worktrees/x",
-        "git -C ~/.scout-worktrees/x switch -c scout/x",
+        "git -C ~/.scout-worktrees/x switch -c main",
         "git -C ~/other commit -m x",
         "git -C ~/other push -u origin scout/x",
         "git branch scout/x",
@@ -982,6 +982,119 @@ def test_step_0s_config_writes_are_for_the_vaults_repository_only(home: Path, co
 )
 def test_the_engine_change_flow_is_told_to_go_in_the_wrap(home: Path, command: str) -> None:
     assert "in the wrap notification" in _denied(_run(home, command))
+
+
+SCOUT_REMOTE = "https://github.com/Raven-Scout/Scout.git"
+ENGINE_ROOT = (
+    "ROOT=\"$(python3 -I -c 'import json,os;print(json.load(open(os.path.expanduser("
+    '"~/.local/state/scout/engine.json")))["engine_root"])\')"'
+)
+# phases/core/git-setup.md's engine-change clone, as it spells it, with NAME set first.
+PHASE_CLONE = (
+    f"NAME=fix-x\n{ENGINE_ROOT}\n"
+    'git clone -q "$(git -C "$ROOT" remote get-url origin 2>/dev/null || echo https://github.com/Raven-Scout/Scout.git)"'
+    " ~/.scout-worktrees/$NAME && git -C ~/.scout-worktrees/$NAME switch -c scout/$NAME"
+)
+
+
+@pytest.fixture
+def engine_home(home: Path) -> Path:
+    """``home`` with an engine checkout whose origin is Scout's (named in engine.json), and two clones in
+    ~/.scout-worktrees: ``done`` (origin Scout's) and ``fork`` (origin elsewhere)."""
+    root = home / "engine"
+    _repo(root, ("plugin/x.md",))
+    _git(root, "remote", "add", "origin", SCOUT_REMOTE)
+    state = home / ".local" / "state" / "scout"
+    state.mkdir(parents=True)
+    (state / "engine.json").write_text(json.dumps({"engine_root": str(root)}))
+    for name, url in (("done", SCOUT_REMOTE), ("fork", "https://example.com/x.git")):
+        clone = home / ".scout-worktrees" / name
+        _repo(clone, ("plugin/x.md",))
+        _git(clone, "remote", "add", "origin", url)
+    return home
+
+
+ENGINE_FLOW = [
+    PHASE_CLONE,
+    f"git clone -q {SCOUT_REMOTE} ~/.scout-worktrees/y",
+    "git clone -q git@github.com:Raven-Scout/Scout.git ~/.scout-worktrees/y"
+    " && git -C ~/.scout-worktrees/y switch -c scout/y",
+    "git -C ~/.scout-worktrees/done switch -c scout/done",
+    "git -C ~/.scout-worktrees/done checkout -b scout/done",
+    "cd ~/.scout-worktrees/done && git add plugin/x.md && git commit -q -m 'phases: a clearer rule'",
+    "git -C ~/.scout-worktrees/done commit -q -F - <<'EOF'\nphases: a clearer rule\nEOF",
+    "git -C ~/.scout-worktrees/done push -u origin scout/done",
+    "cd ~/.scout-worktrees/done && git push -q -u origin scout/done",
+    "git -C ~/.scout-worktrees/done remote get-url origin",
+    "git -C ~/.scout-worktrees/fork commit -q -m x",  # any clone in the folder; only a push needs Scout's origin
+]
+
+
+@pytest.mark.parametrize("command", ENGINE_FLOW)
+def test_the_engine_change_flow_is_allowed(engine_home: Path, command: str) -> None:
+    assert _run(engine_home, command) is None
+
+
+ENGINE_REFUSED = [
+    # a clone's options, source and folder
+    f"git clone -q -c core.fsmonitor=x {SCOUT_REMOTE} ~/.scout-worktrees/y",
+    f"git clone -q --config=core.sshCommand=x {SCOUT_REMOTE} ~/.scout-worktrees/y",
+    f"git clone -q --template=/tmp/t {SCOUT_REMOTE} ~/.scout-worktrees/y",
+    f"git clone -q -u x {SCOUT_REMOTE} ~/.scout-worktrees/y",
+    f"git clone -q --upload-pack=x {SCOUT_REMOTE} ~/.scout-worktrees/y",
+    f"git clone -q --reference ~/Vault {SCOUT_REMOTE} ~/.scout-worktrees/y",
+    f"git clone -q --shared {SCOUT_REMOTE} ~/.scout-worktrees/y",
+    f"git clone -q --separate-git-dir=/tmp/g {SCOUT_REMOTE} ~/.scout-worktrees/y",
+    f"GIT_SSH_COMMAND=x git clone -q {SCOUT_REMOTE} ~/.scout-worktrees/y",
+    "git clone -q ~/Vault ~/.scout-worktrees/y",
+    "git clone -q . ~/.scout-worktrees/y",
+    "git clone -q https://example.com/x.git ~/.scout-worktrees/y",
+    'git clone -q "$(git -C ~/other remote get-url origin)" ~/.scout-worktrees/y',
+    f"git clone -q {SCOUT_REMOTE} ~/elsewhere",
+    f"git clone -q {SCOUT_REMOTE} ~/.scout-worktrees/../Vault2",
+    f"git clone -q {SCOUT_REMOTE} ~/.scout-worktrees",
+    PHASE_CLONE.replace("NAME=fix-x\n", "NAME=fix-x\nROOT=~/Vault\n"),  # ROOT set again: not the engine folder
+    PHASE_CLONE.replace("\ngit clone", "\nROOT=~/Vault; git clone"),
+    # where the branch, commit and push run
+    "git switch -c scout/x",  # the vault
+    "git -C ~/other switch -c scout/x",
+    "git -C ~/.scout-worktrees/new switch -c scout/new",  # no clone made it
+    "git -C ~/.scout-worktrees/done switch -c main",
+    "git -C ~/.scout-worktrees/done switch -c scout/x HEAD~1",
+    "git commit -q -m x",
+    "git -C ~/other commit -q -m x",
+    "git -C ~/.scout-worktrees/done commit --template=/tmp/t -m x",
+    "git -C ~/.scout-worktrees/done -c user.name=x commit -m x",
+    "git -C ~/.scout-worktrees/done commit --cleanup=verbatim -m x",
+    "git -C ~/.scout-worktrees/done commit --amend -m x",
+    "git -C ~/.scout-worktrees/done commit -m x plugin/x.md",
+    "git -C ~/.scout-worktrees/done commit -F ~/Vault/action-items/context/x.md",  # the KB as a message
+    "git -C ~/.scout-worktrees/done push --receive-pack=x -u origin scout/done",
+    "git -C ~/.scout-worktrees/done push -o x -u origin scout/done",
+    "git -C ~/.scout-worktrees/done push -u origin main",
+    "git -C ~/.scout-worktrees/done push -u other scout/done",
+    "git -C ~/.scout-worktrees/fork push -u origin scout/done",  # origin isn't Scout's
+    "git push -u origin scout/x",  # the vault
+]
+
+
+@pytest.mark.parametrize("command", ENGINE_REFUSED)
+def test_the_engine_change_flow_refuses_every_other_form(engine_home: Path, command: str) -> None:
+    _denied(_run(engine_home, command))
+
+
+def test_the_engine_clone_is_refused_when_the_engine_or_vault_origin_isnt_scouts(engine_home: Path) -> None:
+    _git(engine_home / "engine", "remote", "set-url", "origin", "https://example.com/vault.git")
+    _denied(_run(engine_home, PHASE_CLONE))
+    _git(engine_home / "Vault", "remote", "add", "origin", "https://example.com/vault.git")
+    clone = 'git clone -q "$(git -C ~/Vault remote get-url origin 2>/dev/null || echo {u})" ~/.scout-worktrees/y'
+    _denied(_run(engine_home, clone.format(u=SCOUT_REMOTE)))
+
+
+def test_a_clone_whose_config_runs_commands_is_refused(engine_home: Path) -> None:
+    clone = engine_home / ".scout-worktrees" / "done"
+    _git(clone, "config", "core.fsmonitor", "sh -c 'cat ~/Vault/act*/cont*/x.md'")
+    assert "config runs commands" in _denied(_run(engine_home, "git -C ~/.scout-worktrees/done commit -q -m x"))
 
 
 def test_other_refusals_dont_mention_the_wrap(home: Path) -> None:

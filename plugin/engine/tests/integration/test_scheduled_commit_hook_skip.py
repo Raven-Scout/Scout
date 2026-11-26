@@ -181,7 +181,8 @@ def test_a_plain_commit_is_refused_by_the_gate_as_a_form_off_the_allowlist(vault
     (row,) = _session(vault, [f"git commit {MOVE}"])
     assert row["denied"] and "git-safe-commit.sh" in row["reason"]
     assert git(vault, "rev-parse", "HEAD") == head
-    assert [e["payload"]["form"] for e in _events(vault)] == ["git form not allowed in a run (git commit)"]
+    (event,) = _events(vault)
+    assert event["payload"]["form"].startswith("git form not allowed in a run (git commit")
 
 
 def test_what_a_run_does_every_day_passes_the_gate_and_runs(vault: Path) -> None:

@@ -551,6 +551,8 @@ def _decide_bash(
         found = _git_reads_kb(read, where, vault, env, resolve, text_of, names_vault)
         if found == "outside":
             return f"{GIT_FORM} (a config write outside the vault's repository)"
+        if found is not None and found.startswith("engine:"):
+            return f"{GIT_FORM} (git {read.sub}: {found[7:]})"
         if found is not None and found.startswith("config:"):
             return f"{GIT_FORM} (a repository whose config runs commands: {found[7:]})"
         if found == "unresolved":
@@ -579,7 +581,15 @@ def _decide_bash(
     embedded: list[str] = []  # the commands git runs for this one (`git rebase -x 'cmd'`): judged below
     escape = (
         expansion_escape(command)
-        or run_escape(command, protect=protect, secret=secret, kb_read=kb_read, git_read=git_read, embedded=embedded)
+        or run_escape(
+            command,
+            protect=protect,
+            secret=secret,
+            kb_read=kb_read,
+            git_read=git_read,
+            embedded=embedded,
+            home=env.get("HOME"),
+        )
         or even_dollar_escape(command)
     )
     if escape == "env":
@@ -683,6 +693,8 @@ def _git_reads_kb(
     in (or its ``--git-dir``) isn't on disk yet, what git reads there is unknown unless it is plainly the KB already.
     Then the read is "unresolved", or "kb" when the command names the vault or a KB folder (``names_vault``), or
     copied the repository it runs in, the vault's (``git worktree add``, ``git clone .``)."""
+    if read.engine:
+        return _engine_repo(read, resolve(where or "."), vault, env)
     found = _git_tree_reads_kb(read, where, vault, env, resolve, text_of)
     if read.vault_only:
         return None if found is None else "outside"  # None: the vault's repository, for sure
@@ -736,6 +748,45 @@ def _names_vault(command: str, vault: Path, env: Mapping[str, str]) -> bool:
         if rel:
             spellings |= {f"~/{rel}", f"$HOME/{rel}", f"${{HOME}}/{rel}"}
     return any(sp.casefold() in text for sp in spellings)
+
+
+def _engine_repo(read: GitRead, folder: str | None, vault: Path, env: Mapping[str, str]) -> str | None:
+    """Whether a form of the engine-change flow (``read.engine``) runs where it may: in a repository whose top is
+    under ~/.scout-worktrees and has no tie to the vault's (not it, not in or above the vault), whose config runs no
+    command, and, for a push, whose origin is Scout's remote. A folder not on disk yet counts only below a clone the
+    same command made first. "engine:<why>" or "config:<key>" when it doesn't, else None."""
+    from scout.kb import git_allow, git_read
+
+    home = env.get("HOME")
+    if not home or folder is None:
+        return "engine:a folder the gate can't work out"
+    root = paths.resolve_path(Path(home) / git_allow.WORKTREES)
+    here = paths.resolve_path(folder)
+    if not os.path.lexists(folder):
+        clones = [paths.resolve_path(Path(c)) for c in read.cloned]
+        made = any(here == c or c in here.parents for c in clones)
+        return None if made and root in here.parents else "engine:a folder that isn't a clone in ~/.scout-worktrees"
+    repo = git_read.find_repo(here, None, None)
+    if repo is None or git_read.rel_to(root, repo[0]) in (None, ""):
+        return "engine:a repository outside ~/.scout-worktrees"
+    home_vault = paths.resolve_path(vault)
+    ours = git_read.find_repo(home_vault, None, None)
+    if (
+        (ours is not None and git_read.same_folder(repo[1], ours[1]))
+        or git_read.rel_to(home_vault, repo[0]) is not None
+        or git_read.rel_to(repo[0], home_vault) is not None
+    ):
+        return "engine:the vault's repository"
+    runs = git_read.config_runs(repo[1], read.sub)
+    if runs is not None:
+        return f"config:{runs}"
+    if read.engine == git_allow.PUSH:
+        entries = git_read.read_config(repo[1] / "config") or []
+        urls = [v for k, v in entries if k in ("remote.origin.url", "remote.origin.pushurl")]
+        redirected = any(k.startswith("url.") for k, _ in entries)
+        if redirected or not urls or any(u not in git_allow.SCOUT_REMOTES for u in urls):
+            return "engine:a push to a remote that isn't Scout's"
+    return None
 
 
 def _git_tree_reads_kb(
