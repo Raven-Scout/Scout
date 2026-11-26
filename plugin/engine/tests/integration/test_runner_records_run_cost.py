@@ -1,7 +1,7 @@
 """Integration test: each runner records the run's cost with `scoutctl budget record-run`.
 
 Renders run-scout / run-dreaming / run-research with a stub
-``scripts/claude-with-retry.sh`` (records its argv) and a stub ``scoutctl``
+``scout/scripts/claude-with-retry.sh`` (records its argv) and a stub ``scoutctl``
 (records its argv; ``record-run`` succeeds or fails on request). The runner must
 hand ``record-run`` the same ``--name`` it gave claude, the start time, the cap
 and the exit code. When ``record-run`` fails (an engine without it), the old
@@ -15,6 +15,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
+from scout import layout
 
 REPO_ROOT = Path(__file__).resolve().parents[3]  # …/plugin
 TEMPLATES = REPO_ROOT / "templates"
@@ -41,10 +43,11 @@ def _render(tmpl: Path, scout_dir: Path, scoutctl: Path) -> Path:
     }.items():
         text = text.replace(placeholder, value)
     assert "{{" not in text, f"unrendered placeholder left in {tmpl.name}"
-    out = scout_dir / tmpl.name.removesuffix(".tmpl")
+    out = scout_dir / layout.runner_path(tmpl.name.removesuffix(".tmpl"))
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
     out.chmod(0o755)
-    scripts = scout_dir / "scripts"
+    scripts = scout_dir / layout.V2.paths["scripts_dir"]
     scripts.mkdir(parents=True, exist_ok=True)
     (scripts / "scout-lock.sh").write_text(
         (TEMPLATES / "scripts" / "scout-lock.sh.tmpl")
@@ -76,9 +79,9 @@ def _setup(tmp_path: Path, name: str, *, record_run_ok: bool) -> tuple[Path, Pat
     )
     script = _render(TEMPLATES / name, scout_dir, scoutctl)
     argv = scout_dir / "claude.argv"
-    _stub(scout_dir / "scripts" / "claude-with-retry.sh", f'printf \'%s\\n\' "$@" > "{argv}"\nexit 1\n')
+    _stub(scout_dir / layout.script_path("claude-with-retry.sh"), f'printf \'%s\\n\' "$@" > "{argv}"\nexit 1\n')
     fallback = scout_dir / "fallback.args"
-    _stub(scout_dir / "scripts" / "write-session-cost.sh", f'echo "$*" >> "{fallback}"\n')
+    _stub(scout_dir / layout.script_path("write-session-cost.sh"), f'echo "$*" >> "{fallback}"\n')
     return scout_dir, script, calls, argv, fallback
 
 
@@ -119,7 +122,7 @@ def test_runner_tells_the_retry_wrapper_how_to_record_a_failed_attempt(
     """claude-with-retry.sh records each failed attempt's spend with the run's type and start (#561)."""
     scout_dir, script, calls, _argv, _fallback = _setup(tmp_path, name, record_run_ok=True)
     env_file = scout_dir / "wrapper.env"
-    wrapper = scout_dir / "scripts" / "claude-with-retry.sh"
+    wrapper = scout_dir / layout.script_path("claude-with-retry.sh")
     _stub(wrapper, f'env | grep -E "^(SCOUT_RUN_|SCOUTCTL_BIN=)" > "{env_file}"\n')
 
     _run(script, slot_key)
@@ -150,7 +153,7 @@ def test_a_triggered_respond_run_is_the_respond_slot_whatever_the_skill_name(tmp
     scout_dir, script, calls, argv_file, _fallback = _setup(tmp_path, "run-respond.sh.tmpl", record_run_ok=True)
     env_file = scout_dir / "wrapper.env"
     _stub(
-        scout_dir / "scripts" / "claude-with-retry.sh",
+        scout_dir / layout.script_path("claude-with-retry.sh"),
         f'printf \'%s\\n\' "$@" > "{argv_file}"\n'
         f'env | grep -E "^(SCOUT_TRIGGER_EVENT_PATH|SESSION_TYPE|SCOUT_MODE)=" > "{env_file}"\nexit 0\n',
     )

@@ -45,6 +45,13 @@ def install_plist(
         .replace("__USER_HOME__", escape(str(home), quote=True))
         .replace("__SCOUT_DIR__", escape(str(vault), quote=True))
     )
+    from scout import layout
+
+    if layout.layout_version(vault) < 2:
+        # A vault the layout move hasn't reached keeps its heartbeat at the v1 path.
+        rendered = rendered.replace(
+            "/" + layout.V2.script("heartbeat.sh") + "<", "/" + layout.V1.script("heartbeat.sh") + "<"
+        )
     # Fail loudly at install time rather than let launchd silently drop the
     # job on malformed output (#49).
     try:

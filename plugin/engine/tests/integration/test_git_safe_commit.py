@@ -3,7 +3,7 @@
 Scheduled sessions overlap and share one working tree, so a session that runs
 ``git add -A && git commit`` commits whatever a concurrent session has
 half-written, plus anything a peer left staged. The dreaming brain's commit
-steps call ``scripts/git-safe-commit.sh "msg" <paths>`` instead: it stages and
+steps call ``scout/scripts/git-safe-commit.sh "msg" <paths>`` instead: it stages and
 commits only the named paths, serialises the stage→commit step behind a
 cross-session mutex (``flock`` where it exists, an atomic ``mkdir`` where it
 doesn't — macOS ships no ``flock``), and clears a git lock only when it is
@@ -26,12 +26,13 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from scout.scripts.bootstrap import BootstrapConfig, install, upgrade
 from scout.scripts.phase_assembly import render_template
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 TEMPLATE = PLUGIN_ROOT / "templates" / "scripts" / "git-safe-commit.sh.tmpl"
-REL = "scripts/git-safe-commit.sh"
+REL = layout.script_path("git-safe-commit.sh")
 BASH = "/bin/bash" if Path("/bin/bash").exists() else (shutil.which("bash") or "bash")
 RUN_TIMEOUT_S = 60
 
@@ -142,7 +143,7 @@ def test_an_upgrade_parks_the_vaults_own_copy_instead_of_losing_it(installed: Pa
 
 
 def test_the_dreaming_brain_commits_through_the_shipped_helper(installed: Path) -> None:
-    brain = (installed / "DREAMING.md").read_text(encoding="utf-8")
+    brain = (installed / layout.brain_path("DREAMING")).read_text(encoding="utf-8")
 
     assert f"{installed}/{REL} " in brain
     assert "add -A" not in brain

@@ -20,7 +20,7 @@ For each research target:
 
 - Add new relationships discovered during research
 - Create new entity files if a significant new entity was discovered (e.g., a competitor, a technology, a new team member)
-- Run `scripts/scoutctl kb validate` after changes
+- Run `scout/scripts/scoutctl kb validate` after changes
 - A new note built from private material gets `visibility: private` (see the privacy phase)
 
 ## Step 3c: Flag Actionable Insights

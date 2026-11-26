@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from scout import layout
 from scout.scripts import vault_drift
 from scout.scripts.bootstrap import (
     BootstrapConfig,
@@ -86,6 +87,14 @@ def _snapshot(vault: Path, kind: str) -> Path:
     return vault / ".scout-state" / "last-assembled" / f"{kind}.md"
 
 
+def _live(vault: Path, kind: str) -> Path:
+    return vault / layout.brain_path(kind)
+
+
+def _sidecar(vault: Path, kind: str) -> Path:
+    return vault / layout.sidecar_path(kind)
+
+
 def _bytes(*paths: Path) -> list[bytes]:
     return [p.read_bytes() for p in paths]
 
@@ -97,21 +106,21 @@ def test_a_pending_sidecar_skips_only_its_own_file(tmp_path: Path) -> None:
     plugin = _plugin(tmp_path)
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
-    sidecar = vault / "SKILL.md.proposed-merge"
+    sidecar = _sidecar(vault, "SKILL")
     sidecar.write_text("half-resolved by Alex\n<<<<<<< ours\nkeep this\n", encoding="utf-8")
-    before = _bytes(vault / "SKILL.md", _snapshot(vault, "SKILL"), sidecar)
+    before = _bytes(_live(vault, "SKILL"), _snapshot(vault, "SKILL"), sidecar)
 
     _write_phase(plugin, "SKILL", "Added by the plugin.")
     _write_phase(plugin, "DREAMING", "Added by the plugin.")
     _set_heartbeat(plugin, "v2")
     result = upgrade(_config(vault, plugin, "0.4.1"))
 
-    assert _bytes(vault / "SKILL.md", _snapshot(vault, "SKILL"), sidecar) == before
+    assert _bytes(_live(vault, "SKILL"), _snapshot(vault, "SKILL"), sidecar) == before
     assert result.skipped == ["SKILL.md.proposed-merge"]
     assert result.conflicts == []
     # Every other stage still ran.
-    assert "Added by the plugin." in (vault / "DREAMING.md").read_text()
-    assert "# heartbeat v2" in (vault / "scripts" / "heartbeat.sh").read_text()
+    assert "Added by the plugin." in (_live(vault, "DREAMING")).read_text()
+    assert "# heartbeat v2" in (vault / layout.script_path("heartbeat.sh")).read_text()
     stamp = yaml.safe_load((vault / "scout-config.yaml").read_text())
     assert stamp["plugin"]["version_at_last_update"] == "0.4.1"
     assert any("SKILL.md.proposed-merge" in w for w in result.doctor.warnings)
@@ -122,21 +131,21 @@ def test_a_pending_sidecar_does_not_stop_the_next_upgrade_either(tmp_path: Path)
     plugin = _plugin(tmp_path)
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
-    (vault / "DREAMING.md.proposed-merge").write_text("pending\n", encoding="utf-8")
+    (_sidecar(vault, "DREAMING")).write_text("pending\n", encoding="utf-8")
 
     upgrade(_config(vault, plugin, "0.4.1"))
     _set_heartbeat(plugin, "v3")
     result = upgrade(_config(vault, plugin, "0.4.2"))
 
     assert result.skipped == ["DREAMING.md.proposed-merge"]
-    assert "# heartbeat v3" in (vault / "scripts" / "heartbeat.sh").read_text()
+    assert "# heartbeat v3" in (vault / layout.script_path("heartbeat.sh")).read_text()
 
 
 def test_resolving_the_sidecar_resumes_merging_the_file(tmp_path: Path) -> None:
     plugin = _plugin(tmp_path)
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
-    sidecar = vault / "SKILL.md.proposed-merge"
+    sidecar = _sidecar(vault, "SKILL")
     sidecar.write_text("pending\n", encoding="utf-8")
     _write_phase(plugin, "SKILL", "Added by the plugin.")
     upgrade(_config(vault, plugin, "0.4.1"))
@@ -145,7 +154,7 @@ def test_resolving_the_sidecar_resumes_merging_the_file(tmp_path: Path) -> None:
     result = upgrade(_config(vault, plugin, "0.4.2"))
 
     assert result.skipped == []
-    assert "Added by the plugin." in (vault / "SKILL.md").read_text()
+    assert "Added by the plugin." in (_live(vault, "SKILL")).read_text()
 
 
 def test_a_pending_parser_sidecar_still_blocks(tmp_path: Path) -> None:
@@ -156,7 +165,7 @@ def test_a_pending_parser_sidecar_still_blocks(tmp_path: Path) -> None:
     parser_sidecar = vault / "knowledge-base" / "ontology" / "parser.py.proposed-merge"
     parser_sidecar.parent.mkdir(parents=True, exist_ok=True)
     parser_sidecar.write_text("pending\n", encoding="utf-8")
-    (vault / "SKILL.md.proposed-merge").write_text("pending\n", encoding="utf-8")
+    (_sidecar(vault, "SKILL")).write_text("pending\n", encoding="utf-8")
 
     with pytest.raises(RuntimeError) as excinfo:
         upgrade(_config(vault, plugin, "0.4.1"))
@@ -176,10 +185,10 @@ def test_a_routine_phase_change_on_an_unedited_vault_is_applied(tmp_path: Path) 
         _write_phase(plugin, "SKILL", f"Step {n}: added by the plugin in {version}.")
         result = upgrade(_config(vault, plugin, version))
 
-        live = (vault / "SKILL.md").read_text()
+        live = (_live(vault, "SKILL")).read_text()
         assert f"Step {n}: added by the plugin in {version}." in live
         assert result.conflicts == [] and result.skipped == []
-        assert not (vault / "SKILL.md.proposed-merge").exists()
+        assert not (_sidecar(vault, "SKILL")).exists()
         assert _snapshot(vault, "SKILL").read_text() == live
 
 
@@ -192,7 +201,7 @@ def test_an_unedited_vault_from_before_provenance_is_proposed_a_change_once(tmp_
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
     (vault / ".scout-state" / "last-assembled" / PROVENANCE_FILE).unlink()
-    live = vault / "SKILL.md"
+    live = _live(vault, "SKILL")
     before = live.read_bytes()
 
     _write_phase(plugin, "SKILL", "Added by the plugin.")
@@ -200,7 +209,7 @@ def test_an_unedited_vault_from_before_provenance_is_proposed_a_change_once(tmp_
 
     assert live.read_bytes() == before
     assert first.conflicts == ["SKILL.md.proposed-merge"] and first.backups == []
-    sidecar = vault / "SKILL.md.proposed-merge"
+    sidecar = _sidecar(vault, "SKILL")
     assert "Added by the plugin." in sidecar.read_text() and "<<<<<<<" not in sidecar.read_text()
     # Files the release didn't change still start recording provenance.
     assert '"DREAMING.md"' in (vault / ".scout-state" / "last-assembled" / PROVENANCE_FILE).read_text()
@@ -223,7 +232,7 @@ def test_a_migrated_brain_that_starts_with_the_assembly_header_keeps_its_live_br
     vault = tmp_path / "Scout"
     _legacy_vault(vault)
     for kind in _PHASES:
-        (vault / f"{kind}.md").write_text(
+        (_live(vault, kind)).write_text(
             f"# {kind}\n\n**BASE_DIR:** `{vault}`\n\nGrown in the vault.\nA fix from months of dreaming.\n",
             encoding="utf-8",
         )
@@ -249,7 +258,7 @@ def test_a_snapshot_copied_over_by_hand_before_provenance_is_proposed(tmp_path: 
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
     (vault / ".scout-state" / "last-assembled" / PROVENANCE_FILE).unlink()
-    live = vault / "SKILL.md"
+    live = _live(vault, "SKILL")
     live.write_text(live.read_text() + "\nA vault-local step.\n", encoding="utf-8")
     _snapshot(vault, "SKILL").write_text(live.read_text(), encoding="utf-8")
     edited = live.read_bytes()
@@ -268,7 +277,7 @@ def test_a_merge_vouched_for_only_by_the_fingerprint_keeps_a_backup(tmp_path: Pa
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
     (vault / ".scout-state" / "last-assembled" / PROVENANCE_FILE).unlink()
-    live = vault / "SKILL.md"
+    live = _live(vault, "SKILL")
     live.write_text(live.read_text() + "\nA vault-local step.\n", encoding="utf-8")
     edited = live.read_text()
 
@@ -279,12 +288,12 @@ def test_a_merge_vouched_for_only_by_the_fingerprint_keeps_a_backup(tmp_path: Pa
     assert "triage the inbox." in merged and "A vault-local step." in merged
     # Parked like any replaced vault copy: the doctor notes it and
     # `drift --resolve` dismisses it.
-    parked = vault / ".scout-state" / "drift" / "SKILL.md.vault"
+    parked = vault / ".scout-state" / "drift" / f"{layout.brain_path('SKILL')}.vault"
     assert parked.read_text() == edited
-    assert ".scout-state/drift/SKILL.md.vault" in result.backups
+    assert f".scout-state/drift/{layout.brain_path('SKILL')}.vault" in result.backups
     (note,) = [n for n in result.doctor.notes if "SKILL.md.vault" in n]
     assert "no release shipped" not in note, "the note must fit a merged brain file too"
-    vault_drift.resolve(vault, "SKILL.md")
+    vault_drift.resolve(vault, layout.brain_path("SKILL"))
     assert not parked.exists()
 
 
@@ -296,7 +305,7 @@ def test_an_unreadable_provenance_file_fails_closed(tmp_path: Path) -> None:
     install(_config(vault, plugin))
     snapshot_dir = vault / ".scout-state" / "last-assembled"
     (snapshot_dir / PROVENANCE_FILE).write_text("{not json", encoding="utf-8")
-    live = vault / "SKILL.md"
+    live = _live(vault, "SKILL")
     live.write_text(live.read_text() + "\nA vault-local step.\n", encoding="utf-8")
     before = _brains(vault)
 
@@ -311,7 +320,7 @@ def test_an_unreadable_provenance_file_fails_closed(tmp_path: Path) -> None:
     assert (snapshot_dir / f"{PROVENANCE_FILE}.corrupt").read_text(encoding="utf-8") == "{not json"
 
     for kind in _PHASES:  # "decide later": the next upgrade must still fail closed
-        (vault / f"{kind}.md.proposed-merge").unlink()
+        (_sidecar(vault, kind)).unlink()
     second = upgrade(_config(vault, plugin, "0.4.2"))
 
     assert _brains(vault) == before
@@ -324,11 +333,11 @@ def test_a_live_brain_with_conflict_markers_is_left_alone(tmp_path: Path) -> Non
     plugin = _plugin(tmp_path)
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
-    live = vault / "SKILL.md"
+    live = _live(vault, "SKILL")
     live.write_text(live.read_text().replace("read the inbox.", "read the inbox twice."), encoding="utf-8")
     _change_line(plugin, "read the inbox.", "triage the inbox.")
     upgrade(_config(vault, plugin, "0.4.1"))
-    (vault / "SKILL.md.proposed-merge").rename(live)
+    (_sidecar(vault, "SKILL")).rename(live)
     marked = live.read_bytes()
     snapshot = _snapshot(vault, "SKILL").read_bytes()
 
@@ -348,14 +357,14 @@ def test_a_merge_that_changes_nothing_writes_no_backup(tmp_path: Path) -> None:
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
     (vault / ".scout-state" / "last-assembled" / PROVENANCE_FILE).unlink()
-    live = vault / "SKILL.md"
+    live = _live(vault, "SKILL")
     live.write_text(live.read_text() + "\nA vault-local step.\n", encoding="utf-8")
     edited = live.read_bytes()
 
     result = upgrade(_config(vault, plugin, "0.4.1"))  # no plugin change
 
     assert live.read_bytes() == edited
-    assert result.backups == [] and not list(vault.glob(".scout-state/drift/SKILL.md.vault*"))
+    assert result.backups == [] and not list(vault.glob(f".scout-state/drift/{layout.brain_path('SKILL')}.vault*"))
 
 
 def test_an_upgrade_that_fails_part_way_keeps_what_it_recorded(tmp_path: Path) -> None:
@@ -365,9 +374,9 @@ def test_an_upgrade_that_fails_part_way_keeps_what_it_recorded(tmp_path: Path) -
     plugin = _plugin(tmp_path)
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
-    live = vault / "SKILL.md"
+    live = _live(vault, "SKILL")
     live.write_text(live.read_text() + "\nA vault-local step.\n", encoding="utf-8")
-    research = vault / "RESEARCH.md"
+    research = _live(vault, "RESEARCH")
     research_text = research.read_text()
     research.write_bytes(b"\xff\xfe not utf-8")
 
@@ -387,7 +396,7 @@ def test_a_conflicting_vault_edit_keeps_live_and_does_not_block(tmp_path: Path) 
     plugin = _plugin(tmp_path)
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
-    live = vault / "SKILL.md"
+    live = _live(vault, "SKILL")
     live.write_text(live.read_text().replace("Step one: read the inbox.", "Step one: read the inbox twice."))
     edited = live.read_bytes()
 
@@ -397,7 +406,7 @@ def test_a_conflicting_vault_edit_keeps_live_and_does_not_block(tmp_path: Path) 
 
     assert live.read_bytes() == edited
     assert first.conflicts == ["SKILL.md.proposed-merge"]
-    assert "<<<<<<<" in (vault / "SKILL.md.proposed-merge").read_text()
+    assert "<<<<<<<" in (_sidecar(vault, "SKILL")).read_text()
     assert second.skipped == ["SKILL.md.proposed-merge"]
 
 
@@ -407,7 +416,7 @@ def test_a_snapshot_overwritten_by_hand_is_never_fast_forwarded(tmp_path: Path) 
     plugin = _plugin(tmp_path)
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
-    live = vault / "SKILL.md"
+    live = _live(vault, "SKILL")
     live.write_text(live.read_text() + "\nA vault-local step.\n", encoding="utf-8")
     _snapshot(vault, "SKILL").write_text(live.read_text(), encoding="utf-8")
     edited = live.read_bytes()
@@ -430,15 +439,19 @@ _LEGACY_SKILL = (
 
 
 def _legacy_vault(vault: Path) -> None:
-    """Plan-5-era vault: .scout-state/ but no scout-config.yaml; frontmatter brains."""
+    """Plan-5-era vault: .scout-state/ but no scout-config.yaml; frontmatter brains.
+
+    The brains sit at their layout v2 paths: migrate_legacy refuses a v1 vault.
+    """
     (vault / ".scout-state").mkdir(parents=True)
-    (vault / "SKILL.md").write_text(_LEGACY_SKILL, encoding="utf-8")
-    (vault / "DREAMING.md").write_text("---\nname: scout-dreaming\n---\n\nVault-grown dreaming.\n", encoding="utf-8")
-    (vault / "RESEARCH.md").write_text("---\nname: scout-research\n---\n\nVault-grown research.\n", encoding="utf-8")
+    (vault / layout.V2["brain_dir"]).mkdir(parents=True)
+    (_live(vault, "SKILL")).write_text(_LEGACY_SKILL, encoding="utf-8")
+    (_live(vault, "DREAMING")).write_text("---\nname: scout-dreaming\n---\n\nVault-grown dreaming.\n", encoding="utf-8")
+    (_live(vault, "RESEARCH")).write_text("---\nname: scout-research\n---\n\nVault-grown research.\n", encoding="utf-8")
 
 
 def _brains(vault: Path) -> list[bytes]:
-    return _bytes(*(vault / f"{k}.md" for k in ("SKILL", "DREAMING", "RESEARCH")))
+    return _bytes(*(_live(vault, k) for k in ("SKILL", "DREAMING", "RESEARCH")))
 
 
 def test_an_m3_shaped_legacy_vault_keeps_its_live_brain(tmp_path: Path) -> None:
@@ -453,7 +466,7 @@ def test_an_m3_shaped_legacy_vault_keeps_its_live_brain(tmp_path: Path) -> None:
     first = upgrade(_config(vault, plugin, "0.4.1"))
     assert _brains(vault) == before
     assert sorted(first.conflicts) == sorted(f"{k}.md.proposed-merge" for k in _PHASES)
-    proposal = (vault / "SKILL.md.proposed-merge").read_text()
+    proposal = (_sidecar(vault, "SKILL")).read_text()
     assert proposal.startswith("# SKILL\n") and "Added by the plugin." in proposal
 
     second = upgrade(_config(vault, plugin, "0.4.2"))
@@ -468,7 +481,7 @@ def test_an_m3_vault_edited_since_migration_is_never_merged(tmp_path: Path) -> N
     vault = tmp_path / "Scout"
     _legacy_vault(vault)
     migrate_legacy(_config(vault, plugin))
-    live = vault / "SKILL.md"
+    live = _live(vault, "SKILL")
     live.write_text(
         live.read_text().replace("draft the digest.", "draft the digest.\nStep three-b: added in the vault."),
         encoding="utf-8",
@@ -506,14 +519,14 @@ def test_adopting_the_proposal_converges_on_the_next_upgrade(tmp_path: Path) -> 
     _write_phase(plugin, "SKILL", "Added by the plugin.")
     upgrade(_config(vault, plugin, "0.4.1"))
 
-    (vault / "SKILL.md.proposed-merge").rename(vault / "SKILL.md")  # Alex adopts the plugin's brain
+    (_sidecar(vault, "SKILL")).rename(_live(vault, "SKILL"))  # Alex adopts the plugin's brain
     _write_phase(plugin, "SKILL", "Added by the plugin.\nAdded later.")
     result = upgrade(_config(vault, plugin, "0.4.2"))
 
-    live = (vault / "SKILL.md").read_text()
+    live = (_live(vault, "SKILL")).read_text()
     assert "Added later." in live
     assert "SKILL.md.proposed-merge" not in result.conflicts
-    assert not (vault / "SKILL.md.proposed-merge").exists()
+    assert not (_sidecar(vault, "SKILL")).exists()
     assert _snapshot(vault, "SKILL").read_text() == live
 
 
@@ -527,8 +540,8 @@ def test_an_adopted_proposal_edited_before_the_next_upgrade_converges_once_resol
     _write_phase(plugin, "SKILL", "Added by the plugin.")
     upgrade(_config(vault, plugin, "0.4.1"))
 
-    live = vault / "SKILL.md"
-    (vault / "SKILL.md.proposed-merge").rename(live)
+    live = _live(vault, "SKILL")
+    (_sidecar(vault, "SKILL")).rename(live)
     live.write_text(live.read_text() + "\nA step applied by a dreaming run.\n", encoding="utf-8")
     resolved = resolve_brain_file(vault, "SKILL")
     _change_line(plugin, "read the inbox.", "triage the inbox.")
@@ -546,7 +559,7 @@ def test_resolving_a_conflict_merges_the_next_change_against_the_resolution(tmp_
     plugin = _plugin(tmp_path)
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
-    live = vault / "SKILL.md"
+    live = _live(vault, "SKILL")
     live.write_text(live.read_text().replace("read the inbox.", "read the inbox twice."), encoding="utf-8")
     _change_line(plugin, "read the inbox.", "triage the inbox.")
     upgrade(_config(vault, plugin, "0.4.1"))
@@ -556,7 +569,7 @@ def test_resolving_a_conflict_merges_the_next_change_against_the_resolution(tmp_
     _change_line(plugin, "notify Alex.", "notify Alex and Priya.")
     result = upgrade(_config(vault, plugin, "0.4.2"))
 
-    assert resolved.removed_sidecar and not (vault / "SKILL.md.proposed-merge").exists()
+    assert resolved.removed_sidecar and not (_sidecar(vault, "SKILL")).exists()
     assert result.conflicts == []
     text = live.read_text()
     assert "triage the inbox twice." in text and "notify Alex and Priya." in text
@@ -566,11 +579,11 @@ def test_resolve_refuses_while_conflict_markers_remain(tmp_path: Path) -> None:
     plugin = _plugin(tmp_path)
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
-    live = vault / "SKILL.md"
+    live = _live(vault, "SKILL")
     live.write_text(live.read_text().replace("read the inbox.", "read the inbox twice."), encoding="utf-8")
     _change_line(plugin, "read the inbox.", "triage the inbox.")
     upgrade(_config(vault, plugin, "0.4.1"))
-    sidecar = vault / "SKILL.md.proposed-merge"
+    sidecar = _sidecar(vault, "SKILL")
     sidecar_text = sidecar.read_text()
     sidecar.rename(live)  # moved into place without removing the markers
 
@@ -591,11 +604,11 @@ def test_resolve_refuses_when_the_live_file_is_missing(tmp_path: Path) -> None:
     plugin = _plugin(tmp_path)
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
-    (vault / "SKILL.md.proposed-merge").write_text("pending\n", encoding="utf-8")
-    (vault / "SKILL.md").unlink()
+    (_sidecar(vault, "SKILL")).write_text("pending\n", encoding="utf-8")
+    (_live(vault, "SKILL")).unlink()
     with pytest.raises(FileNotFoundError, match="SKILL.md is missing"):
         resolve_brain_file(vault, "SKILL")
-    assert (vault / "SKILL.md.proposed-merge").exists()
+    assert (_sidecar(vault, "SKILL")).exists()
 
 
 def test_resolve_removes_a_sidecar_an_older_engine_left(tmp_path: Path) -> None:
@@ -604,13 +617,13 @@ def test_resolve_removes_a_sidecar_an_older_engine_left(tmp_path: Path) -> None:
     plugin = _plugin(tmp_path)
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
-    (vault / "SKILL.md.proposed-merge").write_text("from an older engine\n", encoding="utf-8")
+    (_sidecar(vault, "SKILL")).write_text("from an older engine\n", encoding="utf-8")
     snapshot_before = _snapshot(vault, "SKILL").read_bytes()
 
     resolved = resolve_brain_file(vault, "SKILL")
 
     assert resolved.removed_sidecar and not resolved.recorded_base
-    assert not (vault / "SKILL.md.proposed-merge").exists()
+    assert not (_sidecar(vault, "SKILL")).exists()
     assert _snapshot(vault, "SKILL").read_bytes() == snapshot_before
 
 
@@ -621,7 +634,7 @@ def _backport(vault: Path, plugin: Path) -> list[tuple[str, list[str]]]:
     cfg = _config(vault, plugin)
     vars_ = _template_vars(cfg)
     sections = build_rendered_sections(plugin / "phases", "SKILL", vars_, set())
-    results = plan_backport(_snapshot(vault, "SKILL").read_text(), (vault / "SKILL.md").read_text(), sections, vars_)
+    results = plan_backport(_snapshot(vault, "SKILL").read_text(), (_live(vault, "SKILL")).read_text(), sections, vars_)
     return [(r.status, r.added) for r in results]
 
 
@@ -629,12 +642,12 @@ def test_backport_still_maps_a_vault_edit_after_a_skipped_upgrade(tmp_path: Path
     plugin = _plugin(tmp_path)
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
-    live = vault / "SKILL.md"
+    live = _live(vault, "SKILL")
     live.write_text(
         live.read_text().replace("Step one: read the inbox.", "Step one: read the inbox.\nCheck the review queue too."),
         encoding="utf-8",
     )
-    (vault / "SKILL.md.proposed-merge").write_text("pending\n", encoding="utf-8")
+    (_sidecar(vault, "SKILL")).write_text("pending\n", encoding="utf-8")
     _write_phase(plugin, "DREAMING", "Added by the plugin.")
     upgrade(_config(vault, plugin, "0.4.1"))
 
@@ -648,7 +661,7 @@ def test_backport_sees_no_vault_edit_after_a_fast_forward(tmp_path: Path) -> Non
     _write_phase(plugin, "SKILL", "Added by the plugin.")
     upgrade(_config(vault, plugin, "0.4.1"))
 
-    assert "Added by the plugin." in (vault / "SKILL.md").read_text()
+    assert "Added by the plugin." in (_live(vault, "SKILL")).read_text()
     assert _backport(vault, plugin) == []
 
 
@@ -677,7 +690,7 @@ def test_an_upgrade_installs_a_brain_kind_new_to_the_vault(tmp_path: Path) -> No
     _write_respond_phase(plugin)
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
-    (vault / "RESPOND.md").unlink()
+    (_live(vault, "RESPOND")).unlink()
     _snapshot(vault, "RESPOND").unlink()
     prov = vault / ".scout-state" / "last-assembled" / PROVENANCE_FILE
     data = json.loads(prov.read_text())
@@ -686,7 +699,7 @@ def test_an_upgrade_installs_a_brain_kind_new_to_the_vault(tmp_path: Path) -> No
 
     result = upgrade(_config(vault, plugin, "0.4.1"))
 
-    live = vault / "RESPOND.md"
+    live = _live(vault, "RESPOND")
     assert live.exists()
     assert "Step one: read the owner's message." in live.read_text()
     assert _snapshot(vault, "RESPOND").read_text() == live.read_text()
@@ -694,7 +707,7 @@ def test_an_upgrade_installs_a_brain_kind_new_to_the_vault(tmp_path: Path) -> No
     # Nothing was replaced, so nothing is parked (no record is the pre-provenance shape).
     assert result.backups == [] and result.conflicts == [] and result.skipped == []
     assert result.installed == ["RESPOND.md"]
-    assert not (vault / "RESPOND.md.proposed-merge").exists()
+    assert not (_sidecar(vault, "RESPOND")).exists()
     assert not any("brain file missing" in w for w in result.doctor.warnings)
 
 
@@ -707,15 +720,15 @@ def test_an_upgrade_repairs_a_brain_file_recorded_as_installed_but_missing(
     _write_respond_phase(plugin)
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
-    (vault / "RESPOND.md").unlink()
+    (_live(vault, "RESPOND")).unlink()
     assert _records(vault)["RESPOND.md"]["snapshot"] == "assembled"
-    other_brains = _bytes(vault / "SKILL.md", vault / "DREAMING.md", vault / "RESEARCH.md")
+    other_brains = _bytes(_live(vault, "SKILL"), _live(vault, "DREAMING"), _live(vault, "RESEARCH"))
     if plugin_changed:
         _write_respond_phase(plugin, "Step three: added by the plugin.")
 
     result = upgrade(_config(vault, plugin, "0.4.1"))
 
-    live = (vault / "RESPOND.md").read_text()
+    live = (_live(vault, "RESPOND")).read_text()
     assert "Step two: answer it." in live
     assert ("Step three: added by the plugin." in live) is plugin_changed
     assert _snapshot(vault, "RESPOND").read_text() == live
@@ -723,5 +736,5 @@ def test_an_upgrade_repairs_a_brain_file_recorded_as_installed_but_missing(
     assert result.installed == ["RESPOND.md"]
     # A second upgrade finds it in place and installs nothing.
     assert upgrade(_config(vault, plugin, "0.4.2")).installed == []
-    assert _bytes(vault / "SKILL.md", vault / "DREAMING.md", vault / "RESEARCH.md") == other_brains
+    assert _bytes(_live(vault, "SKILL"), _live(vault, "DREAMING"), _live(vault, "RESEARCH")) == other_brains
     assert not any("brain file missing" in w for w in result.doctor.warnings)

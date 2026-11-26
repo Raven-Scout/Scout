@@ -32,7 +32,7 @@ Protected (each with the form name a deny and the audit row use):
   (:data:`OWNER_STATE_NAMES`: the sandbox switch, provider consent, run limits, the run
   brokers' folder, the reviewed doctor warnings and the changes map's owner rows);
 - ``Scout's runner scripts``: the vault files bootstrap installs and runs (``run-*.sh``,
-  ``scripts/claude-with-retry.sh``, ``scripts/scoutctl`` …; :data:`RUNNER_FILES`);
+  ``scout/scripts/claude-with-retry.sh``, ``scout/scripts/scoutctl`` …; :data:`RUNNER_FILES`);
 - ``startup files``: the shell's login and rc files and ``~/Library/LaunchAgents``;
 - ``ssh config``: ``~/.ssh`` (its config and keys decide what ``git push`` over ssh runs after a run; the OS
   sandbox lets ssh itself add to ``known_hosts``);
@@ -141,8 +141,34 @@ SHELL_STARTUP = (".zshenv", ".zshrc", ".zprofile", ".zlogin", ".bash_profile", "
 
 # The vault files bootstrap installs and the runners execute (scout.scripts.bootstrap: _CAT1_TEMPLATES but the
 # .gitignore, _CAT1B_RUNNERS, and the scripts in _CAT1_FILES_FROM_PLUGIN). Copied so the hook needn't import
-# bootstrap; tests/unit/test_hooks_write_gate.py keeps the two in step.
-RUNNER_FILES: tuple[str, ...] = (
+# bootstrap; tests/unit/test_hooks_write_gate.py keeps the two in step. Layout v2 paths first, then the v1 paths
+# they had: during the layout move a vault can be on either, and compatibility links stand at the v1 ones.
+V2_RUNNER_FILES: tuple[str, ...] = (
+    "scout/runners/run-scout.sh",
+    "scout/runners/run-dreaming.sh",
+    "scout/runners/run-research.sh",
+    "scout/runners/run-respond.sh",
+    "scout/scripts/scout-tz.sh",
+    "scout/scripts/scoutctl",
+    "scout/scripts/budget-check.sh",
+    "scout/scripts/heartbeat.sh",
+    "scout/scripts/pre-session-data.sh",
+    "scout/scripts/cc-session-cache.sh",
+    "scout/scripts/write-session-cost.sh",
+    "scout/scripts/rate-limit-detect.sh",
+    "scout/scripts/claude-with-retry.sh",
+    "scout/scripts/post-session-backfill.sh",
+    "scout/scripts/materialize-daily-file.sh",
+    "scout/scripts/run-outcome.sh",
+    "scout/scripts/scout-lock.sh",
+    "scout/scripts/git-safe-commit.sh",
+    "scout/hooks/kb-pre-filter.sh",
+    "scout/scripts/recurring-task-status.py",
+    "scout/scripts/vault-freshness.py",
+    "scout/scripts/session-lane-liveness.py",
+    "scout/scripts/kb-shard-log.py",
+)
+V1_RUNNER_FILES: tuple[str, ...] = (
     "run-scout.sh",
     "run-dreaming.sh",
     "run-research.sh",
@@ -167,6 +193,7 @@ RUNNER_FILES: tuple[str, ...] = (
     "scripts/session-lane-liveness.py",
     "scripts/kb-shard-log.py",
 )
+RUNNER_FILES: tuple[str, ...] = (*V2_RUNNER_FILES, *V1_RUNNER_FILES)
 
 
 @dataclass(frozen=True)

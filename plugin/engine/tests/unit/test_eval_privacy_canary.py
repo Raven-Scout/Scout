@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from tests.eval.harness.checks.privacy_canary import (
     PrivacyOutputs,
     leading_indicators,
@@ -174,7 +175,7 @@ def test_the_scenario_vault_builds_with_the_brain_append_and_a_private_permit(tm
 
     sc = load_scenario("privacy-canary")
     vault = build_vault(tmp_path / "vault", today=MONDAY, scenario_dir=sc.path, connectors=sc.connectors)
-    skill = (vault / "SKILL.md").read_text(encoding="utf-8")
+    skill = (vault / layout.brain_path("SKILL")).read_text(encoding="utf-8")
     assert skill.rstrip().endswith((sc.path / "brain" / "SKILL.md").read_text(encoding="utf-8").rstrip())
     assert "## Privacy: owner-only and shared surfaces" in skill
     permit = (vault / "knowledge-base" / "personal" / "task-renew-permit.md").read_text(encoding="utf-8")
@@ -184,7 +185,7 @@ def test_the_scenario_vault_builds_with_the_brain_append_and_a_private_permit(tm
     labels = subprocess.run(
         [str(ENGINE / ".venv" / "bin" / "scoutctl"), "kb", "classify", "--json",
          "knowledge-base/personal/task-renew-permit.md", "knowledge-base/people/sam.md",
-         "knowledge-base/people/priya.md"],
+         "knowledge-base/work/people/sam-work.md", "knowledge-base/people/priya.md"],
         cwd=vault, capture_output=True, text=True,
     )  # fmt: skip
     assert labels.returncode == 0, labels.stderr
@@ -192,6 +193,7 @@ def test_the_scenario_vault_builds_with_the_brain_append_and_a_private_permit(tm
     assert by_path == {
         "knowledge-base/personal/task-renew-permit.md": "private",
         "knowledge-base/people/sam.md": "private",
+        "knowledge-base/work/people/sam-work.md": "private",
         "knowledge-base/people/priya.md": "normal",
     }
 
@@ -326,7 +328,7 @@ def test_a_variant_builds_from_its_files_from_scenario(tmp_path: Path) -> None:
     sc = load_scenario("privacy-canary-dreaming")
     vault = build_vault(tmp_path / "vault", today=MONDAY, scenario_dir=sc.files, connectors=sc.connectors)
     assert PERMIT in (vault / "knowledge-base" / "personal" / "task-renew-permit.md").read_text(encoding="utf-8")
-    assert (vault / "run-dreaming.sh").is_file()
+    assert (vault / layout.runner_path("run-dreaming.sh")).is_file()
 
 
 def test_drafts_changed_reads_git_and_returns_none_when_git_fails(tmp_path: Path) -> None:

@@ -21,6 +21,7 @@ from pathlib import Path
 
 import yaml
 
+from scout import layout as _layout
 from scout.config import config_load_problem
 from scout.doctor_triage import TriageEntry, WarningMeta
 from scout.health import CLI_AUTH_FAILURE_ERE, RunHealth  # noqa: F401  (re-export; test_claude_with_retry pins it)
@@ -81,12 +82,21 @@ class DoctorReport:
 # import). Upgrades no longer write one, but one left behind still blocks.
 _LEGACY_SIDECAR_FILES = ("knowledge-base/ontology/parser.py",)
 
+# Keyed for the vault's layout (scout.layout): (path-table key, file name), or a fixed vault-relative path.
 _REQUIRED_CAT1_FILES = (
-    "scripts/heartbeat.sh",
+    ("scripts_dir", "heartbeat.sh"),
     "knowledge-base/ontology/parser.py",
     "action-items/render.py",
-    "hooks/kb-pre-filter.sh",
+    ("hooks_dir", "kb-pre-filter.sh"),
 )
+
+
+def _required_cat1(vault: Path) -> list[str]:
+    from scout import layout
+
+    lay = layout.for_vault(vault)
+    return [f"{lay[r[0]]}/{r[1]}" if isinstance(r, tuple) else r for r in _REQUIRED_CAT1_FILES]
+
 
 # macOS TCC-protected directories — launchd-spawned processes cannot read files
 # inside these without Full Disk Access granted to the executable.
@@ -232,6 +242,61 @@ def _check_linux_cron_scoutctl_bin() -> tuple[list[str], list[str]]:
         errors.append(f"crontab references non-existent scoutctl: {scoutctl_bin}. {fix_hint}")
     elif not os.access(scoutctl_bin, os.X_OK):
         errors.append(f"crontab references non-executable scoutctl: {scoutctl_bin}. {fix_hint}")
+    return errors, warnings
+
+
+def _check_layout(*, vault: Path, home: Path | None = None) -> tuple[list[str], list[str]]:
+    """The vault layout (spec 2026-11-26 §4.9, §4.12): an interrupted move (red), a deferred one, unknown
+    root entries, compatibility links left behind, a brain file a v1 writer turned back into a real file, and
+    the heartbeat job's script (it is what starts self-update)."""
+    from scout import layout_migrate
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    if _layout.move_in_progress(vault):
+        errors.append(
+            "layout move interrupted: a journal is left in .scout-state/migrations/layout-v2/; runs are paused until "
+            "it is finished. Fix: `scoutctl bootstrap upgrade` (or /scout-update) recovers it"
+        )
+        return errors, warnings
+    version = _layout.layout_version(vault)
+    if version < 2:
+        deferred = layout_migrate.deferral(vault)
+        if deferred:
+            warnings.append(f"layout move deferred: {deferred.get('reason', '')}")
+        return errors, warnings
+    unknown = sorted(
+        p.name
+        for p in vault.iterdir()
+        if p.name not in _layout.KNOWN_ROOT_ENTRIES and not p.is_symlink() and not p.name.startswith(".")
+    )
+    if unknown:
+        shown = ", ".join(unknown[:5]) + (f" and {len(unknown) - 5} more" if len(unknown) > 5 else "")
+        warnings.append(f"unknown files in the vault root: {shown}. Scout never moves them; reports go to reports/")
+    links = layout_migrate.compat_links_present(vault)
+    if links:
+        warnings.append(
+            f"layout v2 compatibility links still in the vault root ({', '.join(links)}); the next upgrade removes "
+            "them once the jobs, pointer, git hook and installed plugin are on layout v2 paths"
+        )
+    real = [n for n in layout_migrate.BRAIN_FILES if (vault / n).is_file() and not (vault / n).is_symlink()]
+    if real:
+        warnings.append(
+            f"{', '.join(real)} at the vault root is a real file again (an older Scout wrote it): the runs read "
+            f"{_layout.V2['brain_dir']}/. Merge what you want into {_layout.V2['brain_dir']}/ and delete the root copy"
+        )
+    plist = (home or Path.home()) / "Library" / "LaunchAgents" / "com.scout.heartbeat.plist"
+    if plist.is_file():
+        try:
+            args = plistlib.loads(plist.read_bytes()).get("ProgramArguments") or []
+        except (OSError, ValueError, plistlib.InvalidFileException, xml.parsers.expat.ExpatError):
+            args = []
+        script = next((a for a in args if isinstance(a, str) and a.endswith("heartbeat.sh")), None)
+        if script and str(vault) in script and not Path(script).exists():
+            errors.append(
+                f"the heartbeat job runs {script}, which doesn't exist: self-update can't start. "
+                "Fix: `scoutctl bootstrap upgrade` reinstalls the job on the current path"
+            )
     return errors, warnings
 
 
@@ -440,7 +505,7 @@ def _check_runner_claude_bin(*, vault: Path) -> tuple[list[str], list[str]]:
     native ~/.local/bin installer) makes every scheduled run fail before Claude
     starts, and nothing else surfaces it.
     """
-    runner = vault / "run-scout.sh"
+    runner = vault / _layout.for_vault(vault).runner("run-scout.sh")
     if not runner.exists():
         return [], []  # missing runner is reported by the cat-1 file check
     match = _CLAUDE_BIN_LINE.search(runner.read_text(encoding="utf-8", errors="replace"))
@@ -460,12 +525,12 @@ _YEAR_RE = re.compile(r"\d{4}")
 
 
 def _check_scout_tz(*, vault: Path) -> list[str]:
-    """The brain dates through ``scripts/scout-tz.sh date '+FORMAT'``; an older copy prints the zone name for it.
+    """The brain dates through ``scout/scripts/scout-tz.sh date '+FORMAT'``; an older copy prints the zone name for it.
 
     That exits 0, so every weekday and filename date a run writes would come out as a zone name and nothing would
     say so. An upgrade that kept an edited copy, or a vault restored from an old backup, leaves one.
     """
-    script = vault / "scripts" / "scout-tz.sh"
+    script = vault / _layout.for_vault(vault).script("scout-tz.sh")
     if not script.is_file():
         return []  # a missing script is reported by the cat-1 file check
     env = {**os.environ, "SCOUT_DATA_DIR": str(vault)}
@@ -475,13 +540,13 @@ def _check_scout_tz(*, vault: Path) -> list[str]:
             capture_output=True, text=True, timeout=10, env=env, stdin=subprocess.DEVNULL, check=False,
         )  # fmt: skip
     except (OSError, subprocess.SubprocessError) as e:
-        return [f"scripts/scout-tz.sh date +%Y could not run ({e}): runs can't date anything in your timezone."]
+        return [f"scout/scripts/scout-tz.sh date +%Y could not run ({e}): runs can't date anything in your timezone."]
     printed = out.stdout.strip()
     if out.returncode == 0 and _YEAR_RE.fullmatch(printed):
         return []
     shown = printed[:40] or f"nothing, exit {out.returncode}"
     return [
-        f"scripts/scout-tz.sh date +%Y printed {shown!r}, not a year: it is older than this plugin or edited, so "
+        f"scout/scripts/scout-tz.sh date +%Y printed {shown!r}, not a year: it is older than this plugin or edited, so "
         "the dates and weekdays runs write come out wrong. Run /scout-update (`scoutctl bootstrap drift` shows a "
         "kept edit)."
     ]
@@ -861,14 +926,14 @@ def _check_claude_auth(*, home: Path, vault: Path, now: datetime | None = None) 
         warnings.append(
             f"the long-lived Claude token scheduled runs use {expiry}; renew it: {claude_auth.SETUP_COMMAND}"
         )
-    wrapper = vault / "scripts" / "claude-with-retry.sh"
+    wrapper = vault / _layout.for_vault(vault).script("claude-with-retry.sh")
     try:
         exports = "claude-oauth-token" in wrapper.read_text(encoding="utf-8", errors="replace")
     except OSError:
         exports = True  # a missing runner is the cat-1 check's to report
     if not exports:
         warnings.append(
-            "a long-lived Claude token is stored, but this vault's scripts/claude-with-retry.sh predates it "
+            "a long-lived Claude token is stored, but this vault's scout/scripts/claude-with-retry.sh predates it "
             "and never passes it to Claude; run /scout-update (or scoutctl bootstrap upgrade)"
         )
     return warnings, notes
@@ -1461,7 +1526,7 @@ def run_doctor(
             errors.append("scout-config.yaml: plugin.version_at_last_update missing")
 
     # Cat-1 files must exist with non-zero content.
-    for rel in _REQUIRED_CAT1_FILES:
+    for rel in _required_cat1(vault):
         path = vault / rel
         if not path.exists():
             errors.append(f"cat-1 file missing: {rel}")
@@ -1477,16 +1542,17 @@ def run_doctor(
     # A live brain file missing (yellow): the runs it drives go without their
     # instructions. Engines up to v0.18.22 recorded a brain kind new to the vault
     # (RESPOND.md) as installed without writing it; the next upgrade installs it.
+    brain = _layout.for_vault(vault)
     for name in BRAIN_KINDS:
-        if not (vault / f"{name}.md").exists():
-            warnings.append(_missing_brain_warning(vault, f"{name}.md"))
+        if not (vault / brain.brain(name)).exists():
+            warnings.append(_missing_brain_warning(vault, brain.brain(name)))
 
     # Pending brain-file sidecars (yellow): upgrades skip that file, so it is
     # not receiving plugin changes until the sidecar is resolved.
     pending = pending_brain_sidecars(vault)
     for sidecar_name in pending:
         live_name = sidecar_name.removesuffix(".proposed-merge")
-        if _has_markers(vault / sidecar_name):
+        if _has_markers(vault / brain["brain_dir"] / sidecar_name if brain["brain_dir"] else vault / sidecar_name):
             # A merge with conflicts: it already holds the vault's version.
             how = f"(e.g. `mv {sidecar_name} {live_name}` and remove any conflict markers)"
         else:
@@ -1504,7 +1570,7 @@ def run_doctor(
     # and upgrades hold the file until the markers are gone.
     for kind in BRAIN_KINDS:
         live_name = f"{kind}.md"
-        if _has_markers(vault / live_name):
+        if _has_markers(vault / brain.brain(kind)):
             warnings.append(
                 f"{live_name} has conflict markers (<<<<<<< / >>>>>>>) from an unfinished merge — "
                 f"upgrades leave {live_name} as is until they are removed"
@@ -1514,7 +1580,7 @@ def run_doctor(
     for kind in BRAIN_KINDS:
         live_name = f"{kind}.md"
         proposed = snapshot_dir / PROPOSED_DIR / live_name
-        live = vault / live_name
+        live = vault / brain.brain(kind)
         if sidecar_name_for(kind) in pending or not proposed.exists() or not live.exists():
             continue
         if proposed.read_bytes() != live.read_bytes():
@@ -1544,6 +1610,9 @@ def run_doctor(
     warnings.extend(_check_backlog_lint(vault=vault))
     warnings.extend(_check_action_items_conflicts(vault=vault))
     warnings.extend(_check_scout_tz(vault=vault))
+    layout_errors, layout_warnings = _check_layout(vault=vault, home=home)
+    errors.extend(layout_errors)
+    warnings.extend(layout_warnings)
     meta: dict[str, WarningMeta] = {}
 
     def protection(found: list[str]) -> list[str]:

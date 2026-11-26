@@ -18,13 +18,13 @@ Report what {{USER_NAME}} did in Linear since the last run — the issues {{USER
 - **Otherwise** (`linear_own_activity` is null; `linear_own_activity_status` says why), build it from Linear: issues updated since `linear_own_activity_since`, keeping only {{USER_NAME}}'s own actions. If it comes back empty for a normally-active window, re-fetch before writing `- None since <when>`. If Linear can't be read, write `- Linear unavailable: <error>`.
 - **Dated issues assigned to {{USER_NAME}}** are pre-fetched with the same key as `linear_assigned_due` (each open one with a due date, whoever touched it). Each needs a task line in a tier, with `due <date>` and `Refs: <identifier>`, not only a digest line; `check-tier-ceiling` (*Deadline-Distance Ceiling*) names any that has none.
 - **Re-fetch fast-moving issues at compose time:** any issue you're about to cite with a state framing ("In Review", "blocked") must be re-read at compose time, not carried from cache (mirrors the Gmail/Pattern #43 rule).
-- **Before committing**, run `scripts/scoutctl action-items check-linear-delta --data-dir {{SCOUT_DIR}}`. Exit 1 names what's missing: add it and run it again. Exit 2 (it couldn't check): note `linear-delta check could not run: <its message>` in this run's 🪵 Run notes entry.
+- **Before committing**, run `scout/scripts/scoutctl action-items check-linear-delta --data-dir {{SCOUT_DIR}}`. Exit 1 names what's missing: add it and run it again. Exit 2 (it couldn't check): note `linear-delta check could not run: <its message>` in this run's 🪵 Run notes entry.
 
 ### Project-Update Polling for {{USER_NAME}}-Led Projects (leadership pings)
 
 `list_issues` + issue comments **miss project-level status-update comments**, which is where leadership often pings. For every Linear project {{USER_NAME}} leads or owns, call `get_status_updates` (and `list_comments` on the project) for updates since the last run.
 
-**Leadership-ping headline rule:** if a project-update comment on {{USER_NAME}}'s own project comes from someone with a managerial/leadership relationship to {{USER_NAME}} (`.scout-cache/session-context.json` → `people_context.owner_managers` lists them, from the ontology's `manages`/`managed_by`/`reports_to` relations, when its `generated_at` is today; for someone not listed, or with no file from today, check `people.md` or `scripts/scoutctl kb related <person>`), auto-promote it to the run summary's 🔴 headline — a manager's ask on {{USER_NAME}}'s project is the highest-priority inbound signal and must not be buried.
+**Leadership-ping headline rule:** if a project-update comment on {{USER_NAME}}'s own project comes from someone with a managerial/leadership relationship to {{USER_NAME}} (`.scout-cache/session-context.json` → `people_context.owner_managers` lists them, from the ontology's `manages`/`managed_by`/`reports_to` relations, when its `generated_at` is today; for someone not listed, or with no file from today, check `people.md` or `scout/scripts/scoutctl kb related <person>`), auto-promote it to the run summary's 🔴 headline — a manager's ask on {{USER_NAME}}'s project is the highest-priority inbound signal and must not be buried.
 
 ### Status Changes
 
@@ -118,7 +118,7 @@ requires: linear
 
 ## Linear-Sourced KB Updates
 
-After scanning Linear, update the knowledge base with current issue data. **Issue status staleness is the most common form of KB rot** — treat this update step as critical. Find the notes to update through `scoutctl kb`, never `cat`, `ls`, `find`, `grep` or Glob in `knowledge-base/`: `scripts/scoutctl kb name-lookup <name>` for a person, `kb resolve <name>` for a project or other note, `kb read <path>` for one you aren't changing. Open a note with Read only to edit it.
+After scanning Linear, update the knowledge base with current issue data. **Issue status staleness is the most common form of KB rot** — treat this update step as critical. Find the notes to update through `scoutctl kb`, never `cat`, `ls`, `find`, `grep` or Glob in `knowledge-base/`: `scout/scripts/scoutctl kb name-lookup <name>` for a person, `kb resolve <name>` for a project or other note, `kb read <path>` for one you aren't changing. Open a note with Read only to edit it.
 
 ### Issue Tracker Sync
 

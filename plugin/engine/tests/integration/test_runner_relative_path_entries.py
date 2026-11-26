@@ -4,7 +4,7 @@ Scheduled runs get a fixed absolute PATH from their plist, but a manual one (the
 scout-briefing skill, the app's Run now) inherits the user's PATH with the vault as
 cwd. A relative entry there (`.`, `node_modules/.bin`, an empty one) would let a
 `python3`, `date` or `mkdir` planted in the vault run in place of the real one: the
-runner calls them by name, and so does scripts/scout-lock.sh (`python3 -I` for the
+runner calls them by name, and so does scout/scripts/scout-lock.sh (`python3 -I` for the
 awake clock, on every lock sample and at each run's start).
 """
 
@@ -46,9 +46,9 @@ def vault(tmp_path: Path) -> Path:
     v = tmp_path / "Scout"
     (v / ".scout-logs").mkdir(parents=True)
     _script(v / "bin" / "scoutctl", "#!/bin/bash\nexit 0\n")
-    _render(TEMPLATES / "scripts" / "run-outcome.sh.tmpl", v / "scripts" / "run-outcome.sh", v)
-    _render(TEMPLATES / "scripts" / "scout-lock.sh.tmpl", v / "scripts" / "scout-lock.sh", v)
-    _script(v / "scripts" / "claude-with-retry.sh", f'#!/bin/bash\ntouch "{v}/session-ran"\n')
+    _render(TEMPLATES / "scripts" / "run-outcome.sh.tmpl", v / "scout" / "scripts" / "run-outcome.sh", v)
+    _render(TEMPLATES / "scripts" / "scout-lock.sh.tmpl", v / "scout" / "scripts" / "scout-lock.sh", v)
+    _script(v / "scout" / "scripts" / "claude-with-retry.sh", f'#!/bin/bash\ntouch "{v}/session-ran"\n')
     return v
 
 
@@ -60,7 +60,7 @@ def _assert_nothing_planted_ran(marker: Path, out: subprocess.CompletedProcess[s
 
 @pytest.mark.parametrize("runner", sorted(RUNNERS))
 def test_a_manual_run_from_the_vault_never_runs_a_planted_program(vault: Path, runner: str) -> None:
-    script = _render(TEMPLATES / runner, vault / runner.removesuffix(".tmpl"), vault)
+    script = _render(TEMPLATES / runner, vault / "scout" / "runners" / runner.removesuffix(".tmpl"), vault)
     marker = _plant(vault)
 
     out = subprocess.run(
@@ -83,7 +83,7 @@ def test_scout_lock_sourced_alone_takes_python3_only_from_an_absolute_entry(vaul
     marker = _plant(vault)
 
     out = subprocess.run(
-        ["/bin/bash", "-c", 'source scripts/scout-lock.sh && _scout_awake_now && printf "%s\\n" "$PATH"'],
+        ["/bin/bash", "-c", 'source scout/scripts/scout-lock.sh && _scout_awake_now && printf "%s\\n" "$PATH"'],
         env={**os.environ, "PATH": _hostile_path()},
         cwd=vault,
         capture_output=True,

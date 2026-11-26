@@ -339,7 +339,7 @@ def test_respond_brain_excludes_slack_and_telegram_wrap_sections():
 
 def test_brain_kinds_include_respond():
     """Every map of the brain files names RESPOND, with the sources and modes `_assemble` uses."""
-    from scout import diagnostics
+    from scout import diagnostics, layout
     from scout.changes.scan import BRAIN_FILES
     from scout.scripts.brain_merge import BRAIN_KINDS
     from scout.scripts.custom_assembly import TARGET_MODES
@@ -349,5 +349,6 @@ def test_brain_kinds_include_respond():
     names = {f"{k}.md" for k in BRAIN_KINDS}
     assert set(TARGET_MODES) == set(BRAIN_KINDS) and TARGET_MODES["RESPOND"] == {"respond"}
     assert set(_ASSEMBLY_MAP) == set(BRAIN_KINDS) and _ASSEMBLY_MAP["RESPOND"] == (("core", "respond"), {"respond"})
-    assert names == BRAIN_FILES
+    # The changes scanner reads old commits too, so it knows each brain at its v1 (root) and v2 path.
+    assert BRAIN_FILES == names | {layout.brain_path(k) for k in BRAIN_KINDS}
     assert names <= diagnostics._STRUCTURAL_FILES and names <= diagnostics._STRUCTURAL_MD

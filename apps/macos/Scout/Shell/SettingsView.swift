@@ -286,7 +286,7 @@ struct SettingsView: View {
         section(label: "Folders") {
             SettingsCard {
                 folderField("Dreaming proposals folder", path: $dreamingProposalsPath,
-                            defaultRelative: "dreaming-proposals", reads: "Proposals")
+                            defaultRelative: VaultLayout.dreamingProposalsDir, reads: "Proposals")
                 folderField("Wishlist folder", path: $wishlistPath,
                             defaultRelative: PerFileTabConfig.wishlist.directoryDefaultRelative, reads: "Wishlist")
                 folderField("Research queue folder", path: $researchQueuePath,

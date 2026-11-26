@@ -7,7 +7,7 @@ description: Run an interactive Scout meta-review — a system-level audit that 
 
 Run an interactive Scout **Meta Review** — a system-level audit that sits ABOVE the individual session types (briefing, consolidation, dreaming, research, work).
 
-This is NOT a Scout session. It does not read SKILL.md or DREAMING.md. It reviews the Scout system itself: are all the parts working together? Are improvements actually improving things? Is anything rotting, stalling, or drifting?
+This is NOT a Scout session. It does not read the brain skills (`scout/brain/SKILL.md`, `DREAMING.md`). It reviews the Scout system itself: are all the parts working together? Are improvements actually improving things? Is anything rotting, stalling, or drifting?
 
 Run this in the **current conversation** so the user has full visibility. Run it weekly, or whenever something feels off.
 
@@ -75,7 +75,7 @@ cat <SCOUT_DIR>/.scout-logs/usage-tracker.jsonl 2>/dev/null | tail -20
 
 ### 2a: Mistake Audit Trends
 
-Read `knowledge-base/scout-mistake-audit.md` and analyze:
+Read `scout/records/scout-mistake-audit.md` and analyze:
 
 1. **Total patterns logged** — how many?
 2. **Open vs resolved** — are patterns getting fixed or just accumulating?
@@ -87,7 +87,7 @@ Read `knowledge-base/scout-mistake-audit.md` and analyze:
 
 ### 2b: Dreaming Proposals Pipeline
 
-Read `dreaming-proposals.md` (and `dreaming-proposals-archive.md` if it exists):
+Read `scout/records/dreaming-proposals.md` (and `scout/records/dreaming-proposals-archive.md` if it exists):
 
 1. **Total pending** — how many proposals are waiting for review?
 2. **Age of oldest pending** — how long has it been waiting?
@@ -136,7 +136,7 @@ Read the last 3 days of action items files. Check:
 ### 3c: Ontology & Knowledge Graph
 
 ```bash
-ls <SCOUT_DIR>/knowledge-base/ontology/entities/*.md 2>/dev/null | wc -l
+ls <SCOUT_DIR>/knowledge-base/organizations/*.md <SCOUT_DIR>/knowledge-base/ontology/entities/*.md 2>/dev/null | wc -l
 ls <SCOUT_DIR>/knowledge-base/people/*.md 2>/dev/null | wc -l
 ls <SCOUT_DIR>/knowledge-base/personal/*.md 2>/dev/null | wc -l
 ```
@@ -158,9 +158,9 @@ cd <SCOUT_DIR> && python knowledge-base/ontology/parser.py validate
 ### 4a: Cross-Skill Consistency
 
 Read all skill files and check for contradictions or gaps:
-- `SKILL.md` (briefing/consolidation)
-- `DREAMING.md` (dreaming)
-- `RESEARCH.md` (research)
+- `scout/brain/SKILL.md` (briefing/consolidation)
+- `scout/brain/DREAMING.md` (dreaming)
+- `scout/brain/RESEARCH.md` (research)
 - `.claude/commands/scout-work.md` (if installed locally)
 
 Look for:
@@ -213,7 +213,7 @@ Fix them directly. Commit as: `meta-review [HH:MM]: <summary of fix>`
 ### 5c: Propose Structural Changes
 
 For issues that require:
-- Skill file changes → write a dreaming proposal in `dreaming-proposals.md`
+- Skill file changes → write a dreaming proposal in `scout/records/dreaming-proposals.md`
 - Hook changes → note in the report with a recommended implementation
 - New tooling → note in the report for the user's review
 

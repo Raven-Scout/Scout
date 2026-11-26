@@ -29,7 +29,7 @@ struct PerFileTabConfig: Sendable, Equatable {
         defaultPriority: .medium,
         optionalField: .source(label: "Source"),
         addNoun: "wishlist item",
-        directoryDefaultRelative: "docs/wishlist",
+        directoryDefaultRelative: VaultLayout.wishlistDir,
         pathOverrideKey: "wishlistPath"
     )
 
@@ -39,7 +39,7 @@ struct PerFileTabConfig: Sendable, Equatable {
         defaultPriority: .medium,
         optionalField: .area(label: "Area"),
         addNoun: "research topic",
-        directoryDefaultRelative: "knowledge-base/research-queue",
+        directoryDefaultRelative: VaultLayout.researchQueueDir,
         pathOverrideKey: "researchQueuePath"
     )
 }

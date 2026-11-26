@@ -11,4 +11,4 @@ streaming PR lands the cap can go up, and Priya decides by how much at the weekl
 
 **Status:** the sync is on {{d-1}} at 15:00 UTC.
 
-**Links:** [[projects/report-builder/report-builder]] · [[report-builder-exports]]
+**Links:** [[work/projects/report-builder/report-builder]] · [[report-builder-exports]]

@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from scout.scripts.bootstrap import BootstrapConfig, install, upgrade
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[3]
@@ -56,7 +57,7 @@ _RUNNER_FIX = [
     # interactive and write nothing, so connector-health logging goes dark.
     'export SCOUT_MODE="$MODE"',
     # Record how the run ended, from the wrapper, out-of-band.
-    'OUTCOME="$SCOUT_DIR/scripts/run-outcome.sh"',
+    'OUTCOME="$SCOUT_DIR/scout/scripts/run-outcome.sh"',
     '"$OUTCOME" record "$MODE" "$EXIT_CODE" "$START_TIME" "$LOG_FILE" >> "$LOG_FILE" 2>&1 || true',
     # Connector-health roll-up, so the surface refreshes even when a run dies early.
     # The runner calls the engine directly; no vault helper is involved.
@@ -65,21 +66,21 @@ _RUNNER_FIX = [
 
 VAULT_FIXES = [
     pytest.param(".gitignore", [".mcp.json", ".venv/"], id="gitignore"),
-    pytest.param("run-scout.sh", _RUNNER_FIX, id="run-scout"),
-    pytest.param("run-dreaming.sh", _RUNNER_FIX, id="run-dreaming"),
-    pytest.param("run-research.sh", _RUNNER_FIX, id="run-research"),
+    pytest.param(layout.runner_path("run-scout.sh"), _RUNNER_FIX, id="run-scout"),
+    pytest.param(layout.runner_path("run-dreaming.sh"), _RUNNER_FIX, id="run-dreaming"),
+    pytest.param(layout.runner_path("run-research.sh"), _RUNNER_FIX, id="run-research"),
     pytest.param(
-        "hooks/kb-pre-filter.sh",
-        ['( cd "$SCOUT_DATA_DIR" && python3 -I scripts/vault-freshness.py --limit 15 \\'],
+        layout.hook_path("kb-pre-filter.sh"),
+        ['( cd "$SCOUT_DATA_DIR" && python3 -I scout/scripts/vault-freshness.py --limit 15 \\'],
         id="kb-pre-filter",
     ),
     pytest.param(
-        "scripts/heartbeat.sh",
+        layout.script_path("heartbeat.sh"),
         ['"$SCOUTCTL_BIN" health notify --quiet \\'],
         id="heartbeat",
     ),
     pytest.param(
-        "scripts/recurring-task-status.py",
+        layout.script_path("recurring-task-status.py"),
         [
             'if cadence.startswith("yearly:"):',
             "def count_missed_windows(cadence: str, last_completed: Optional[date], today: date) -> int:",
@@ -128,4 +129,4 @@ def test_upgrade_over_a_current_vault_backs_up_no_runner(vault: Path) -> None:
     """
     result = upgrade(_config(vault, version="0.4.1"))
     assert result.backups == []
-    assert list(vault.glob("run-*.sh.bak.*")) == []
+    assert list((vault / layout.V2["runners_dir"]).glob("run-*.sh.bak.*")) == []

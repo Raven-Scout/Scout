@@ -66,7 +66,11 @@ PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent
 #   critical-blocks check naming governance files (+~100). RESEARCH +~440: the trailer rule and the dm-sent record.
 #   RESPOND +~100: privacy's dm-sent record only; the trailer rule is its own section, kept out of respond runs, which
 #   never change Scout itself. (Measured against main's phases at 895a11b2: 47,464 / 21,743 / 7,615 / 6,044.)
-PINS = {"SKILL": 48_138, "DREAMING": 23_954, "RESEARCH": 8_057, "RESPOND": 6_147}
+# 2026-11-26 (layout v2, ADR 0011): RESEARCH and RESPOND re-pinned to their measure. Every vault path the phases
+# name moved under scout/ (scout/scripts/scoutctl, scout/brain/<KIND>.md, scout/records/...) or into a space
+# (knowledge-base/<space>/...), and the write protocol says where each kind of file lives: +~446 RESEARCH (+5.5%),
+# +~416 RESPOND (+6.8%), measured against the phases at 6b49ac79^. SKILL and DREAMING stay inside their headroom.
+PINS = {"SKILL": 48_138, "DREAMING": 23_954, "RESEARCH": 8_501, "RESPOND": 6_563}
 GROWTH = 0.05
 SHRINK = 0.10
 

@@ -547,9 +547,12 @@ def _spawn_runner(vault: Path, slot_key: str, slot: Slot, *, trigger: str | None
             f"Edit ~/Scout/.scout-state/schedule.yaml and set runtime: local, "
             f"or delete the slot."
         )
+    from scout import layout
     from scout.schedule import check_runner
 
-    runner_path = vault / check_runner(slot.runner, f"slot {slot_key}")  # again: a Slot can be built in code
+    # A bare runner name, found where the vault's layout keeps runners (scout/runners/ on v2).
+    name = check_runner(slot.runner, f"slot {slot_key}")  # again: a Slot can be built in code
+    runner_path = vault / layout.for_vault(vault).runner(name)
     env = os.environ.copy()
     env["SCOUT_FORCE_MODE"] = slot_key
     env["SCOUT_DATA_DIR"] = str(vault)
@@ -908,6 +911,14 @@ def _do_tick(
     tracker_path: Path,
     started_at: float,
 ) -> Event:
+    from scout import layout
+
+    if layout.move_in_progress(vault):
+        # The layout move left a journal: runs would start on half-moved paths. Nothing is marked fired, so
+        # the next tick after recovery evaluates the slots again (spec 2026-11-26 §4.9).
+        skipped = _TickResult()
+        skipped.skipped.append({"slot_key": "*", "reason": "layout move in progress"})
+        return _finalize_tick(log_dir, skipped, started_at=started_at)
     # Event triggers evaluate first (spec: docs/specs/event-triggers.md §Event flow).
     _evaluate_triggers(vault=vault, log_dir=log_dir)
     _sync_delegates(vault=vault, log_dir=log_dir)

@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from scout import custom_connectors as cc
+from scout import layout
 from scout.scripts import custom_connector_ops as ops
 from scout.scripts.bootstrap import BootstrapConfig, install
 
@@ -64,7 +65,7 @@ def _config(vault: Path) -> dict:
 def test_add_applies_and_records_everything(vault: Path):
     out = _add(vault, SUITE)
     assert (out.status, out.exit_code) == ("applied", 0)
-    assert "## Mail suite Inbound Scan" in (vault / "SKILL.md").read_text()
+    assert "## Mail suite Inbound Scan" in (vault / layout.brain_path("SKILL")).read_text()
     assert "suite_mail" in _config(vault)["connectors"]["enabled"]
     saved = yaml.safe_load((vault / cc.CUSTOM_FILE).read_text())["connectors"]["suite_mail"]
     assert "key" not in saved and saved["display_name"] == "Mail suite"
@@ -75,7 +76,7 @@ def test_re_add_replaces_the_entry_in_place(vault: Path):
     changed = {**SUITE, "inbound": {"tools": SUITE["inbound"]["tools"], "focus": "Only the shared queue."}}
     out = _add(vault, changed)
     assert out.status == "applied"
-    skill = (vault / "SKILL.md").read_text()
+    skill = (vault / layout.brain_path("SKILL")).read_text()
     assert skill.count("## Mail suite Inbound Scan") == 1
     assert "Only the shared queue." in skill
     assert list(yaml.safe_load((vault / cc.CUSTOM_FILE).read_text())["connectors"]) == ["suite_mail"]
@@ -98,19 +99,19 @@ def test_missing_input_is_invalid_and_inputs_are_namespaced(vault: Path):
     out = _add(vault, TICKETS, inputs={"team": "ops"}, probe_runner=lambda cmd: 0)
     assert out.status == "applied"
     assert _config(vault)["connectors"]["inputs"]["tickets__team"] == "ops"
-    assert "`tix list --team ops` — run with Bash" in (vault / "SKILL.md").read_text()
+    assert "`tix list --team ops` — run with Bash" in (vault / layout.brain_path("SKILL")).read_text()
 
 
 @pytest.mark.parametrize("value", ["ghp_abcdefghijklmnop", "Bearer abcdefghijklmnopqrstu", "xoxb-1234567890-abc"])
 def test_credential_shaped_input_is_invalid_and_writes_nothing(vault: Path, value: str):
     """F4: --input values are written into SKILL.md (committed, sent in every session prompt)."""
-    skill_before = (vault / "SKILL.md").read_text()
+    skill_before = (vault / layout.brain_path("SKILL")).read_text()
     out = _add(vault, TICKETS, inputs={"team": value}, probe_runner=lambda cmd: 0)
     assert (out.status, out.exit_code) == ("invalid", 2)
     assert [i.path for i in out.issues] == ["connectors.tickets.needs_user_input"]
     assert "SKILL.md" in out.issues[0].message and "secret" in out.issues[0].message
     assert value not in out.issues[0].message
-    assert (vault / "SKILL.md").read_text() == skill_before
+    assert (vault / layout.brain_path("SKILL")).read_text() == skill_before
     assert not (vault / cc.CUSTOM_FILE).exists()
     assert "tickets__team" not in (_config(vault)["connectors"].get("inputs") or {})
 
@@ -121,13 +122,13 @@ def test_credential_shaped_input_is_invalid_and_writes_nothing(vault: Path, valu
 )
 def test_multi_line_or_heading_input_is_invalid_and_writes_nothing(vault: Path, value: str, problem: str):
     """#344: --input values are substituted into SKILL.md; they must not add lines or headings."""
-    skill_before = (vault / "SKILL.md").read_text()
+    skill_before = (vault / layout.brain_path("SKILL")).read_text()
     for dry_run in (True, False):
         out = _add(vault, TICKETS, inputs={"team": value}, probe_runner=lambda cmd: 0, dry_run=dry_run)
         assert (out.status, out.exit_code) == ("invalid", 2)
         assert [(i.path, problem in i.message) for i in out.issues] == [("connectors.tickets.needs_user_input", True)]
         assert value not in out.issues[0].message
-    assert (vault / "SKILL.md").read_text() == skill_before
+    assert (vault / layout.brain_path("SKILL")).read_text() == skill_before
     assert not (vault / cc.CUSTOM_FILE).exists()
 
 
@@ -153,7 +154,7 @@ def test_add_multi_line_bash_tool_renders_fenced_in_skill(vault: Path):
     multi = {**TICKETS, "inbound": {"tools": tools, "focus": "Open tickets."}}
     out = _add(vault, multi, inputs={"team": "ops"}, probe_runner=lambda cmd: 0)
     assert out.status == "applied"
-    skill = (vault / "SKILL.md").read_text()
+    skill = (vault / layout.brain_path("SKILL")).read_text()
     assert "  ```bash\n  # open tickets\n  tix list --team ops\n  ```" in skill
     assert "\n# open tickets" not in skill
 
@@ -198,23 +199,23 @@ def test_failed_bash_probe_exits_2_unless_unverified(vault: Path):
 
 
 def test_dry_run_returns_sections_and_writes_nothing(vault: Path):
-    skill_before = (vault / "SKILL.md").read_text()
+    skill_before = (vault / layout.brain_path("SKILL")).read_text()
     out = _add(vault, SUITE, dry_run=True)
     assert (out.status, out.exit_code) == ("dry-run", 0)
     assert out.sections[0]["target"] == "SKILL.md"
     assert "## Mail suite Inbound Scan" in out.sections[0]["body"]
-    assert (vault / "SKILL.md").read_text() == skill_before
+    assert (vault / layout.brain_path("SKILL")).read_text() == skill_before
     assert not (vault / cc.CUSTOM_FILE).exists()
 
 
 def test_pending_sidecar_defers_add_but_saves_it(vault: Path):
-    (vault / "SKILL.md.proposed-merge").write_text("pending")
+    (vault / layout.sidecar_path("SKILL")).write_text("pending")
     out = _add(vault, SUITE)
     assert (out.status, out.exit_code, out.waiting) == ("deferred", 3, ["SKILL.md"])
     assert "SKILL.md" in out.message
     assert "suite_mail" in yaml.safe_load((vault / cc.CUSTOM_FILE).read_text())["connectors"]
     assert "suite_mail" in _config(vault)["connectors"]["enabled"]
-    assert (vault / "SKILL.md.proposed-merge").read_text() == "pending"
+    assert (vault / layout.sidecar_path("SKILL")).read_text() == "pending"
 
 
 def test_hand_edit_defers_without_blaming_the_plugin(vault: Path):
@@ -242,7 +243,7 @@ def test_remove_takes_out_sections_entry_enabled_and_inputs(vault: Path):
     _add(vault, TICKETS, inputs={"team": "ops"}, probe_runner=lambda cmd: 0)
     out = ops.remove(vault, "tickets", plugin_root=PLUGIN, plugin_version="0.0.0")
     assert (out.status, out.exit_code) == ("applied", 0)
-    assert "Tickets Inbound Scan" not in (vault / "SKILL.md").read_text()
+    assert "Tickets Inbound Scan" not in (vault / layout.brain_path("SKILL")).read_text()
     cfg = _config(vault)["connectors"]
     assert "tickets" not in cfg["enabled"] and "tickets__team" not in cfg["inputs"]
     assert yaml.safe_load((vault / cc.CUSTOM_FILE).read_text())["connectors"] == {}
@@ -404,7 +405,7 @@ def _mcp_def(key: str) -> dict:
 def _assert_all_recorded(vault: Path, keys: set[str]) -> None:
     assert keys <= set(yaml.safe_load((vault / cc.CUSTOM_FILE).read_text())["connectors"])
     assert keys <= set(_config(vault)["connectors"]["enabled"])
-    skill = (vault / "SKILL.md").read_text()
+    skill = (vault / layout.brain_path("SKILL")).read_text()
     for key in keys:
         assert f"## {key.capitalize()} Inbound Scan" in skill
 

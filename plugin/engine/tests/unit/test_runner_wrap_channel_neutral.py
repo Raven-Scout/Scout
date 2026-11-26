@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
+
 REPO_ROOT = Path(__file__).resolve().parents[3]  # …/plugin
 TEMPLATES = REPO_ROOT / "templates"
 
@@ -43,5 +45,6 @@ def test_runner_prompt_does_not_hardcode_slack(name: str) -> None:
 def test_runner_prompt_defers_to_skill_md_notification_section(name: str) -> None:
     """Every runner can reach SKILL.md's section; DREAMING.md and RESEARCH.md may lack one."""
     prompt = _prompt(name)
-    assert "SKILL.md's notification section" in prompt or "or SKILL.md's when" in prompt
+    skill = layout.brain_path("SKILL")
+    assert f"{skill}'s notification section" in prompt or f"or {skill}'s when" in prompt
     assert "send nothing and say so" in prompt, f"{name}: no channel configured must mean no send, not a guess"

@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from scout.kb.structure import Marker
 from tests._gate_probe import HOOKED_CLAUDE_PRELUDE
 from tests.eval.harness.build import EVAL_ROOT, build_vault
@@ -47,7 +48,7 @@ from tests.eval.harness.scenario import load_scenario
 TODAY = date(2026, 10, 14)
 SCENARIO = EVAL_ROOT / "scenarios" / "kb-front-page"
 GOLDEN = EVAL_ROOT / "golden" / "kb-front-page"
-PROJECT = "knowledge-base/projects/report-builder"
+PROJECT = f"{layout.space_dir('work', 'projects')}/report-builder"
 
 
 @pytest.fixture(scope="module")
@@ -71,11 +72,19 @@ def _lay(src: Path, dest: Path) -> None:
         target.write_text(render_dates(path.read_text(encoding="utf-8"), TODAY), encoding="utf-8")
 
 
+def _mark_v2(vault: Path) -> None:
+    """A layout v2 vault (ADR 0011) is one with ``scout/brain/``; the scenario's project folder is a v2 path."""
+    brain = vault / layout.V2["brain_dir"]
+    brain.mkdir(parents=True, exist_ok=True)
+    (brain / ".keep").write_text("", encoding="utf-8")
+
+
 def _snapshot(tmp_path: Path, *cases: str) -> Path:
     """A small vault: the scenario's project folder as the fixture commit, then each golden case
     laid over it, committed the way a run commits."""
     vault = tmp_path / "vault"
     _lay(SCENARIO / "vault" / PROJECT, vault / PROJECT)
+    _mark_v2(vault)
     _git(vault, "init", "-q", "-b", "main", when=f"{TODAY}T06:00:00")
     _git(vault, "add", "-A", when=f"{TODAY}T06:00:00")
     _git(vault, "commit", "-q", "-m", "fixture", when=f"{TODAY}T06:00:00")
@@ -251,7 +260,7 @@ def test_a_citation_to_a_note_nobody_wrote_does_not_count(tmp_path: Path, scenar
     failing = _only_failing(_snapshot(tmp_path, "good", "dangling-cite"), scenario)
     assert list(failing) == ["kb_facts_cited"]
     assert failing["kb_facts_cited"] == (
-        "row-cap-200k: in knowledge-base/projects/report-builder/knowledge/report-builder-decisions.md without a "
+        "row-cap-200k: in knowledge-base/work/projects/report-builder/knowledge/report-builder-decisions.md without a "
         "citation (a URL, or a link to an existing note under sources/ or meetings/)",
     )
 
@@ -327,6 +336,7 @@ def test_an_uncommitted_edit_counts(tmp_path: Path, scenario) -> None:
 def test_a_vault_without_a_fixture_commit_is_unevaluated_not_passed(tmp_path: Path, scenario) -> None:
     vault = tmp_path / "vault"
     _lay(SCENARIO / "vault" / PROJECT, vault / PROJECT)
+    _mark_v2(vault)
     _git(vault, "init", "-q", "-b", "main", when=f"{TODAY}T06:00:00")
     checks = score_kb(vault, spec_for(scenario))
     assert {c.passed for c in checks} == {None}

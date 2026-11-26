@@ -24,7 +24,7 @@ on the owner's say-so, and keeps each clock:
   the item's context note as ``former_title``.
 - **The clock is kept** by a rewrite record per item in
   ``.scout-state/title-rewrites.jsonl`` (see :mod:`scout.action_items.stale`).
-- **One commit** through the vault's ``scripts/git-safe-commit.sh``. The files
+- **One commit** through the vault's ``scout/scripts/git-safe-commit.sh``. The files
   are put back only while HEAD hasn't moved. Undone by :func:`undo`, which
   records its own rewrites. A plain ``git revert`` on a later day would drop
   the records and restart every clock from the pass day.

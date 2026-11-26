@@ -131,10 +131,10 @@ def _bash_targets(command: str) -> tuple[list[tuple[str, bool]] | None, list[tup
 # In the vault, each git subcommand that writes the git dir, and what a run does instead once the broker commits for
 # it (spec §5.7). Read-only subcommands aren't here: they keep working.
 BROKER_REPLACEMENTS: dict[str, str] = {
-    "add": "scripts/git-safe-commit.sh (the broker stages and commits)",
-    "commit": "scripts/git-safe-commit.sh (the broker commits)",
-    "mv": "mv, then scripts/git-safe-commit.sh with both paths",
-    "rm": "rm, then scripts/git-safe-commit.sh with the path",
+    "add": "scout/scripts/git-safe-commit.sh (the broker stages and commits)",
+    "commit": "scout/scripts/git-safe-commit.sh (the broker commits)",
+    "mv": "mv, then scout/scripts/git-safe-commit.sh with both paths",
+    "rm": "rm, then scout/scripts/git-safe-commit.sh with the path",
     "rm --cached": "list it in .gitignore, move it aside, commit its path with the helper (a deletion), move it back",
     "checkout --": "git show HEAD:<path> > <path> (read-only git, a work-tree write)",
     "restore --worktree": "git show <rev>:<path> > <path> (read-only git, a work-tree write)",

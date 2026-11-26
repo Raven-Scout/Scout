@@ -1,5 +1,5 @@
 {
-  "engine_version": "0.18.18",
+  "engine_version": "0.18.23",
   "policy": {
     "federation": {
       "enabled": false
@@ -24,6 +24,50 @@
       {
         "ceiling": "people",
         "glob": "knowledge-base/sources/**",
+        "kinds": [
+          "meeting",
+          "thread"
+        ]
+      },
+      {
+        "ceiling": "org",
+        "glob": "knowledge-base/organizations/**"
+      },
+      {
+        "ceiling": "org",
+        "glob": "knowledge-base/work/topics/**"
+      },
+      {
+        "ceiling": "org",
+        "glob": "knowledge-base/work/projects/**"
+      },
+      {
+        "ceiling": "org",
+        "glob": "knowledge-base/work/organizations/**"
+      },
+      {
+        "ceiling": "people",
+        "glob": "knowledge-base/work/sources/**",
+        "kinds": [
+          "meeting",
+          "thread"
+        ]
+      },
+      {
+        "ceiling": "org",
+        "glob": "knowledge-base/personal/topics/**"
+      },
+      {
+        "ceiling": "org",
+        "glob": "knowledge-base/personal/projects/**"
+      },
+      {
+        "ceiling": "org",
+        "glob": "knowledge-base/personal/organizations/**"
+      },
+      {
+        "ceiling": "people",
+        "glob": "knowledge-base/personal/sources/**",
         "kinds": [
           "meeting",
           "thread"

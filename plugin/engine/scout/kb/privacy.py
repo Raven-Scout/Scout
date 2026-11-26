@@ -105,7 +105,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
 from importlib.resources import as_file, files
@@ -399,6 +399,61 @@ class Label:
         }
 
 
+def _narrower_scope(a: FederationScope, b: FederationScope) -> FederationScope:
+    if a == "none" or b == "none":
+        return "none"
+    if a == "org":
+        return b
+    if b == "org":
+        return a
+    keep = tuple(x for x in a if x in b)
+    return keep or "none"
+
+
+def strictest(labels: Sequence[Label], *, path: str) -> Label:
+    """One label no looser than any of ``labels``, for an entity folded from several files (layout v2 §3.2).
+
+    Private if any is; the narrowest scope and ceiling; local-only or shared if any is; the delegates every
+    label admits. ``path`` is the identity note's. Warnings are the union.
+    """
+    if not labels:
+        raise ValueError("strictest() needs at least one label")
+    first = labels[0]
+    private = next((lb for lb in labels if lb.visibility == "private"), None)
+    scope = first.federation_scope
+    declared = first.federation_scope_declared
+    ceiling = first.ceiling
+    for lb in labels[1:]:
+        scope = _narrower_scope(scope, lb.federation_scope)
+        declared = _narrower_scope(declared, lb.federation_scope_declared)
+        if _level(lb.ceiling) < _level(ceiling):
+            ceiling = lb.ceiling
+    delegate_scope: tuple[str, ...] | None = None
+    for lb in labels:
+        if lb.delegate_scope is not None:
+            delegate_scope = (
+                lb.delegate_scope
+                if delegate_scope is None
+                else tuple(d for d in delegate_scope if d in lb.delegate_scope)
+            )
+    return Label(
+        path=path,
+        visibility="private" if private else first.visibility,
+        visibility_source=(private or first).visibility_source,
+        federation_scope=scope,
+        federation_scope_declared=declared,
+        federation_source=first.federation_source,
+        ceiling=ceiling,
+        local_only=any(lb.local_only for lb in labels),
+        shared_file=any(lb.shared_file for lb in labels),
+        warnings=_dedup(w for lb in labels for w in lb.warnings),
+        shared_source=any(lb.shared_source for lb in labels),
+        delegate_source=any(lb.delegate_source for lb in labels),
+        delegate_scope=delegate_scope,
+        delegate_author=next((lb.delegate_author for lb in labels if lb.delegate_author), None),
+    )
+
+
 # ----- policy -----------------------------------------------------------------
 
 
@@ -661,7 +716,7 @@ def load_policy(vault: Path | None) -> Policy:
     ``federation_defaults``, ``sync_only``, ``delegates`` and ``shared_edits``. Other keys are ignored. See the
     module docstring for the warnings it records on ``Policy.warnings``.
     """
-    base = _engine_default()
+    base = with_spaces(_engine_default(), None)
     if vault is None:
         return base
     config = paths.config_path(vault)
@@ -670,6 +725,7 @@ def load_policy(vault: Path | None) -> Policy:
     try:
         text = config.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
+        # The registry can't be read either. The warning already makes sync and a run's commit refuse.
         return dataclasses.replace(base, warnings=("privacy-overlay-unreadable",))
     return policy_from_config_text(text)
 
@@ -686,16 +742,18 @@ def policy_from_config_text(text: str | None) -> Policy:
     built, the engine default applies.
     """
     if text is None:
-        return _engine_default()
+        return with_spaces(_engine_default(), None)
     try:
         data = load_yaml(text)
     except yaml.YAMLError:
         return _unreadable_policy(text)
     if data is None:
-        return _engine_default()
+        return with_spaces(_engine_default(), None)
     if not isinstance(data, dict):
         return _unreadable_policy(None)
-    return policy_from_overlay(data.get("privacy"), literal_true=delegate_flags_on(text))
+    return policy_from_overlay(
+        data.get("privacy"), literal_true=delegate_flags_on(text), spaces=_spaces_or_invalid(data.get("spaces"))
+    )
 
 
 def _unreadable_policy(text: str | None) -> Policy:
@@ -774,8 +832,73 @@ def overlay_for_mirror(overlay: Any, keep: Callable[[str], bool]) -> dict[str, A
     return out
 
 
+_INVALID: Any = object()  # a space registry that doesn't parse: fail closed (see with_spaces)
+
+
+def _spaces_or_invalid(raw: Any) -> Any:
+    from scout.config import parse_spaces
+    from scout.errors import ConfigError
+
+    try:
+        return parse_spaces(raw)
+    except ConfigError:
+        return _INVALID
+
+
+# Per-space federation ceilings (layout v2, spec 2026-11-26 §7.2): the v1 entries in privacy.yaml stay while a
+# v1 vault is readable; these are added for each registered space.
+_SPACE_CEILINGS: tuple[tuple[str, CeilingLevel, tuple[str, ...] | None], ...] = (
+    ("topics", "org", None),
+    ("projects", "org", None),
+    ("organizations", "org", None),
+    ("sources", "people", ("meeting", "thread")),
+)
+
+
+def with_spaces(policy: Policy, spaces: Any) -> Policy:
+    """``policy`` with the space registry's defaults (R1): each private space's folder is private by default,
+    after the owner's own entries and before the engine's, and each space's topics, projects, organizations and
+    sources get the ceiling their v1 folder has. Identity organizations (``knowledge-base/organizations/``) get
+    the old entities ceiling.
+
+    ``None`` means no registry (the default spaces). An invalid registry in a config that loads fails closed:
+    every folder directly under ``knowledge-base/`` that isn't Scout-wide is private by default, so a typo
+    can't make a private space normal, and the warning ``spaces-invalid`` says so. A config that doesn't load
+    at all gets the default spaces: its ``privacy-overlay-unreadable`` warning already stops sync and a run's
+    commit.
+    """
+    from scout.config import DEFAULT_SPACES, RESERVED_SPACE_KEYS
+
+    warnings = policy.warnings
+    vis: list[tuple[str, Visibility]] = []
+    if spaces is _INVALID:
+        vis = [(f"knowledge-base/{r}/**", "normal") for r in sorted(RESERVED_SPACE_KEYS)]
+        vis.append(("knowledge-base/*/**", "private"))
+        keys: list[str] = []
+        warnings = _dedup((*warnings, "spaces-invalid"))
+    else:
+        registry = DEFAULT_SPACES if spaces is None else spaces
+        vis = [(f"knowledge-base/{s.key}/**", "private") for s in registry if s.visibility == "private"]
+        keys = [s.key for s in registry]
+    present = {g for g, _ in policy.visibility_defaults}
+    added = [(g, v) for g, v in vis if g not in present]
+    n_owner = len(policy.visibility_defaults) - len(_engine_default().visibility_defaults)
+    defaults = (*policy.visibility_defaults[:n_owner], *added, *policy.visibility_defaults[n_owner:])
+    ceilings = list(policy.federation_ceilings)
+    have = {r.glob for r in ceilings}
+    extra = [CeilingRule("knowledge-base/organizations/**", "org")]
+    extra += [CeilingRule(f"knowledge-base/{k}/{d}/**", c, kinds) for k in keys for d, c, kinds in _SPACE_CEILINGS]
+    ceilings += [r for r in extra if r.glob not in have]
+    return dataclasses.replace(
+        policy, visibility_defaults=tuple(defaults), federation_ceilings=tuple(ceilings), warnings=warnings
+    )
+
+
 def policy_from_overlay(
-    overlay: Mapping[str, Any] | None, *, literal_true: Mapping[str, frozenset[str]] | None = None
+    overlay: Mapping[str, Any] | None,
+    *,
+    literal_true: Mapping[str, frozenset[str]] | None = None,
+    spaces: Any = None,
 ) -> Policy:
     """Engine default merged with a ``privacy:`` overlay mapping (no vault needed).
 
@@ -783,13 +906,14 @@ def policy_from_overlay(
     applies, exposed so the contract corpus (and the Agnes indexer's runner)
     can build a policy from a bare overlay. A non-mapping overlay is ignored
     with ``privacy-overlay-invalid``. ``literal_true``: see :func:`_delegate_rules`.
+    ``spaces``: the vault's space registry (:func:`with_spaces`; ``None``: the default spaces).
     """
     base = _engine_default()
     if overlay is None:
-        return base
+        return with_spaces(base, spaces)
     warnings: list[str] = []
     if not isinstance(overlay, Mapping):
-        return dataclasses.replace(base, warnings=("privacy-overlay-invalid",))
+        return with_spaces(dataclasses.replace(base, warnings=("privacy-overlay-invalid",)), spaces)
 
     local_only = base.local_only
     if "local_only_add" in overlay:
@@ -909,23 +1033,26 @@ def policy_from_overlay(
             warnings.append("privacy-overlay-invalid")
             shared_edits = "refuse"  # fail closed: the freeze
 
-    return Policy(
-        local_only_always=base.local_only_always,
-        local_only=local_only,
-        sync_allow=base.sync_allow,
-        visibility_defaults=vis_defaults,
-        owner_only_surfaces=frozenset(owner_only),
-        shared_surfaces=frozenset(shared),
-        shared_files=shared_files,
-        federation_enabled=enabled,
-        federation_ceilings=base.federation_ceilings,
-        federation_ceilings_overlay=ceilings_overlay,
-        federation_defaults=scope_defaults,
-        warnings=_dedup(warnings),
-        sync_only=sync_only,
-        delegates=delegates,
-        shared_edits=shared_edits,
-        visibility_forced_private=base.visibility_forced_private,  # the engine's: no overlay key narrows it
+    return with_spaces(
+        Policy(
+            local_only_always=base.local_only_always,
+            local_only=local_only,
+            sync_allow=base.sync_allow,
+            visibility_defaults=vis_defaults,
+            owner_only_surfaces=frozenset(owner_only),
+            shared_surfaces=frozenset(shared),
+            shared_files=shared_files,
+            federation_enabled=enabled,
+            federation_ceilings=base.federation_ceilings,
+            federation_ceilings_overlay=ceilings_overlay,
+            federation_defaults=scope_defaults,
+            warnings=_dedup(warnings),
+            sync_only=sync_only,
+            delegates=delegates,
+            shared_edits=shared_edits,
+            visibility_forced_private=base.visibility_forced_private,  # the engine's: no overlay key narrows it
+        ),
+        spaces,
     )
 
 

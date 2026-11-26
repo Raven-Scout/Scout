@@ -13,6 +13,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
+from scout import layout
 from scout.cli import app
 
 runner = CliRunner()
@@ -336,7 +337,7 @@ def test_auto_upgrade_applies_an_explicit_claude_bin(tmp_path, monkeypatch):
     assert json.loads(result.stdout)["action"] == "upgrade"
     config = yaml.safe_load((vault / "scout-config.yaml").read_text())
     assert config["connectors"]["inputs"]["claude_bin"] == "/tmp/x/claude"
-    assert "/tmp/x/claude" in (vault / "run-scout.sh").read_text()
+    assert "/tmp/x/claude" in (vault / layout.runner_path("run-scout.sh")).read_text()
     assert "--claude-bin" not in result.stderr
 
 
@@ -353,21 +354,23 @@ def test_auto_upgrade_keeps_the_vaults_claude_bin_by_default(tmp_path, monkeypat
 
 
 def _populate_legacy_vault(vault: Path) -> None:
-    """Plan-5-era vault: .scout-state/ exists; no scout-config.yaml (mirrors
-    the fixture in tests/unit/test_bootstrap_migrate_legacy.py)."""
+    """Legacy vault: .scout-state/ exists; no scout-config.yaml (mirrors
+    the fixture in tests/unit/test_bootstrap_migrate_legacy.py). This engine
+    migrates only one already in layout v2 (spec 2026-11-26 §7.1)."""
     vault.mkdir(parents=True, exist_ok=True)
     (vault / ".scout-state").mkdir()
     (vault / "knowledge-base").mkdir()
     (vault / "action-items").mkdir()
-    (vault / "scripts").mkdir()
-    (vault / "hooks").mkdir()
+    for key in ("scripts_dir", "hooks_dir", "brain_dir", "runners_dir"):
+        (vault / layout.V2[key]).mkdir(parents=True)
     (vault / ".scout-logs").mkdir()
-    (vault / "SKILL.md").write_text("# SKILL\n\nVault-customized content.\n")
-    (vault / "DREAMING.md").write_text("# DREAMING\n\nVault-customized content.\n")
-    (vault / "RESEARCH.md").write_text("# RESEARCH\n\nVault-customized content.\n")
-    (vault / "run-scout.sh").write_text('#!/bin/bash\n# legacy hand-edited runner\nSCOUT_DIR="..."\n')
-    (vault / "run-dreaming.sh").write_text("#!/bin/bash\n# legacy\n")
-    (vault / "run-research.sh").write_text("#!/bin/bash\n# legacy\n")
+    for kind in ("SKILL", "DREAMING", "RESEARCH"):
+        (vault / layout.brain_path(kind)).write_text(f"# {kind}\n\nVault-customized content.\n")
+    (vault / layout.runner_path("run-scout.sh")).write_text(
+        '#!/bin/bash\n# legacy hand-edited runner\nSCOUT_DIR="..."\n'
+    )
+    (vault / layout.runner_path("run-dreaming.sh")).write_text("#!/bin/bash\n# legacy\n")
+    (vault / layout.runner_path("run-research.sh")).write_text("#!/bin/bash\n# legacy\n")
 
 
 def test_migrate_legacy_json_on_legacy_vault(tmp_path, monkeypatch):

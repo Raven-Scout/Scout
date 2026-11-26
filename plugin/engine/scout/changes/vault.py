@@ -37,7 +37,7 @@ def _git_env() -> dict[str, str]:
 def main_worktree(path: Path) -> Path:
     """``path``, or the same folder in its repository's main worktree when ``path`` is inside a linked worktree.
 
-    A vault's own ``scripts/scoutctl`` names its folder in ``SCOUT_DATA_DIR``, so a command run from a vault
+    A vault's own ``scout/scripts/scoutctl`` names its folder in ``SCOUT_DATA_DIR``, so a command run from a vault
     worktree would otherwise key the owner's decisions to the worktree and read its (absent, gitignored)
     ``.scout-logs/``. Never raises: anything git can't answer leaves ``path`` as given."""
     try:

@@ -65,7 +65,7 @@ RENDER_HISTORY = Path(__file__).resolve().parent.parent / "defaults" / "render-h
 # Managed files the vault grows on purpose (bootstrap._CAT_MERGE_FILES, which
 # the read-only doctor can't import): their edits are vault content, so they
 # are never offered as a plugin patch.
-VAULT_DEVELOPED_FILES = frozenset({"knowledge-base/ontology/parser.py", "docs/kb-page-standard.md"})
+VAULT_DEVELOPED_FILES = frozenset({"knowledge-base/ontology/parser.py", "scout/kb-page-standard.md"})
 
 Merge = Callable[..., MergeResult]
 
@@ -528,7 +528,7 @@ def resolve(vault: Path, rel: str, *, drop_update: bool = False) -> list[str]:
     is missing, still holds conflict markers, or lacks the update.
     """
     if Path(rel).is_absolute() or ".." in Path(rel).parts:
-        raise ValueError(f"{rel}: give the file's vault-relative path, e.g. scripts/heartbeat.sh")
+        raise ValueError(f"{rel}: give the file's vault-relative path, e.g. scout/scripts/heartbeat.sh")
     plugin = _drift_path(vault, rel, PLUGIN_SUFFIX)
     copies = _vault_copies(vault, rel)
     parked_update = _read(plugin)
@@ -760,16 +760,20 @@ def privacy_drift(vault: Path) -> list[PrivacyDrift]:
     Read-only. Messages name the path and the fix, never the file's content.
     """
     found: list[PrivacyDrift] = []
-    for runner in sorted(vault.glob("run-*.sh")):
-        if not runner.is_file():
+    from scout import layout
+
+    lay = layout.for_vault(vault)
+    runners_dir = vault / lay["runners_dir"] if lay["runners_dir"] else vault
+    for runner in sorted(runners_dir.glob("run-*.sh")):
+        if not runner.is_file() or runner.is_symlink():
             continue
         rel = _rel(vault, runner)
         text = _head_text(runner)
         # A runner Scout can't read could be launching claude any way it likes (#717 review): report it.
         if (text is None and _unreadable(runner)) or (text is not None and not _READER_EXPORT_RE.search(text)):
             found.append(PrivacyDrift(rel, "runner-no-reader", _runner_message(rel)))
-    scripts = vault / "scripts"
-    if scripts.is_dir():
+    scripts = vault / lay["scripts_dir"]
+    if scripts.is_dir() and not scripts.is_symlink():
         for path in sorted(scripts.rglob("*")):
             # One file that can't be looked at is its own finding, never the end of the scan.
             try:

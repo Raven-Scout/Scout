@@ -13,7 +13,8 @@ from scout.kb.git_io import git, tracked_files
 from scout.kb.lint_config import glob_match
 from scout.kb.lint_rules import wikilink_targets
 
-_ARCHIVE = "knowledge-base/projects/**/archive/**"
+# A project's archive copies: v1's projects folder and every space's (layout v2).
+_ARCHIVES = ("knowledge-base/projects/**/archive/**", "knowledge-base/*/projects/**/archive/**")
 
 _TAG = re.compile(r"(?<![\w#/])#[A-Z][A-Z0-9]{2,}\b")
 _ISSUE = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d{1,6}\b")
@@ -34,7 +35,7 @@ def lossless_check(repo: Path, old_rev: str, rel: str) -> list[str]:
     old = git(repo, "show", f"{old_rev}:{rel}").stdout
     parts: list[str] = []
     for p in tracked_files(repo):
-        if p.endswith(".md") and not glob_match(_ARCHIVE, p) and (repo / p).is_file():
+        if p.endswith(".md") and not any(glob_match(g, p) for g in _ARCHIVES) and (repo / p).is_file():
             parts.append((repo / p).read_text(encoding="utf-8", errors="replace"))
     corpus = "\n".join(parts)
     corpus_links = {t.lower() for t in wikilink_targets(corpus)}

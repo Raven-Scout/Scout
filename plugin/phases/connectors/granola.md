@@ -49,7 +49,7 @@ A "✅ transcript captured" / "notes available for [meeting]" line is **not** ex
 **Pre-commit self-check:** before committing, search the run's notes/KB/action-items for transcript breadcrumb rows that carry no extracted substance:
 
 ```bash
-cd {{SCOUT_DIR}} && scripts/scoutctl kb search --all -i 'transcript (captured|available)|notes (captured|available)' \
+cd {{SCOUT_DIR}} && scout/scripts/scoutctl kb search --all -i 'transcript (captured|available)|notes (captured|available)' \
   --glob "action-items/$(basename "$DAILY_FILE")" --glob 'knowledge-base/**'
 ```
 
@@ -59,7 +59,7 @@ If a flagged meeting has no decisions/commitments/follow-ups recorded near it, g
 
 ### Attendee Extraction
 
-Note all meeting attendees. Cross-reference with `people.md` (`scripts/scoutctl kb name-lookup <name>`) and add any new people with context: "Attendee in [meeting title] on [date]."
+Note all meeting attendees. Cross-reference with `people.md` (`scout/scripts/scoutctl kb name-lookup <name>`) and add any new people with context: "Attendee in [meeting title] on [date]."
 
 ### Cross-Reference with the Document Store
 

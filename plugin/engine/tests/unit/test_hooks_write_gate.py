@@ -444,8 +444,12 @@ def test_the_runner_file_list_matches_bootstrap() -> None:
 
     expected = {dest for dest, _ in bootstrap._CAT1_TEMPLATES if dest not in bootstrap._CAT1_APPEND_ONLY}
     expected |= {dest for dest, _ in bootstrap._CAT1B_RUNNERS}
-    expected |= {dest for dest in bootstrap._CAT1_FILES_FROM_PLUGIN if dest.startswith("scripts/")}
-    assert set(RUNNER_FILES) == expected
+    expected |= {dest for dest in bootstrap._CAT1_FILES_FROM_PLUGIN if dest.startswith("scout/scripts/")}
+    from scout.kb.hook_paths import V1_RUNNER_FILES, V2_RUNNER_FILES
+
+    assert set(V2_RUNNER_FILES) == expected
+    assert set(RUNNER_FILES) == expected | set(V1_RUNNER_FILES)
+    assert {r.removeprefix("scout/").removeprefix("runners/") for r in V2_RUNNER_FILES} == set(V1_RUNNER_FILES)
 
 
 @pytest.mark.parametrize(

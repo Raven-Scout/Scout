@@ -18,7 +18,7 @@ private result in text, and a `_label` key on each entity in JSON.
 narrow the reader `SCOUT_READER` / `SCOUT_MODE` set, as is `--lookup-type`
 (name_lookup: person | organization | any | a comma-separated list);
 `--rel-types` is another spelling of `--rels`. `scoutctl` is the one on PATH,
-else this vault's `scripts/scoutctl`. With neither, this exits non-zero
+else this vault's `scout/scripts/scoutctl`. With neither, this exits non-zero
 without reading the knowledge base: there is no unlabelled fallback.
 
 Python callers: `from knowledge_base.ontology.parser import KnowledgeGraph`
@@ -165,7 +165,7 @@ def scoutctl_argv(args: argparse.Namespace) -> list[str] | None:
 
 
 def find_scoutctl() -> str | None:
-    """`scoutctl` on PATH, else this vault's `scripts/scoutctl` (<vault>/knowledge-base/ontology/parser.py)."""
+    """`scoutctl` on PATH, else this vault's `scout/scripts/scoutctl` (<vault>/knowledge-base/ontology/parser.py)."""
     found = shutil.which("scoutctl")
     if found:
         return found
@@ -182,7 +182,7 @@ def main() -> int:
     scoutctl = find_scoutctl()
     if scoutctl is None:
         print(
-            "parser.py: scoutctl not found on PATH or in this vault's scripts/. The knowledge graph "
+            "parser.py: scoutctl not found on PATH or in this vault's scout/scripts/. The knowledge graph "
             "runs in the Scout engine (scoutctl kb), which labels private notes; this parser won't "
             "read the knowledge base without it. Put scoutctl on PATH (see /scout-status), then retry.",
             file=sys.stderr,

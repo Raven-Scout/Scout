@@ -64,7 +64,7 @@ def test_a_linked_run_holds_the_lease_for_the_session_and_gives_it_back(vault: P
     calls = _stub(vault)
     _link(vault)
     _script(
-        vault / "scripts" / "claude-with-retry.sh",
+        vault / "scout" / "scripts" / "claude-with-retry.sh",
         f'#!/bin/bash\ngrep -c "repo lease keepalive" "{calls}" > "{vault}/session-ran"\n',
     )
 
@@ -116,7 +116,7 @@ def test_a_linked_run_with_no_engine_is_skipped_as_lease_unavailable(vault: Path
 def test_the_lease_is_given_back_when_the_run_fails(vault: Path) -> None:  # noqa: F811
     calls = _stub(vault)
     _link(vault)
-    _script(vault / "scripts" / "claude-with-retry.sh", "#!/bin/bash\nexit 7\n")
+    _script(vault / "scout" / "scripts" / "claude-with-retry.sh", "#!/bin/bash\nexit 7\n")
     result = _run(vault, "run-scout.sh.tmpl", SCOUT_FORCE_MODE=SLOT)
     assert result.returncode == 0, result.stderr
     assert any(c.startswith("repo lease release") for c in _calls(calls))

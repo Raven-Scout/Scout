@@ -21,6 +21,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from scout import layout
+
 REPO_ROOT = Path(__file__).resolve().parents[3]  # …/scout-plugin
 TEMPLATE = REPO_ROOT / "templates" / "run-scout.sh.tmpl"
 TEMPLATES = REPO_ROOT / "templates"
@@ -42,7 +44,8 @@ def _render(tmpl: Path, scout_dir: Path) -> Path:
         "{{USER_SLACK_ID}}": "U0123456789",
     }.items():
         text = text.replace(placeholder, value)
-    out = scout_dir / "run-scout.sh"
+    out = scout_dir / layout.runner_path("run-scout.sh")
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
     out.chmod(0o755)
     _render_lock_lib(scout_dir)
@@ -50,20 +53,20 @@ def _render(tmpl: Path, scout_dir: Path) -> Path:
 
 
 def _render_lock_lib(scout_dir: Path) -> None:
-    """scripts/scout-lock.sh, which every runner sources (#218)."""
+    """scout/scripts/scout-lock.sh, which every runner sources (#218)."""
     text = (
         (TEMPLATES / "scripts" / "scout-lock.sh.tmpl").read_text(encoding="utf-8").replace("{{INSTANCE_NAME}}", "Scout")
     )
-    out = scout_dir / "scripts" / "scout-lock.sh"
+    out = scout_dir / layout.script_path("scout-lock.sh")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
 
 
 def _stub_retry_wrapper(scout_dir: Path) -> Path:
-    """Stand-in for scripts/claude-with-retry.sh: records that the session
+    """Stand-in for scout/scripts/claude-with-retry.sh: records that the session
     body was reached (i.e. the lock was acquired), then succeeds."""
     marker = scout_dir / "session-ran.marker"
-    stub = scout_dir / "scripts" / "claude-with-retry.sh"
+    stub = scout_dir / layout.script_path("claude-with-retry.sh")
     stub.parent.mkdir(parents=True, exist_ok=True)
     stub.write_text(f'#!/bin/bash\ntouch "{marker}"\nexit 0\n', encoding="utf-8")
     stub.chmod(0o755)

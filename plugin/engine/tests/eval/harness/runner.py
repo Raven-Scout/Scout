@@ -18,6 +18,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from scout import layout as _layout
 from scout.action_items import stale
 from scout.action_items.parser import ActionItem, parse_lines
 
@@ -134,6 +135,11 @@ def allowed_tools(vault: Path, servers: set[str]) -> list[str]:
         "Bash(scripts/*)",
         "Bash(bash scripts/*)",
         f"Bash(bash {vault}/scripts/*)",
+        # layout v2 (scout/scripts/)
+        f"Bash({vault}/scout/scripts/*)",
+        "Bash(scout/scripts/*)",
+        "Bash(bash scout/scripts/*)",
+        f"Bash(bash {vault}/scout/scripts/*)",
         f"Bash({ENGINE / '.venv' / 'bin' / 'scoutctl'} *)",
     ]
     tools += [f"mcp__{s}" for s in sorted(servers)]
@@ -466,7 +472,7 @@ def run_sample(
     runner_timed_out = False
     with (result_dir / "runner.log").open("w", encoding="utf-8") as log:
         proc = subprocess.Popen(
-            ["bash", str(vault / scenario.runner)],
+            ["bash", str(vault / _layout.for_vault(vault).runner(scenario.runner))],
             cwd=vault,
             env=env,
             stdout=log,

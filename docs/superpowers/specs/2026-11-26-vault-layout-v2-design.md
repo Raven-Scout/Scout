@@ -47,7 +47,7 @@ otherwise force a second restructure, the KB gets its space folders in the same 
 | Q15, R3 | Rewriting old paths | Literal paths are always rewritten. Note links are rewritten in current files only. `action-items/archive/` and dated source files stay as written; their links keep resolving. |
 | R1 | Space privacy | Each space has a default visibility: `work` normal, `personal` and `svj` private. A note's own `visibility:` still wins. |
 | R2 | Pending brain sidecar | The layout move defers until no brain merge sidecar is pending. `/scout-update` walks the user through resolving them first. |
-| R4 | Trims | No `vault spaces` subcommand family, no `--undo` command, no `migration_holds` key. The old-layout path table serves read-only callers only. `connectors.custom.yaml`, `connector-probes.local.yaml` and `action-items/render.py` stay. Recurring tasks stay Scout-wide. `kb-page-standard.md` goes to `scout/`. |
+| R4 | Trims | No `vault spaces` subcommand family, no `--undo` command, no `migration_holds` key. The old-layout path table serves read-only callers only. Runtime callers, writers included, resolve paths by the layout detected on disk; only bootstrap rendering and seeding are v2-only (David, 2026-11-26: a deferred move leaves a new engine on a v1 vault). `connectors.custom.yaml`, `connector-probes.local.yaml` and `action-items/render.py` stay. Recurring tasks stay Scout-wide. `kb-page-standard.md` goes to `scout/`. |
 | R5 | The vault's own scripts | `scripts/` and every root `run-*.sh` move whole, the vault's own included. The ones that locate files relative to themselves are listed in the migration report. |
 | R6 | Read gate on records | `scout/records/` is not gated. Phases get a rule: a record links to a note and never copies its text. |
 
@@ -543,7 +543,7 @@ own `scripts/`, and `SKILL.md` matches plugin skills.
 
 ### 7.1 Engine (`plugin/engine/scout`)
 
-- **New:** `layout.py` (the path table: v2 for everything, v1 for read-only callers only; helpers
+- **New:** `layout.py` (the path table: v2 for bootstrap rendering and seeding; every runtime caller, writers included, resolves through the layout detected on disk with `for_vault`, so a deferred vault stays v1 throughout; helpers
   `brain_path`, `runner_path`, `script_path`, `record_path`, `space_dir`, `default_space`, `legacy_rel`), and
   `layout_migrate.py` (planner, rewrite, apply, report, recovery). The space registry loader lives in
   `config.py`.

@@ -103,7 +103,7 @@ struct KBEntityGroupClassificationTests {
         let labels = KBEntityGroup.allCases.map(\.label)
         #expect(labels == ["People", "Projects", "Issues", "Channels",
                            "Ontology", "Research", "Topics", "Sources",
-                           "Personal", "Logs", "Audits", "Other"])
+                           "Personal", "Logs", "Audits", "Meetings", "Other"])
         #expect(Set(labels).count == KBEntityGroup.allCases.count)
         #expect(labels.allSatisfy { !$0.isEmpty })
     }
@@ -127,7 +127,7 @@ struct KBEntityGroupClassificationTests {
         #expect(KBEntityGroup.allCases.map(\.rawValue)
                 == ["people", "projects", "issues", "channels",
                     "ontology", "research", "topics", "sources",
-                    "personal", "logs", "audits", "other"])
+                    "personal", "logs", "audits", "meetings", "other"])
         #expect(KBEntityGroup(rawValue: "people") == .people)
         #expect(KBEntityGroup(rawValue: "nonsense") == nil)
     }

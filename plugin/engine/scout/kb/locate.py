@@ -10,7 +10,7 @@ cwd's git top level, so the scout-ask skill names the vault itself. The vault co
 3. ``~/Scout``, when there is no pointer. A pointer file that is unreadable or malformed counts as none, and
    ``reason`` says so.
 
-Never the cwd: a cloned repository could hold a planted ``scout-config.yaml`` and ``scripts/scoutctl``, and a
+Never the cwd: a cloned repository could hold a planted ``scout-config.yaml`` and ``scout/scripts/scoutctl``, and a
 vault found there would have its script run. The cwd only decides ``in_vault``. A folder counts as a vault only
 when it holds ``scout-config.yaml``. Reads no note and writes nothing.
 """

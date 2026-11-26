@@ -600,8 +600,15 @@ def run(
     n = now or datetime.now(UTC)
     stats = read_tracker_stats(tracker_path, now=n)
 
-    research_runner = target / "run-research.sh"
-    dreaming_runner = target / "run-dreaming.sh"
+    from scout import layout
+
+    if layout.move_in_progress(target):
+        # Runs wait for the layout move to finish; heartbeat.sh still starts self-update, which recovers it.
+        _log_line(log_path, "skipped: layout move in progress", tz_name=log_tz)
+        return EXIT_SKIPPED
+    lay = layout.for_vault(target)
+    research_runner = target / lay.runner("run-research.sh")
+    dreaming_runner = target / lay.runner("run-dreaming.sh")
 
     decision = decide(
         stats=stats,

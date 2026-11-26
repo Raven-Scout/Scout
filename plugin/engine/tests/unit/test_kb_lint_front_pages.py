@@ -10,24 +10,34 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from scout.kb.lint import lint_staged, run_hook
 from scout.kb.lint_config import REPORT_UNTIL_NAMED, glob_match, load_lint_config
 
-FRONT = "knowledge-base/projects/widgets/widgets.md"
-LOOSE = "knowledge-base/projects/widgets/notes.md"
-NOTE = "knowledge-base/projects/widgets/knowledge/widgets-pricing.md"
+# A layout v2 vault (ADR 0011): project pages live in the default space, knowledge-base/work/projects/.
+PROJECTS = layout.space_dir("work", "projects")
+FRONT = f"{PROJECTS}/widgets/widgets.md"
+LOOSE = f"{PROJECTS}/widgets/notes.md"
+NOTE = f"{PROJECTS}/widgets/knowledge/widgets-pricing.md"
 SECTIONS = ["Where it stands", "What's next", "Key decisions", "Open questions", "People", "Go deeper", "History"]
 
 # The block the PR body gives the maintainer to apply after release; keep the two in step.
 FRONT_PAGE_LOCK = """\
 kb_lint:
   path_modes:
-    - glob: "knowledge-base/projects/*/{folder}.md"
+    - glob: "knowledge-base/work/projects/*/{folder}.md"
       mode: block
-      exclude: ["knowledge-base/projects/archived/**"]
+      exclude: ["knowledge-base/work/projects/archived/**"]
       checks: [size, page-narration, page-sections, page-bullet]
     - {glob: "knowledge-base/**", mode: block, exclude_logs: true, checks: [mega-line, diary]}
 """
+
+
+@pytest.fixture
+def kb_repo(kb_repo):
+    """The shared git vault, on layout v2 (a ``scout/brain/`` folder is what marks it)."""
+    (kb_repo.root / layout.V2["brain_dir"]).mkdir(parents=True, exist_ok=True)
+    return kb_repo
 
 
 def _config(tmp_path: Path, text: str) -> None:
@@ -58,15 +68,15 @@ def page(where: list[str] | None = None, extra: str = "", fill: int = 0) -> str:
         (FRONT, True),
         (LOOSE, False),
         (NOTE, False),
-        ("knowledge-base/projects/widgets/knowledge/widgets.md", False),
-        ("knowledge-base/projects/widgets/archive/widgets.md", False),
-        ("knowledge-base/projects/widgets/gadgets/gadgets.md", False),  # a sub-project is two folders down
-        ("knowledge-base/projects/widgets.md", False),
+        ("knowledge-base/work/projects/widgets/knowledge/widgets.md", False),
+        ("knowledge-base/work/projects/widgets/archive/widgets.md", False),
+        ("knowledge-base/work/projects/widgets/gadgets/gadgets.md", False),  # a sub-project is two folders down
+        ("knowledge-base/work/projects/widgets.md", False),
         ("knowledge-base/topics/widgets/widgets.md", False),
     ],
 )
 def test_folder_matches_a_file_named_like_its_folder(tmp_path: Path, rel: str, front: bool) -> None:
-    _config(tmp_path, _rule("knowledge-base/projects/*/{folder}.md"))
+    _config(tmp_path, _rule("knowledge-base/work/projects/*/{folder}.md"))
     cfg = load_lint_config(tmp_path)
     assert cfg.warnings == ()
     assert (cfg.mode_for(rel, "size") == "block") is front
@@ -81,7 +91,9 @@ def test_folder_takes_literal_text_around_it(tmp_path: Path) -> None:
 
 
 def test_folder_works_in_a_rules_exclude(tmp_path: Path) -> None:
-    _config(tmp_path, _rule("knowledge-base/projects/*/*.md", exclude="['knowledge-base/projects/*/{folder}.md']"))
+    _config(
+        tmp_path, _rule("knowledge-base/work/projects/*/*.md", exclude="['knowledge-base/work/projects/*/{folder}.md']")
+    )
     cfg = load_lint_config(tmp_path)
     assert cfg.mode_for(LOOSE, "size") == "block"
     assert cfg.mode_for(FRONT, "size") == "report"
@@ -97,9 +109,9 @@ def test_folder_is_not_part_of_the_shared_glob_language() -> None:
     "glob",
     [
         "knowledge-base/{folder}/x.md",  # not in the last segment
-        "knowledge-base/projects/*/{folder}-{folder}.md",  # twice
-        "knowledge-base/projects/*/{folder}*.md",  # beside a wildcard
-        "knowledge-base/projects/*/?{folder}.md",
+        "knowledge-base/work/projects/*/{folder}-{folder}.md",  # twice
+        "knowledge-base/work/projects/*/{folder}*.md",  # beside a wildcard
+        "knowledge-base/work/projects/*/?{folder}.md",
         "{folder}.md",  # no folder to name
     ],
 )
@@ -118,7 +130,7 @@ def test_a_bad_folder_exclude_drops_the_rule(tmp_path: Path) -> None:
 
 
 def test_a_folder_rule_is_checked_against_the_linted_files(tmp_path: Path) -> None:
-    _config(tmp_path, _rule("knowledge-base/projects/*/{folder}.md"))
+    _config(tmp_path, _rule("knowledge-base/work/projects/*/{folder}.md"))
     cfg = load_lint_config(tmp_path)
     assert cfg.rules_matching_nothing([FRONT]) == []
     assert len(cfg.rules_matching_nothing([LOOSE, NOTE])) == 1
@@ -145,7 +157,7 @@ def test_the_front_page_lock_reads_cleanly_and_targets_front_pages_only(tmp_path
         assert cfg.mode_for(FRONT, check) == "block"
         assert cfg.mode_for(LOOSE, check) == "report"
         assert cfg.mode_for(NOTE, check) == "report"
-        assert cfg.mode_for("knowledge-base/projects/archived/archived.md", check) == "report"
+        assert cfg.mode_for(f"{PROJECTS}/archived/archived.md", check) == "report"
     # The long-line and diary rule still covers front pages, through the second rule.
     assert cfg.mode_for(FRONT, "mega-line") == "block"
 
@@ -333,5 +345,5 @@ def test_a_bullet_limit_that_isnt_positive_is_a_bad_setting(kb_repo, limit: int)
 
 
 def test_a_folder_glob_keeps_glob_matchs_trailing_newline_tolerance(tmp_path: Path) -> None:
-    _config(tmp_path, _rule("knowledge-base/projects/*/{folder}.md"))
+    _config(tmp_path, _rule("knowledge-base/work/projects/*/{folder}.md"))
     assert load_lint_config(tmp_path).mode_for(FRONT + "\n", "size") == "block"

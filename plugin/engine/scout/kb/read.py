@@ -513,7 +513,10 @@ def _dec(v: Any) -> Any:
 
 
 def _is_entity(frontmatter: Any) -> bool:
-    return isinstance(frontmatter, dict) and "name" in frontmatter and "type" in frontmatter
+    """An entity, or a role note the graph folds into one (layout v2): both are kept in the index."""
+    from scout.kb.ontology import is_graph_note
+
+    return is_graph_note(frontmatter)
 
 
 class IndexStore:

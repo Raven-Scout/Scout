@@ -8,7 +8,7 @@ the app since #701) meant a hung claude behind a live shell was never judged
 wedged and showed as Running for ever.
 
 So a watcher runs beside every scheduled run (``scoutctl progress watch``,
-started by ``scripts/scout-lock.sh`` once the run holds the session lock). Every
+started by ``scout/scripts/scout-lock.sh`` once the run holds the session lock). Every
 ``SCOUT_PROGRESS_SAMPLE_SECS`` it samples the runner's session, the way the
 reaper samples a holder: the processes of the runner's process group and
 process tree, minus Scout's own background helpers (the lease keepalive, the
@@ -39,7 +39,7 @@ never read as a stall, and a line a run forged goes stale like any other.
 Readers open it without following links or blocking, and read at most
 :data:`MAX_LINE_BYTES`:
 
-- ``scripts/scout-lock.sh``'s ``_scout_holder_wedged``: a holder is wedged once
+- ``scout/scripts/scout-lock.sh``'s ``_scout_holder_wedged``: a holder is wedged once
   its fresh line's stall passes ``SCOUT_LOCK_MAX_AGE_SECS``. Without a fresh
   line for the holder it samples CPU and the process list itself, as before.
 - ``scoutctl health``: ``session.no_progress`` for the same holder on the same

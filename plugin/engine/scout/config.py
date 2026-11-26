@@ -22,6 +22,7 @@ import datetime as _dt
 import os
 import re
 import sys
+from dataclasses import dataclass
 from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any
@@ -327,3 +328,127 @@ def pinned_eval_day() -> _dt.date | None:
         return _dt.date.fromisoformat(pinned)
     except ValueError as e:
         raise ConfigError(f"{EVAL_TODAY_ENV}: not a YYYY-MM-DD date: {pinned!r}") from e
+
+
+# ----- space registry (vault layout v2, spec 2026-11-26 §2 Q11, R1) ----------
+#
+# ``spaces:`` in scout-config.yaml is a list of ``{key, default, visibility}``.
+# It names the knowledge-base/<key>/ folders and each one's default note
+# visibility. Routing (delivery channels, connector maps) is Feature 1's.
+
+SPACE_KEY_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+# Scout-wide KB folders and v1 folder names: a space key may equal none of them (spec §3.1).
+RESERVED_SPACE_KEYS = frozenset(
+    {
+        "people",
+        "organizations",
+        "ontology",
+        "decisions-log",
+        "review-queue",
+        "research-queue",
+        "recurring-tasks",
+        "from-agents",
+        "lab",
+        "projects",
+        "topics",
+        "sources",
+        "meetings",
+        "inbox",
+    }
+)
+SPACE_VISIBILITIES = ("normal", "private")
+
+
+@dataclass(frozen=True)
+class Space:
+    """One registered space."""
+
+    key: str
+    default: bool = False
+    visibility: str = "normal"
+
+    def to_json(self) -> dict[str, Any]:
+        return {"key": self.key, "default": self.default, "visibility": self.visibility}
+
+
+# What a vault without a ``spaces:`` key has, and what the layout move writes there (spec §4.4).
+DEFAULT_SPACES: tuple[Space, ...] = (Space("work", True, "normal"), Space("personal", False, "private"))
+
+
+def parse_spaces(raw: Any) -> tuple[Space, ...]:
+    """The registry from a ``spaces:`` value. ``ConfigError`` naming the first problem.
+
+    ``None`` (no key) gives :data:`DEFAULT_SPACES`. Each entry is a mapping with
+    ``key``; ``default`` (bool, exactly one true) and ``visibility``
+    (``normal``/``private``, default ``normal``) are optional.
+    """
+    if raw is None:
+        return DEFAULT_SPACES
+    if not isinstance(raw, list) or not raw:
+        raise ConfigError("spaces: must be a non-empty list of {key, default, visibility}")
+    out: list[Space] = []
+    seen: set[str] = set()
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ConfigError(f"spaces[{i}]: must be a mapping with a key")
+        key = entry.get("key")
+        if not isinstance(key, str) or not SPACE_KEY_RE.match(key):
+            raise ConfigError(f"spaces[{i}].key: must match [a-z][a-z0-9-]*")
+        if key in RESERVED_SPACE_KEYS:
+            raise ConfigError(f"spaces[{i}].key: {key!r} is a Scout-wide knowledge-base folder")
+        if key in seen:
+            raise ConfigError(f"spaces[{i}].key: {key!r} is listed twice")
+        seen.add(key)
+        default = entry.get("default", False)
+        if not isinstance(default, bool):
+            raise ConfigError(f"spaces[{i}].default: must be true or false")
+        visibility = entry.get("visibility", "normal")
+        if visibility not in SPACE_VISIBILITIES:
+            raise ConfigError(f"spaces[{i}].visibility: must be normal or private")
+        out.append(Space(key, default, visibility))
+    defaults = [s.key for s in out if s.default]
+    if len(defaults) != 1:
+        raise ConfigError(f"spaces: exactly one space must be the default (found {len(defaults)})")
+    return tuple(out)
+
+
+def spaces_problem(data_dir: Path | None = None) -> str | None:
+    """Why the vault's ``spaces:`` is invalid, or None when it is valid or absent."""
+    try:
+        parse_spaces(user_value("spaces", data_dir))
+    except ConfigError as e:
+        return str(e)
+    return None
+
+
+def load_spaces(data_dir: Path | None = None) -> tuple[Space, ...]:
+    """The vault's space registry; :data:`DEFAULT_SPACES` when absent.
+
+    An invalid registry warns and falls back to the defaults, like the rest of
+    the user layer: a hand-mangled file must not stop a run. The layout move
+    and ``vault move`` check :func:`spaces_problem` and refuse instead.
+    """
+    try:
+        return parse_spaces(user_value("spaces", data_dir))
+    except ConfigError as e:
+        _warn(f"ignoring scout-config.yaml spaces: {e} — using work (default) and personal")
+        return DEFAULT_SPACES
+
+
+def default_space(spaces: tuple[Space, ...]) -> Space:
+    return next(s for s in spaces if s.default)
+
+
+def render_spaces_yaml(spaces: tuple[Space, ...]) -> str:
+    """The ``spaces:`` block as the layout move and setup write it."""
+    lines = [
+        "# Spaces: one knowledge-base/<key>/ folder each. Exactly one is the default, where a note",
+        "# goes when nothing says otherwise. visibility is each space's default note visibility.",
+        "spaces:",
+    ]
+    for s in spaces:
+        lines.append(f"  - key: {s.key}")
+        if s.default:
+            lines.append("    default: true")
+        lines.append(f"    visibility: {s.visibility}")
+    return "\n".join(lines) + "\n"

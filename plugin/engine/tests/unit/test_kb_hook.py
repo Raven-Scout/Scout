@@ -463,3 +463,20 @@ def test_bootstrap_stage_skips_non_git_vault(tmp_path) -> None:
     )
     _stage_install_git_hook(cfg)  # must not raise
     assert not (vault / ".git").exists()
+
+
+@pytest.mark.parametrize(
+    "where", ["scripts/claude-with-retry.sh", "scout/scripts/claude-with-retry.sh", "scout/runners/run-scout.sh"]
+)
+def test_a_layout_v2_run_is_a_live_run_to_the_fallback_check(tmp_path, live, where: str) -> None:
+    """Layout v2 (spec 2026-11-26 §7.1): the hook's awk finds a run by its wrapper at the v1 or the v2 path, and
+    a runner in scout/runners/ holding the lock."""
+    vault = _git_vault(tmp_path)
+    pid = live(vault, where)
+    if where.endswith("run-scout.sh"):
+        _hold_lock(vault, pid, f"{pid} morning-briefing\n")
+    proc = _run_in_vault(vault, str(tmp_path / "nope"))
+    assert proc.returncode == 1
+    assert "kb-lint: a scheduled run is in progress, so this commit is refused until the check can run." in (
+        proc.stderr
+    )

@@ -13,25 +13,25 @@ requires: null
 Explicit paths through the helper, **never `git add -A`**: a concurrent session shares this tree, and `-A` commits its half-written files.
 
 ```bash
-{{SCOUT_DIR}}/scripts/git-safe-commit.sh "research [HH:MM]: <summary of targets researched and key findings>" <only the paths THIS run touched>
+{{SCOUT_DIR}}/scout/scripts/git-safe-commit.sh "research [HH:MM]: <summary of targets researched and key findings>" <only the paths THIS run touched>
 ```
 
 Exit 4: nothing changed. Exit 3 or 5: report it in the notification; never fall back to `-A`.
 
-Use `scripts/scout-tz.sh date '+%H:%M'` for the timestamp (the computer's own zone, unless `scout-config.yaml` sets a `timezone:` override).
+Use `scout/scripts/scout-tz.sh date '+%H:%M'` for the timestamp (the computer's own zone, unless `scout-config.yaml` sets a `timezone:` override).
 
 ## Step 4b: Session Entry
 
-Add one row (≤ 500 chars) to this month's shard `knowledge-base/session-log/YYYY-MM.md`, with Edit/Write (never `ls`/`tail`/`grep` the KB to find it):
+Add one row (≤ 500 chars) to this month's shard `scout/records/session-log/YYYY-MM.md`, with Edit/Write (never `ls`/`tail`/`grep` the KB to find it):
 
 `| YYYY-MM-DD | HH:MM | Research | <one sentence: targets researched, key findings, entities updated, with [[links]]> | <commit> |`
 
-Then commit it: `{{SCOUT_DIR}}/scripts/git-safe-commit.sh "research [HH:MM]: session log" knowledge-base/session-log/YYYY-MM.md`.
+Then commit it: `{{SCOUT_DIR}}/scout/scripts/git-safe-commit.sh "research [HH:MM]: session log" scout/records/session-log/YYYY-MM.md`.
 
 ## Step 4c: Session Cost
 
 ```bash
-{{SCOUT_DIR}}/scripts/write-session-cost.sh research 0 0 0
+{{SCOUT_DIR}}/scout/scripts/write-session-cost.sh research 0 0 0
 ```
 
 ---
@@ -53,7 +53,7 @@ Send a brief DM to {{USER_NAME}} (Slack ID: `{{USER_SLACK_ID}}`) summarizing:
 3. Entities updated
 4. Actionable insights (if any)
 
-Keep it concise — 5-8 lines max. The value is in the KB updates, not the summary. Send it through the privacy phase's outbound-draft step (`.scout-cache/outbound-draft.md`, `scripts/scoutctl kb check-outbound` with `--surface slack`, send only on exit 0).
+Keep it concise — 5-8 lines max. The value is in the KB updates, not the summary. Send it through the privacy phase's outbound-draft step (`.scout-cache/outbound-draft.md`, `scout/scripts/scoutctl kb check-outbound` with `--surface slack`, send only on exit 0).
 
 ---
 

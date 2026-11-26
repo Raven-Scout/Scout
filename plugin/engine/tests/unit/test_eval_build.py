@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from tests.eval.harness.build import FIXTURE_USER, FixtureError, build_vault
 
 TODAY = date(2026, 10, 14)
@@ -34,14 +35,14 @@ def _tree(root: Path) -> dict[str, bytes]:
 
 def test_brain_files_come_from_the_checkout(tmp_path: Path) -> None:
     vault = build_vault(tmp_path / "v", today=TODAY)
-    skill = (vault / "SKILL.md").read_text()
+    skill = (vault / layout.brain_path("SKILL")).read_text()
     assert "## Run Modes" in skill
-    assert FIXTURE_USER in (vault / "run-scout.sh").read_text()
+    assert FIXTURE_USER in (vault / layout.runner_path("run-scout.sh")).read_text()
 
 
 def test_base_overlay_is_rendered_with_dates(tmp_path: Path) -> None:
     vault = build_vault(tmp_path / "v", today=TODAY)
-    widgets = (vault / "knowledge-base/projects/widgets/widgets.md").read_text()
+    widgets = (vault / layout.space_dir("work", "projects") / "widgets/widgets.md").read_text()
     assert "**Last verified:** 2026-10-12" in widgets
     assert "{{" not in widgets
 
@@ -60,7 +61,7 @@ def test_generated_index_is_written_and_rendered(tmp_path: Path) -> None:
 
 def test_session_cache_script_is_a_noop(tmp_path: Path) -> None:
     vault = build_vault(tmp_path / "v", today=TODAY)
-    script = vault / "scripts/cc-session-cache.sh"
+    script = vault / layout.script_path("cc-session-cache.sh")
     assert script.read_text() == "#!/bin/bash\nexit 0\n"
     assert os.access(script, os.X_OK)
 
@@ -133,7 +134,7 @@ def test_eval_sh_resolves_a_relative_destination_against_the_callers_cwd(tmp_pat
     )
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == str((tmp_path / "rel-vault").resolve())
-    assert (tmp_path / "rel-vault" / "SKILL.md").exists()
+    assert (tmp_path / "rel-vault" / layout.brain_path("SKILL")).exists()
 
 
 def test_cli_build_prints_the_vault_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -141,7 +142,7 @@ def test_cli_build_prints_the_vault_path(tmp_path: Path, capsys: pytest.CaptureF
 
     assert main(["build", str(tmp_path / "v"), "--today", "2026-10-14"]) == 0
     assert capsys.readouterr().out.strip() == str(tmp_path / "v")
-    assert (tmp_path / "v" / "SKILL.md").exists()
+    assert (tmp_path / "v" / layout.brain_path("SKILL")).exists()
 
 
 def test_cli_build_rejects_an_unknown_scenario(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

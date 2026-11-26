@@ -579,7 +579,7 @@ def _page_sections(f: StagedFile) -> list[Finding]:
         if _page_private(f)
         else f"required {plural.noun(n, 'section')} " + ", ".join(missing)
     )
-    return [Finding(f.rel, "page-sections", True, f"{verb} {what} — see docs/kb-page-standard.md")]
+    return [Finding(f.rel, "page-sections", True, f"{verb} {what} — see scout/kb-page-standard.md")]
 
 
 def _page_narration(f: StagedFile) -> list[Finding]:
@@ -715,6 +715,49 @@ def _lab(f: StagedFile) -> list[Finding]:
     return out
 
 
+_IDENTITY_DIRS = ("knowledge-base/people/", "knowledge-base/organizations/")
+_IDENTITY_BODY_RE = re.compile(r"^\s*(?:#.*|- .*\[\[[^\]]+\]\].*)?\s*$")
+
+
+def _identity_note(f: StagedFile) -> list[Finding]:
+    """On a layout-v2 vault, an identity note holds only identity keys and its role-note link lines (§3.2).
+
+    A run that writes facts into one would put a space's facts where every space reads them: they belong in
+    ``knowledge-base/<space>/people/<n>-<space>.md``.
+    """
+    if not f.rel.startswith(_IDENTITY_DIRS) or f.rel.count("/") != 2:
+        return []
+    from scout import layout
+    from scout.layout_migrate import identity_keys_only, split_frontmatter
+
+    if layout.layout_version(f.repo) != 2:
+        return []
+    text = staged_text_lossy(f.repo, f.rel)
+    fm, body = split_frontmatter(text)
+    if fm is None:
+        return []
+    # Only a split person or organization (it lists its spaces); a team or other note beside it is free-form.
+    if not re.search(r"^type:\s*(person|organization)\s*$", fm, re.M) or not re.search(r"^spaces:", fm, re.M):
+        return []
+    out: list[Finding] = []
+    extra = identity_keys_only(text)
+    if extra:
+        out.append(
+            Finding(
+                f.rel,
+                "identity-note",
+                True,
+                f"an identity note holds identity keys only; move {', '.join(sorted(extra))} to a space's role note",
+            )
+        )
+    stray = [ln for ln in body.split("\n") if not _IDENTITY_BODY_RE.match(ln)]
+    if stray:
+        out.append(
+            Finding(f.rel, "identity-note", True, "an identity note's body is its heading and one link per role note")
+        )
+    return out
+
+
 # The checks `lint_staged` runs on each in-scope staged file, in output order.
 # A new check is one function here, and its id goes in `lint_config.KNOWN_CHECKS`.
 # It reports `Finding(blocking=True)` for what should refuse a commit, and the
@@ -731,6 +774,7 @@ STAGED_CHECKS: tuple[StagedCheck, ...] = (
     _page_narration,
     _page_bullets,
     _lab,
+    _identity_note,
 )
 
 

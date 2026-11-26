@@ -20,7 +20,7 @@ C4Deployment
     }
     Deployment_Node(vault_node, "Vault", "~/Scout or SCOUT_DATA_DIR, git repo, Obsidian vault") {
       Container(runners, "Runtime scripts", "bash", "run-scout.sh, run-dreaming.sh, run-research.sh, scripts/, hooks/")
-      ContainerDb(vault_files, "Knowledge and briefings", "markdown, YAML", "brain files, knowledge-base/, action-items/, meetings/, scout-config.yaml")
+      ContainerDb(vault_files, "Knowledge and briefings", "markdown, YAML", "scout/ (brain skills, runners, scripts, records), knowledge-base/, action-items/, inbox/, scout-config.yaml")
       ContainerDb(state_dirs, "State, logs, caches", ".scout-state, .scout-logs, .scout-cache", "gitignored")
     }
     Deployment_Node(claude_home, "Claude Code", "~/.claude") {

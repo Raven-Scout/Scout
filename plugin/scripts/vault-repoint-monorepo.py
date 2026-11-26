@@ -45,6 +45,11 @@ GLOBS = (
     "run-*.sh",
     "scripts/*",
     "hooks/*",
+    # Layout v2 (the same files, moved under scout/)
+    "scout/brain/*.md",
+    "scout/runners/run-*.sh",
+    "scout/scripts/*",
+    "scout/hooks/*",
 )
 LIST_ONLY = (".claude/settings.local.json",)
 

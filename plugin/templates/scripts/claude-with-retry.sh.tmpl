@@ -22,13 +22,13 @@
 #   - "Exceeded USD budget"     (intentional budget gate)
 #   - Claude usage limits       ("You've hit your session limit · resets 6:50pm"):
 #                                 they lift hours later, so a backoff of seconds would
-#                                 retry into the same limit. scripts/rate-limit-detect.sh
+#                                 retry into the same limit. scout/scripts/rate-limit-detect.sh
 #                                 records the reset and the budget gate holds later
 #                                 slots until then (#407).
 #   - Any non-zero exit whose log tail doesn't match the transient list
 #
 # IMPORTANT: each retry re-runs `claude -p` from scratch with the full prompt.
-# That is safe only if the SKILL.md flow is idempotent — i.e. mid-run commits
+# That is safe only if the scout/brain/SKILL.md flow is idempotent — i.e. mid-run commits
 # leave a recoverable state and a fresh invocation will not double-commit.
 # The {{INSTANCE_NAME}} dreaming/consolidation/research modes are *documented*
 # as restartable, but verify in a dry run before relying on this in production.
@@ -287,7 +287,7 @@ elif [ "${SCOUT_SANDBOX_STATUS:-}" = "enforced" ]; then
 fi
 
 # RUN BROKERS (Phase 1d, spec 2026-11-16). In a sandboxed run, a broker outside
-# the sandbox makes the run's commits (scripts/git-safe-commit.sh hands over to
+# the sandbox makes the run's commits (scout/scripts/git-safe-commit.sh hands over to
 # it) and sends its Telegram messages (scoutctl notify telegram), so the profile
 # can deny every write in the vault's git dir and every read in ~/.scout-secrets.
 # It starts once and outlives retries; on exit it is stopped, and whatever a

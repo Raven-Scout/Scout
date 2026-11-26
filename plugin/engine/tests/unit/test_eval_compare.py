@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from tests.eval.harness.build import PLUGIN_ROOT, build_vault
 from tests.eval.harness.checkout import Checkout, CheckoutError, base_checkout, head_checkout
 from tests.eval.harness.runner import load_sample, run_sample
@@ -104,9 +105,9 @@ def _plugin_copy_with_marker(tmp_path: Path) -> Checkout:
 def test_a_vault_built_from_another_checkout_uses_that_checkouts_phases(tmp_path: Path) -> None:
     other = _plugin_copy_with_marker(tmp_path)
     vault = build_vault(tmp_path / "v", today=MONDAY, checkout=other)
-    assert "BASE-ARM-MARKER" in (vault / "SKILL.md").read_text()
+    assert "BASE-ARM-MARKER" in (vault / layout.brain_path("SKILL")).read_text()
     head_vault = build_vault(tmp_path / "h", today=MONDAY)
-    assert "BASE-ARM-MARKER" not in (head_vault / "SKILL.md").read_text()
+    assert "BASE-ARM-MARKER" not in (head_vault / layout.brain_path("SKILL")).read_text()
 
 
 def test_the_base_arms_session_sees_the_base_engine(
@@ -120,7 +121,7 @@ def test_the_base_arms_session_sees_the_base_engine(
     )  # fmt: skip
     assert ran.aborted is None
     assert (tmp_path / "pythonpath.txt").read_text() == str(other.pythonpath)
-    assert "BASE-ARM-MARKER" in (ran.result_dir / "vault" / "SKILL.md").read_text()
+    assert "BASE-ARM-MARKER" in (ran.result_dir / "vault" / layout.brain_path("SKILL")).read_text()
 
 
 def test_a_base_install_never_installs_launchd_jobs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

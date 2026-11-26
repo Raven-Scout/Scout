@@ -9,7 +9,7 @@ started with no tools (``--tools ""``), ``--restricted``, no MCP servers, no ses
 a fresh empty directory that is both its working directory and its ``HOME`` (so no user CLAUDE.md,
 skills, commands or settings are loaded; slash commands are disabled), with an environment of only
 ``PATH``, ``LANG`` and the Claude auth variables the scheduled runner passes
-(``scripts/claude-with-retry.sh``): ``CLAUDE_CODE_OAUTH_TOKEN`` and ``ANTHROPIC_API_KEY``. Auth comes
+(``scout/scripts/claude-with-retry.sh``): ``CLAUDE_CODE_OAUTH_TOKEN`` and ``ANTHROPIC_API_KEY``. Auth comes
 only from that env token or API key, never from the user's home. The ``model`` value is passed as an
 argv value, so it is held to a strict pattern.
 

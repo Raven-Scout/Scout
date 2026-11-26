@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from scout.kb.hook import install_hook
 from scout.kb.ontology import clear_frontmatter_cache
 from tests.integration.test_scheduled_commit_env_bypass import (
@@ -104,7 +105,7 @@ SESSION = """#!/bin/bash
 cd "$SCOUT_DATA_DIR" || exit 1
 mkdir -p notes
 git mv {positions} {moved}
-python3 scripts/e2e-driver.py
+python3 scout/scripts/e2e-driver.py
 git reset -q --hard
 exit 0
 """
@@ -121,14 +122,16 @@ def vault(tmp_path: Path) -> Path:
     clear_frontmatter_cache()
     v = build_privacy_vault(tmp_path)
     with (v / ".git" / "info" / "exclude").open("a", encoding="utf-8") as fh:
-        fh.write(".scout-logs/\n.scout-cache/\nbin/\nscripts/\nrun-*.sh\n")
+        fh.write(
+            f".scout-logs/\n.scout-cache/\nbin/\n{layout.V2.paths['scripts_dir']}/\n{layout.V2.paths['runners_dir']}/\n"
+        )
     install_hook(v)  # the scoutctl next to this interpreter
     _script(v / "bin" / "scoutctl", "#!/bin/bash\nexit 0\n")  # the runner's own scoutctl calls
-    _render(TEMPLATES / "scripts" / "run-outcome.sh.tmpl", v / "scripts" / "run-outcome.sh", v)
-    _render(TEMPLATES / "scripts" / "scout-lock.sh.tmpl", v / "scripts" / "scout-lock.sh", v)
-    _render(TEMPLATES / "scripts" / "git-safe-commit.sh.tmpl", v / "scripts" / "git-safe-commit.sh", v)
-    _script(v / "scripts" / "e2e-driver.py", DRIVER)
-    _script(v / "scripts" / "claude-with-retry.sh", SESSION.format(positions=POSITIONS, moved=MOVED))
+    _render(TEMPLATES / "scripts" / "run-outcome.sh.tmpl", v / layout.script_path("run-outcome.sh"), v)
+    _render(TEMPLATES / "scripts" / "scout-lock.sh.tmpl", v / layout.script_path("scout-lock.sh"), v)
+    _render(TEMPLATES / "scripts" / "git-safe-commit.sh.tmpl", v / layout.script_path("git-safe-commit.sh"), v)
+    _script(v / layout.script_path("e2e-driver.py"), DRIVER)
+    _script(v / layout.script_path("claude-with-retry.sh"), SESSION.format(positions=POSITIONS, moved=MOVED))
     (v / ".scout-cache" / "e2e").mkdir(parents=True)
     return v
 
@@ -136,7 +139,7 @@ def vault(tmp_path: Path) -> Path:
 def _session(vault: Path, commands: list[str]) -> list[dict]:
     """Run the commands in a real runner's session; what the gate and the shell did with each."""
     (vault / ".scout-cache" / "e2e" / "commands.json").write_text(json.dumps(commands), encoding="utf-8")
-    script = _render(TEMPLATES / "run-scout.sh.tmpl", vault / "run-scout.sh", vault)
+    script = _render(TEMPLATES / "run-scout.sh.tmpl", vault / layout.runner_path("run-scout.sh"), vault)
     env = {
         **_clean_env(),
         "SCOUT_FORCE_MODE": SLOT,
@@ -199,7 +202,7 @@ def test_the_helper_and_a_message_naming_the_forms_commit_through_the_gate(vault
     results = _session(
         vault,
         [
-            "scripts/git-safe-commit.sh 'kb: never --no-verify, never -n' notes/helper.md",
+            "scout/scripts/git-safe-commit.sh 'kb: never --no-verify, never -n' notes/helper.md",
             "git add notes/direct.md",
             'git commit -q -m "kb: don\'t use git commit --no-verify" -- notes/direct.md',
         ],

@@ -67,6 +67,9 @@ _STRUCTURAL_FILES = frozenset(
     }
 )
 _STRUCTURAL_TOP_DIRS = frozenset({"scripts", "hooks"})
+# Layout v2 (scout.layout): the same engine files, under scout/. Records (scout/records/) are not structural.
+_STRUCTURAL_PREFIXES = ("scout/brain/", "scout/runners/", "scout/scripts/", "scout/hooks/")
+_STRUCTURAL_FILES_V2 = frozenset({"scout/kb-page-standard.md", "README.md"})
 # Inside .git only these files are Scout's business (lock and HEAD errors); refs and the rest can name the owner's work.
 _GIT_FILES = frozenset(
     {
@@ -84,7 +87,23 @@ _GIT_FILES = frozenset(
 _STRUCTURAL_MD = frozenset({"CLAUDE.md", "SKILL.md", "DREAMING.md", "RESEARCH.md", "RESPOND.md", "README.md"})
 # Scout's own folder names: never hidden as names, though what is inside them is walked.
 _KEEP_WORDS = frozenset(
-    {"knowledge-base", "action-items", "ontology", "wishlist", "research", "proposals", "archive", "scripts", "hooks"}
+    {
+        "knowledge-base",
+        "action-items",
+        "ontology",
+        "wishlist",
+        "research",
+        "proposals",
+        "archive",
+        "scripts",
+        "hooks",
+        "scout",
+        "brain",
+        "runners",
+        "records",
+        "reports",
+        "inbox",
+    }
 )
 # Paths under the home folder that are Scout's or the toolchain's, kept up to the first space after the prefix.
 # Scout's and the toolchain's own folders. Only the first path segment after one is kept; anything deeper is <path>.
@@ -207,6 +226,16 @@ _EXACT_MIN = 8
 _ANYWHERE_LEN = 5
 _SKIP_WALK = frozenset({".git", "node_modules", "__pycache__"})
 _PEOPLE_DIR = "knowledge-base/people/"
+
+
+def is_person_path(rel: str) -> bool:
+    """A person's note: an identity note, or (layout v2) a role note in a space's people/ folder."""
+    if rel.startswith(_PEOPLE_DIR):
+        return True
+    parts = rel.split("/")
+    return len(parts) >= 4 and parts[0] == "knowledge-base" and parts[2] == "people"
+
+
 _MAX_WALK = 50_000
 
 _DELIM = "'\"`<>()\\[\\]\n"
@@ -337,7 +366,13 @@ def _is_structural(rel: str) -> bool:
     first = rel.split("/", 1)[0]
     if first == ".git":
         return rel in _GIT_FILES
-    return first in _SCOUT_DOT_DIRS or first in _STRUCTURAL_TOP_DIRS or rel in _STRUCTURAL_FILES
+    return (
+        first in _SCOUT_DOT_DIRS
+        or first in _STRUCTURAL_TOP_DIRS
+        or rel in _STRUCTURAL_FILES
+        or rel in _STRUCTURAL_FILES_V2
+        or rel.startswith(_STRUCTURAL_PREFIXES)
+    )
 
 
 def _vault_path(match: re.Match[str]) -> str:
@@ -553,7 +588,7 @@ def _walk_names(vault: Path, ctx: ScrubContext) -> None:
                 continue
             ctx.add(rel, "<path>", anywhere=True)
             # A person's name is short and plain ("Priya"), and the most sensitive name there is: hide it anywhere.
-            person = rel.startswith(_PEOPLE_DIR)
+            person = is_person_path(rel)
             ctx.add(entry.name, "<name>", anywhere=person)
             if entry.suffix:
                 ctx.add(entry.stem, "<name>", anywhere=person)

@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 
 from scout import config as scout_config
-from scout import safe_write
+from scout import layout, safe_write
 
 TEMPLATE = Path(__file__).parent.parent / "defaults" / "cron-managed-block.tmpl"
 BLOCK_OPEN = "# >>> scout-managed >>>"
@@ -100,7 +100,7 @@ def _render_block(home: Path, vault: Path) -> str:
         TEMPLATE.read_text(encoding="utf-8")
         .replace("__USER_HOME__", str(home))
         .replace("__SCOUTCTL_BIN__", str(resolve_scoutctl_bin()))
-        .replace("__HEARTBEAT__", _cron_word(vault / "scripts" / "heartbeat.sh"))
+        .replace("__HEARTBEAT__", _cron_word(vault / layout.for_vault(vault).script("heartbeat.sh")))
         .replace("__CRON_LOG__", _cron_word(vault / ".scout-logs" / "cron.log"))
         .replace("__SCOUT_DIR__", str(vault))
     )

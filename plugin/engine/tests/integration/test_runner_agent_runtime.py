@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
+
 PLUGIN = Path(__file__).resolve().parents[2].parent
 TEMPLATES = PLUGIN / "templates"
 ENGINE = PLUGIN / "engine"
@@ -46,10 +48,11 @@ def _render(tmpl: Path, scout_dir: Path, scoutctl: str, claude: str) -> Path:
     }.items():
         text = text.replace(placeholder, value)
     assert "{{" not in text, f"unrendered placeholder left in {tmpl.name}"
-    out = scout_dir / tmpl.name.removesuffix(".tmpl")
+    out = scout_dir / layout.runner_path(tmpl.name.removesuffix(".tmpl"))
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
     out.chmod(0o755)
-    scripts = scout_dir / "scripts"
+    scripts = scout_dir / layout.V2["scripts_dir"]
     scripts.mkdir(parents=True, exist_ok=True)
     for name in ("scout-lock.sh", "run-outcome.sh"):
         body = (TEMPLATES / "scripts" / f"{name}.tmpl").read_text(encoding="utf-8")
@@ -112,7 +115,7 @@ def _stub_scoutctl(tmp_path: Path, *, resolve: str | None = "claude-code", check
 
 def _stub_wrapper(scout_dir: Path) -> Path:
     argv_file = scout_dir / "wrapper.argv"
-    stub = scout_dir / "scripts" / "claude-with-retry.sh"
+    stub = scout_dir / layout.script_path("claude-with-retry.sh")
     stub.parent.mkdir(parents=True, exist_ok=True)
     stub.write_text(
         "#!/bin/bash\n"
@@ -337,8 +340,8 @@ def test_live_run_still_matches_exec_launched_claude(tmp_path: Path, name: str, 
     scoutctl = _engine_scoutctl(tmp_path, scout_dir, claude)
     script = _render(TEMPLATES / name, scout_dir, str(scoutctl), str(claude))
     wrapper = (TEMPLATES / "scripts" / "claude-with-retry.sh.tmpl").read_text(encoding="utf-8")
-    (scout_dir / "scripts" / "claude-with-retry.sh").write_text(wrapper.replace("{{INSTANCE_NAME}}", "Scout"))
-    (scout_dir / "scripts" / "claude-with-retry.sh").chmod(0o755)
+    (scout_dir / layout.script_path("claude-with-retry.sh")).write_text(wrapper.replace("{{INSTANCE_NAME}}", "Scout"))
+    (scout_dir / layout.script_path("claude-with-retry.sh")).chmod(0o755)
     home = tmp_path / "home"
     home.mkdir()
 

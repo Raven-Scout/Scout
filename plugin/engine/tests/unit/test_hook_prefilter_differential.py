@@ -73,6 +73,13 @@ ENTRIES: dict[str, tuple[str, str]] = {
 # Cases where the new command is meant to differ from the old one: {case id: reason}. Empty on purpose.
 INTENDED_DIFFERENCES: dict[str, str] = {}
 
+# Wording the new command is meant to change in every case: (old text, new text). Layout v2 (ADR 0011) moved the
+# vault's scoutctl wrapper to scout/scripts/, so the fail-closed message names it there. Only the message moved:
+# the old outcome is compared with this text swapped, and every other byte must still agree.
+INTENDED_REWORDINGS: tuple[tuple[str, str], ...] = (
+    ("Read the KB through scripts/scoutctl kb", "Read the KB through scout/scripts/scoutctl kb"),
+)
+
 # The alternatives appended to the Bash pattern after the move, as prefilter.sh assembles them: a word the shell
 # rewrites before the program sees it (so its text need not spell the KB path it becomes), a program that takes
 # its paths from another's output, and a change of directory into action-items/.
@@ -894,13 +901,21 @@ def _with_cwd(world: World, case: Case, where: str | None = None) -> Case:
     return case._replace(payload='{"cwd": ' + json.dumps(place) + sep + rest)
 
 
+def _reworded(outcome: Outcome) -> Outcome:
+    """The old command's ``outcome`` with INTENDED_REWORDINGS applied to what it printed."""
+    stdout, stderr = outcome.stdout, outcome.stderr
+    for before, after in INTENDED_REWORDINGS:
+        stdout, stderr = stdout.replace(before, after), stderr.replace(before, after)
+    return outcome._replace(stdout=stdout, stderr=stderr)
+
+
 def _differences(world: World, cases: list[Case]) -> list[str]:
     """The cases where the old and the new command disagree, one line each, but for an intended widening."""
     expansions = _expansion_matches([c for c in {_command_of(case.payload) for case in cases} if c is not None])
 
     def both(case: Case) -> str | None:
         case = _with_cwd(world, case)
-        old, new = world.run(OLD[case.entry], case), world.run(NEW[case.entry], case)
+        old, new = _reworded(world.run(OLD[case.entry], case)), world.run(NEW[case.entry], case)
         if old == new or _intended(case) or _widened(case, old, new, expansions):
             return None
         return f"{case.id}: old={old!r} new={new!r}"

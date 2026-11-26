@@ -36,7 +36,7 @@ write that folder, so apply trusts nothing there on its own:
   visibility is judged on HEAD's text, the same snapshot as the hidden-note
   scan.
 - **One commit per change**, made at once through the vault's
-  ``scripts/git-safe-commit.sh`` with a message naming the delegate, so the
+  ``scout/scripts/git-safe-commit.sh`` with a message naming the delegate, so the
   next run's commit never sweeps it in as the run's own. If no commit lands
   and HEAD hasn't moved, the files are put back and the proposal is tried
   again at the next apply.
@@ -263,7 +263,7 @@ def _today_count(applied: Mapping[str, Mapping[str, Any]], op: str, today: str) 
 
 
 def _default_commit(vault: Path, message: str, rel_paths: list[str]) -> str:
-    """Commit through the vault's own ``scripts/git-safe-commit.sh`` (as #708's retitle does)."""
+    """Commit through the vault's own ``scout/scripts/git-safe-commit.sh`` (as #708's retitle does)."""
     from scout.action_items import retitle
 
     try:

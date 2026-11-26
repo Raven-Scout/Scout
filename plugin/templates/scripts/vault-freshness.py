@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """vault-freshness.py — rank knowledge-base files by how stale git says they are.
 
-``hooks/kb-pre-filter.sh`` ranks each KB file by the "Last verified" / "Last
+``scout/hooks/kb-pre-filter.sh`` ranks each KB file by the "Last verified" / "Last
 updated" date the file *claims*. A claim can drift: a file can carry a fresh
 verified date for facts nobody re-checked. A git commit date cannot drift that
 way, since it is when the content last actually changed. This script ranks
@@ -22,12 +22,12 @@ file name) and dated records (a path component carrying an ISO date, such as an
 audit snapshot or an event's folder). Both are point-in-time by design.
 
 Usage:
-  python3 scripts/vault-freshness.py                 # ranked table, stale files only
-  python3 scripts/vault-freshness.py --all           # every scanned file
-  python3 scripts/vault-freshness.py --limit 20      # top-N most overdue
-  python3 scripts/vault-freshness.py --json          # machine-readable
-  python3 scripts/vault-freshness.py --divergence    # only the claimed-date vs git audit
-  python3 scripts/vault-freshness.py --out .scout-cache/vault-freshness.md   # also write a cache view
+  python3 scout/scripts/vault-freshness.py                 # ranked table, stale files only
+  python3 scout/scripts/vault-freshness.py --all           # every scanned file
+  python3 scout/scripts/vault-freshness.py --limit 20      # top-N most overdue
+  python3 scout/scripts/vault-freshness.py --json          # machine-readable
+  python3 scout/scripts/vault-freshness.py --divergence    # only the claimed-date vs git audit
+  python3 scout/scripts/vault-freshness.py --out .scout-cache/vault-freshness.md   # also write a cache view
 
 The vault is $SCOUT_DATA_DIR, or else the directory this script is installed in
 (<vault>/scripts/). Read-only: it never writes KB files, only stdout and --out.
@@ -69,8 +69,10 @@ PRIORITY_HOURS = {
 DEFAULT_HOURS = 168
 HEAD_SCAN_LINES = 25
 
-# Entity files: people, personal reference facts, ontology entities.
-ENTITY_DIRS = ("people", "personal", "ontology/entities")
+# Entity files: people, personal reference facts, ontology entities, organizations (layout v2), and each
+# space's role notes (<space>/people/, <space>/organizations/).
+ENTITY_DIRS = ("people", "personal", "ontology/entities", "organizations")
+ROLE_DIRS = ("people", "organizations")
 ENTITY_HOURS = 720
 
 ARCHIVE_DIRS = {"archive", "archived"}
@@ -79,9 +81,7 @@ ISO_DATE_RE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
 # The frontmatter `priority:` key, then a prose marker in the head. Both are
 # anchored at line start so a comment or value naming the key never wins.
 PRIORITY_KEY_RE = re.compile(r"^priority:\s*(.*)$", re.IGNORECASE)
-PRIORITY_PROSE_RE = re.compile(
-    r"^\s*(?:>\s*)?(?:[-*]\s+)?(?:\*\*)?priority(?:\*\*)?:(?:\*\*)?\s*(.*)$", re.IGNORECASE
-)
+PRIORITY_PROSE_RE = re.compile(r"^\s*(?:>\s*)?(?:[-*]\s+)?(?:\*\*)?priority(?:\*\*)?:(?:\*\*)?\s*(.*)$", re.IGNORECASE)
 FRONTMATTER_SCAN_LINES = 200
 
 # Claimed-date divergence: compare the date a file claims on its "Last verified"
@@ -110,6 +110,19 @@ STATUSES = ("ok", "stale", "very-stale", "untracked")
 # in process when this Python can import the engine, else from
 # `scoutctl kb files --json` (SCOUTCTL_BIN, then PATH). With neither, every row
 # is `unknown` and printed as [private]: fail closed, never silently unlabelled.
+
+
+def _vault_above(start: Path) -> Path:
+    """The nearest folder above ``start`` holding scout-config.yaml (the vault), else the folder above the scripts
+    folder (``scout/scripts/`` in layout v2, ``scripts/`` before it).
+
+    Layout v2 keeps this script in scout/scripts/; before it, scripts/. Walking up finds the vault either way.
+    """
+    for parent in start.parents:
+        if (parent / "scout-config.yaml").is_file():
+            return parent
+    above = start.parent.parent
+    return above.parent if above.name == "scout" else above
 
 
 def reader_sees_nothing() -> bool:
@@ -178,7 +191,7 @@ def warn_unlabelled(script: str) -> None:
 
 def vault_dir() -> Path:
     env = os.environ.get("SCOUT_DATA_DIR")
-    return Path(env) if env else Path(__file__).resolve().parent.parent
+    return Path(env) if env else _vault_above(Path(__file__).resolve())
 
 
 def _head(path: Path, n: int) -> list[str]:
@@ -195,6 +208,9 @@ def freshness_hours(path: Path, vault: Path) -> int:
         return BASENAME_HOURS[path.name]
     rel = path.relative_to(vault / "knowledge-base").as_posix()
     if any(rel.startswith(d + "/") for d in ENTITY_DIRS):
+        return ENTITY_HOURS
+    parts = rel.split("/")
+    if len(parts) >= 3 and parts[1] in ROLE_DIRS:
         return ENTITY_HOURS
     head = _head(path, FRONTMATTER_SCAN_LINES)
     body_start = 0

@@ -172,10 +172,15 @@ test -f "$HOME/Scout/scout-config.yaml" || { echo "NO_VAULT"; exit 0; }
 test -e "$HOME/Scout/knowledge-base/ontology/parser.py.proposed-merge" && { echo "BLOCKING_SIDECAR"; exit 0; }
 # Pending brain-file sidecars don't block the upgrade (it skips just those
 # files), but the user should hear about them before it runs.
-for f in "$HOME/Scout/"{SKILL,DREAMING,RESEARCH}.md.proposed-merge; do
+for f in "$HOME/Scout/"{SKILL,DREAMING,RESEARCH,RESPOND}.md.proposed-merge "$HOME/Scout/scout/brain/"{SKILL,DREAMING,RESEARCH,RESPOND}.md.proposed-merge; do
     if [ -e "$f" ]; then echo "PENDING_SIDECAR:$(basename "$f")"; fi
 done
 test -x "$SCOUTCTL" || { echo "VENV_MISSING:$NEW_ROOT"; exit 0; }
+# Layout v2 (spec 2026-11-26 §4.12): what the move would do, if the vault hasn't moved yet.
+if "$SCOUTCTL" vault --help >/dev/null 2>&1; then
+    SCOUT_DATA_DIR="$HOME/Scout" "$SCOUTCTL" vault migrate --plan --json > "$HOME/Scout/.scout-cache/layout-plan.json" 2>/dev/null \
+        && python3 -I -c 'import json,sys;d=json.load(open(sys.argv[1]));print("LAYOUT_DONE" if d["layout_version"]==2 else "LAYOUT_MOVE:%d|%d|%s" % (d["summary"]["moved"], d["summary"]["identity_notes"], d.get("would_defer") or ""))' "$HOME/Scout/.scout-cache/layout-plan.json" || true
+fi
 
 # Verify the venv is editable-installed FROM this plugin checkout.
 # Otherwise we'd run the upgrade against the OTHER tree's templates.
@@ -204,6 +209,11 @@ EOF
   /bin/bash "$NEW_ROOT/scripts/install-venv.sh"
   ```
   Then re-run `/scout-update`.
+- `LAYOUT_MOVE:<moved>|<identity notes>|<reason>` (when the vault is still on the old layout): this version reorganises the vault (layout v2: Scout's machinery under `scout/`, its records under `scout/records/`, input under `inbox/`, meetings and one folder per space inside `knowledge-base/`). Remember the counts for Step 1. If `<reason>` is not empty the move would wait; act on it now:
+  - a pending brain sidecar: resolve it first (Step 3 explains how; `"$SCOUTCTL" bootstrap resolve <file>`), then re-run `/scout-update`. The move never runs while one is pending, so the new phases can reach the brain skills.
+  - a waiting run, a merge or rebase in progress, an old Claude Code plugin, a file already at a target path: tell the user the reason as given and how to clear it; the upgrade itself would stop before changing anything.
+  The full plan is in `~/Scout/.scout-cache/layout-plan.json` (paths only). Its `prefix_hints` say when files in `knowledge-base/personal/` share a prefix that could be its own space (for example `11 files are named svj-*`): offer to add that space to `spaces:` in `scout-config.yaml` (`- key: svj` with `visibility: private`) before the move, and re-run the plan.
+- `LAYOUT_DONE`: the vault is on layout v2 already.
 - `READY`: continue.
 
 ---
@@ -231,6 +241,8 @@ grep version_at_last_update ~/Scout/scout-config.yaml || true
 ```
 
 Tell the user: "Plugin version: `<plugin>`. Vault was last updated against version `<vault>`. About to apply Plan 8 upgrade pipeline. Proceed? (yes/no)"
+
+When Step 0 printed `LAYOUT_MOVE`, say before asking: "This version reorganises your vault: `<moved>` files move, `<identity notes>` people and organizations get an identity note, and the files that name old paths get path updates. The plan is in `.scout-cache/layout-plan.json`. Uncommitted edits to tracked files go into a checkpoint commit first (`Scout: checkpoint before the layout move`); untracked files are never added." Ask for a yes to both the upgrade and the checkpoint commit, and wait for it.
 
 If user declines, stop.
 
@@ -274,14 +286,14 @@ Capture exit code (0 = green, 1 = yellow, 2 = red) and stdout/stderr.
   To resolve a sidecar, first make `X.md` the version the user wants. For a sidecar with conflict markers that can be `mv X.md.proposed-merge X.md` and removing the markers, since the merge already holds the vault's version. For a sidecar without markers (the plugin's whole version), don't `mv` it unless the user wants to replace their brain with the plugin's: review `diff X.md X.md.proposed-merge` and copy in the parts they want. Then run `"$SCOUTCTL" bootstrap resolve X.md`. That records the plugin's version as the merge base, so later edits to `X.md` (a dreaming run applying a proposal, say) merge cleanly with the next plugin change, and it removes the sidecar. It refuses while conflict markers remain. Deleting the sidecar without `resolve` means "decide later": the next upgrade proposes the same change again.
 - If exit 2: list every `error:` line. Suggest `scoutctl bootstrap doctor` for a clean read of the current state.
 
-Then report every `vault edit <outcome>: <file> — …` line. These are the vault's own edits to plugin-owned files (scripts, hooks, runners, `render.py`, `parser.py`, `docs/kb-page-standard.md`); none of them blocks a later upgrade:
+Then report every `vault edit <outcome>: <file> — …` line. These are the vault's own edits to plugin-owned files (scripts, hooks, runners, `render.py`, `parser.py`, `scout/kb-page-standard.md`); none of them blocks a later upgrade:
 
-- `kept` / `merged`: the edit survived (merged into the plugin's update where both changed). Mention that `scoutctl bootstrap drift --patch` turns it into a plugin PR — the plugin repo is public, so the user reviews every added line for personal details first. Not for `parser.py` or `docs/kb-page-standard.md`: the vault grows or tailors them on purpose, so their edits are vault content and `--patch` leaves them out.
+- `kept` / `merged`: the edit survived (merged into the plugin's update where both changed). Mention that `scoutctl bootstrap drift --patch` turns it into a plugin PR — the plugin repo is public, so the user reviews every added line for personal details first. Not for `parser.py` or `scout/kb-page-standard.md`: the vault grows or tailors them on purpose, so their edits are vault content and `--patch` leaves them out.
 - `conflict`: the edit and the plugin's update overlap, or (if the line says "could not merge") git could not run. The user's version is still running; the update is parked at `.scout-state/drift/<file>.plugin` with a conflict-marked draft at `<file>.merge`.
   - To keep both: merge by hand into `<file>`, then run `scoutctl bootstrap drift --resolve <file>`. It refuses until the update's lines are in the file.
   - To take the plugin's version: `cp .scout-state/drift/<file>.plugin <file>`.
   - To keep only the user's version: `--resolve <file> --drop-update`. Confirm this with the user first: it drops the plugin's fix.
-  - A `parser.py` or `docs/kb-page-standard.md` conflict with no recorded base ("no record of the last render") can't be checked, so plain `--resolve` refuses it; after merging by hand, settle it with `--resolve <file> --drop-update`. For the page standard this is the usual case on a vault that wrote its own before the plugin shipped one: compare it with `.scout-state/drift/docs/kb-page-standard.md.plugin`, take what the user wants, then settle it.
+  - A `parser.py` or `scout/kb-page-standard.md` conflict with no recorded base ("no record of the last render") can't be checked, so plain `--resolve` refuses it; after merging by hand, settle it with `--resolve <file> --drop-update`. For the page standard this is the usual case on a vault that wrote its own before the plugin shipped one: compare it with `.scout-state/drift/docs/kb-page-standard.md.plugin`, take what the user wants, then settle it.
 - `error`: the file couldn't be read or written (permissions, a locked file). It was left untouched and everything else upgraded. Report the reason shown.
 - `replaced` (with a `backup:` path): this was the vault's first upgrade with no record of the last render, and the file matched no release, so the plugin's version was installed and the vault's copy parked at `.scout-state/drift/<file>.vault`. `scoutctl bootstrap drift --diff` shows what the copy had; dismiss it with `scoutctl bootstrap drift --resolve <file>`, or copy it back over `<file>` to keep its edit (later upgrades then protect it).
 
@@ -294,9 +306,23 @@ If a `backup: .scout-state/drift/X.md.vault` line appears for a brain file (`SKI
 
   That means a new tool never reaches a `restrict_tools` allowlist on its own. Run `"$SCOUTCTL" connectors custom list`. If a connector reads Agnes and has `restrict_tools: true`, tell the user: *colleagues can share notes with you through Agnes. Your Scout can read them only if this connector lists the three read-only tools for it; what it reads stays private to you.* Ask first, and on a yes run `"$SCOUTCTL" connectors custom allow-shared-notes '<key>'` (`SCOUTCTL` as set in the block above). Also tell them the connector must sign in with their Agnes personal access token: Agnes doesn't offer shared notes to a connector signed in through its OAuth flow (`/mcp`). Skip this step if nothing is restricted or the user says no; ask again on a later update only if they raise it.
 
+## Step 3a: The layout move
+
+When the output has a `layout v2: N files moved; report <path>` line, tell the user the move is done in two commits (renames, then content), that `<path>` lists what moved, the references that may not resolve, the scripts to check by hand and other work trees still on the old layout, and that open Claude Code sessions in the vault should be restarted (they still hold the old paths; until the next upgrade, links at the old entry points keep their tool calls working). The way back is in the upgrade notes: `git revert` the two commits, then `scoutctl bootstrap upgrade` on the release before layout v2.
+
+When the upgrade printed `deferred: … the layout move is deferred: <reason>`, nothing was changed: report the reason and how to clear it, as in Step 0.
+
+### Step 3a-2: The space review
+
+Right after a move (or later, when the user asks), offer the space review: most notes were filed in the default space by rule, and some belong elsewhere. On a yes:
+
+1. Run `"$SCOUTCTL" vault space-candidates --json`. Each candidate has a path, its signals (`domain:<space>`, `family-relationship`, `links-mostly:<space>`) and a suggested space.
+2. For each one, read the note with `"$SCOUTCTL" kb read <path>` and propose a space, a reason and a confidence. Ask the user row by row; never move one they didn't approve.
+3. For each approved row run `"$SCOUTCTL" vault move <path> --space <key>`. It moves the note (or meeting series), rewrites links to it, updates a role note's `space:` and its identity's `spaces:`, and commits.
+
 ## Step 3b: Per-note privacy — legacy markers and local-only trading paths
 
-First tell the user, in one paragraph: any note can carry `visibility: normal` or `visibility: private` in its frontmatter. A private note is seen only by them and their own scheduled runs: its content, title and links can reach owner-only places (the vault, the app, their private Telegram chat), never Slack, connector writes, queries or anyone else's agent. Notes under `knowledge-base/personal/` and files under `.scout-inbox/` are private by default, with no line needed (`visibility: normal` on one of them opts it out). `federation_scope` is reserved for sharing with other people's agents later; it grants nothing yet. `scoutctl kb policy` shows the effective policy, including the paths that never leave this computer.
+First tell the user, in one paragraph: any note can carry `visibility: normal` or `visibility: private` in its frontmatter. A private note is seen only by them and their own scheduled runs: its content, title and links can reach owner-only places (the vault, the app, their private Telegram chat), never Slack, connector writes, queries or anyone else's agent. Notes in a private space (`knowledge-base/personal/` and any space registered with `visibility: private`) and files under `.scout-inbox/` are private by default, with no line needed (`visibility: normal` on one of them opts it out). `federation_scope` is reserved for sharing with other people's agents later; it grants nothing yet. `scoutctl kb policy` shows the effective policy, including the paths that never leave this computer.
 
 Then read the migration report. It never changes anything:
 

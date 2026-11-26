@@ -2,7 +2,7 @@
 
 An interactive ``claude`` login expires, and every scheduled run then dies on startup.
 ``claude setup-token`` mints a token that lasts a year; ``scoutctl auth setup-token``
-stores it here, and ``scripts/claude-with-retry.sh`` exports it as
+stores it here, and ``scout/scripts/claude-with-retry.sh`` exports it as
 ``CLAUDE_CODE_OAUTH_TOKEN`` for every run when the variable is not already set.
 
 Storage sits behind ``TokenStore``. On macOS the token is a generic-password item in
@@ -369,7 +369,7 @@ class LastSignIn:
 
 
 def last_sign_in(vault: Path) -> LastSignIn | None:
-    """What ``scripts/claude-with-retry.sh`` recorded for its last run, or None."""
+    """What ``scout/scripts/claude-with-retry.sh`` recorded for its last run, or None."""
     try:
         raw = json.loads((vault / ".scout-logs" / SIGN_IN_RECORD).read_text(encoding="utf-8"))
         at = datetime.fromtimestamp(int(raw["at"]), tz=UTC)

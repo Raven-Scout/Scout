@@ -106,6 +106,13 @@ def pages_now(vault: Path, project: str) -> KbPages:
 def source_notes(vault: Path) -> frozenset[str]:
     """Vault-relative paths of the notes a citation may link (``SOURCE_ROOTS``), as they are now."""
     roots = [vault / root for root in SOURCE_ROOTS if (vault / root).is_dir()]
+    # layout v2: each space's sources/ and meetings/
+    roots += [
+        d
+        for d in sorted((vault / "knowledge-base").glob("*/sources"))
+        + sorted((vault / "knowledge-base").glob("*/meetings"))
+        if d.is_dir()
+    ]
     return frozenset(p.relative_to(vault).as_posix() for root in roots for p in root.rglob("*.md"))
 
 

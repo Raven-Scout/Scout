@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
+
 REPO_ROOT = Path(__file__).resolve().parents[3]  # …/scout-plugin
 TEMPLATES = REPO_ROOT / "templates"
 
@@ -35,7 +37,7 @@ RUNNERS = [
 ]
 
 EXPORT_LINE = 'export SCOUT_MODE="$MODE"'
-CLAUDE_LAUNCH = '"$SCOUT_DIR/scripts/claude-with-retry.sh"'
+CLAUDE_LAUNCH = f'"$SCOUT_DIR/{layout.script_path("claude-with-retry.sh")}"'
 
 
 @pytest.mark.parametrize(("name", "mode_line"), RUNNERS)

@@ -10,6 +10,8 @@ nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
     /// topics, personal notes, session logs, the mistake audit — rendered as
     /// one grey "Other" blob on the map.
     case topics, sources, personal, logs, audits
+    /// A meeting series and its occurrences (layout v2: `knowledge-base/<space>/meetings/`).
+    case meetings
     case other
 
     /// Classify a note. The ontology `type:` the plugin writes in frontmatter
@@ -32,6 +34,7 @@ nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
         if dirs.contains("ontology") { return .ontology }
         if dirs.contains("research-queue") || dirs.contains("review-queue")
             || stem == "research-queue" || stem == "review-queue" { return .research }
+        if dirs.contains("meetings") || stem == "meetings" { return .meetings }
         if dirs.contains("topics") || stem == "topics" { return .topics }
         if dirs.contains("sources") || stem == "sources" { return .sources }
         if dirs.contains("personal") { return .personal }
@@ -55,6 +58,7 @@ nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
         case .personal: return "Personal"
         case .logs: return "Logs"
         case .audits: return "Audits"
+        case .meetings: return "Meetings"
         case .other: return "Other"
         }
     }
@@ -69,7 +73,7 @@ nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
         case .other:    return DS.Ink.p3
         // Ontology was the dreaming violet, which sits within a few points of
         // People's purple — the two read as one colour on the map.
-        case .ontology, .topics, .sources, .personal, .logs, .audits: return swatch.color
+        case .ontology, .topics, .sources, .personal, .logs, .audits, .meetings: return swatch.color
         }
     }
 
@@ -88,6 +92,7 @@ nonisolated enum KBEntityGroup: String, Equatable, Hashable, CaseIterable {
         case .personal: return DS.Swatch(name: "KBPersonal", light: DS.RGB(0.780, 0.380, 0.540), dark: DS.RGB(0.920, 0.560, 0.680))
         case .logs:     return DS.Swatch(name: "KBLogs", light: DS.RGB(0.470, 0.530, 0.620), dark: DS.RGB(0.600, 0.650, 0.730))
         case .audits:   return DS.Swatch(name: "KBAudits", light: DS.RGB(0.520, 0.540, 0.200), dark: DS.RGB(0.720, 0.730, 0.420))
+        case .meetings: return DS.Swatch(name: "KBMeetings", light: DS.RGB(0.200, 0.470, 0.700), dark: DS.RGB(0.420, 0.660, 0.880))
         case .other:    return DS.Palette.inkP3
         }
     }

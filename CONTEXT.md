@@ -15,6 +15,16 @@ a rename waiting to happen, not a second meaning.
 The user's own Scout git repository, holding the knowledge base, the action items and the brain skills.
 _Avoid_: Scout folder, data dir, repo
 
+**Layout move**:
+The one-time move of a vault from layout v1 to layout v2, run as a stage of an upgrade in two commits (renames,
+then content); it defers, changing nothing, when it can't run yet.
+_Avoid_: migration (alone: Scout has several), restructure
+
+**Compatibility link**:
+A symlink the layout move leaves at an old entry point (`scripts`, `hooks`, a root brain skill or runner) so
+jobs and sessions still on the old paths keep working until the next upgrade removes it.
+_Avoid_: shim (the `scoutctl` shim in `~/.local/bin` is something else)
+
 **Space**:
 A separate area of the user's life, such as work, personal or a homeowners' association, that Scout keeps apart while still
 reasoning across them. Each space has a folder in the knowledge base and a default visibility.

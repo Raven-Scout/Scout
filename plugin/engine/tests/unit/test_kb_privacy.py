@@ -821,7 +821,8 @@ def test_engine_yaml_guards() -> None:
     import yaml
 
     raw = yaml.safe_load((Path(privacy.__file__).parents[1] / "defaults" / "privacy.yaml").read_text())
-    assert privacy._parse_engine_yaml(raw) == load_policy(None)
+    # load_policy adds the default space registry's entries (layout v2) to the parsed engine file
+    assert privacy.with_spaces(privacy._parse_engine_yaml(raw), None) == load_policy(None)
     with pytest.raises(ValueError, match="schema_version"):
         privacy._parse_engine_yaml({**raw, "schema_version": 2})
     with pytest.raises(ValueError, match="bad visibility"):

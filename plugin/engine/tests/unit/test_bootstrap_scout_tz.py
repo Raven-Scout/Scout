@@ -1,8 +1,8 @@
 """Unit tests for the scout-tz.sh resolver template (cat-1 install + runtime behavior).
 
 scout-tz.sh is the runtime timezone resolver the assembled brain files call as
-``scripts/scout-tz.sh date FMT`` and the other cat-1 scripts call via
-``TZ="$(scripts/scout-tz.sh)"``. These tests cover
+``scout/scripts/scout-tz.sh date FMT`` and the other cat-1 scripts call via
+``TZ="$(scout/scripts/scout-tz.sh)"``. These tests cover
 both halves: bootstrap writes it (executable, fully rendered), and the installed
 script actually resolves/validates/falls back the way its contract says.
 """
@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from scout import layout
 from scout.scripts.bootstrap import BootstrapConfig, install, managed_renders
 
 _PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent  # repo root
@@ -60,8 +61,8 @@ def _run(script: Path, *args: str, env_overrides: dict[str, str] | None = None):
 
 
 def test_install_writes_scout_tz_executable(installed_vault):
-    script = installed_vault / "scripts" / "scout-tz.sh"
-    assert script.exists(), "cat-1 install must write scripts/scout-tz.sh"
+    script = installed_vault / layout.script_path("scout-tz.sh")
+    assert script.exists(), "cat-1 install must write scout/scripts/scout-tz.sh"
     assert script.stat().st_mode & stat.S_IXUSR, "scout-tz.sh must be executable"
     text = script.read_text(encoding="utf-8")
     assert "{{" not in text, "template vars must be fully rendered"
@@ -69,7 +70,7 @@ def test_install_writes_scout_tz_executable(installed_vault):
 
 
 def test_scout_tz_reads_configured_timezone(installed_vault, tmp_path):
-    script = installed_vault / "scripts" / "scout-tz.sh"
+    script = installed_vault / layout.script_path("scout-tz.sh")
     cfg = tmp_path / "travel-config.yaml"
     cfg.write_text('timezone: "Europe/Prague"  # traveling\n', encoding="utf-8")
     result = _run(script, env_overrides={"SCOUT_CONFIG": str(cfg)})
@@ -78,7 +79,7 @@ def test_scout_tz_reads_configured_timezone(installed_vault, tmp_path):
 
 
 def test_scout_tz_falls_back_on_invalid_zone(installed_vault, tmp_path):
-    script = installed_vault / "scripts" / "scout-tz.sh"
+    script = installed_vault / layout.script_path("scout-tz.sh")
     cfg = tmp_path / "bogus-config.yaml"
     cfg.write_text("timezone: Mars/Olympus_Mons\n", encoding="utf-8")
     result = _run(script, env_overrides={"SCOUT_CONFIG": str(cfg)})
@@ -90,7 +91,7 @@ def test_scout_tz_falls_back_on_invalid_zone(installed_vault, tmp_path):
 def test_scout_tz_date_runs_date_in_the_resolved_zone(installed_vault, tmp_path):
     """`scripts/scout-tz.sh date FMT` is the brain's call site: no command substitution, which a
     session run on an allowlist (dontAsk) is always denied, whatever its rules say."""
-    script = installed_vault / "scripts" / "scout-tz.sh"
+    script = installed_vault / layout.script_path("scout-tz.sh")
     cfg = _write_prague_config(tmp_path)
     result = _run(script, "date", "+%Z|%Y", env_overrides={"SCOUT_CONFIG": cfg, "TZ": "UTC"})
     assert result.returncode == 0, result.stderr
@@ -121,7 +122,7 @@ def test_scout_tz_refuses_everything_but_one_format(installed_vault, tmp_path, a
     """An allowlist admits every `scripts/*` call, so the helper runs `date +FORMAT` and nothing else: no
     option of date's (which read files or set the clock), no other command. A refusal exits 2 with an empty
     stdout, so a caller can't mistake it for a date or a zone."""
-    script = installed_vault / "scripts" / "scout-tz.sh"
+    script = installed_vault / layout.script_path("scout-tz.sh")
     secret = tmp_path / "secret.txt"
     secret.write_text(f"{_SECRET}\n", encoding="utf-8")
     argv = [a.replace("{f}", str(secret)) for a in args]
@@ -144,7 +145,7 @@ def test_doctor_flags_a_scout_tz_that_prints_a_zone_for_date(installed_vault):
     `scripts/scout-tz.sh date …` would be a zone name. Only the doctor can say so."""
     from scout.scripts.bootstrap_doctor import _check_scout_tz
 
-    script = installed_vault / "scripts" / "scout-tz.sh"
+    script = installed_vault / layout.script_path("scout-tz.sh")
     script.write_text("#!/bin/bash\necho Europe/Prague\n", encoding="utf-8")
     (warning,) = _check_scout_tz(vault=installed_vault)
     assert "printed 'Europe/Prague', not a year" in warning and "/scout-update" in warning
@@ -154,7 +155,7 @@ def test_scout_tz_self_test_passes_in_installed_vault(installed_vault):
     # The install renders scout-config.yaml with timezone America/New_York, so
     # the script-relative config fallback resolves inside the tmp vault and the
     # shipped self-test's assertions all hold.
-    script = installed_vault / "scripts" / "scout-tz.sh"
+    script = installed_vault / layout.script_path("scout-tz.sh")
     result = _run(script, "--self-test")
     assert result.returncode == 0, f"self-test failed:\n{result.stdout}\n{result.stderr}"
     assert "FAIL" not in result.stdout
@@ -162,7 +163,7 @@ def test_scout_tz_self_test_passes_in_installed_vault(installed_vault):
 
 
 def test_scout_tz_follows_the_host_when_unconfigured(installed_vault, tmp_path):
-    script = installed_vault / "scripts" / "scout-tz.sh"
+    script = installed_vault / layout.script_path("scout-tz.sh")
     cfg = tmp_path / "no-zone-config.yaml"
     cfg.write_text("platform: macos\n", encoding="utf-8")
     target = tmp_path / "tzdb" / "zoneinfo" / "Asia" / "Tokyo"
@@ -284,7 +285,8 @@ def test_no_rendered_file_bakes_in_the_zone(tmp_path):
     cfg.timezone = zone
     install(cfg)
     rendered = {r.file.vault_rel: r.text for r in managed_renders(cfg)}
-    for brain in ("SKILL.md", "DREAMING.md", "RESEARCH.md"):
+    for kind in ("SKILL", "DREAMING", "RESEARCH"):
+        brain = layout.brain_path(kind)
         if (vault / brain).exists():
             rendered[brain] = (vault / brain).read_text(encoding="utf-8")
     baked = sorted(rel for rel, text in rendered.items() if zone in text)
@@ -296,8 +298,8 @@ def test_runners_pin_the_run_zone_for_every_child(installed_vault, runner):
     """A run spans many processes (the shell scripts, the engine's Python
     hooks, the session itself). The runner resolves the zone once and exports
     it, so all of them agree even if the host's zone changes mid-run."""
-    text = (installed_vault / runner).read_text(encoding="utf-8")
-    assert 'RUN_TZ="$("$SCOUT_DIR/scripts/scout-tz.sh"' in text
+    text = (installed_vault / layout.runner_path(runner)).read_text(encoding="utf-8")
+    assert 'RUN_TZ="$("$SCOUT_DIR/scout/scripts/scout-tz.sh"' in text
     assert 'export SCOUT_USER_TIMEZONE="$RUN_TZ"' in text
 
 
@@ -306,7 +308,7 @@ def test_dependent_scripts_call_resolver_not_literal(installed_vault):
     timestamp from scout-tz.sh (with the || echo double fallback), not from a
     render-time zone literal."""
     for name in ("write-session-cost.sh", "rate-limit-detect.sh"):
-        text = (installed_vault / "scripts" / name).read_text(encoding="utf-8")
+        text = (installed_vault / layout.script_path(name)).read_text(encoding="utf-8")
         assert "scout-tz.sh" in text, f"{name} must call the resolver"
         assert "|| echo America/New_York" in text, f"{name} must keep the double fallback"
         assert 'TZ="$SCOUT_TZ"' in text, f"{name} must use the resolved zone"
@@ -315,7 +317,7 @@ def test_dependent_scripts_call_resolver_not_literal(installed_vault):
 def test_write_session_cost_renders_localized_timestamp(installed_vault, tmp_path):
     """End-to-end: the installed write-session-cost.sh resolves the vault's
     configured timezone through scout-tz.sh when writing its tracker row."""
-    script = installed_vault / "scripts" / "write-session-cost.sh"
+    script = installed_vault / layout.script_path("write-session-cost.sh")
     result = _run(
         script,
         "dreaming",

@@ -28,6 +28,8 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
+
 REPO_ROOT = Path(__file__).resolve().parents[3]  # …/plugin
 TEMPLATES = REPO_ROOT / "templates"
 RUN_TIMEOUT_S = 60
@@ -86,13 +88,13 @@ def make_vault(tmp_path: Path) -> Path:
     }.items():
         text = text.replace(placeholder, value)
     assert "{{" not in text
-    _script(v / "run-scout.sh", text)
+    _script(v / layout.runner_path("run-scout.sh"), text)
     lock_lib = (TEMPLATES / "scripts" / "scout-lock.sh.tmpl").read_text(encoding="utf-8")
-    _script(v / "scripts" / "scout-lock.sh", lock_lib.replace("{{INSTANCE_NAME}}", "Scout"))
+    _script(v / layout.script_path("scout-lock.sh"), lock_lib.replace("{{INSTANCE_NAME}}", "Scout"))
     _script(v / "bin" / "scoutctl", NOOP_SCOUTCTL)
     # The retry wrapper is called as `claude-with-retry.sh LOG_FILE CLAUDE_BIN args…`;
     # the stub runs the (fake) claude as a child, as the real one does.
-    _script(v / "scripts" / "claude-with-retry.sh", '#!/bin/bash\nshift\n"$@"\n')
+    _script(v / layout.script_path("claude-with-retry.sh"), '#!/bin/bash\nshift\n"$@"\n')
     # A fake `claude`: records its PID, then holds for FAKE_CLAUDE_HOLD_S.
     _script(
         v / "bin" / "claude",
@@ -116,7 +118,11 @@ def _env(**extra: str) -> dict[str, str]:
 
 def _waiter(vault: Path, **env: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [str(vault / "run-scout.sh")], env=_env(**env), capture_output=True, text=True, timeout=RUN_TIMEOUT_S
+        [str(vault / layout.runner_path("run-scout.sh"))],
+        env=_env(**env),
+        capture_output=True,
+        text=True,
+        timeout=RUN_TIMEOUT_S,
     )
 
 
@@ -375,7 +381,7 @@ def test_a_stopped_claude_past_the_ceiling_is_reaped_with_its_whole_group(vault:
     the next slot find it past the ceiling. The reap takes the runner's whole
     process group, the new run starts, and exactly one ``claude --name scout-``
     is alive afterwards: the new run's."""
-    holder = _detached(str(vault / "run-scout.sh"), env=_env(FAKE_CLAUDE_HOLD_S="300"))
+    holder = _detached(str(vault / layout.runner_path("run-scout.sh")), env=_env(FAKE_CLAUDE_HOLD_S="300"))
     holders.append(holder)
     pids_file = vault / "claude-pids"
     _wait_for(lambda: pids_file.exists() and pids_file.read_text(encoding="utf-8").strip() != "", "the holder's claude")
@@ -384,7 +390,7 @@ def test_a_stopped_claude_past_the_ceiling_is_reaped_with_its_whole_group(vault:
     os.kill(old_claude, signal.SIGSTOP)
 
     reaper = subprocess.Popen(
-        [str(vault / "run-scout.sh")],
+        [str(vault / layout.runner_path("run-scout.sh"))],
         env=_env(FAKE_CLAUDE_HOLD_S="30", SCOUT_LOCK_MAX_AGE_SECS="2", SCOUT_LOCK_WAIT_SECS="30"),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

@@ -13,7 +13,7 @@ from scout.scripts.phase_assembly import render_template
 
 TEMPLATES = Path(__file__).resolve().parents[3] / "templates"
 SKILLS = TEMPLATES.parent / "skills"
-CLAUDE_LAUNCH = '"$SCOUT_DIR/scripts/claude-with-retry.sh"'
+CLAUDE_LAUNCH = '"$SCOUT_DIR/scout/scripts/claude-with-retry.sh"'
 
 
 def _rendered() -> str:
@@ -25,7 +25,7 @@ def _rendered() -> str:
             "INSTANCE_NAME_LOWER": "testscout",
             "SCOUT_DIR": "/vault",
             "CLAUDE_BIN": "/bin/claude",
-            "SCOUTCTL_BIN": "/vault/scripts/scoutctl",
+            "SCOUTCTL_BIN": "/vault/scout/scripts/scoutctl",
             "MAX_BUDGET": "5.00",
         },
     )
@@ -52,7 +52,7 @@ def test_run_respond_template_pins_mode_and_budget() -> None:
     assert "dreaming" not in text.lower()
     prompt = _prompt(text)
     assert "running in RESPOND mode" in prompt
-    assert "Read /vault/RESPOND.md in full and follow it" in prompt
+    assert "Read /vault/scout/brain/RESPOND.md in full and follow it" in prompt
 
 
 def test_run_respond_prompt_points_at_the_trigger_event_without_expanding_it() -> None:
@@ -66,7 +66,7 @@ def test_run_respond_takes_the_shared_session_lock_before_claude() -> None:
     """The Telegram source and the ledger read a live respond run off .scout-logs/.scout-session.lock."""
     text = _rendered()
     assert 'LOCK_FILE="$LOG_DIR/.scout-session.lock"' in text
-    assert 'LOCK_LIB="$SCOUT_DIR/scripts/scout-lock.sh"' in text
+    assert 'LOCK_LIB="$SCOUT_DIR/scout/scripts/scout-lock.sh"' in text
     assert '\n. "$LOCK_LIB"\n' in text
     acquire = text.index("if ! scout_lock_acquire; then\n    scout_record_skip skipped_lock\n    exit 0\nfi\n")
     assert text.index('. "$LOCK_LIB"') < acquire < text.index(CLAUDE_LAUNCH)
@@ -103,5 +103,7 @@ def test_scout_respond_skill_launches_the_runner_in_the_background() -> None:
         "description: Answer pending Telegram messages from the owner now "
         "(normally started automatically by the telegram-respond trigger)"
     ) in head
-    assert "nohup bash ./run-respond.sh > /dev/null 2>&1 &" in body
+    assert (
+        'R=./scout/runners/run-respond.sh; [ -x "$R" ] || R=./run-respond.sh; nohup bash "$R" > /dev/null 2>&1 &'
+    ) in body
     assert ".scout-logs/respond-*.log" in body

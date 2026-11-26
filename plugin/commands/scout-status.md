@@ -98,7 +98,7 @@ Files without any date marker count as "unknown" — flag them separately but do
 
 ### 3c. Pending Proposals
 
-Read `SCOUT_DIR/dreaming-proposals.md`.
+Read `SCOUT_DIR/scout/records/dreaming-proposals.md` (`SCOUT_DIR/dreaming-proposals.md` on a vault that has not moved to layout v2).
 
 Look for proposal blocks with status `Pending` or `Approved` (i.e., not yet `Applied` or `Rejected`). A proposal block typically looks like:
 
@@ -111,7 +111,7 @@ Count how many Pending and Approved proposals exist.
 
 ### 3d. Wishlist
 
-Read every `*.md` file in `SCOUT_DIR/docs/wishlist/` (if the directory exists), not its `progress/` folder, which holds each item's progress log. Each file is one item with YAML frontmatter — the `status:` field is the state (`open` | `in-progress` | `done` | `dropped`).
+Read every `*.md` file in `SCOUT_DIR/scout/records/wishlist/` (`SCOUT_DIR/docs/wishlist/` before layout v2; if the directory exists), not its `progress/` folder, which holds each item's progress log. Each file is one item with YAML frontmatter — the `status:` field is the state (`open` | `in-progress` | `done` | `dropped`).
 
 Collect the active items: `status: open` (new) and `status: in-progress`. Exclude `done` and `dropped`.
 
@@ -229,13 +229,13 @@ The report is `{severity, evaluated_at, last_ok_at, findings[], slots[]}`. Each 
 
 ### 3h. Brain-file edits (applied rules)
 
-Dreaming runs may edit Scout's own instructions (`SKILL.md`, `DREAMING.md`, `RESEARCH.md`) without asking first, when the change is additive or closes a logged mistake. That is safe only if the user can see what changed. The daily action-items file and the wrap message say it once; this section is the place to look it up later.
+Dreaming runs may edit Scout's own instructions (`scout/brain/SKILL.md`, `DREAMING.md`, `RESEARCH.md`) without asking first, when the change is additive or closes a logged mistake. That is safe only if the user can see what changed. The daily action-items file and the wrap message say it once; this section is the place to look it up later.
 
 Read git:
 
 ```bash
 git -C "SCOUT_DIR" log --since="7 days ago" --no-merges --date=format:'%Y-%m-%d %H:%M' \
-    --pretty=format:'@@%h|%ad|%s' --numstat -- SKILL.md DREAMING.md RESEARCH.md
+    --pretty=format:'@@%h|%ad|%s' --numstat -- scout/brain/SKILL.md scout/brain/DREAMING.md scout/brain/RESEARCH.md SKILL.md DREAMING.md RESEARCH.md
 ```
 
 Each commit starts with an `@@<hash>|<date>|<subject>` line, followed by `added<TAB>removed<TAB>file` lines.

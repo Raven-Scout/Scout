@@ -13,7 +13,7 @@ In order:
 2. **Commit the ledgers.** Each delegate's ``taken.ledger`` (ULIDs only),
    and ``.scout-inbox/agents/.gitignore``, which keeps the copies of what
    agents wrote uncommitted, are committed through
-   ``scripts/git-safe-commit.sh``. The copies themselves are never committed.
+   ``scout/scripts/git-safe-commit.sh``. The copies themselves are never committed.
 3. **Apply,** within :data:`APPLY_BUDGET_S` seconds: no new copy is started
    after that, so the session lock is held briefly. A run that fires
    meanwhile waits for it (``run-*.sh`` waits up to ``SCOUT_LOCK_WAIT_SECS``,

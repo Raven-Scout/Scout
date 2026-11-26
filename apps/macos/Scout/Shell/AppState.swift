@@ -315,9 +315,11 @@ final class AppState: ObservableObject {
         let writerBox = ActionItemsWriterBox(writer: writerActor, boardWriter: boardWriter)
         let envState = ActionItemsEnvironmentState()
 
-        // Per-file proposals live in `dreaming-proposals/` (the sibling
-        // `dreaming-proposals.md` is just an index). The folder is overridable
-        // via the `dreamingProposalsPath` setting; takes effect on next launch.
+        // Per-file proposals live in `scout/records/dreaming-proposals/` (the
+        // sibling `dreaming-proposals.md` is just an index). The folder is
+        // overridable via the `dreamingProposalsPath` setting; takes effect on
+        // next launch. An override still naming the layout v1 default is cleared.
+        VaultLayout.clearV1DefaultOverrides(defaults, scoutDir: scoutDir)
         let proposalsDirURL: URL = {
             let override = defaults
                 .string(forKey: "dreamingProposalsPath")?
@@ -325,7 +327,7 @@ final class AppState: ObservableObject {
             if let override, !override.isEmpty {
                 return URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
             }
-            return scoutDir.appendingPathComponent("dreaming-proposals")
+            return scoutDir.appendingPathComponent(VaultLayout.dreamingProposalsDir)
         }()
         let proposalsDoc = ProposalsDocumentService(directoryURL: proposalsDirURL, fileEvents: events)
         let proposalsWriter = ProposalsWriter(

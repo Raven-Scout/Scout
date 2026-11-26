@@ -183,7 +183,9 @@ def project_knowledge(
         root = projects_dir or cfg.projects_dir
         skip = cfg.skip_projects
     except Exception:
-        root, skip = projects_dir or "knowledge-base/projects", frozenset()
+        from scout.kb.structure import _space_defaults
+
+        root, skip = projects_dir or _space_defaults(vault)[0], frozenset()
     base = vault / root
     out: list[dict[str, Any]] = []
     if not base.is_dir():

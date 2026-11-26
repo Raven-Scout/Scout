@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from scout.scripts import vault_drift as vd
 from scout.scripts.bootstrap import BootstrapConfig, install, upgrade
 
@@ -55,8 +56,8 @@ pytestmark = pytest.mark.skipif(not _no_yaml_without_site(), reason="PyYAML is i
 @pytest.fixture
 def vault(tmp_path: Path) -> Path:
     v = tmp_path / "vault"
-    (v / "scripts").mkdir(parents=True)
-    shutil.copy(TEMPLATE, v / "scripts" / "recurring-task-status.py")
+    (v / "scout" / "scripts").mkdir(parents=True)
+    shutil.copy(TEMPLATE, v / layout.script_path("recurring-task-status.py"))
     tasks = v / "knowledge-base" / "recurring-tasks"
     tasks.mkdir(parents=True)
     (tasks / "weekly-status.md").write_text(ENTITY, encoding="utf-8")
@@ -97,7 +98,7 @@ def _write_pointer(home: Path, python: Path) -> None:
 def _run(vault: Path, home: Path, *args: str, **env: str) -> subprocess.CompletedProcess[str]:
     """Run the vault's copy the way a brain file does: bare interpreter, vault cwd."""
     return subprocess.run(
-        [sys.executable, "-S", "scripts/recurring-task-status.py", "--date", "2027-06-18", *args],
+        [sys.executable, "-S", layout.script_path("recurring-task-status.py"), "--date", "2027-06-18", *args],
         cwd=vault,
         capture_output=True,
         text=True,
@@ -225,8 +226,8 @@ def test_an_upgrade_merges_the_guard_into_a_vault_that_edited_the_import_block(t
     is where a vault patches this file, so the three-way merge needs no hand help."""
     plugin = tmp_path / "plugin"
     shutil.copytree(TEMPLATE.parents[1], plugin / "templates")
-    rel = "scripts/recurring-task-status.py"
-    shipped = plugin / "templates" / rel
+    rel = layout.script_path("recurring-task-status.py")
+    shipped = plugin / "templates" / "scripts" / "recurring-task-status.py"
     current = shipped.read_text(encoding="utf-8")
     shipped.write_text(_pre_fix(current), encoding="utf-8")
     vault = tmp_path / "Scout"

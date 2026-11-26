@@ -25,3 +25,10 @@ __pycache__/
 # MCP server config — holds API keys. Sessions auto-commit the vault, so this
 # line is what keeps a live key out of git history.
 .mcp.json
+
+# Dropped files for Scout to read (inbox/drop/): their contents stay out of git.
+inbox/drop/*
+!inbox/drop/README.md
+
+# The layout move's journal and pre-move copies (scoutctl vault migrate): this computer's state.
+.scout-state/migrations/

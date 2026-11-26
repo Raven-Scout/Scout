@@ -1,6 +1,6 @@
 #!/bin/bash
 # {{INSTANCE_NAME}} Respond runner — started by the telegram-respond trigger (a run_skill action), or by hand
-# Answers the owner's pending Telegram messages: reads RESPOND.md, acts narrowly, sends one reply
+# Answers the owner's pending Telegram messages: reads scout/brain/RESPOND.md, acts narrowly, sends one reply
 
 set -euo pipefail
 
@@ -41,10 +41,10 @@ mkdir -p "$LOG_DIR"
 
 # Pin this run's timezone for every child — the shell helpers, the engine's
 # Python hooks, the session itself — so they all date the run alike, even if
-# the computer's zone changes mid-run. scripts/scout-tz.sh resolves it once,
+# the computer's zone changes mid-run. scout/scripts/scout-tz.sh resolves it once,
 # here on the host: scout-config.yaml's optional override, else the host's own
 # zone. A warning (an override that names no real zone) goes to this run's log.
-RUN_TZ="$("$SCOUT_DIR/scripts/scout-tz.sh" 2>>"$LOG_FILE" || true)"
+RUN_TZ="$("$SCOUT_DIR/scout/scripts/scout-tz.sh" 2>>"$LOG_FILE" || true)"
 if [ -n "$RUN_TZ" ]; then
     export SCOUT_USER_TIMEZONE="$RUN_TZ"
 fi
@@ -60,21 +60,21 @@ export SESSION_TYPE=respond
 
 # Concurrency guard — only one {{INSTANCE_NAME}} session at a time. The lock
 # protocol (#331), the wait for a busy lock and the redundant-run check (#218)
-# live in scripts/scout-lock.sh, shared by all the runners. It is rendered
+# live in scout/scripts/scout-lock.sh, shared by all the runners. It is rendered
 # with them, so a vault without it is a broken install: fail loudly rather than
 # run unlocked.
 RUN_START=$(date +%s)
 export SCOUT_RUNNER_KIND="$RUNNER_KIND"
-LOCK_LIB="$SCOUT_DIR/scripts/scout-lock.sh"
+LOCK_LIB="$SCOUT_DIR/scout/scripts/scout-lock.sh"
 if [ ! -r "$LOCK_LIB" ]; then
     echo "=== $LOCK_LIB is missing — not running without the session lock. Run /scout-update to restore it. ===" >> "$LOG_FILE"
-    echo "{{INSTANCE_NAME}} $RUNNER_KIND run FAILED: scripts/scout-lock.sh missing at $(date)" >> "$LOG_DIR/failures.log"
-    if [ -x "$SCOUT_DIR/scripts/run-outcome.sh" ]; then
-        "$SCOUT_DIR/scripts/run-outcome.sh" record "$MODE" 1 "$RUN_START" "$LOG_FILE" >> "$LOG_FILE" 2>&1 || true
+    echo "{{INSTANCE_NAME}} $RUNNER_KIND run FAILED: scout/scripts/scout-lock.sh missing at $(date)" >> "$LOG_DIR/failures.log"
+    if [ -x "$SCOUT_DIR/scout/scripts/run-outcome.sh" ]; then
+        "$SCOUT_DIR/scout/scripts/run-outcome.sh" record "$MODE" 1 "$RUN_START" "$LOG_FILE" >> "$LOG_FILE" 2>&1 || true
     fi
     exit 1
 fi
-# shellcheck source=scripts/scout-lock.sh
+# shellcheck source=scout/scripts/scout-lock.sh
 . "$LOCK_LIB"
 if ! scout_lock_acquire; then
     scout_record_skip skipped_lock
@@ -89,20 +89,20 @@ if ! scout_lease_acquire; then
     exit 0
 fi
 
-# The prompt instructs Claude to read RESPOND.md and follow it. The event file's
+# The prompt instructs Claude to read scout/brain/RESPOND.md and follow it. The event file's
 # path stays an escaped variable name: the session reads it with printenv, and a
 # run started by hand, which has none, doesn't trip `set -u` here.
 PROMPT="You are {{INSTANCE_NAME}} running in RESPOND mode — answering the owner's pending Telegram messages now. Your working directory is {{SCOUT_DIR}}.
 
-Read {{SCOUT_DIR}}/RESPOND.md in full and follow it.
+Read {{SCOUT_DIR}}/scout/brain/RESPOND.md in full and follow it.
 
-The messages to answer are in the trigger's event file, whose path is in the \$SCOUT_TRIGGER_EVENT_PATH environment variable (\`printenv SCOUT_TRIGGER_EVENT_PATH\`). A run started by hand has none; RESPOND.md says what to do then.
+The messages to answer are in the trigger's event file, whose path is in the \$SCOUT_TRIGGER_EVENT_PATH environment variable (\`printenv SCOUT_TRIGGER_EVENT_PATH\`). A run started by hand has none; scout/brain/RESPOND.md says what to do then.
 
 Important:
 - Use 'gh' CLI for all GitHub operations (not GitHub MCP).
 - The knowledge base is in {{SCOUT_DIR}}/knowledge-base/.
 - Always use [[wikilinks]] when referencing KB files.
-- Send nothing but the one reply RESPOND.md describes: no wrap notification, no Slack.
+- Send nothing but the one reply scout/brain/RESPOND.md describes: no wrap notification, no Slack.
 - Your output should focus on what you found and changed, not infrastructure steps."
 
 echo "=== {{INSTANCE_NAME}} Respond run starting at $(date) ===" >> "$LOG_FILE"
@@ -121,31 +121,31 @@ export SCOUT_READER=autonomous
 export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
 
 # Pre-session hooks — gather data before Claude starts (saves tool calls inside the session).
-# These write to .scout-cache/ for RESPOND.md to consume. The messages themselves are
-# never taken from there: RESPOND.md reads them from the protected ledger through
+# These write to .scout-cache/ for scout/brain/RESPOND.md to consume. The messages themselves are
+# never taken from there: scout/brain/RESPOND.md reads them from the protected ledger through
 # `scoutctl telegram pending` (the event's ids, or, on a run started by hand, all of them).
-PRE_FILTER="$SCOUT_DIR/hooks/kb-pre-filter.sh"
+PRE_FILTER="$SCOUT_DIR/scout/hooks/kb-pre-filter.sh"
 if [ -x "$PRE_FILTER" ]; then
     "$PRE_FILTER" respond >> "$LOG_FILE" 2>&1 || true
 fi
-PRE_SESSION="$SCOUT_DIR/scripts/pre-session-data.sh"
+PRE_SESSION="$SCOUT_DIR/scout/scripts/pre-session-data.sh"
 if [ -x "$PRE_SESSION" ]; then
     "$PRE_SESSION" respond >> "$LOG_FILE" 2>&1 || true
 fi
-CC_CACHE="$SCOUT_DIR/scripts/cc-session-cache.sh"
+CC_CACHE="$SCOUT_DIR/scout/scripts/cc-session-cache.sh"
 if [ -x "$CC_CACHE" ]; then
     "$CC_CACHE" 24 >> "$LOG_FILE" 2>&1 || true
 fi
 # Daily-file completeness invariant — if today's action-items file doesn't
 # exist yet, materialize it verbatim from the most recent daily file so no
 # session (or app surface) ever sees a missing/stub list. No-op when present.
-MATERIALIZE="$SCOUT_DIR/scripts/materialize-daily-file.sh"
+MATERIALIZE="$SCOUT_DIR/scout/scripts/materialize-daily-file.sh"
 if [ -x "$MATERIALIZE" ]; then
     "$MATERIALIZE" >> "$LOG_FILE" 2>&1 || true
 fi
 
 # Budget check — skip if we're over the spending threshold
-BUDGET_CHECK="$SCOUT_DIR/scripts/budget-check.sh"
+BUDGET_CHECK="$SCOUT_DIR/scout/scripts/budget-check.sh"
 if [ -x "$BUDGET_CHECK" ]; then
     if ! "$BUDGET_CHECK" --verbose >> "$LOG_FILE" 2>&1; then
         echo "=== Budget check: skipping this run ===" >> "$LOG_FILE"
@@ -266,7 +266,7 @@ fi
 echo "=== write sandbox: $SCOUT_SANDBOX_STATUS ===" >> "$LOG_FILE"
 
 # Exported as SCOUT_MODE so the plugin's Stop hooks (session-tool-log,
-# session-tokens — see hooks/hooks.json) see it inside the claude child
+# session-tokens — see hooks/hooks.json in the plugin) see it inside the claude child
 # process. When it is unset, session-tool-log deliberately writes nothing (so
 # interactive sessions stay silent) and session-tokens labels the run `manual`;
 # without this export every scheduled run looks interactive and no connector
@@ -334,7 +334,7 @@ export SCOUT_RUN_AWAKE_STARTED
 
 # Run Claude in print mode through the retry wrapper — capture exit code without triggering set -e.
 # Wrapper handles log redirection and retries on transient API errors (socket close,
-# ECONNRESET, ConnectionRefused, Stream idle timeout, 529 Overloaded). See scripts/claude-with-retry.sh.
+# ECONNRESET, ConnectionRefused, Stream idle timeout, 529 Overloaded). See scout/scripts/claude-with-retry.sh.
 # With SCOUTCTL_BIN, the run's type and start, it records each failed attempt's spend
 # and gives a retry only what this run has left of its cap (#561).
 EXIT_CODE=0
@@ -343,7 +343,7 @@ if [ "$AGENT_EXEC" -eq 1 ]; then
     # same sandbox. For claude-code that CLI is claude with the else branch's argv, word for word
     # (tests/unit/test_agent_runtime_cli.py). SCOUT_AGENT_BIN is only for the wrapper's messages.
     cd "$SCOUT_DIR" && SCOUTCTL_BIN="$SCOUTCTL_BIN" SCOUT_SANDBOX_PROFILE="$SCOUT_SANDBOX_PROFILE" SCOUT_RUN_TYPE=respond SCOUT_RUN_STARTED="$START_TIME" SCOUT_AGENT_BIN="$CLAUDE_BIN" \
-        "$SCOUT_DIR/scripts/claude-with-retry.sh" \
+        "$SCOUT_DIR/scout/scripts/claude-with-retry.sh" \
         "$LOG_FILE" \
         "$SCOUTCTL_BIN" agent-runtime exec --runtime "$SCOUT_AGENT_RUNTIME" ${AGENT_BIN_ARGS[@]+"${AGENT_BIN_ARGS[@]}"} \
         --model "$SCOUT_MODEL" \
@@ -353,7 +353,7 @@ if [ "$AGENT_EXEC" -eq 1 ]; then
         || EXIT_CODE=$?
 else
     cd "$SCOUT_DIR" && SCOUTCTL_BIN="$SCOUTCTL_BIN" SCOUT_SANDBOX_PROFILE="$SCOUT_SANDBOX_PROFILE" SCOUT_RUN_TYPE=respond SCOUT_RUN_STARTED="$START_TIME" \
-        "$SCOUT_DIR/scripts/claude-with-retry.sh" \
+        "$SCOUT_DIR/scout/scripts/claude-with-retry.sh" \
         "$LOG_FILE" \
         "$CLAUDE_BIN" \
         --permission-mode auto \
@@ -408,7 +408,7 @@ echo "=== {{INSTANCE_NAME}} Respond run finished at $(date) (exit code: $EXIT_CO
 # If the run failed, log it and check for rate limiting
 if [ $EXIT_CODE -ne 0 ]; then
     echo "{{INSTANCE_NAME}} Respond run FAILED with exit code $EXIT_CODE at $(date)" >> "$LOG_DIR/failures.log"
-    RATE_DETECT="$SCOUT_DIR/scripts/rate-limit-detect.sh"
+    RATE_DETECT="$SCOUT_DIR/scout/scripts/rate-limit-detect.sh"
     if [ -x "$RATE_DETECT" ]; then
         if "$RATE_DETECT" "$LOG_FILE" --write-tracker 2>/dev/null; then
             echo "Rate limit detected — logged to usage tracker" >> "$LOG_FILE"
@@ -424,17 +424,17 @@ fi
 # Record how this run ended, out-of-band. This has to be a runner step, not a
 # session step: the failure being watched for is a run that never reaches its
 # phases (an expired login, a dead network), and nothing the session writes can
-# report that. scripts/run-outcome.sh is an optional vault helper; a vault
+# report that. scout/scripts/run-outcome.sh is an optional vault helper; a vault
 # without it skips this step. Its errors go to the run log, so a broken helper
 # (and with it the failure alerting) leaves a trace.
-OUTCOME="$SCOUT_DIR/scripts/run-outcome.sh"
+OUTCOME="$SCOUT_DIR/scout/scripts/run-outcome.sh"
 if [ -x "$OUTCOME" ]; then
     "$OUTCOME" record "$MODE" "$EXIT_CODE" "$START_TIME" "$LOG_FILE" >> "$LOG_FILE" 2>&1 || true
 fi
 
 # Regenerate the connector-health surface from the runner, for the same reason:
 # a run that dies early has still logged its tool calls, but never refreshes
-# knowledge-base/connector-health.md, which then goes stale while still looking
+# scout/records/connector-health.md, which then goes stale while still looking
 # current (showing alerts that later runs already resolved). The engine does the
 # roll-up and says in this log when it had nothing to rewrite. Never fatal.
 if [ -x "$SCOUTCTL_BIN" ]; then
@@ -448,7 +448,7 @@ fi
 # at exit) from every attempt's transcript and writes the runner's row with it, which
 # the budget check counts in place of the session's row. Without that command (an
 # older engine), the old fallback row with $0, so a failed run still leaves a row.
-COST_TRACKER="$SCOUT_DIR/scripts/write-session-cost.sh"
+COST_TRACKER="$SCOUT_DIR/scout/scripts/write-session-cost.sh"
 if [ -x "$SCOUTCTL_BIN" ] && "$SCOUTCTL_BIN" budget record-run "respond" --name "$RUN_NAME" \
     --started "$START_TIME" --cap {{MAX_BUDGET}} --exit-code "$EXIT_CODE" >> "$LOG_FILE" 2>&1; then
     :

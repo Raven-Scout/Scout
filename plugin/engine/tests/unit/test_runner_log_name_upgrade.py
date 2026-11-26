@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from scout import cli
+from scout import cli, layout
 from scout.scripts import vault_drift
 from scout.scripts.bootstrap import BootstrapConfig, install
 
@@ -31,6 +31,8 @@ RUNNERS = {
     "run-research.sh": "research",
     "run-respond.sh": "respond",
 }
+# Where an install renders each runner (layout v2: scout/runners/<name>).
+RUNNER_RELS = [layout.runner_path(name) for name in RUNNERS]
 
 # The block a runner's log-name lines are now, and the two lines it replaced.
 _NEW_BLOCK = re.compile(
@@ -74,7 +76,7 @@ def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _as_old_release(vault: Path, rel: str, edit) -> tuple[str, str]:  # type: ignore[no-untyped-def]
     """Put ``rel`` back to the old release's render (base), with ``edit`` applied live."""
     new = (vault / rel).read_text(encoding="utf-8")
-    old = _old_render(new, RUNNERS[rel])
+    old = _old_render(new, RUNNERS[Path(rel).name])
     vault_drift.snapshot_path(vault, rel).write_text(old, encoding="utf-8")
     live = edit(old.splitlines(keepends=True))
     (vault / rel).write_text(live, encoding="utf-8")
@@ -90,7 +92,7 @@ def _upgrade():  # type: ignore[no-untyped-def]
     return runner.invoke(cli.app, ["bootstrap", "upgrade", "--no-jobs"])
 
 
-@pytest.mark.parametrize("rel", RUNNERS)
+@pytest.mark.parametrize("rel", RUNNER_RELS)
 def test_a_far_vault_edit_merges_and_the_runner_gets_unique_log_names(vault: Path, rel: str) -> None:
     new, _ = _as_old_release(vault, rel, lambda lines: _tag(lines, len(lines) - 5))
 
@@ -106,7 +108,7 @@ def test_a_far_vault_edit_merges_and_the_runner_gets_unique_log_names(vault: Pat
     assert not (vault / vault_drift.DRIFT_DIR / f"{rel}.plugin").exists()
 
 
-@pytest.mark.parametrize("rel", RUNNERS)
+@pytest.mark.parametrize("rel", RUNNER_RELS)
 def test_an_edit_next_to_the_log_name_lines_parks_the_update(vault: Path, rel: str) -> None:
     def edit_lock_line(lines: list[str]) -> str:
         (i,) = [n for n, line in enumerate(lines) if line.startswith("LOCK_FILE=")]

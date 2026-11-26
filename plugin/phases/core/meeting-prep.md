@@ -12,14 +12,14 @@ After querying all connectors and before writing action items, generate prep fil
 
 ### Step 1: Match calendar events to meeting folders
 
-Read the list of tracked meetings with `scripts/scoutctl kb read knowledge-base/meetings/meetings.md`. For each meeting on today's calendar:
+Read the list of tracked meetings with `scout/scripts/scoutctl kb read knowledge-base/meetings.md`. Each row names a series, its space and its calendar match patterns; the series lives in `knowledge-base/<space>/meetings/<slug>/`, with its home file `<slug>.md`. For each meeting on today's calendar:
 1. Normalize the event title (lowercase, strip whitespace)
-2. Match against `calendar_match` patterns in each meeting's home file frontmatter
-3. If matched and no dated file (`meetings/<slug>/YYYY-MM-DD.md`) exists yet, create it (`scripts/scoutctl kb files --glob 'knowledge-base/meetings/<slug>/*.md'` lists them)
+2. Match it against each row's Calendar match patterns. Open a series' home file only once it matched (a private space's attendees stay out of runs that don't need them)
+3. If matched and no dated file (`knowledge-base/<space>/meetings/<slug>/YYYY-MM-DD.md`) exists yet, create it (`scout/scripts/scoutctl kb files --glob 'knowledge-base/<space>/meetings/<slug>/*.md'` lists them)
 
 ### Step 2: Generate prep content
 
-For each matched meeting, create the dated session file:
+For each matched meeting, create the dated occurrence file (prep, notes and synthesis live in this one file). Give it frontmatter with `type: meeting-occurrence` and `date: YYYY-MM-DD`, then this body:
 
 ```
 # [Meeting Name] — YYYY-MM-DD
@@ -30,7 +30,7 @@ For each matched meeting, create the dated session file:
 ## Prep
 
 ### Since Last Session ([date])
-[Query project files, Linear, Slack, GitHub for changes since last meeting. Read the most recent dated session file with `scripts/scoutctl kb read <path>`.]
+[Query project files, Linear, Slack, GitHub for changes since last meeting. Read the most recent dated session file with `scout/scripts/scoutctl kb read <path>`.]
 
 ### Open Action Items from Last Session
 [Carry forward uncompleted items from last session's Synthesis]
@@ -56,8 +56,8 @@ For each matched meeting, create the dated session file:
 
 ### Step 3: Handle untracked meetings
 
-- Recurring calendar events with no matching folder → create folder + home file with `[new - needs review]` flag
-- One-off meetings with 2+ attendees + project link → create a meeting folder
+- Recurring calendar events with no matching folder → create the folder and home file in the space it belongs to (the default space unless it is personal or plainly another registered space's) with a `[new - needs review]` flag, and add a row to `knowledge-base/meetings.md` with the meeting link, the space and its calendar match patterns (also `calendar_match` in the home file). Attendees and themes go in the home file, never the registry: every space reads the registry.
+- One-off meetings with 2+ attendees + project link → create a meeting folder the same way
 
 ### Step 4: Update action items format
 
@@ -120,10 +120,10 @@ Fill the `## Synthesis` section:
 
 ### Step 3: Propagate
 
-a. **Decisions** → meeting home file Key Decisions + each project's decisions note (`knowledge-base/projects/<name>/knowledge/<name>-decisions.md`; the project page's Key decisions table shows only the top 7). Include `[[meeting-slug/YYYY-MM-DD]]` as source.
+a. **Decisions** → meeting home file Key Decisions + each project's decisions note (`knowledge-base/<space>/projects/<name>/knowledge/<name>-decisions.md`; the project page's Key decisions table shows only the top 7). Include `[[meeting-slug/YYYY-MM-DD]]` as source.
 b. **Action items** → daily action-items file with `Source: [[meeting-slug/YYYY-MM-DD]]`. Apply standard cross-check.
 c. **Running Themes** → update home file.
-d. **Session log** → add one row (≤ 500 chars) to this month's shard `knowledge-base/session-log/YYYY-MM.md`, linking the meeting home file.
+d. **Session log** → add one row (≤ 500 chars) to this month's shard `scout/records/session-log/YYYY-MM.md`, linking the meeting home file.
 e. **Today's Meetings table** → update status from `upcoming` to `done`.
 
 ### Step 4: Handle missing notes

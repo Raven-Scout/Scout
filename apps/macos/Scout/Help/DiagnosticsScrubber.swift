@@ -40,12 +40,23 @@ nonisolated struct DiagnosticsScrubber: Sendable {
         "knowledge-base/ontology/parser.py", "action-items/render.py",
     ]
     static let structuralTopDirs: Set<String> = ["scripts", "hooks"]
+    /// Layout v2: the same engine files under scout/ (keep in step with diagnostics._STRUCTURAL_PREFIXES).
+    static let structuralPrefixes = ["scout/brain/", "scout/runners/", "scout/scripts/", "scout/hooks/"]
+    static let structuralFilesV2: Set<String> = ["scout/kb-page-standard.md", "README.md"]
     /// Inside .git only these are Scout's business (lock and HEAD errors); refs and the rest can name the owner's work.
     static let gitFiles: Set<String> = [
         ".git", ".git/index.lock", ".git/HEAD.lock", ".git/HEAD", ".git/config", ".git/index", ".git/ORIG_HEAD",
         ".git/FETCH_HEAD", ".git/MERGE_HEAD",
     ]
     static let peopleDir = "knowledge-base/people/"
+
+    /// A person's note: an identity note, or (layout v2) a role note in a space's people/ folder
+    /// (keep in step with diagnostics.is_person_path).
+    static func isPersonPath(_ rel: String) -> Bool {
+        if rel.hasPrefix(peopleDir) { return true }
+        let parts = rel.split(separator: "/", omittingEmptySubsequences: false)
+        return parts.count >= 4 && parts[0] == "knowledge-base" && parts[2] == "people"
+    }
     /// Scout's own vocabulary, kept when a message quotes it ("must be one of ['mon', …]").
     static let keywords: Set<String> = [
         "mon", "tue", "wed", "thu", "fri", "sat", "sun", "fire", "skip", "collapse", "true", "false", "yes", "no",
@@ -75,7 +86,8 @@ nonisolated struct DiagnosticsScrubber: Sendable {
     /// Scout's own folder names: never hidden, though what is inside them is.
     static let keepWords: Set<String> = [
         "knowledge-base", "action-items", "ontology", "wishlist", "research",
-        "proposals", "archive", "scripts", "hooks",
+        "proposals", "archive", "scripts", "hooks", "scout", "brain", "runners", "records", "reports",
+        VaultLayout.inboxDir,
     ]
     /// Scout's and the toolchain's own folders. Only the first path segment after one is kept; anything deeper is `<path>`.
     static let homeKeepPrefixes = [
@@ -181,6 +193,7 @@ nonisolated struct DiagnosticsScrubber: Sendable {
         let first = rel.split(separator: "/", maxSplits: 1).first.map(String.init) ?? rel
         if first == ".git" { return gitFiles.contains(rel) }
         return scoutDotDirs.contains(first) || structuralTopDirs.contains(first) || structuralFiles.contains(rel)
+            || structuralFilesV2.contains(rel) || structuralPrefixes.contains(where: { rel.hasPrefix($0) })
     }
 
     /// A letter of a script written without spaces between words (CJK and the like).
@@ -231,7 +244,7 @@ nonisolated struct DiagnosticsScrubber: Sendable {
             }
             b.add(rel, "<path>", anywhere: true)
             // A person's name is short and plain ("Priya"), and the most sensitive name there is: hide it anywhere.
-            let person = rel.hasPrefix(peopleDir)
+            let person = isPersonPath(rel)
             b.add(url.lastPathComponent, "<name>", anywhere: person)
             let stem = url.deletingPathExtension().lastPathComponent
             if stem != url.lastPathComponent { b.add(stem, "<name>", anywhere: person) }

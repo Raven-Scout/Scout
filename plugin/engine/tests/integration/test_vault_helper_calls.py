@@ -3,12 +3,12 @@
 Several fixes a vault carried by hand are calls from a plugin-owned script into
 a helper script only that vault has:
 
-  - each runner records the run's outcome (``scripts/run-outcome.sh record``)
+  - each runner records the run's outcome (``scout/scripts/run-outcome.sh record``)
     after the session, from the wrapper, so it still happens when the session
     dies before reaching its phases;
-  - ``hooks/kb-pre-filter.sh`` caches the git-truth staleness ranking
-    (``scripts/vault-freshness.py``) before the session starts;
-  - ``scripts/heartbeat.sh`` runs a run-health sweep
+  - ``scout/hooks/kb-pre-filter.sh`` caches the git-truth staleness ranking
+    (``scout/scripts/vault-freshness.py``) before the session starts;
+  - ``scout/scripts/heartbeat.sh`` runs a run-health sweep
     (``scoutctl health notify``) on every tick.
 
 The plugin now ships these helpers (see test_shipped_helpers_install.py), but
@@ -29,6 +29,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from scout.scripts.phase_assembly import render_template
 
 TEMPLATES = Path(__file__).resolve().parents[3] / "templates"
@@ -77,10 +78,10 @@ def _run(script: Path, vault: Path, *args: str, **env: str) -> subprocess.Comple
 @pytest.fixture
 def vault(tmp_path: Path) -> Path:
     v = tmp_path / "Scout"
-    for d in (".scout-logs", ".scout-cache", "scripts", "hooks"):
+    for d in (".scout-logs", ".scout-cache", layout.V2["scripts_dir"], layout.V2["hooks_dir"]):
         (v / d).mkdir(parents=True)
     # Every runner sources the session lock (#218).
-    _render("scripts/scout-lock.sh.tmpl", v, "scripts/scout-lock.sh")
+    _render("scripts/scout-lock.sh.tmpl", v, layout.script_path("scout-lock.sh"))
     return v
 
 
@@ -101,7 +102,7 @@ exit {exit_code}
 
 
 def _stub_claude(vault: Path, exit_code: int) -> None:
-    _script(vault / "scripts" / "claude-with-retry.sh", f"#!/bin/bash\nexit {exit_code}\n")
+    _script(vault / "scout" / "scripts" / "claude-with-retry.sh", f"#!/bin/bash\nexit {exit_code}\n")
 
 
 def _rollup_scoutctl(vault: Path, exit_code: int = 0) -> tuple[Path, Path]:
@@ -122,10 +123,10 @@ def test_runner_records_the_outcome_and_rolls_up_connector_health(
     vault: Path, template: str, slot: str, exit_code: int
 ) -> None:
     scoutctl, calls = _rollup_scoutctl(vault)
-    runner = _render(template, vault, template.removesuffix(".tmpl"), SCOUTCTL_BIN=str(scoutctl))
+    runner = _render(template, vault, layout.runner_path(template.removesuffix(".tmpl")), SCOUTCTL_BIN=str(scoutctl))
     _stub_claude(vault, exit_code)
     outcome_args = vault / "outcome.args"
-    _script(vault / "scripts" / "run-outcome.sh", f'#!/bin/bash\nprintf \'%s\\n\' "$@" > "{outcome_args}"\n')
+    _script(vault / "scout" / "scripts" / "run-outcome.sh", f'#!/bin/bash\nprintf \'%s\\n\' "$@" > "{outcome_args}"\n')
 
     result = _run(runner, vault, SCOUT_FORCE_MODE=slot)
 
@@ -168,7 +169,9 @@ def test_runner_records_the_outcome_and_rolls_up_connector_health(
 @pytest.mark.parametrize(("template", "slot"), RUNNERS)
 def test_runner_without_scoutctl_skips_the_run(vault: Path, template: str, slot: str) -> None:
     """Without scoutctl the gate probe can't run, so the run is skipped, not run ungated (spec 2026-11-13 §3.5)."""
-    runner = _render(template, vault, template.removesuffix(".tmpl"), SCOUTCTL_BIN=str(vault / "bin" / "absent"))
+    runner = _render(
+        template, vault, layout.runner_path(template.removesuffix(".tmpl")), SCOUTCTL_BIN=str(vault / "bin" / "absent")
+    )
     _stub_claude(vault, 0)
 
     result = _run(runner, vault, SCOUT_FORCE_MODE=slot)
@@ -186,9 +189,12 @@ def test_failing_helpers_do_not_fail_the_runner(vault: Path, template: str, slot
         vault / "bin" / "scoutctl",
         "#!/bin/bash\n[ \"$1\" = gates ] && exit 0\necho 'connector-health: fatal error: engine broken' >&2\nexit 1\n",
     )
-    runner = _render(template, vault, template.removesuffix(".tmpl"), SCOUTCTL_BIN=str(scoutctl))
+    runner = _render(template, vault, layout.runner_path(template.removesuffix(".tmpl")), SCOUTCTL_BIN=str(scoutctl))
     _stub_claude(vault, 0)
-    _script(vault / "scripts" / "run-outcome.sh", "#!/bin/bash\necho 'run-outcome: ledger not writable' >&2\nexit 1\n")
+    _script(
+        vault / "scout" / "scripts" / "run-outcome.sh",
+        "#!/bin/bash\necho 'run-outcome: ledger not writable' >&2\nexit 1\n",
+    )
 
     result = _run(runner, vault, SCOUT_FORCE_MODE=slot)
 
@@ -204,14 +210,14 @@ def test_failing_helpers_do_not_fail_the_runner(vault: Path, template: str, slot
 def test_a_working_engine_without_the_optional_vault_helpers_still_runs(vault: Path, template: str, slot: str) -> None:
     """scoutctl works, but run-outcome.sh, budget-check.sh, the pre-session hooks and the cost tracker are absent."""
     scoutctl = _script(vault / "bin" / "scoutctl", "#!/bin/bash\nexit 0\n")
-    runner = _render(template, vault, template.removesuffix(".tmpl"), SCOUTCTL_BIN=str(scoutctl))
+    runner = _render(template, vault, layout.runner_path(template.removesuffix(".tmpl")), SCOUTCTL_BIN=str(scoutctl))
     _stub_claude(vault, 0)
 
     result = _run(runner, vault, SCOUT_FORCE_MODE=slot)
 
     assert result.returncode == 0, result.stderr
     assert "run finished" in _runner_log(vault)
-    assert not (vault / "scripts" / "run-outcome.sh").exists()
+    assert not (vault / "scout" / "scripts" / "run-outcome.sh").exists()
 
 
 @pytest.mark.parametrize(("template", "slot"), RUNNERS)
@@ -220,10 +226,13 @@ def test_an_engine_gone_mid_run_skips_the_rollup_and_falls_back_for_the_cost_row
 ) -> None:
     """The probe passed, then scoutctl vanished (an engine upgrade moved it): the runner's fallbacks still record."""
     scoutctl = _script(vault / "bin" / "scoutctl", "#!/bin/bash\nexit 0\n")
-    runner = _render(template, vault, template.removesuffix(".tmpl"), SCOUTCTL_BIN=str(scoutctl))
-    _script(vault / "scripts" / "claude-with-retry.sh", f'#!/bin/bash\nrm -f "{scoutctl}"\nexit 0\n')
+    runner = _render(template, vault, layout.runner_path(template.removesuffix(".tmpl")), SCOUTCTL_BIN=str(scoutctl))
+    _script(vault / "scout" / "scripts" / "claude-with-retry.sh", f'#!/bin/bash\nrm -f "{scoutctl}"\nexit 0\n')
     cost_args = vault / "cost.args"
-    _script(vault / "scripts" / "write-session-cost.sh", f'#!/bin/bash\nprintf \'%s\\n\' "$@" > "{cost_args}"\n')
+    _script(
+        vault / "scout" / "scripts" / "write-session-cost.sh",
+        f'#!/bin/bash\nprintf \'%s\\n\' "$@" > "{cost_args}"\n',
+    )
 
     result = _run(runner, vault, SCOUT_FORCE_MODE=slot)
 
@@ -253,13 +262,15 @@ sys.exit({exit_code})
 
 def _kb_pre_filter(vault: Path) -> tuple[Path, Path]:
     scoutctl, calls = _stub_scoutctl(vault)
-    hook = _render("hooks/kb-pre-filter.sh.tmpl", vault, "hooks/kb-pre-filter.sh", SCOUTCTL_BIN=str(scoutctl))
+    hook = _render(
+        "hooks/kb-pre-filter.sh.tmpl", vault, layout.hook_path("kb-pre-filter.sh"), SCOUTCTL_BIN=str(scoutctl)
+    )
     return hook, calls
 
 
 def test_kb_pre_filter_caches_the_git_truth_ranking_before_filtering(vault: Path) -> None:
     hook, scoutctl_calls = _kb_pre_filter(vault)
-    _script(vault / "scripts" / "vault-freshness.py", FRESHNESS_STUB.format(exit_code=0))
+    _script(vault / "scout" / "scripts" / "vault-freshness.py", FRESHNESS_STUB.format(exit_code=0))
 
     result = _run(hook, vault, "briefing")
 
@@ -274,7 +285,7 @@ def test_kb_pre_filter_caches_the_git_truth_ranking_before_filtering(vault: Path
 def test_kb_pre_filter_still_filters_without_a_working_ranking(vault: Path, helper: str) -> None:
     hook, scoutctl_calls = _kb_pre_filter(vault)
     if helper == "failing":
-        _script(vault / "scripts" / "vault-freshness.py", FRESHNESS_STUB.format(exit_code=1))
+        _script(vault / "scout" / "scripts" / "vault-freshness.py", FRESHNESS_STUB.format(exit_code=1))
 
     result = _run(hook, vault, "dreaming")
 
@@ -286,7 +297,7 @@ def test_kb_pre_filter_reports_a_failing_ranking_and_drops_its_stale_cache(vault
     """The runner sends the hook's stderr to the run log, so the crash is visible;
     and a cache left by an earlier run must not be read as the current ranking."""
     hook, _ = _kb_pre_filter(vault)
-    _script(vault / "scripts" / "vault-freshness.py", FRESHNESS_STUB.format(exit_code=1))
+    _script(vault / "scout" / "scripts" / "vault-freshness.py", FRESHNESS_STUB.format(exit_code=1))
     stale = vault / ".scout-cache" / "vault-freshness.md"
     stale.write_text("# ranking from an earlier run\n", encoding="utf-8")
 
@@ -309,7 +320,7 @@ sys.exit(2)
 
 def _heartbeat(vault: Path) -> tuple[Path, Path]:
     scoutctl, calls = _stub_scoutctl(vault)
-    beat = _render("scripts/heartbeat.sh.tmpl", vault, "scripts/heartbeat.sh", SCOUTCTL_BIN=str(scoutctl))
+    beat = _render("scripts/heartbeat.sh.tmpl", vault, layout.script_path("heartbeat.sh"), SCOUTCTL_BIN=str(scoutctl))
     return beat, calls
 
 
@@ -317,7 +328,7 @@ def test_heartbeat_sweeps_run_health_on_every_tick(vault: Path) -> None:
     """Every tick, not once a day: a wake-graced finding needs a second look to be
     confirmed, and the notifier's own state keeps a repeat sweep from re-pushing."""
     beat, scoutctl_calls = _heartbeat(vault)
-    _script(vault / "scripts" / "session-lane-liveness.py", LIVENESS_STUB)
+    _script(vault / "scout" / "scripts" / "session-lane-liveness.py", LIVENESS_STUB)
 
     first = _run(beat, vault)
     second = _run(beat, vault)
@@ -370,7 +381,7 @@ def test_a_failing_sweep_does_not_stop_the_heartbeat(vault: Path) -> None:
         vault / "bin" / "scoutctl",
         f'#!/bin/bash\necho "$*" >> "{vault / "scoutctl.calls"}"\n[ "$1" = health ] && exit 1\nexit 0\n',
     )
-    beat = _render("scripts/heartbeat.sh.tmpl", vault, "scripts/heartbeat.sh", SCOUTCTL_BIN=str(scoutctl))
+    beat = _render("scripts/heartbeat.sh.tmpl", vault, layout.script_path("heartbeat.sh"), SCOUTCTL_BIN=str(scoutctl))
 
     result = _run(beat, vault)
 

@@ -10,7 +10,8 @@ announced yet. It never raises; a broken input reads as nothing to do.
 ``docs/wishlist/``, both sides of a ``knowledge-base/`` rename): a positional 3-way merge of each file (``git
 merge-file``), so later edits elsewhere in those files stay and an identical block elsewhere is never taken for the
 change's own lines. ``apply_governance`` patches the working tree with an approved ``governance-pending/`` diff.
-Neither stages or commits anything: the run commits the returned paths through ``scripts/git-safe-commit.sh``. Every
+Neither stages or commits anything: the run commits the returned paths through
+``scout/scripts/git-safe-commit.sh``. Every
 git call goes through ``scout.changes.scan``'s runner (``GIT_OPTIONAL_LOCKS=0``, a timeout)."""
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ from scout.changes.scan import _git, _git_bytes, name_status, own_paths
 
 ANNOUNCED_NAME = "changes-announced.json"
 _ANNOUNCED_SCHEMA = 1
-CALIBRATION_REPORT = "docs/changes-calibration-report.md"
+CALIBRATION_REPORT = "reports/changes-calibration-report.md"
 # The calibration report is due this long after the first verdict came in.
 CALIBRATION_REPORT_AFTER = timedelta(days=28)
 CACHE_DIR = ".scout-cache"

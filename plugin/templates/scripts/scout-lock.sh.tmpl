@@ -1,6 +1,6 @@
 #!/bin/bash
-# scout-lock.sh — the {{INSTANCE_NAME}} session lock, shared by run-scout.sh,
-# run-dreaming.sh, run-research.sh and run-respond.sh. Sourced, never executed: the functions
+# scout-lock.sh — the {{INSTANCE_NAME}} session lock, shared by scout/runners/run-scout.sh,
+# scout/runners/run-dreaming.sh, scout/runners/run-research.sh and scout/runners/run-respond.sh. Sourced, never executed: the functions
 # below run inside the runner's shell (set -euo pipefail).
 #
 # The runner sets, before sourcing:
@@ -134,9 +134,9 @@ SCOUT_LOCK_SESSION_PIDS=""
 # A deliberate skip still records how the run ended (#401). Without a row in
 # .scout-logs/run-outcomes.jsonl, `scoutctl health` reads the fired slot as
 # silent (slot.fired_silent) for a run that was skipped on purpose.
-# scripts/run-outcome.sh is an optional vault helper, as at the end of the run.
+# scout/scripts/run-outcome.sh is an optional vault helper, as at the end of the run.
 scout_record_skip() {
-    local outcome_sh="$SCOUT_DIR/scripts/run-outcome.sh"
+    local outcome_sh="$SCOUT_DIR/scout/scripts/run-outcome.sh"
     if [ -x "$outcome_sh" ]; then
         "$outcome_sh" record "$MODE" 0 "$RUN_START" "$LOG_FILE" "$1" >> "$LOG_FILE" 2>&1 || true
     fi

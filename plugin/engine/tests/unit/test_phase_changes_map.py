@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from scout import layout
 from scout.changes.models import RUN_KINDS, SURFACES
 from scout.cli import app as scoutctl
 from scout.scripts.bootstrap import BootstrapConfig, _assemble
@@ -97,7 +98,9 @@ def test_step_1d_keeps_ordinary_proposals_until_the_app_can_show_changes() -> No
     assert "`Approved`" in step_1d and "not `Rejected`" in step_1d and "Applied — [today's date]" in step_1d
     assert "**Before writing new ones, apply**" in step_1d
     # The app's Proposals tab keeps per-file proposals in dreaming-proposals/: an apply commits every path main did.
-    assert "`<the brain file> dreaming-proposals.md dreaming-proposals/ dreaming-proposals-archive.md`" in step_1d
+    proposals = layout.record_path("dreaming_proposals")
+    proposals_dir = layout.record_path("dreaming_proposals_dir")
+    assert f"`<the brain file> {proposals} {proposals_dir}/ scout/records/dreaming-proposals-archive.md`" in step_1d
     fallback = step_1d[step_1d.index("**Harness fallback.**") :]
     assert "opt-out `Pending` proposal" in fallback and "governance-pending" not in fallback
 
@@ -142,7 +145,7 @@ def test_step_1e_acts_on_due() -> None:
     assert "Changes tab" not in step_1e
     assert "scoutctl changes announced" in step_1e
     assert "engagement_tests_running" in step_1e
-    assert "calibration_report_due" in step_1e and "docs/changes-calibration-report.md" in step_1e
+    assert "calibration_report_due" in step_1e and "reports/changes-calibration-report.md" in step_1e
     assert "governance-pending/" in step_1e
     assert "`verified` is false" in step_1e
     assert "Engine back-port" in step_1e and "dreaming-proposals.md" in step_1e

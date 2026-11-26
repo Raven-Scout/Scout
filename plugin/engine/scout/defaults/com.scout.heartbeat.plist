@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  com.scout.heartbeat.plist — runs the vault's scripts/heartbeat.sh every 30 min.
+  com.scout.heartbeat.plist — runs the vault's scout/scripts/heartbeat.sh every 30 min.
 
   Installed by `scoutctl schedule install-heartbeat-plist`, which fills the
   USER_HOME and SCOUT_DIR placeholders (spelled with surrounding double
@@ -20,7 +20,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>__SCOUT_DIR__/scripts/heartbeat.sh</string>
+        <string>__SCOUT_DIR__/scout/scripts/heartbeat.sh</string>
     </array>
 
     <key>WorkingDirectory</key>

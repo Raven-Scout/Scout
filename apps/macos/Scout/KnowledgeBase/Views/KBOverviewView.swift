@@ -21,7 +21,7 @@ struct KBOverviewView: View {
     static let quickLinks: [(stem: String, fallbackPath: String, label: String, icon: String)] = [
         ("knowledge-base",  "knowledge-base/knowledge-base.md",    "Index",    "book.closed"),
         ("people",          "knowledge-base/people.md",            "People",   "person.2"),
-        ("projects",        "knowledge-base/projects/projects.md", "Projects", "folder"),
+        ("projects",        VaultLayout.defaultProjectsIndex,      "Projects", "folder"),
         ("issues",          "knowledge-base/issues.md",            "Issues",   "exclamationmark.triangle"),
         ("channels",        "knowledge-base/channels.md",          "Channels", "number"),
         ("research-queue",  "knowledge-base/research-queue.md",    "Research", "magnifyingglass"),

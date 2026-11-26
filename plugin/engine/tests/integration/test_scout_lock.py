@@ -1,4 +1,4 @@
-"""scripts/scout-lock.sh — the shared session lock: wait, skip rows, redundancy (#218).
+"""scout/scripts/scout-lock.sh — the shared session lock: wait, skip rows, redundancy (#218).
 
 Generation 1: a runner that finds the lock busy waits for it (polling, up to
 ``SCOUT_LOCK_WAIT_SECS``) instead of exiting at once, because the dispatcher has
@@ -28,6 +28,8 @@ import time
 from pathlib import Path
 
 import pytest
+
+from scout import layout
 
 REPO_ROOT = Path(__file__).resolve().parents[3]  # …/plugin
 TEMPLATES = REPO_ROOT / "templates"
@@ -65,9 +67,9 @@ def vault(tmp_path: Path) -> Path:
     v = tmp_path / "Scout"
     (v / ".scout-logs").mkdir(parents=True)
     _script(v / "bin" / "scoutctl", "#!/bin/bash\nexit 0\n")
-    _render(TEMPLATES / "scripts" / "run-outcome.sh.tmpl", v / "scripts" / "run-outcome.sh", v)
-    _render(TEMPLATES / "scripts" / "scout-lock.sh.tmpl", v / "scripts" / "scout-lock.sh", v)
-    _script(v / "scripts" / "claude-with-retry.sh", f'#!/bin/bash\ntouch "{v}/session-ran"\n')
+    _render(TEMPLATES / "scripts" / "run-outcome.sh.tmpl", v / layout.script_path("run-outcome.sh"), v)
+    _render(TEMPLATES / "scripts" / "scout-lock.sh.tmpl", v / layout.script_path("scout-lock.sh"), v)
+    _script(v / layout.script_path("claude-with-retry.sh"), f'#!/bin/bash\ntouch "{v}/session-ran"\n')
     return v
 
 
@@ -150,7 +152,7 @@ def _gone(pid: int) -> None:
 
 
 def _run(vault: Path, runner: str, **env: str) -> subprocess.CompletedProcess[str]:
-    script = _render(TEMPLATES / runner, vault / runner.removesuffix(".tmpl"), vault)
+    script = _render(TEMPLATES / runner, vault / layout.runner_path(runner.removesuffix(".tmpl")), vault)
     return subprocess.run(
         [str(script)],
         env={
@@ -376,7 +378,7 @@ def test_a_malformed_ledger_never_blocks_a_run(vault: Path) -> None:
 
 @pytest.mark.parametrize("runner", RUNNERS)
 def test_a_runner_without_scout_lock_fails_loudly_and_runs_nothing(vault: Path, runner: str) -> None:
-    (vault / "scripts" / "scout-lock.sh").unlink()
+    (vault / layout.script_path("scout-lock.sh")).unlink()
 
     result = _run(vault, runner)
 

@@ -177,7 +177,7 @@ kb_lint:
   # A rule's glob and exclude may use `{folder}`, the name of the folder the
   # file is in: once, in the last segment, beside plain text only. Example —
   # project front pages may not regrow, and nothing else changes:
-  #     - glob: "knowledge-base/projects/*/{folder}.md"
+  #     - glob: "knowledge-base/work/projects/*/{folder}.md"
   #       mode: block
   #       checks: [size, page-narration, page-sections, page-bullet]
   path_modes: []
@@ -190,14 +190,19 @@ kb_lint:
     - "action-items/archive/**"
     - "**/extracted/**"
     - "knowledge-base/projects/**/archive/**"
+    - "knowledge-base/*/projects/**/archive/**"
   strict_line_globs:
     - "action-items/action-items-*.md"
     - "knowledge-base/session-log/**"
   # Topic notes: cross-project ones under topics/, and each project's own in
-  # its knowledge/ folder (docs/kb-page-standard.md).
+  # its knowledge/ folder (scout/kb-page-standard.md). Each space has its own
+  # (knowledge-base/<space>/...); the knowledge-base/projects/... lines are for a
+  # vault that hasn't moved to layout v2 yet.
   topic_globs:
     - "knowledge-base/topics/**"
+    - "knowledge-base/*/topics/**"
     - "knowledge-base/projects/*/knowledge/**"
+    - "knowledge-base/*/projects/*/knowledge/**"
   # Files `kb lint --report` never ranks as dreaming shrink targets: the daily
   # file is rewritten by the briefings, the legacy session log is migrated by
   # a one-time sharding step, and the topic board's files are state the app
@@ -225,11 +230,18 @@ kb_lint:
     - "knowledge-base/review-queue/**"
     - "knowledge-base/decisions-log.md"
     - "knowledge-base/projects/*/knowledge/*-decisions*.md"
+    - "knowledge-base/*/projects/*/knowledge/*-decisions*.md"
     - "knowledge-base/projects/*/decision-log.md"
+    - "knowledge-base/*/projects/*/decision-log.md"
     - "knowledge-base/projects/*/decision-log/**"
+    - "knowledge-base/*/projects/*/decision-log/**"
     - "knowledge-base/projects/*/nav-history.md"
+    - "knowledge-base/*/projects/*/nav-history.md"
     - "knowledge-base/projects/*/nav-history/**"
+    - "knowledge-base/*/projects/*/nav-history/**"
     - "knowledge-base/kg-audits/**"
+    # A meeting's dated occurrence files (prep, notes, synthesis): one per meeting, layout v2.
+    - "knowledge-base/*/meetings/*/????-??-??*.md"
   budgets:
     - {glob: "action-items/action-items-*.md", bytes: 61440}
     # The topic board's files grow with use (dismissed.md is append-only).
@@ -248,14 +260,24 @@ kb_lint:
     # Knowledge-graph audit snapshots: dated records, unbudgeted.
     - {glob: "knowledge-base/kg-audits/**", bytes: null}
     - {glob: "knowledge-base/sources/**", bytes: 8192}
+    - {glob: "knowledge-base/*/sources/**", bytes: 8192}
     - {glob: "knowledge-base/topics/**", bytes: 10240}
+    - {glob: "knowledge-base/*/topics/**", bytes: 10240}
     # Verbatim pre-restructure copies: dated records, unbudgeted.
     - {glob: "knowledge-base/projects/**/archive/**", bytes: null}
+    - {glob: "knowledge-base/*/projects/**/archive/**", bytes: null}
     # The decisions note is the one dated log in a project; older rows shard to
     # <name>-decisions-YYYY.md.
     - {glob: "knowledge-base/projects/*/knowledge/*-decisions*.md", bytes: 51200}
+    - {glob: "knowledge-base/*/projects/*/knowledge/*-decisions*.md", bytes: 51200}
     - {glob: "knowledge-base/projects/*/knowledge/**", bytes: 10240}
+    - {glob: "knowledge-base/*/projects/*/knowledge/**", bytes: 10240}
     - {glob: "knowledge-base/people/**", bytes: 10240}
+    - {glob: "knowledge-base/organizations/**", bytes: 10240}
+    # Role notes: what Scout knows about a person or organization in one space (layout v2).
+    - {glob: "knowledge-base/*/people/**", bytes: 10240}
+    - {glob: "knowledge-base/*/organizations/**", bytes: 10240}
+    - {glob: "knowledge-base/*/meetings/*/????-??-??*.md", bytes: 51200}
     - {glob: "knowledge-base/ontology/**", bytes: 10240}
     - {glob: "knowledge-base/personal/**", bytes: 10240}
     - {glob: "knowledge-base/session-log/**", bytes: 98304}
@@ -263,17 +285,21 @@ kb_lint:
     - {glob: "knowledge-base/research-queue/**", bytes: 51200}
     - {glob: "knowledge-base/review-queue/**", bytes: 51200}
     - {glob: "knowledge-base/projects/*/decision-log/**", bytes: 51200}
+    - {glob: "knowledge-base/*/projects/*/decision-log/**", bytes: 51200}
     - {glob: "knowledge-base/projects/*/nav-history/**", bytes: 51200}
+    - {glob: "knowledge-base/*/projects/*/nav-history/**", bytes: 51200}
     - {glob: "knowledge-base/**", bytes: 15360}
 
 # KB structure check — `scoutctl kb structure` (report-only): does each
-# project folder meet docs/kb-page-standard.md? `--next` picks the dreaming
+# project folder meet scout/kb-page-standard.md? `--next` picks the dreaming
 # run's nightly rebuild target. The defaults match the standard the plugin
 # seeds; a vault that tailors its standard tailors these to match. Lists
 # replace the defaults, they don't add to them. Folders and files matching
 # `kb_lint.exclude_globs` or the KB schema's `graph.exclude` are skipped.
 kb_structure:
-  projects_dir: knowledge-base/projects
+  # projects_dir: the default space's projects folder (knowledge-base/<default>/projects, layout v2;
+  # knowledge-base/projects on a vault that hasn't moved). Every space's projects folder is checked; a
+  # projects_dir set here is the default space's.
   # Folders under projects_dir that are not a project (e.g. a parking folder).
   skip_projects: [archived]
   # Subfolders a project folder may hold. A sub-project folder with its own
@@ -285,7 +311,8 @@ kb_structure:
   # note under linked_dirs that links to the project, landed more than this
   # many days after the front page's `as_of`.
   stale_days: 3
-  linked_dirs: [knowledge-base/sources, knowledge-base/topics]
+  # linked_dirs: each space's sources/ and topics/ by default (knowledge-base/sources and
+  # knowledge-base/topics before layout v2). A list set here replaces them.
   # The nightly KB pass doesn't rebuild a front page bigger than this: it is
   # marked for an interactive session instead (`kb structure` shows
   # [interactive]). A shared page it may only trim is still picked. Default
@@ -316,3 +343,14 @@ kb_structure:
     - {label: "masked time", pattern: "\\b\\d{1,2}:\\dx\\b"}
     - label: "session name"
       pattern: "\\b(?:(?:morning|midday|afternoon|evening)-consolidation|(?:morning|weekend)-briefing|dreaming-(?:evening|nightly|weekend-morning))\\b"
+
+# Spaces (layout v2): one knowledge-base/<key>/ folder each, for that part of life's projects, topics,
+# sources, meetings and role notes. Exactly one is the default, where a note goes when nothing says
+# otherwise; visibility is each space's default note visibility (a note's own `visibility:` wins).
+# Set in the vault's scout-config.yaml, never here. A vault without the key has:
+#   spaces:
+#     - key: work
+#       default: true
+#       visibility: normal
+#     - key: personal
+#       visibility: private

@@ -199,21 +199,21 @@ Commits land in the git log as `work [HH:MM]: <summary>`, distinguishing manual 
 
 ### Meta Review (interactive, diagnostic)
 
-A system-level audit that sits above the individual session types. Does not read SKILL.md or DREAMING.md — instead it reviews the Scout system itself: are sessions actually running? Is the mistake audit trending better or worse? Are dreaming proposals flowing or clogged? Is the data-source coverage matrix consistent across session types? Writes a report to `knowledge-base/meta-review-YYYY-MM-DD.md`, applies low-risk quick fixes directly, and writes proposals for anything that needs judgment. Run weekly, or when something feels off.
+A system-level audit that sits above the individual session types. Does not read the brain skills (`scout/brain/SKILL.md`, `DREAMING.md`) — instead it reviews the Scout system itself: are sessions actually running? Is the mistake audit trending better or worse? Are dreaming proposals flowing or clogged? Is the data-source coverage matrix consistent across session types? Writes a report to `knowledge-base/meta-review-YYYY-MM-DD.md`, applies low-risk quick fixes directly, and writes proposals for anything that needs judgment. Run weekly, or when something feels off.
 
 Everything is a git repo. Every change Scout makes is committed with a descriptive message. The commit history is as much a part of the system as the files.
 
 ### Meeting Management
 
-Scout tracks your recurring meetings in `meetings/`. Each meeting has:
+Scout tracks your recurring meetings in `knowledge-base/<space>/meetings/`, listed in `knowledge-base/meetings.md`. Each meeting has:
 - A **home file** with attendees, running themes, key decisions
-- **Dated session files** that evolve through three phases: prep → notes → synthesis
+- **Dated occurrence files** (`type: meeting-occurrence`) that evolve through three phases: prep → notes → synthesis
 
 Before each meeting, Scout generates a prep file with context from the last session, related project status, and suggested talking points. After meetings, it finds transcripts from Google Drive, synthesizes them with your manual notes, and propagates decisions and action items to project files.
 
 ### Inbox
 
-`inbox.md` is your quick-capture file. Dump anything — meeting notes, reminders, ideas, personal tasks. Scout processes it every run and routes entries to the right place:
+`inbox/inbox.md` is your quick-capture file. Dump anything — meeting notes, reminders, ideas, personal tasks. Scout processes it every run and routes entries to the right place:
 - Meeting notes → the relevant meeting's home file
 - Action items → today's action items
 - Personal tasks → knowledge graph entities
@@ -326,7 +326,7 @@ Agnes can host a private copy of the vault, which Agnes calls your **Personal Kn
 ```yaml
 privacy:
   sync_only:
-    - "knowledge-base/projects/**"
+    - "knowledge-base/work/projects/**"
     - "notes/shared"          # a plain path takes in everything under it
 ```
 
@@ -430,52 +430,62 @@ scout-plugin/
 
 ```
 ~/Scout/
-  SKILL.md                  -- Assembled skill file (briefing + consolidation)
-  DREAMING.md               -- Assembled skill file (dreaming)
-  RESEARCH.md               -- Assembled skill file (research)
-  run-scout.sh              -- Briefing/consolidation runner (calls pre-session hooks)
-  run-dreaming.sh           -- Dreaming runner (calls pre-session hooks)
-  run-research.sh           -- Research runner
-  scout-config.yaml         -- Your configuration (connectors, budget, auto-update)
+  README.md                 -- Generated map of these folders (layout v2, ADR 0011)
+  scout-config.yaml         -- Your configuration (connectors, budget, auto-update, spaces)
   .scout-state/schedule.yaml -- When each session type runs (edit here or in the Mac app)
-  inbox.md                  -- Quick-capture file (processed every run)
-  meetings/                 -- Meeting registry + per-meeting folders (prep/notes/synthesis)
-  dreaming-proposals.md     -- Proposal gate for skill improvements
-  hooks/
-    kb-pre-filter.sh        -- Pre-session: bucket KB files by staleness
-  scripts/
-    budget-check.sh         -- Pre-run budget verification (wraps `scoutctl budget check`)
-    claude-with-retry.sh    -- Launches Claude with retry + auth-failure diagnostics
-    write-session-cost.sh   -- Session cost logging
-    rate-limit-detect.sh    -- Rate limit signal detection
-    heartbeat.sh            -- Opportunistic session triggering (+ daily lane-liveness check)
-    run-outcome.sh          -- Post-run: record how each run ended; notify on repeated failures
-    git-safe-commit.sh      -- Commit explicit paths behind a cross-session mutex (never `git add -A`)
-    vault-freshness.py      -- Pre-session: rank KB files by last git commit vs. freshness budget
-    session-lane-liveness.py -- Daily: flag a session type that has stopped producing commits
-    pre-session-data.sh     -- Pre-session: gather git log, PRs, KB dates, tasks
-    cc-session-cache.sh     -- Pre-session: summarize non-Scout CC sessions
+  scout/                    -- How Scout runs
+    brain/                  -- SKILL.md (briefing + consolidation), DREAMING.md, RESEARCH.md, RESPOND.md
+    runners/                -- run-scout.sh, run-dreaming.sh, run-research.sh, run-respond.sh
+    hooks/
+      kb-pre-filter.sh      -- Pre-session: bucket KB files by staleness
+    scripts/
+      budget-check.sh       -- Pre-run budget verification (wraps `scoutctl budget check`)
+      claude-with-retry.sh  -- Launches Claude with retry + auth-failure diagnostics
+      write-session-cost.sh -- Session cost logging
+      rate-limit-detect.sh  -- Rate limit signal detection
+      heartbeat.sh          -- Opportunistic session triggering (+ daily lane-liveness check)
+      run-outcome.sh        -- Post-run: record how each run ended; notify on repeated failures
+      git-safe-commit.sh    -- Commit explicit paths behind a cross-session mutex (never `git add -A`)
+      vault-freshness.py    -- Pre-session: rank KB files by last git commit vs. freshness budget
+      session-lane-liveness.py -- Daily: flag a session type that has stopped producing commits
+      pre-session-data.sh   -- Pre-session: gather git log, PRs, KB dates, tasks
+      cc-session-cache.sh   -- Pre-session: summarize non-Scout CC sessions
+    kb-page-standard.md     -- What a KB page must look like
+    records/                -- Scout's records of its own runs
+      session-log.md, session-log/            -- One row per run
+      scout-mistake-audit.md, scout-mistake-audit/ -- Error-pattern log written by dreaming
+      connector-health.md   -- 14-day connector roll-up
+      dreaming-proposals.md -- Proposal gate for skill improvements
+      wishlist/             -- One file per wishlist item (state in frontmatter status:)
   knowledge-base/           -- Your persistent knowledge base (Obsidian vault)
     knowledge-base.md       -- KB index
     people.md               -- People directory
     channels.md             -- Channels Scout monitors
+    meetings.md             -- One row per recurring meeting series, with its space
+    people/                 -- Identity notes: name, aliases, handles, spaces; a link per role note
+    organizations/          -- Identity notes for organizations
     ontology/
       schema.yaml           -- Your schema override (optional; absent = the packaged schema)
       parser.py             -- Query engine for the knowledge graph
-      entities/             -- Organization entity files
-    people/                 -- Person entity files
-    personal/               -- Personal task and family entity files
-    projects/               -- Project files (index: projects/projects.md)
+      entities/             -- Other entity files (technologies, tasks)
     research-queue/         -- Queued research topics (one file per topic)
     research-queue.md       -- Research run log (thin)
-    scout-mistake-audit.md  -- Error-pattern log written by dreaming
     review-queue.md         -- Claims waiting on user verification
+    work/                   -- A space (`spaces:` in scout-config.yaml; work is the default)
+      projects/             -- Project files (index: projects/projects.md)
+      topics/, sources/     -- Topic notes and source notes
+      meetings/<slug>/      -- A series' home file and dated occurrence files (prep/notes/synthesis)
+      people/, organizations/ -- Role notes: what Scout knows about someone in this space
+    personal/               -- The personal space (private by default)
   action-items/             -- Daily action items
     archive/                -- Older-than-7-days action items
-    meeting-prep/           -- Auto-generated meeting prep docs
+    context/                -- One context note per action item
     render.py               -- Optional MD → HTML dashboard
-  docs/
-    wishlist/               -- One file per wishlist item (state in frontmatter status:)
+  drafts/                   -- Drafts to send
+  reports/                  -- One-off reports (and the layout move's report)
+  inbox/
+    inbox.md                -- Quick-capture file (processed every run)
+    drop/                   -- Files for Scout to read (contents stay out of git)
   .scout-cache/             -- Hook outputs (gitignored, regenerated every run)
   .scout-logs/              -- Run logs and usage-tracker.jsonl (gitignored)
 ```
@@ -627,7 +637,7 @@ Check run logs in `.scout-logs/`. Verify your schedule is active with `launchctl
 Connect it on claude.ai (or `gh auth login` for GitHub), add its key (`slack`, `calendar`, `email`, `linear`, `github`, `granola`, `drive`, `claude_sessions`) to `connectors.enabled` in `~/Scout/scout-config.yaml` — plus any input it needs under `connectors.inputs` (e.g. `user_slack_id`) — then run `/scout-update`. The upgrade reassembles your skill files to include that connector's phase modules, keeping your edits.
 
 **I want to customize the skill file.**
-Edit `SKILL.md`, `DREAMING.md`, or `RESEARCH.md` directly in your Scout directory. `/scout-update` 3-way merges plugin improvements into your edited files; wherever it can't merge safely it leaves a `*.md.proposed-merge` sidecar for you to review instead of overwriting, and the rest of the upgrade still runs. Once the file is the version you want, `scoutctl bootstrap resolve SKILL.md` records it so later plugin changes merge into it. A skill file you never edited simply takes the new version; the plugin never overwrites your edits.
+Edit `scout/brain/SKILL.md`, `DREAMING.md`, or `RESEARCH.md` directly in your Scout directory. `/scout-update` 3-way merges plugin improvements into your edited files; wherever it can't merge safely it leaves a `*.md.proposed-merge` sidecar for you to review instead of overwriting, and the rest of the upgrade still runs. Once the file is the version you want, `scoutctl bootstrap resolve SKILL.md` records it so later plugin changes merge into it. A skill file you never edited simply takes the new version; the plugin never overwrites your edits.
 
 **How do I queue research topics?**
 Add a file to `knowledge-base/research-queue/` (e.g. `knowledge-base/research-queue/<date>-<topic-slug>.md`) with frontmatter (`title`, `status: open`, `priority`, `date`) describing what to research. Scout picks it up during the next research session.

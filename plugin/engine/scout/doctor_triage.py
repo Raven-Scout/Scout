@@ -177,9 +177,16 @@ _SCRIPT_SUFFIXES = frozenset(
 
 
 def _vault_files(vault: Path) -> list[str]:
-    """Vault-relative paths of every file under ``scripts/`` (tooling folders left out) and each root ``run-*.sh``."""
-    out = [p.name for p in sorted(vault.glob("run-*.sh")) if p.is_file()]
-    scripts = vault / "scripts"
+    """Vault-relative paths of every file in the scripts folder (tooling folders left out) and each runner, in
+    the vault's layout (``scout/scripts/``, ``scout/runners/`` on v2)."""
+    from scout import layout
+
+    lay = layout.for_vault(vault)
+    runners = vault / lay["runners_dir"] if lay["runners_dir"] else vault
+    out = [
+        p.relative_to(vault).as_posix() for p in sorted(runners.glob("run-*.sh")) if p.is_file() and not p.is_symlink()
+    ]
+    scripts = vault / lay["scripts_dir"]
     if scripts.is_dir():
         for p in sorted(scripts.rglob("*")):
             if p.is_file() and not p.is_symlink() and not _SKIP_DIRS.intersection(p.relative_to(scripts).parts[:-1]):

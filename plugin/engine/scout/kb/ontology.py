@@ -90,6 +90,7 @@ from scout.kb.privacy import (
     note_facts,
     read_head,
     reads_any,
+    strictest,
     visible_to,
 )
 
@@ -152,7 +153,28 @@ def _name_word_key(word: str) -> str:
 
 # KB-relative globs ``load()`` skips when the schema sets no ``graph.exclude``:
 # verbatim pre-restructure snapshots repeat the live page's name and type.
-DEFAULT_EXCLUDE = ("projects/**/archive/**",)
+# KB-relative: v1's projects folder and every space's (layout v2).
+DEFAULT_EXCLUDE = ("projects/**/archive/**", "*/projects/**/archive/**")
+
+# A role note (layout v2, spec 2026-11-26 §3.2): what Scout knows about a person or organization in one space.
+# It names its identity note in ``role_of`` and is folded into that entity, never an entity of its own.
+ROLE_TYPE = "role"
+# Keys a role never folds into its identity: the identity's own, the role's bookkeeping, privacy keys.
+_UNFOLDED_KEYS = frozenset(
+    {"name", "type", "aliases", "spaces", "role_of", "space", "relationships"}
+    | {"visibility", "federation_scope", "delegate_scope", "kind", "source", "promoted_from"}
+)
+
+
+def is_role_note(frontmatter: Any) -> bool:
+    return isinstance(frontmatter, dict) and frontmatter.get("type") == ROLE_TYPE and "role_of" in frontmatter
+
+
+def is_graph_note(frontmatter: Any) -> bool:
+    """An entity (``name`` and ``type``) or a role note."""
+    return isinstance(frontmatter, dict) and (
+        ("name" in frontmatter and "type" in frontmatter) or is_role_note(frontmatter)
+    )
 
 
 def clear_frontmatter_cache() -> None:
@@ -355,6 +377,8 @@ class KnowledgeGraph:
         self.relationships: list[dict[str, str]] = []
         # Files whose frontmatter isn't valid YAML: path (vault-relative), error, _source_path, _label.
         self.parse_errors: list[dict[str, Any]] = []
+        # Role notes whose role_of names no loaded identity (vault-relative paths); not YAML errors.
+        self.orphan_roles: list[str] = []
         # Set by validate(): dangling targets the vault's schema accepts as known gaps.
         self.known_gaps: list[dict[str, str]] = []
         self._slug_index: dict[str, str] = {}
@@ -397,6 +421,7 @@ class KnowledgeGraph:
         self.entities = {}
         self.relationships = []
         self.parse_errors = []
+        self.orphan_roles = []
         self.known_gaps = []
         self._slug_index = {}
         self._alias_index = {}
@@ -412,7 +437,9 @@ class KnowledgeGraph:
         # Rebuilt each load, so files deleted since the last one drop out.
         current: _FrontmatterCache = {}
 
-        pending: list[tuple[str, Any]] = []
+        pending: list[tuple[str, Any, dict[str, Any] | None]] = []
+        roles: list[tuple[Path, dict[str, Any], Label]] = []
+        labels: dict[str, Label] = {}
         for md_file in Path(self.kb_root).rglob("*.md"):
             if exclude:
                 tail = labeller.tail(md_file)
@@ -439,6 +466,19 @@ class KnowledgeGraph:
                     }
                 )
                 continue
+            if is_role_note(frontmatter):
+                assert isinstance(frontmatter, dict)
+                facts = frontmatter.pop(_FACTS_KEY, None)
+                if not isinstance(facts, NoteFacts):
+                    text, unreadable = read_head(md_file)
+                    facts = note_facts(text, unreadable=unreadable)
+                role_label = labeller.label_obj(md_file, facts)
+                if role_label.delegate_source and (facts.state == "ok" or role_label.path.startswith(FROM_AGENTS)):
+                    continue
+                if not self._full and not visible_to(role_label, self.reader, labeller.policy):
+                    continue  # an invisible role is not folded
+                roles.append((md_file, frontmatter, role_label))
+                continue
             if not frontmatter or "name" not in frontmatter or "type" not in frontmatter:
                 continue
 
@@ -457,27 +497,102 @@ class KnowledgeGraph:
                 continue
             frontmatter["_source_path"] = str(md_file)
             frontmatter["_label"] = label.to_json()
+            labels[name] = label
             raw_relationships = frontmatter.pop("relationships", [])
             self.entities[name] = frontmatter
-            pending.append((name, raw_relationships))
+            pending.append((name, raw_relationships, None))
 
         self._build_indexes()
-        for name, raw_relationships in pending:
+        self._fold_roles(roles, labels, labeller, pending)
+        for name, raw_relationships, edge_label in pending:
             for rel in raw_relationships or []:
+                if not isinstance(rel, dict):
+                    continue
                 target = self._resolve_target(rel.get("target", ""))
                 rel_type = rel.get("type", "")
                 if not self._full and target not in self.entities:
                     continue  # a delegate: a dangling target may be a hidden entity's name
                 if target and rel_type:
-                    self.relationships.append({"source": name, "type": rel_type, "target": target})
+                    edge: dict[str, Any] = {"source": name, "type": rel_type, "target": target}
+                    if edge_label is not None:
+                        edge["_label"] = edge_label  # a folded role's edge keeps its own file's label
+                    self.relationships.append(edge)
                     inverse = self._get_inverse(rel_type)
                     if inverse:
-                        self.relationships.append({"source": target, "type": inverse, "target": name})
+                        back: dict[str, Any] = {"source": target, "type": inverse, "target": name}
+                        if edge_label is not None:
+                            back["_label"] = edge_label
+                        self.relationships.append(back)
 
         if self.store is None:
             with _CACHE_LOCK:
                 _CACHE[root_key] = current
         return self
+
+    def _fold_roles(
+        self,
+        roles: list[tuple[Path, dict[str, Any], Label]],
+        labels: dict[str, Label],
+        labeller: _Labeller,
+        pending: list[tuple[str, Any, dict[str, Any] | None]],
+    ) -> None:
+        """Fold each visible role note into the identity its ``role_of`` names (spec 2026-11-26 §3.2).
+
+        ``role_of`` is resolved by path against the identities' source files, never by alias. A role adds the
+        properties its identity lacks (the default space's role first, then by space), keeps its own values
+        under ``_roles[<space>]`` (with its ``_label`` and ``_source_path``), and attaches its relationships to
+        the identity's name, each edge with the role file's label. The entity takes the strictest label of its
+        source files. A role whose identity isn't loaded (hidden from this reader, or missing) is dropped;
+        a missing one is listed in ``orphan_roles``.
+        """
+        if not roles:
+            return
+        by_path: dict[str, str] = {}
+        for name, entity in self.entities.items():
+            src = entity.get("_source_path")
+            if src:
+                by_path[os.path.normcase(os.path.abspath(src))] = name
+        kb_root = Path(self.kb_root)
+        try:
+            from scout.config import default_space, load_spaces
+
+            default = default_space(load_spaces(labeller.vault)).key
+        except Exception:  # noqa: BLE001 - a registry problem must not stop a graph load
+            default = ""
+
+        def order(item: tuple[Path, dict[str, Any], Label]) -> tuple[int, str, str]:
+            space = str(item[1].get("space") or "")
+            return (0 if space == default else 1, space, str(item[0]))
+
+        folded: dict[str, list[Label]] = {}
+        for md_file, fm, role_label in sorted(roles, key=order):
+            target = self._resolve_wikilink(str(fm.get("role_of") or "")).split("|", 1)[0].split("#", 1)[0].strip()
+            target = target[:-3] if target.endswith(".md") else target
+            identity = by_path.get(os.path.normcase(os.path.abspath(kb_root / f"{target}.md"))) if target else None
+            if identity is None:
+                if self._full:  # for another reader the identity may only be hidden
+                    self.orphan_roles.append(labeller.rel(md_file))
+                continue
+            entity = self.entities[identity]
+            space = str(fm.get("space") or Path(md_file).parent.parent.name)
+            own: dict[str, Any] = {}
+            for key, value in fm.items():
+                if key in _UNFOLDED_KEYS or key.startswith("_"):
+                    continue
+                own[key] = value
+                entity.setdefault(key, value)
+            own["_label"] = role_label.to_json()
+            own["_source_path"] = str(md_file)
+            entity.setdefault("_roles", {})[space] = own
+            folded.setdefault(identity, []).append(role_label)
+            pending.append((identity, fm.get("relationships") or [], role_label.to_json()))
+        for identity, role_labels in folded.items():
+            base = labels.get(identity)
+            if base is None:
+                continue
+            entity = self.entities[identity]
+            entity["_label"] = strictest([base, *role_labels], path=base.path).to_json()
+            entity["_label_sources"] = [base.path, *(lb.path for lb in role_labels)]
 
     def _stored_frontmatter(self, path: Path, rel: str, store: FrontmatterStore) -> dict[str, Any] | None:
         """``_extract_frontmatter`` through ``store`` (the privacy index), keyed by ``rel``."""
@@ -545,7 +660,8 @@ class KnowledgeGraph:
             frontmatter = load_frontmatter_yaml("\n".join(block))
         except yaml.YAMLError as e:
             return {PARSE_ERROR_KEY: _yaml_error_text(e), _FACTS_KEY: note_facts(decode_head(data))}
-        if isinstance(frontmatter, dict) and "name" in frontmatter and "type" in frontmatter:
+        if is_graph_note(frontmatter):
+            assert isinstance(frontmatter, dict)
             head = decode_head(data)
             # The classifier reads the same lines nearly always (no BOM, the
             # fence inside its window): reuse this parse rather than YAML-parse twice.

@@ -16,8 +16,8 @@
 # wrapper raises one local desktop alert (at most a day apart): the floor.
 #
 # Usage (from each run-*.sh, after the session):
-#     scripts/run-outcome.sh record <mode> <exit_code> <started_epoch> <log_file> [<outcome>]
-#     scripts/run-outcome.sh clear-stale-locks
+#     scout/scripts/run-outcome.sh record <mode> <exit_code> <started_epoch> <log_file> [<outcome>]
+#     scout/scripts/run-outcome.sh clear-stale-locks
 #
 # <outcome> is given only for a deliberate skip (#401): skipped_lock (another
 # session held the vault lock), skipped_budget (the budget check said no),
@@ -34,7 +34,7 @@
 # failed from the exit code. An older helper ignores the extra argument.
 #
 # Each row also says which runner wrote it (`runner`, from SCOUT_RUNNER_KIND, which
-# scripts/scout-lock.sh reads to spot a redundant run), what started it
+# scout/scripts/scout-lock.sh reads to spot a redundant run), what started it
 # (`trigger`), and how many commits landed in the run's window
 # (`commits_in_window`, `newest_commit`; #237). The commit count is measured,
 # never assumed: when it can't be (no git, no repo, an implausible start), both
@@ -84,7 +84,7 @@ EDGE_CHALLENGE_RE='API Error: 403 Attention Required! \| Cloudflare'
 AUTH_RACE_RE='^(Error: )?(Claude Code )?couldn.{1,3}t verify your sign-in with Anthropic yet|^(Error: )?Claude Code .{0,80}sign-in token was still being refreshed'
 NETWORK_RE='ENOTFOUND|ECONNRESET|ECONNREFUSED|ConnectionRefused|ETIMEDOUT|socket hang up|socket connection was closed unexpectedly|Stream idle timeout|Connection closed mid-response|FailedToOpenSocket'
 GIT_LOCK_RE='index\.lock|HEAD\.lock'
-# Keep in sync with PATTERNS in scripts/rate-limit-detect.sh: that one decides whether to
+# Keep in sync with PATTERNS in scout/scripts/rate-limit-detect.sh: that one decides whether to
 # retry, this one labels the failure. Claude Code's own quota message ("You've hit your
 # session limit · resets <time>") matched neither, so those runs were never retried and
 # were labelled `unknown`. `limit.{0,20}resets` keys on the self-declared reset rather than

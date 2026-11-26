@@ -32,13 +32,13 @@ Skip messages not authored by {{INSTANCE_NAME}}, and skip other people's replies
 **Record each of {{USER_NAME}}'s replies and reactions**, judging its sentiment by the Step 1b table (positive confirmation → `positive`; negative flag or correction → `negative`; mixed or unclear → `neutral`):
 
 ```bash
-scripts/scoutctl engagement record dm-reply --surface slack-dm --ref <bot ts>/<reply ts> --ts <reply ts> --sentiment <positive|neutral|negative>
-scripts/scoutctl engagement record dm-reaction --surface slack-dm --ref <bot ts>/r:<emoji name> --ts <bot ts> --sentiment <positive|neutral|negative>
+scout/scripts/scoutctl engagement record dm-reply --surface slack-dm --ref <bot ts>/<reply ts> --ts <reply ts> --sentiment <positive|neutral|negative>
+scout/scripts/scoutctl engagement record dm-reaction --surface slack-dm --ref <bot ts>/r:<emoji name> --ts <bot ts> --sentiment <positive|neutral|negative>
 ```
 
 `<bot ts>` is the Slack ts of the bot message being answered, and the ref must start with it and a `/`, or the reply never counts as an answer to that DM. A reaction has no time of its own in Slack, so it takes the bot message's ts. When a negative reply is about one specific change on the changes map (it quotes a `chg-…` id, the change's id on the map, or answers a wrap line about that change), add `--change <chg-id>`.
 
-The command prints nothing when it records a new signal. **`already recorded` means an earlier run handled that signal: skip it in Steps 1b–1d.** Steps 1b–1d work on new signals only. On the first run under this rule, a new signal older than the last dreaming run (its row in the newest `knowledge-base/session-log/` shard) may already have been handled: check the mistake audit's evidence before acting on it again. If the command fails, handle the signal anyway and note the error in the run notes.
+The command prints nothing when it records a new signal. **`already recorded` means an earlier run handled that signal: skip it in Steps 1b–1d.** Steps 1b–1d work on new signals only. On the first run under this rule, a new signal older than the last dreaming run (its row in the newest `scout/records/session-log/` shard) may already have been handled: check the mistake audit's evidence before acting on it again. If the command fails, handle the signal anyway and note the error in the run notes.
 
 ***
 
@@ -62,13 +62,13 @@ Categorize every piece of harvested feedback into one of these signal types:
 
 ### Step 1c: Cross-Reference with Mistake Audit
 
-Read the mistake audit with `scripts/scoutctl kb read knowledge-base/scout-mistake-audit.md`. For every negative or correction signal from Step 1b:
+Read the mistake audit with `scout/scripts/scoutctl kb read scout/records/scout-mistake-audit.md`. For every negative or correction signal from Step 1b:
 
 **If the signal matches an existing pattern in the mistake audit:**
 - Increment the occurrence count for that pattern.
 - Add this instance as a new evidence entry (date, message content, feedback received).
 - If the pattern's status was `Fixed` but this is a recurrence, change status back to `Open` and add a `[regression]` flag with the date. This is the most important update — regressions indicate the fix was incomplete.
-- Record the recurrence, so a change that targeted this pattern is judged by it: `scripts/scoutctl engagement record recurrence --surface mistake-audit --ref pattern-<N>@<evidence Slack ts or date> --ts <evidence Slack ts or ISO date>`, where `<N>` is the pattern's number and the evidence is the feedback message's Slack ts (or the evidence's date, `YYYY-MM-DD`, when it has no ts).
+- Record the recurrence, so a change that targeted this pattern is judged by it: `scout/scripts/scoutctl engagement record recurrence --surface mistake-audit --ref pattern-<N>@<evidence Slack ts or date> --ts <evidence Slack ts or ISO date>`, where `<N>` is the pattern's number and the evidence is the feedback message's Slack ts (or the evidence's date, `YYYY-MM-DD`, when it has no ts).
 
 **If the signal does NOT match any existing pattern:**
 - Add a new entry to the mistake audit with:
@@ -94,16 +94,16 @@ Based on the classified signals and mistake audit updates, determine what change
 
 | Target File | Autonomy Level | Action |
 |---|---|---|
-| `knowledge-base/scout-mistake-audit.md` | **Direct edit** | Apply updates from Step 1c immediately |
+| `scout/records/scout-mistake-audit.md` | **Direct edit** | Apply updates from Step 1c immediately |
 | KB files (content corrections) | **Direct edit** | Fix factual errors identified by feedback (e.g., wrong status, wrong person, outdated info) |
-| `SKILL.md`, `DREAMING.md`, `RESEARCH.md`, `scripts/` | **Direct edit, proposal, or governance file** | Additive, feedback-aligned or pattern-closing: edit directly; each commit is a change on the changes map, tested and undoable (Step 1e), and carries the change trailers (Step 1f). Large, structural, behavior-removing or uncertain: a proposal (below). Governance or safety gating: a `governance-pending/` file (below). |
+| `scout/brain/SKILL.md`, `scout/brain/DREAMING.md`, `scout/brain/RESEARCH.md`, `scout/scripts/` | **Direct edit, proposal, or governance file** | Additive, feedback-aligned or pattern-closing: edit directly; each commit is a change on the changes map, tested and undoable (Step 1e), and carries the change trailers (Step 1f). Large, structural, behavior-removing or uncertain: a proposal (below). Governance or safety gating: a `governance-pending/` file (below). |
 | New KB files or structural changes | **Direct edit** | Only if supported by clear evidence from multiple feedback signals |
 
-**Proposals.** A **large, structural, behavior-removing or genuinely uncertain** brain change goes to `dreaming-proposals.md` as an opt-out proposal: `### [Date] — [Short description]`, then `**Trigger:**`, `**Proposed change:**` (exact before/after text and where, specific enough to apply mechanically), `**Rationale:**`, `**Evidence:**`, and `**Status:** Pending (auto-apply after [today + 3 days])`. **Before writing new ones, apply** every proposal whose status is `Approved`, or `Pending (auto-apply after <date>)` with that date passed and not `Rejected`: make the edit exactly as written, set its status to `Applied — [today's date]`, and commit each on its own with the change trailers (`Scout-Change-Why:` from its trigger, or `owner-ask:proposal-<date>` when {{USER_NAME}} marked it `Approved`), naming every proposals path: `<the brain file> dreaming-proposals.md dreaming-proposals/ dreaming-proposals-archive.md`.
+**Proposals.** A **large, structural, behavior-removing or genuinely uncertain** brain change goes to `scout/records/dreaming-proposals.md` as an opt-out proposal: `### [Date] — [Short description]`, then `**Trigger:**`, `**Proposed change:**` (exact before/after text and where, specific enough to apply mechanically), `**Rationale:**`, `**Evidence:**`, and `**Status:** Pending (auto-apply after [today + 3 days])`. **Before writing new ones, apply** every proposal whose status is `Approved`, or `Pending (auto-apply after <date>)` with that date passed and not `Rejected`: make the edit exactly as written, set its status to `Applied — [today's date]`, and commit each on its own with the change trailers (`Scout-Change-Why:` from its trigger, or `owner-ask:proposal-<date>` when {{USER_NAME}} marked it `Approved`), naming every proposals path: `<the brain file> scout/records/dreaming-proposals.md scout/records/dreaming-proposals/ scout/records/dreaming-proposals-archive.md`.
 
 **Governance or safety gating** (a change to what {{INSTANCE_NAME}} may do on its own: autonomy rules, safety or privacy gates, who approves what, rollback rules, verdict thresholds) never goes in directly or as a proposal. Write `governance-pending/<slug>.md` (`<slug>`: lowercase letters, digits and hyphens, at most 61 characters, starting with a letter or digit) and commit it. It is **never applied by the run that wrote it**: it waits for {{USER_NAME}}'s OK, then a later run applies it (Step 1e). The file is YAML frontmatter between two `---` lines with `summary` (one plain sentence, at most 120 characters), `why` (a `Scout-Change-Why:` value) and optional `targets` (a list of `pattern-<N>`s, or `engagement`); a few lines of context; then exactly one fenced `diff` block.
 
-Build the diff with git: make the edit, copy `git diff -- <path>` into the block, then restore the file with `git show HEAD:<path> > <path>` (vault-relative paths with no spaces, quotes or `..`; hunk line counts must match). A file that breaks this never reaches {{USER_NAME}}: after committing, check that `scripts/scoutctl changes --json` lists `gov-<slug>` under `needs_ok`, and in the wrap name the file and how to decide: `scoutctl changes approve gov-<slug> --diff-hash <its diff_hash>` or `scoutctl changes reject gov-<slug>`. Never edit a pending file once committed: the decision is bound to the file {{USER_NAME}} saw. To change one, file a new slug.
+Build the diff with git: make the edit, copy `git diff -- <path>` into the block, then restore the file with `git show HEAD:<path> > <path>` (vault-relative paths with no spaces, quotes or `..`; hunk line counts must match). A file that breaks this never reaches {{USER_NAME}}: after committing, check that `scout/scripts/scoutctl changes --json` lists `gov-<slug>` under `needs_ok`, and in the wrap name the file and how to decide: `scoutctl changes approve gov-<slug> --diff-hash <its diff_hash>` or `scoutctl changes reject gov-<slug>`. Never edit a pending file once committed: the decision is bound to the file {{USER_NAME}} saw. To change one, file a new slug.
 
 **Harness fallback.** If the runtime blocks a direct brain commit (a safety classifier may stop autonomous self-modification), don't drop the improvement: file it as an opt-out `Pending` proposal (above), so a later run or {{USER_NAME}} applies it.
 
@@ -122,7 +122,7 @@ Build the diff with git: make the edit, copy `git diff -- <path>` into the block
 If Phase 1 made any changes (mistake audit updates, KB fixes, brain improvements, proposals, governance-pending files) — **stage explicit paths through the helper, NEVER bare `git add -A`.** A concurrently-running scheduled session shares this working tree, and `-A` stages *its* half-written files into your commit; the helper refuses `-A` (exit 2), takes a cross-session mutex, and clears provably-stale git locks:
 
 ```bash
-{{SCOUT_DIR}}/scripts/git-safe-commit.sh "dreaming [HH:MM]: feedback processing — <summary of changes>" <only the paths THIS run touched>
+{{SCOUT_DIR}}/scout/scripts/git-safe-commit.sh "dreaming [HH:MM]: feedback processing — <summary of changes>" <only the paths THIS run touched>
 ```
 
 Commit each brain or script improvement on its own with the change trailers ("Commits That Change {{INSTANCE_NAME}} Itself"): `Scout-Change-Why:`, `Scout-Change-Summary:`, and when they apply `Scout-Change-Targets:` (`engagement` for at most one change per run) and, for a rollback (Step 1e), `Scout-Change-Reverts: <id>`. One change per commit keeps each testable and undoable on its own.

@@ -68,9 +68,9 @@ def vault(tmp_path: Path) -> Path:
         fake_bin / "date",
         f'#!/bin/bash\nif [ "$*" = "+%Y-%m-%d_%H-%M-%S" ]; then echo "{STAMP}"; exit 0; fi\nexec /bin/date "$@"\n',
     )
-    _render(TEMPLATES / "scripts" / "run-outcome.sh.tmpl", v / "scripts" / "run-outcome.sh", v)
-    _render(TEMPLATES / "scripts" / "scout-lock.sh.tmpl", v / "scripts" / "scout-lock.sh", v)
-    _script(v / "scripts" / "claude-with-retry.sh", f'#!/bin/bash\ntouch "{v}/session-ran"\n')
+    _render(TEMPLATES / "scripts" / "run-outcome.sh.tmpl", v / "scout" / "scripts" / "run-outcome.sh", v)
+    _render(TEMPLATES / "scripts" / "scout-lock.sh.tmpl", v / "scout" / "scripts" / "scout-lock.sh", v)
+    _script(v / "scout" / "scripts" / "claude-with-retry.sh", f'#!/bin/bash\ntouch "{v}/session-ran"\n')
     return v
 
 
@@ -85,7 +85,7 @@ def live_holder(vault: Path):
 
 
 def _run(vault: Path, runner: str) -> subprocess.CompletedProcess[str]:
-    script = _render(TEMPLATES / runner, vault / runner.removesuffix(".tmpl"), vault)
+    script = _render(TEMPLATES / runner, vault / "scout" / "runners" / runner.removesuffix(".tmpl"), vault)
     fake_bin = vault.parent / "fakebin"
     return subprocess.run(
         [str(script)],

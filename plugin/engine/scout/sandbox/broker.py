@@ -8,7 +8,7 @@ in the vault's git dir and every read in the secrets dirs (:func:`scout.sandbox.
 
 - ``claude-with-retry.sh`` starts :func:`serve` outside the sandbox, one per run, on a unix socket in a fresh
   0700 folder, and asks :func:`build_profile` for the tightened profile. It exports :data:`ENV_SOCKET`.
-- In-session, ``scripts/git-safe-commit.sh`` hands over to :func:`client_commit` and ``scoutctl notify telegram``
+- In-session, ``scout/scripts/git-safe-commit.sh`` hands over to :func:`client_commit` and ``scoutctl notify telegram``
   to :func:`client_telegram`. They print what the broker's reply says and exit with its code, so a run sees what
   it saw before: ``committed <sha>`` back during the session, the same exit codes.
 - The broker validates (:func:`validate_commit`, :func:`validate_telegram`) and then runs the vault's own
@@ -46,7 +46,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from scout import plural, safe_write
+from scout import layout, plural, safe_write
 from scout.kb import hook_paths
 
 PROTOCOL = 1
@@ -831,9 +831,9 @@ def run_commit(
     timeout: float = COMMIT_TIMEOUT_S,
 ) -> Reply:  # fmt: skip
     """``bash <vault>/scripts/git-safe-commit.sh MESSAGE PATHS…`` in the vault: its checks, its mutex, the hook."""
-    helper = vault / "scripts" / "git-safe-commit.sh"
+    helper = vault / layout.for_vault(vault).script("git-safe-commit.sh")
     if not helper.is_file():
-        return Reply(5, "git-safe-commit: the vault has no scripts/git-safe-commit.sh\n")
+        return Reply(5, "git-safe-commit: the vault has no scout/scripts/git-safe-commit.sh\n")
     try:
         proc = subprocess.Popen(
             ["/bin/bash", str(helper), message, *paths],
@@ -1889,10 +1889,12 @@ def _event(vault: Path, kind: str, payload: dict[str, Any]) -> None:
 def helper_has_client(vault: Path) -> bool:
     """Whether the vault's git-safe-commit.sh hands over to the broker, and its scoutctl launcher is there."""
     try:
-        text = (vault / "scripts" / "git-safe-commit.sh").read_text(encoding="utf-8", errors="replace")
+        text = (vault / layout.for_vault(vault).script("git-safe-commit.sh")).read_text(
+            encoding="utf-8", errors="replace"
+        )
     except OSError:
         return False
-    return CLIENT_MARKER in text and os.access(vault / "scripts" / "scoutctl", os.X_OK)
+    return CLIENT_MARKER in text and os.access(vault / layout.for_vault(vault).script("scoutctl"), os.X_OK)
 
 
 def wait_for(sock_path: Path, *, timeout: float = SOCKET_WAIT_S) -> bool:
@@ -1917,7 +1919,7 @@ def build_profile(vault: Path, broker_dir: Path, base: str, env: Mapping[str, st
     if not base.strip():
         raise BrokerError("no base profile was passed")
     if not helper_has_client(vault):
-        raise BrokerError("the vault's scripts/git-safe-commit.sh predates the broker (run /scout-update)")
+        raise BrokerError("the vault's scout/scripts/git-safe-commit.sh predates the broker (run /scout-update)")
     if not wait_for(broker_dir / SOCKET_NAME, timeout=SOCKET_WAIT_S):
         raise BrokerError(f"the broker didn't answer within {int(SOCKET_WAIT_S)}s")
     try:
@@ -1936,7 +1938,7 @@ PYTHON_START_TIMEOUT_S = 30.0
 def python_starts(
     profile: str, vault: Path, env: Mapping[str, str], *, timeout_s: float = PYTHON_START_TIMEOUT_S
 ) -> str | None:
-    """None when the vault's ``scripts/scoutctl`` starts the engine under ``profile``, with the run's environment
+    """None when the vault's ``scout/scripts/scoutctl`` starts the engine under ``profile``, with the run's environment
     and in the vault, as a session would; else why not.
 
     The session's first process inside the sandbox can be scoutctl (``agent-runtime exec`` launches claude), so a
@@ -1947,7 +1949,7 @@ def python_starts(
     run_env = {k: v for k, v in env.items() if k != ENV_SOCKET}
     try:
         proc = subprocess.run(
-            [str(sbx.SANDBOX_EXEC), "-p", profile, str(vault / "scripts" / "scoutctl"), "version"],
+            [str(sbx.SANDBOX_EXEC), "-p", profile, str(vault / layout.for_vault(vault).script("scoutctl")), "version"],
             capture_output=True, text=True, timeout=timeout_s, check=False, stdin=subprocess.DEVNULL,
             cwd=str(vault), env=run_env,
         )  # fmt: skip

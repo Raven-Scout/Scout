@@ -18,7 +18,7 @@ C4Dynamic
   Container(session, "Scout session", "claude -p, opus, permission-mode auto, max-budget-usd", "Reads SKILL.md, follows the Run Modes row for the mode, cross-checks, writes the vault, commits, sends the DM")
 
   Container_Ext(cc, "Claude Code", "fires the Stop hooks in hooks.json when the session ends")
-  ContainerDb(vault, "Vault", "git repo, including .scout-cache", "SKILL.md, knowledge-base, inbox.md, meetings, action-items, pre-session caches")
+  ContainerDb(vault, "Vault", "git repo, including .scout-cache", "scout/brain/SKILL.md, knowledge-base (meetings inside it), inbox/inbox.md, action-items, pre-session caches")
   Container_Ext(connectors, "MCP connectors and gh", "Slack, Calendar, Gmail, Drive, Linear, Granola, Fathom. GitHub via gh")
 
   RelIndex(1, launchd, tick, "every 5 min")
@@ -75,7 +75,7 @@ C4Dynamic
    limit ("… limit · resets <time>"), which lifts hours later. The prompt is a literal
    string: read `SKILL.md`, run mode `morning-briefing`, commit, send the DM.
 7. **The session reads and writes the vault.** It reads the assembled brain
-   file, the knowledge base, `inbox.md`, meetings and the `.scout-cache` files,
+   file, the knowledge base, `inbox/inbox.md`, meetings and the `.scout-cache` files,
    then writes today's action items, KB updates, meeting prep and review-queue
    entries, and commits with the session type and time in the message.
 8. **The session is the only container that talks to work tools.** It follows

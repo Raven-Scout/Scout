@@ -76,6 +76,7 @@ Ask each of these in order, waiting for each answer:
 2. "What's your name? (used in commit messages and the KB)"
 3. "What's your email? (used for git config)"
 4. "Scout follows this computer's timezone (currently `<HOST_ZONE>`), so it stays right when you travel. Press enter to keep that, or name an IANA zone (e.g. `Europe/Prague`) to pin a different one." — fill `<HOST_ZONE>` from `readlink /etc/localtime | sed -E 's#^.*/zoneinfo[^/]*/##'`. Most users keep the default; record an override only if they name one.
+5. "Scout keeps what it knows in spaces, one folder each: `work` (the default) and `personal` (private by default). Want another space, for example for a club, a side project or a building you help run? (name it, or press enter for none)" — a space key is lower case letters, digits and `-`, and may not be a Scout folder name (`people`, `projects`, `meetings`, …). After the install, add each extra space to `spaces:` in `~/Scout/scout-config.yaml` (`- key: <name>` with `visibility: private` or `normal`, as the user says) and run `"$SCOUTCTL" bootstrap upgrade --no-jobs` once so its folders exist.
 
 ---
 
@@ -169,7 +170,7 @@ Omit `--claude-bin` unless the user told you a specific path: by default the eng
     --auto-update   # or --no-auto-update, per Step 3
 ```
 
-Add `--timezone "<IANA_ZONE>"` only if the user named an override in Step 1. Without it, the vault follows the computer's timezone: nothing is written to `scout-config.yaml`, and `scripts/scout-tz.sh` reads the zone from the host on every run.
+Add `--timezone "<IANA_ZONE>"` only if the user named an override in Step 1. Without it, the vault follows the computer's timezone: nothing is written to `scout-config.yaml`, and `scout/scripts/scout-tz.sh` reads the zone from the host on every run.
 
 The plist + cron block installed by this step automatically reference `$SCOUTCTL` — `resolve_scoutctl_bin()` derives the path from the running engine's plugin root, so the scheduler is always pinned to the venv the wizard just used.
 
@@ -194,14 +195,14 @@ Report the result to the user:
 - If `yellow`: list the warnings; tell the user the system will work but those items want attention.
 - If `red`: list the errors; tell the user setup did not complete cleanly and link to `scoutctl bootstrap doctor` for diagnosis.
 
-Then explain privacy in one paragraph: any note can carry `visibility: normal` or `visibility: private` in its frontmatter. A private note is seen only by the user and their own scheduled runs: its content, title and links can reach owner-only places (the vault, the app, their private Telegram chat), never Slack, connector writes, queries or anyone else's agent. Notes under `knowledge-base/personal/` and files under `.scout-inbox/` are private by default, with no line needed. `federation_scope` is reserved for sharing with other people's agents later; it grants nothing yet. `"$SCOUTCTL" kb policy` shows the effective policy.
+Then explain privacy in one paragraph: any note can carry `visibility: normal` or `visibility: private` in its frontmatter. A private note is seen only by the user and their own scheduled runs: its content, title and links can reach owner-only places (the vault, the app, their private Telegram chat), never Slack, connector writes, queries or anyone else's agent. Notes in a private space (`knowledge-base/personal/` by default) and files under `.scout-inbox/` are private by default, with no line needed. `federation_scope` is reserved for sharing with other people's agents later; it grants nothing yet. `"$SCOUTCTL" kb policy` shows the effective policy.
 
 If the vault folder held notes before setup, run `"$SCOUTCTL" bootstrap privacy-migrate --json` and, for each entry of `local_only_proposals` (folders that look like trading or brokerage data), ask the user separately whether to keep it on this computer only; for a yes, run `"$SCOUTCTL" bootstrap privacy-migrate --local-only '<glob>'`. Handle `visibility_values` and `private_links` as `/scout-update` Step 3b describes.
 
 If the user wants the first briefing:
 
 ```bash
-SCOUT_FORCE_MODE=morning-briefing ~/Scout/run-scout.sh
+SCOUT_FORCE_MODE=morning-briefing ~/Scout/scout/runners/run-scout.sh
 ```
 
 Otherwise: "First scheduled run will fire at the next slot in `~/Scout/.scout-state/schedule.yaml`."

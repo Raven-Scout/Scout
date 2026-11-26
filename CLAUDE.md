@@ -165,6 +165,17 @@ first.** The two have different languages, test runners, and release flows.
   `apps/macos/ScoutTests/Fixtures/delegate-status.json` and update the pins in
   `apps/macos/ScoutTests/Engine/DelegateStatusTests.swift` — all in one commit.
   It never carries a key, token, vault path or note name.
+- **The vault layout has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/vault-layout.json`, the output of
+  `scoutctl vault layout --json` (`scout/layout.py`, layout v2, ADR 0011,
+  versioned by `schema_version`), whose paths the app's `VaultLayout`
+  constants are pinned to. Generate it from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_vault_layout_contract.py`,
+  then from the repo root `cp` it to
+  `apps/macos/ScoutTests/Fixtures/vault-layout.json` and check the pins in
+  `apps/macos/ScoutTests/Engine/VaultLayoutContractTests.swift` — all in one
+  commit. A vault path the app hardcodes goes in `Shell/VaultLayout.swift`
+  and gets a pin there; a new layout key goes in `scout/layout.py`, never the JSON.
 - **The resolve prompt has one canonical copy too:**
   `plugin/engine/tests/fixtures/contract/resolve-prompt.json`, one document per
   kind from `scoutctl health resolve-prompt <kind> <key> --json`
