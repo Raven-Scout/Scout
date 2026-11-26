@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # The vault keeps Scout's system, records, output, knowledge and input apart, and the engine owns the layout

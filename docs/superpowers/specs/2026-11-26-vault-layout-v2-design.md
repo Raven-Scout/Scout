@@ -1,7 +1,7 @@
 # Vault layout v2: system, records, output, knowledge and input apart
 
-Status: **draft for David's approval.** Spec only: no code. Decisions taken with David on 2026-11-26, one
-question at a time; a Fable 5.2 agent drafted the layout and migration from them, a second Fable 5.2 agent
+Status: **approved** (David, 2026-11-26). Spec only: no code yet. Decisions taken with David on 2026-11-26,
+one question at a time; a Fable 5.2 agent drafted the layout and migration from them, a second Fable 5.2 agent
 reviewed that draft adversarially, and every claim that changed the design was checked in code.
 Ticket: "Optimise the Scout vault folder structure: separate system files from generated content" on the
 Scout Next board (https://github.com/users/davidesner/projects/2, draft item).
