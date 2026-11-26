@@ -38,6 +38,9 @@ elsewhere first names files they never check, the pattern also gained ``ADDED_AL
 HOME), and the last, quote-stripped match ``STRIPPED_NAMES`` (HOME, SCOUT_MODE and SCOUT_READER) and
 ``STRIPPED_NAMERS`` (a builtin that sets what it names, anywhere), so ``HO''ME=x``, ``SCOUT_MO\\DE=`` or
 ``"read" HOM?`` is no way round; a case may differ only by now reaching Python for those too.
+``ADDED_ALTERNATIVES`` also holds a quote or backslash inside a word (``gr''ep -r TODO .``: the shell runs ``grep``,
+which the program rules look for unquoted) and a read that decompresses (an archive's members are notes no file
+name shows); a case may differ by now reaching Python for those as well.
 
 A second: ``CASE_RULES``, the Bash pattern's program rules applied ignoring letter case, since on a
 case-insensitive disk ``FIND`` runs find. A case may now reach Python where the old command let it through for a
@@ -151,6 +154,14 @@ CASE_RULES = (
     _W + r"((ba|z|da|k)?sh)([^A-Za-z0-9_.-]|$)",
     _W + r"git[^;&|]* (grep|-c )",
     _W + r"git[^;&|]*(commit|am).*([^A-Za-z0-9_-]|\\[nt])-[A-Za-z]*n",
+    # The decompressing reads of ADDED_ALTERNATIVES (ZGREP, GREP -Z).
+    _W + r"((z|bz|xz|lz|lz4|zstd)[ef]?grep|(z|gz|bz|xz|lz|lz4|zstd)cat|(z|bz|xz)(less|more|diff|cmp))"
+    r"([^A-Za-z0-9_./-]|$)",
+    _W + r"[ef]?grep[^;&|]* (-[A-Za-z]*[zZ]|--decompress)",
+    _W + r"(unzip|funzip|zipinfo|zipgrep|zip|bsdtar|gtar|7z|7za|7zz|7zr|ditto|cpio|bsdcpio|pax|gzip|gunzip"
+    r"|bzip2|bunzip2|xz|unxz|lzma|unlzma|zstd|unzstd|lz4|unlz4|brotli|lzip|lunzip|compress|uncompress|pigz|unpigz"
+    r"|pbzip2|lbzip2)([^A-Za-z0-9_./-]|$)",
+    r"(^|[^A-Za-z0-9_./-]|\\[nt])(gstdbuf|xcrun|arch|caffeinate)([^A-Za-z0-9_./-]|$)",
     # the readers that reach the KB from a folder holding it (READER_ALTERNATIVES), as PAX, ZIP or DIFF too
     _W + r"(pax|zip|cpio|ditto|scp|gzip|zstd|lz4)([^A-Za-z0-9_.-]|$)",
     _W + r"g?diff[^;&|]* (-[A-Za-z]*r|--recursive)",
@@ -162,8 +173,20 @@ LATE_RULES = "|".join(CASE_RULES)
 STRIPPED_RULES = rf"knowledge[-_]base|action-items/context|{LATE_RULES}"
 MAX_PAYLOAD = 32768  # bytes; a run's kb-read-gate payload over this is blocked in the shell
 # Appended after the expansions: any mention of HOME. (Arithmetic, `(( H$v = 1 ))`, and zsh's `${(P)v::=…}` are
-# the expansions' `(` and `$`.)
-ADDED_ALTERNATIVES = ("HOME",)
+# the expansions' `(` and `$`.) Then a quote or backslash inside a word, which hides a program's name from the
+# rules that look for it (`gr''ep`, `g\rep`), and a read that decompresses (zgrep, zcat's kin, grep -z/-Z).
+ADDED_ALTERNATIVES = (
+    "HOME",
+    r"""[A-Za-z0-9_]([^ -&(-~]|\\"|\\\\)+[A-Za-z0-9_]""",  # `[^ -&(-~]`: a single quote (or non-ASCII)
+    r"(^|[^A-Za-z0-9_.-]|\\[nt])((z|bz|xz|lz|lz4|zstd)[ef]?grep|(z|gz|bz|xz|lz|lz4|zstd)cat|(z|bz|xz)(less|more|diff"
+    r"|cmp))([^A-Za-z0-9_./-]|$)",
+    r"(^|[^A-Za-z0-9_.-]|\\[nt])[ef]?grep[^;&|]* (-[A-Za-z]*[zZ]|--decompress)",
+    r"(^|[^A-Za-z0-9_.-]|\\[nt])(unzip|funzip|zipinfo|zipgrep|zip|bsdtar|gtar|7z|7za|7zz|7zr|ditto|cpio|bsdcpio|pax|gzip|gunzip"
+    r"|bzip2|bunzip2|xz|unxz|lzma|unlzma|zstd|unzstd|lz4|unlz4|brotli|lzip|lunzip|compress|uncompress|pigz|unpigz"
+    r"|pbzip2|lbzip2)([^A-Za-z0-9_./-]|$)",
+    r"(^|[^A-Za-z0-9_./-]|\\[nt])(gstdbuf|xcrun|arch|caffeinate)([^A-Za-z0-9_./-]|$)",
+    r"\\\\\\n",  # a backslash-newline, as JSON spells it
+)
 ADDED_PATTERN = "|".join(ADDED_ALTERNATIVES)
 ADDED_PATTERN_RE = re.compile(ADDED_PATTERN)
 # Everything appended to the old pattern, in prefilter.sh's order: the expansions, HOME, then the readers.
@@ -785,7 +808,8 @@ NOT_READERS = (
     "diff -u notes/a.md notes/b.md",
     "join notes/a.md notes/b.md",
     "awk '{print 1}' notes/a.md",
-    "unzip -l notes.zip",
+    # (`unzip -l notes.zip` reaches Python since #822: listing an archive in the vault names its notes, as
+    # `find knowledge-base` does.)
 )
 
 RUN = {"SCOUT_MODE": "briefing"}

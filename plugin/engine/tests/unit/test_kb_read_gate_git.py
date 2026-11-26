@@ -627,7 +627,7 @@ ALLOWED = [
     "git -C action-items grep x -- ':!context'",  # grep's exclusions apply below its folder
     "git grep x -- ':!knowledge-base' ':!knowledge_base' ':!knowledge-base.md' ':!action-items/context'",
     "git -C docs grep x -- ':!x'",
-    "git -C docs archive HEAD -- ':(exclude)x' | tar t",
+    "git -C docs archive HEAD -- ':(exclude)x' > /dev/null",
     "git log -p -- docs ':(exclude)docs/x'",
     "git show --stat HEAD -- ':(exclude)docs'",
     "git -C docs grep x HEAD:./",
@@ -638,7 +638,7 @@ ALLOWED = [
     "git grep x -- scripts",
     "git -C scripts grep x -- '*.py'",
     "git -C docs grep x",
-    "git -C docs archive HEAD | tar t",
+    "git -C docs archive HEAD > /dev/null",
     "git -C scripts blame run.py",
     "git -C action-items show HEAD:context/x.md",  # from the top: `context/x.md`, no such file
     "git -C action-items --git-dir=../.git show HEAD:./context/x.md",  # top is action-items: `context/x.md` again
