@@ -191,9 +191,10 @@ def _deny_delegate_write() -> str:
 def _deny_hook_skip(form: str) -> str:
     return (
         f"{MARK} A scheduled run doesn't skip or redirect git's commit hooks ({form}): their checks are what keep "
-        "private and shared notes apart. Commit with `scripts/git-safe-commit.sh` in the vault; a run commits in no "
-        "other repository (describe an engine or plugin change in the wrap notification). If a hook refuses the "
-        "commit, fix what it reports; if you can't, leave the file uncommitted and say so in the run notes."
+        "private and shared notes apart. Commit with `scripts/git-safe-commit.sh` in the vault, and with a plain "
+        "`git commit -m` only in an engine-change clone in `~/.scout-worktrees` (git-setup's flow; else describe the "
+        "change in the wrap notification). If a hook refuses the commit, fix what it reports; if you can't, leave "
+        "the file uncommitted and say so in the run notes."
     )
 
 
@@ -363,8 +364,9 @@ def _deny_git_form(form: str) -> str:
         f"{git_allow.forms()}. Commit with `scripts/git-safe-commit.sh` in the vault; read KB notes with "
         "`scoutctl kb …`. "
         + (
-            "To change the engine or plugin, don't clone, branch or push from the run: describe the change you "
-            "would make, and why, in the wrap notification. "
+            "To change the engine or plugin, follow git-setup's flow exactly: clone Scout's own remote into "
+            "`~/.scout-worktrees/<name>`, then `switch -c scout/<name>`, `commit -m`, `push -u origin scout/<name>` "
+            "there. If that can't work, describe the change you would make, and why, in the wrap notification. "
             if engine
             else ""
         )
@@ -753,7 +755,7 @@ def _names_vault(command: str, vault: Path, env: Mapping[str, str]) -> bool:
 def _engine_repo(read: GitRead, folder: str | None, vault: Path, env: Mapping[str, str]) -> str | None:
     """Whether a form of the engine-change flow (``read.engine``) runs where it may: in a repository whose top is
     under ~/.scout-worktrees and has no tie to the vault's (not it, not in or above the vault), whose config runs no
-    command, and, for a push, whose origin is Scout's remote. A folder not on disk yet counts only below a clone the
+    command, and whose origin is Scout's remote. A folder not on disk yet counts only below a clone the
     same command made first. "engine:<why>" or "config:<key>" when it doesn't, else None."""
     from scout.kb import git_allow, git_read
 
@@ -780,12 +782,11 @@ def _engine_repo(read: GitRead, folder: str | None, vault: Path, env: Mapping[st
     runs = git_read.config_runs(repo[1], read.sub)
     if runs is not None:
         return f"config:{runs}"
-    if read.engine == git_allow.PUSH:
-        entries = git_read.read_config(repo[1] / "config") or []
-        urls = [v for k, v in entries if k in ("remote.origin.url", "remote.origin.pushurl")]
-        redirected = any(k.startswith("url.") for k, _ in entries)
-        if redirected or not urls or any(u not in git_allow.SCOUT_REMOTES for u in urls):
-            return "engine:a push to a remote that isn't Scout's"
+    entries = git_read.read_config(repo[1] / "config") or []
+    urls = [v for k, v in entries if k in ("remote.origin.url", "remote.origin.pushurl")]
+    redirected = any(k.startswith("url.") for k, _ in entries)
+    if redirected or not urls or any(u not in git_allow.SCOUT_REMOTES for u in urls):
+        return "engine:a repository whose origin isn't Scout's"
     return None
 
 

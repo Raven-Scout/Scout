@@ -214,8 +214,8 @@ def _option(
 
 # The engine-change flow (phases/core/git-setup.md): a run outside the write sandbox clones Scout's own repository
 # into ~/.scout-worktrees/<name>, branches, commits and pushes there for a draft PR. Only these forms, and only there:
-# the gate checks where each runs (a repository whose top is under ~/.scout-worktrees and isn't the vault's) and, for
-# a push, that origin is Scout's (review of #817, round 6; the owner's call: the flow stays, narrowly).
+# the gate checks where each runs: a repository whose top is under ~/.scout-worktrees, isn't the vault's and whose
+# origin is Scout's (review of #817, round 6; the owner's call: the flow stays, narrowly).
 SCOUT_REMOTES = ("https://github.com/Raven-Scout/Scout.git", "git@github.com:Raven-Scout/Scout.git")
 WORKTREES = ".scout-worktrees"
 _ENGINE_BRANCH = re.compile(r"^scout/[A-Za-z0-9._$-]+(?:/[A-Za-z0-9._$-]+)*$")

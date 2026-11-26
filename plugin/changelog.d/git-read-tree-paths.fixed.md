@@ -69,8 +69,9 @@
   substitutions print it, which the gate works out from `engine.json` and the engine checkout's origin) into
   `~/.scout-worktrees/<name>`, with no options but `-q`; then `switch -c`/`checkout -b scout/<name>`, `commit -m|-F`
   and `push -u origin scout/<name>` only in a repository whose top is under `~/.scout-worktrees` and has no tie to
-  the vault's, whose config runs nothing, and (for a push) whose origin is Scout's. Any other such form points to
-  the wrap notification, as in the sandbox. `git config`
+  the vault's, whose config runs nothing and whose origin is Scout's (a push: that one refspec, no `--force`,
+  `--mirror`, `--all`, `--tags`, `-o`). A refused form's message names the flow, and the wrap notification as the
+  fallback. `git config`
   may only read (`<key>`, `--get`, `--get-regexp`, `--list`, `get`, `list`) or set `user.email` and `user.name`
   in the vault's own repository (Step 0 of every run outside the write sandbox). A word the shell fills in before
   `--` must be one the command sets (`X=-p; git log $X` is read as `-p`), and a glob, brace list, zsh array or

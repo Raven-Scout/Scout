@@ -1026,7 +1026,6 @@ ENGINE_FLOW = [
     "git -C ~/.scout-worktrees/done push -u origin scout/done",
     "cd ~/.scout-worktrees/done && git push -q -u origin scout/done",
     "git -C ~/.scout-worktrees/done remote get-url origin",
-    "git -C ~/.scout-worktrees/fork commit -q -m x",  # any clone in the folder; only a push needs Scout's origin
 ]
 
 
@@ -1074,6 +1073,15 @@ ENGINE_REFUSED = [
     "git -C ~/.scout-worktrees/done push -u origin main",
     "git -C ~/.scout-worktrees/done push -u other scout/done",
     "git -C ~/.scout-worktrees/fork push -u origin scout/done",  # origin isn't Scout's
+    "git -C ~/.scout-worktrees/fork commit -q -m x",
+    "git -C ~/.scout-worktrees/fork switch -c scout/x",
+    f"git clone -q --recurse-submodules {SCOUT_REMOTE} ~/.scout-worktrees/y",
+    "git -C ~/.scout-worktrees/done push --force -u origin scout/done",
+    "git -C ~/.scout-worktrees/done push --mirror",
+    "git -C ~/.scout-worktrees/done push --all -u origin",
+    "git -C ~/.scout-worktrees/done push --tags -u origin scout/done",
+    "git -C ~/.scout-worktrees/done push -u origin scout/done scout/other",
+    "git -C ~/.scout-worktrees/done push -u origin HEAD:main",
     "git push -u origin scout/x",  # the vault
 ]
 
