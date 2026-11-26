@@ -300,14 +300,17 @@ def scout_session_running(pgrep_pattern: str = "claude.*scout-") -> bool:
 # the user's pending work (#231 — an untracked .scout-state/last-fire.json once
 # kept the tree dirty around the clock, so the 4-hour gate never gated).
 _MACHINE_STATE_DIRS = (".scout-state", ".scout-logs", ".scout-cache")
+# A detached experiment writes outputs (and its `.tmp/`) in its own folder for hours, and the run that finishes it
+# commits them: until then they aren't pending work, or every gate would fire another paid session (spec §6.4).
+_EXPERIMENT_FOLDERS = "knowledge-base/lab/*/experiments/*/**"
 
 
 def vault_has_uncommitted_changes(vault: Path) -> bool:
     """True iff ``git status --porcelain`` in *vault* shows modifications
-    outside Scout's machine-state dirs."""
+    outside Scout's machine-state dirs and the lab's experiment folders."""
     if not (vault / ".git").is_dir():
         return False
-    excludes = [f":(exclude){d}" for d in _MACHINE_STATE_DIRS]
+    excludes = [f":(exclude){d}" for d in _MACHINE_STATE_DIRS] + [f":(exclude,glob){_EXPERIMENT_FOLDERS}"]
     try:
         proc = subprocess.run(
             ["git", "-C", str(vault), "status", "--porcelain", "--", ".", *excludes],
