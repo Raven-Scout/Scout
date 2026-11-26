@@ -258,8 +258,8 @@ def test_a_harmless_neighbour_stays_allowed(home: Path, command: str) -> None:
 
 
 UNRESOLVED = [
-    ("cat $(echo kn)owledge-base/a.md", "command_output"),
-    ('cat "$(printf knowl%sdge-base/a.md e)"', "command_output"),
+    ("cat $(head -c2 docs/a.md)owledge-base/a.md", "command_output"),  # (`$(echo kn)`: placed, denied)
+    ('cat "$(head -1 docs/a.md)"', "command_output"),  # (`$(printf knowl%sdge…)`: unplaced printf, denied)
     ("cat `echo knowledge-base/a.md`", "command_output"),
     ('cat "`echo knowledge-base/a.md`"', "command_output"),  # a backtick inside double quotes still runs
     ("cat $UNSET_SOMEWHERE/a.md", "unset_variable"),
@@ -296,7 +296,7 @@ def test_a_read_the_gate_cant_work_out_is_allowed_and_recorded(home: Path, comma
 
 
 def test_the_unresolved_read_event_never_carries_the_command(home: Path) -> None:
-    assert _run(home, "cat $(echo kn)owledge-base/a.md docs/$UNSET_X.md") is None
+    assert _run(home, "cat $(head -c2 docs/a.md)owledge-base/a.md docs/$UNSET_X.md") is None
     (row,) = _events(home)
     assert row["payload"]["categories"] == ["command_output", "unset_variable"]
     assert set(row["payload"]) == {"categories", "mode"}

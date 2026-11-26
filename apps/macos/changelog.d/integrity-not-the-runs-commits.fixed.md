@@ -1,1 +1,0 @@
-- **A protected file Scout couldn't put back now says why.** A run's detail and the Run protection card used to say only that "a tag or the stash" still held the change. Scout now also leaves a branch alone when another session has it checked out, and both places say so, adding that a reset or stash in that worktree won't remove a committed change.

@@ -47,6 +47,7 @@ def _zsh(home: Path, command: str) -> str:
         env=env,
         capture_output=True,
         text=True,
+        errors="replace",  # an archive's bytes: only whether a note's word shows matters
         timeout=20,
         check=False,
     )
@@ -119,6 +120,98 @@ PRINTS_NO_NOTE = [
     'cat "k*/a.md" 2>/dev/null',
     'cat "kn{o,}wledge-base/a.md" 2>/dev/null',
 ]
+
+
+# Readers whose files aren't simply their operands (scout.kb.other_reads, #790 follow-up), with the programs each
+# needs: a copy or an archive out of the KB, diff -r over a folder holding it, a program naming a file in its text,
+# dd, source, and plain readers the gate lacked. Skipped where a program isn't installed (ditto is macOS's).
+READS_A_NOTE = [
+    ("cd action-items; tar cf - con* | tar xOf -", ("tar",)),
+    ("tar cf - . | tar xOf - 2>/dev/null", ("tar",)),
+    ("cd action-items; cp -r con* ../x; cat ../x/x.md", ("cp",)),
+    ("cd action-items; zip -qr ../z.zip con*; unzip -p ../z.zip", ("zip", "unzip")),
+    ("zip -qr - . | cat", ("zip",)),
+    ("cd action-items; rsync -a con* ../x/; cat ../x/context/x.md", ("rsync",)),
+    ("cd action-items; pax -w con*", ("pax",)),
+    ("pax -w . 2>/dev/null", ("pax",)),
+    ("cd action-items; ditto con* ../x; cat ../x/x.md", ("ditto",)),
+    ("cd action-items; split -l 1 con*/x.md ../sp; cat ../sp*", ("split",)),
+    ("cd action-items; gzip -c con*/x.md | gunzip", ("gzip", "gunzip")),
+    ("mkdir -p e; diff -rN action-items e", ("diff",)),
+    ("mkdir -p e; diff -rN . e", ("diff",)),
+    ("cd action-items; sed 'r context/x.md' ../docs/a.md", ("sed",)),
+    ("cd action-items; awk 'BEGIN{while((getline l < \"context/x.md\")>0) print l}'", ("awk",)),
+    ("cd action-items; awk 'BEGIN{f=\"context/x.md\"; while ((getline l < f) > 0) print l}'", ("awk",)),
+    ("cd action-items; awk -v f=context/x.md 'BEGIN{while ((getline l < f) > 0) print l}'", ("awk",)),
+    ("cd action-items; awk 'BEGIN{\"cat context/x.md\" | getline l; print l}'", ("awk",)),
+    ("cd action-items; perl -ne print con*/x.md", ("perl",)),
+    ('cd action-items; perl -e \'open(F, "<", "context/x.md"); print <F>\'', ("perl",)),
+    ("cd action-items; dd if=context/x.md 2>/dev/null", ("dd",)),
+    ("cd action-items; source context/x.md 2>&1", ()),
+    ("cd action-items; . context/x.md 2>&1", ()),
+    ("cd action-items; join con*/x.md con*/x.md", ("join",)),
+    ("cd action-items; expand con*/x.md", ("expand",)),
+    ("cd action-items; look kb con*/x.md", ("look",)),
+    ("cd action-items; shuf con*/x.md", ("shuf",)),
+    ("cat \"$(cat <<'EOF'\nknowledge-base/a.md\nEOF\n)\"", ()),
+    ("X=kn; cat <<EOF\n$(cat ${X}owledge-base/a.md)\nEOF", ()),
+    ("cd action-items; cat $(find .) 2>/dev/null", ("find",)),
+    ('cd action-items; for f in $(find .); do cat "$f" 2>/dev/null; done', ("find",)),
+    ('cd action-items; find . | while read f; do cat "$f" 2>/dev/null; done', ("find",)),
+    ('cd action-items; find . -type f | while IFS= read -r f; do cat "$f"; done', ("find",)),
+    ('cd action-items; rg --files | while read f; do cat "$f"; done', ("rg",)),
+    ("cd action-items; cat $(rg --files)", ("rg",)),
+    # #819 review
+    ('perl -e \'system "cat", "knowledge-base/a.md"\'', ("perl",)),
+    ('perl -e \'exec "cat", "knowledge-base/a.md"\'', ("perl",)),
+    ("perl -e 'local @ARGV=(\"knowledge-base/a.md\"); print <>'", ("perl",)),
+    ("perl -e 'print qx{cat knowledge-base/a.md}'", ("perl",)),
+    ("perl -e 'open(my $f, \"<\", q{knowledge-base/a.md}); print <$f>'", ("perl",)),
+    ("perl -e '$f = q{knowledge-base/a.md}; open(F, $f); print <F>'", ("perl",)),
+    ('awk \'BEGIN{system("cat kn" "owledge-base/a.md")}\'', ("awk",)),
+    ("awk 'BEGIN{c = \"cat knowledge-base/a.md\"; system(c)}'", ("awk",)),
+    ('awk \'BEGIN{("cat kn" "owledge-base/a.md") | getline l; print l}\'', ("awk",)),
+    ('awk \'BEGIN{print "cat knowledge-base/a.md" | "sh"}\'', ("awk",)),
+    ("F=knowledge-base/a.md awk 'BEGIN{getline l < ENVIRON[\"F\"]; print l}'", ("awk",)),
+    ("tar cf knowledge-base/x.tar --use-compress-program='tee /dev/stderr' knowledge-base/a.md 2>&1", ("tar",)),
+    ('D=knowledge-base; sed "r $D/a.md" docs/a.md', ("sed",)),
+    ("printf '%s\\n' */*/* | while read f; do cat \"$f\" 2>/dev/null; done", ()),
+]
+
+READS_NO_NOTE = [
+    ("tar cf ../out.tar docs/", ("tar",)),
+    ("cp -r docs/ ../x", ("cp",)),
+    ("mkdir -p ../other; diff -r scripts/ ../other/ 2>/dev/null", ("diff",)),
+    ("sed 's/a/b/' docs/a.md", ("sed",)),
+    ("sed 'r docs/a.md' scripts/a.md", ("sed",)),
+    ("awk '{print $1}' docs/a.md", ("awk",)),
+    ("awk 'BEGIN{while((getline l < \"docs/a.md\")>0) print l}'", ("awk",)),
+    ("perl -ne print docs/a.md", ("perl",)),
+    ("cat \"$(cat <<'EOF'\ndocs/a.md\nEOF\n)\"", ()),
+    ("X=kn; cat <<'EOF'\n$(cat ${X}owledge-base/a.md)\nEOF", ()),
+    ('find docs | while read f; do cat "$f" 2>/dev/null; done', ("find",)),
+]
+
+
+def _needs(tools: tuple[str, ...]) -> None:
+    missing = [t for t in tools if shutil.which(t) is None]
+    if missing:
+        pytest.skip(f"not installed: {', '.join(missing)}")
+
+
+@pytest.mark.parametrize(("command", "tools"), READS_A_NOTE)
+def test_a_reader_zsh_reads_a_note_with_the_gate_denies(home: Path, command: str, tools: tuple[str, ...]) -> None:
+    _needs(tools)
+    assert "kbnote" in _zsh(home, command).lower(), "the case must really print a note under zsh"
+    out = _gate(home, command)
+    assert out is not None and out["hookSpecificOutput"]["permissionDecision"] == "deny", command
+
+
+@pytest.mark.parametrize(("command", "tools"), READS_NO_NOTE)
+def test_a_reader_that_reads_no_note_the_gate_allows(home: Path, command: str, tools: tuple[str, ...]) -> None:
+    _needs(tools)
+    assert "kbnote" not in _zsh(home, command).lower()
+    assert _gate(home, command) is None, command
 
 
 @pytest.mark.parametrize("command", PRINTS_A_NOTE)

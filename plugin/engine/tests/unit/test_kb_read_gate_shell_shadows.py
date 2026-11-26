@@ -212,6 +212,9 @@ MUST_DENY = [
     ("", "cat $(printf '%s\\n' */*.md)"),
     ("", "cat $(echo */*.md)"),
     ("", "cat $(ls -d k*)/*"),
+    ("", "cat $(echo kn)owledge-base/a.md"),
+    ("", 'cat "$(printf knowl%sdge-base/a.md e)"'),
+    ("", 'sed "r $(echo knowledge-base/a.md)" docs/a.md'),
 ]
 
 # Ordinary searches: the gate leaves them alone, and no KB note shows.
