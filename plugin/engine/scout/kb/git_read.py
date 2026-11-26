@@ -113,6 +113,8 @@ class GitRead:
     # False for a call that prints no file's contents (`git status`, `git log --oneline`): only the repository it
     # runs in is judged, by its config (:func:`config_runs`).
     reads: bool = True
+    # A write a run may make only in the vault's own repository (Step 0's `git config user.email|user.name`).
+    vault_only: bool = False
 
 
 def split_global(args: list[str]) -> tuple[list[str], str | None, str | None, int]:

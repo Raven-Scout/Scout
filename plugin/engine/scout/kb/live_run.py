@@ -1942,9 +1942,14 @@ def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | No
         chdirs, git_dir_, work_tree_, at = git_read.split_global([_unshield(w) for w in git])
         if at >= len(git):
             return None
+        from scout.kb import git_allow
+
+        sub = raw_read.fold(_unshield(git[at]))
+        rest = [_unshield(w) for w in git[at + 1 :]]
         read = git_read.GitRead(
-            sub=raw_read.fold(_unshield(git[at])), chdirs=chdirs, git_dir=git_dir_, work_tree=work_tree_, reads=False
-        )
+            sub=sub, chdirs=chdirs, git_dir=git_dir_, work_tree=work_tree_, reads=False,
+            vault_only=sub == "config" and git_allow.config_write(rest),
+        )  # fmt: skip
     elif stripped.fed:  # `… | xargs git cat-file -p`: its objects or paths come from stdin, which the gate can't see
         read.trees, read.pathspecs, read.maybe_paths, read.files, read.no_index = [SUBST], [], [], [], False
     start = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
@@ -2014,7 +2019,7 @@ def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | No
                 one = git_read.GitRead(
                     sub=read.sub, git_dir=gd, work_tree=wt, trees=lists[0], pathspecs=lists[1],
                     maybe_paths=lists[2], unbounded=read.unbounded, fs_changed=_STATE["fs_changed"],
-                    links=list(_STATE["links"]), reads=read.reads,
+                    links=list(_STATE["links"]), reads=read.reads, vault_only=read.vault_only,
                 )  # fmt: skip
                 found = _GIT_READ(one, where)
                 if found is not None:
@@ -2232,8 +2237,10 @@ def _git_allowlist_form(words: list[str]) -> str | None:
     if _STATE["git_env"]:
         return f"{GIT_FORM} (GIT_*, PATH or the command table set)"
     i = 0
-    while i < len(args) and args[i] == "-C":
-        i += 2
+    if [_unshield(a) for a in args] == ["--version"]:
+        return None
+    while i < len(args) and _unshield(args[i]) in ("-C", "--no-pager"):
+        i += 2 if _unshield(args[i]) == "-C" else 1
     if i >= len(args):
         return f"{GIT_FORM} (no subcommand)" if i == 0 else None
     sub = _unshield(args[i])

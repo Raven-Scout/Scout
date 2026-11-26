@@ -212,11 +212,16 @@ def _option(
     return None, None
 
 
+def config_write(args: list[str]) -> bool:
+    """Whether ``git config <args>`` is one of Step 0's two writes (allowed only in the vault's repository)."""
+    return len(args) == 2 and args[0].casefold() in WRITE_KEYS
+
+
 def _config(args: list[str]) -> str | None:
     """``git config`` reads only: ``<key>``, ``--get <key> [<pattern>]``, ``--get-regexp <re> [<pattern>]``,
     ``--list``/``-l``, ``get <key>``, ``list``, each with ``--show-origin`` if wanted; and Step 0's two writes,
     ``git config user.email <v>`` / ``user.name <v>`` with a literal one-line value and nothing else."""
-    if len(args) == 2 and args[0].casefold() in WRITE_KEYS:
+    if config_write(args):
         value = args[1]
         return "write" if any(c in value for c in "\n\r\0") or value.startswith("-") else None
     words = [a for a in args if a != "--show-origin"]
@@ -256,5 +261,6 @@ def forms() -> str:
         "--no-patch), `git status` (--short, --porcelain), `git diff` (--stat, --name-only, --cached), "
         "`git add <paths>`, `git config <key>` (reads), `git remote -v|get-url|show`, `git rev-parse`, "
         "`git ls-files`, `git branch`/`git tag` (list), `git describe`, `git merge-base`, `git rev-list --count`, "
-        "`git shortlog -sn`, with at most `-C <dir>` before the subcommand and no GIT_* or PATH set"
+        "`git shortlog -sn`, `git --version`, with at most `-C <dir>` and `--no-pager` before the subcommand and no "
+        "GIT_* or PATH set; `git config user.email|user.name <value>` only in the vault's repository"
     )

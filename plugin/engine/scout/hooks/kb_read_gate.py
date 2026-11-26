@@ -191,9 +191,9 @@ def _deny_delegate_write() -> str:
 def _deny_hook_skip(form: str) -> str:
     return (
         f"{MARK} A scheduled run doesn't skip or redirect git's commit hooks ({form}): their checks are what keep "
-        "private and shared notes apart. Commit the normal way: `scripts/git-safe-commit.sh` in the vault, plain "
-        "`git commit` in any other repo. If a hook refuses the commit, fix what it reports; if you can't, leave the "
-        "file uncommitted and say so in the run notes."
+        "private and shared notes apart. Commit with `scripts/git-safe-commit.sh` in the vault; a run commits in no "
+        "other repository (describe an engine or plugin change in the wrap notification). If a hook refuses the "
+        "commit, fix what it reports; if you can't, leave the file uncommitted and say so in the run notes."
     )
 
 
@@ -352,10 +352,23 @@ def _deny_title_rewrites(form: str) -> str:
 def _deny_git_form(form: str) -> str:
     from scout.kb import git_allow
 
+    # The engine-change flow (phases/core/git-setup.md: clone, branch, commit, push in ~/.scout-worktrees) isn't
+    # a run's to make for now: as in the write sandbox, the change is described in the wrap.
+    engine = (
+        any(f"(git {sub}" in form for sub in ("clone", "switch", "checkout", "commit", "push"))
+        or "(branch a name" in form
+    )
     return (
         f"{MARK} A scheduled run uses git only in a few read forms, and this isn't one ({form}). The forms: "
         f"{git_allow.forms()}. Commit with `scripts/git-safe-commit.sh` in the vault; read KB notes with "
-        "`scoutctl kb …`. If the run needs another git form, say so in the run notes."
+        "`scoutctl kb …`. "
+        + (
+            "To change the engine or plugin, don't clone, branch or push from the run: describe the change you "
+            "would make, and why, in the wrap notification. "
+            if engine
+            else ""
+        )
+        + "If the run needs another git form, say so in the run notes."
     )
 
 
@@ -536,6 +549,8 @@ def _decide_bash(
     def git_read(read: GitRead, where: str) -> str | None:
         """A git call's reads (:func:`_git_reads_kb`), from the folder ``where`` it runs in."""
         found = _git_reads_kb(read, where, vault, env, resolve, text_of, names_vault)
+        if found == "outside":
+            return f"{GIT_FORM} (a config write outside the vault's repository)"
         if found is not None and found.startswith("config:"):
             return f"{GIT_FORM} (a repository whose config runs commands: {found[7:]})"
         if found == "unresolved":
@@ -669,6 +684,8 @@ def _git_reads_kb(
     Then the read is "unresolved", or "kb" when the command names the vault or a KB folder (``names_vault``), or
     copied the repository it runs in, the vault's (``git worktree add``, ``git clone .``)."""
     found = _git_tree_reads_kb(read, where, vault, env, resolve, text_of)
+    if read.vault_only:
+        return None if found is None else "outside"  # None: the vault's repository, for sure
     if found == "kb" or (found or "").startswith("config:"):
         return found
     if not read.reads:
@@ -763,6 +780,8 @@ def _git_tree_reads_kb(
         return "unresolved"
     repo = git_read.find_repo(here, git_dir, work_tree)
     if repo is None:
+        if read.vault_only:  # git refuses a write with no repository; the vault's folder is fine (and isn't one yet)
+            return None if git_read.rel_to(paths.resolve_path(vault), here) is not None else "outside"
         return None  # not a repository: git reads nothing of a tree
     home = paths.resolve_path(vault)
     ours = git_read.find_repo(home, None, None)
@@ -772,6 +791,8 @@ def _git_tree_reads_kb(
     if ours is not None and git_read.same_folder(repo[1], ours[1]):
         vault_at = git_read.rel_to(ours[0], home) or ""
     else:
+        if read.vault_only:
+            return "outside"
         runs = git_read.config_runs(repo[1], read.sub)
         if runs is not None:
             return f"config:{runs}"

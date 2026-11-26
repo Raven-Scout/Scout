@@ -773,6 +773,9 @@ RUN_USAGE = [
     'N=5; git log -n "$N"',
     'git log --since="$(date +%F)" --oneline',
     "G=git; $G log --oneline",
+    "git --no-pager log --oneline -3",
+    "git --version",
+    "git -C ~/Vault/docs config user.name 'Scout Bot'",  # still the vault's repository
 ]
 
 
@@ -949,6 +952,39 @@ def test_read_config_is_none_for_a_file_git_cant_read(tmp_path: Path) -> None:
     assert git_read.read_config(tmp_path / "bad") is None
     (tmp_path / "ok").write_text("[Core]\n\tWorkTree = /x ; note\n")
     assert git_read.read_config(tmp_path / "ok") == [("core.worktree", "/x")]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -C ~/other config user.name A",
+        "git -C ~/plain config user.email a@example.com",  # no repository
+        "git -C $UNSET_X config user.name A",
+        "cd ~/other && git config user.name A",
+    ],
+)
+def test_step_0s_config_writes_are_for_the_vaults_repository_only(home: Path, command: str) -> None:
+    assert "outside the vault's repository" in _denied(_run(home, command))
+    assert _run(home, "git -C ~/other config user.name") is None  # a read is fine anywhere
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git clone -q https://github.com/example-org/repo.git ~/.scout-worktrees/x",
+        "git -C ~/.scout-worktrees/x switch -c scout/x",
+        "git -C ~/other commit -m x",
+        "git -C ~/other push -u origin scout/x",
+        "git branch scout/x",
+    ],
+)
+def test_the_engine_change_flow_is_told_to_go_in_the_wrap(home: Path, command: str) -> None:
+    assert "in the wrap notification" in _denied(_run(home, command))
+
+
+def test_other_refusals_dont_mention_the_wrap(home: Path) -> None:
+    assert "wrap notification" not in _denied(_run(home, "git log -p"))
+    assert "wrap notification" not in _denied(_run(home, "git --no-pager --exec-path=/tmp log"))
 
 
 def test_a_foreign_repository_holding_the_vaults_history_is_judged_by_the_paths_it_names(home: Path) -> None:

@@ -352,7 +352,7 @@ def _events(vault: Path) -> list[dict]:
 def test_run_denies_a_hook_skip_names_the_form_and_records_an_event(vault, command, form):
     reason = _denied(_decision(vault, "Bash", {"command": command}))
     assert form in reason and "fix" in reason.lower() and "git-safe-commit.sh" in reason
-    assert "plain `git commit`" in reason, "the helper can't commit in an engine clone: the deny covers both places"
+    assert "wrap notification" in reason, "a run commits in no other repository: an engine change goes in the wrap"
     for word in ("lock", "PID", "process", "ancestry", "live", "host"):
         assert word not in reason, f"the deny doesn't explain how a run is told apart: {word}"
     (row,) = _events(vault)

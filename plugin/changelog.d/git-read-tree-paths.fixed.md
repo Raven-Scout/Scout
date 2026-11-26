@@ -60,13 +60,14 @@
 - **In a scheduled run, git is an allowlist** (new `engine/scout/kb/git_allow.py`). Fifty runs used only `log`,
   `config` reads, `show`, `status`, `diff`, `add` and `remote`, with display options, so a run may use those and a
   few more read forms (`rev-parse`, `ls-files`, `branch`/`tag` listings, `describe`, `merge-base`, `rev-list`,
-  `shortlog`), each with a listed set of options spelled out in full (no prefixes) and at most `-C <dir>` before
-  the subcommand. Any other subcommand, option or global option (`-c`, `--exec-path`, `--no-pager`, `-p`), and
+  `shortlog`, `--version`), each with a listed set of options spelled out in full (no prefixes) and at most
+  `-C <dir>` and `--no-pager` before the subcommand. Any other subcommand, option or global option (`-c`, `--exec-path`, `--no-pager`, `-p`), and
   any git call in a command that sets a `GIT_*` variable, `PATH` or zsh's `path`, an editor or pager, or zsh's
   command table (`commands`, `functions`, `alias`, `hash`), is refused with a message naming the forms a run may
-  use. Commits go through `scripts/git-safe-commit.sh`, which a run's `git commit` now gets pointed to. `git config`
+  use. Commits go through `scripts/git-safe-commit.sh`, which a run's `git commit` now gets pointed to; a clone,
+  branch, commit or push for an engine change is pointed to the wrap notification instead, as in the sandbox. `git config`
   may only read (`<key>`, `--get`, `--get-regexp`, `--list`, `get`, `list`) or set `user.email` and `user.name`
-  in the repository's config (Step 0 of every run outside the write sandbox). A word the shell fills in before
+  in the vault's own repository (Step 0 of every run outside the write sandbox). A word the shell fills in before
   `--` must be one the command sets (`X=-p; git log $X` is read as `-p`), and a glob, brace list, zsh array or
   `xargs` input there is refused, since it may make an option. The content-read judging stays for the allowed
   forms. A repository other than the vault's whose own config runs a command (fsmonitor, a filter, textconv, an
