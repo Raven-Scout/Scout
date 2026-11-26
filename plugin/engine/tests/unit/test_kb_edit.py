@@ -1,0 +1,558 @@
+"""`scoutctl kb edit`: the sanctioned rule-based edit a run uses in place of a python heredoc (follow-up to #824).
+
+The output is counts and status only: no test below may find a note's text, a pattern or a heading in it."""
+
+from __future__ import annotations
+
+import json
+import os
+
+import pytest
+from typer.testing import CliRunner
+
+from scout.cli import app
+from scout.kb import edit as kb_edit
+from scout.kb.edit import OpFailed, apply_ops, check_ops, line_counts, load_ops
+from scout.kb.read import UsageError
+
+runner = CliRunner()
+NOTE = "knowledge-base/projects/alpha/alpha.md"
+CONTEXT = "action-items/context/PROJ-1234.md"
+SECRET = "knowledge-base/personal/renewal.md"
+BODY = (
+    "---\n"
+    "title: Alpha\n"
+    "last_verified: 2026-11-01\n"
+    "tags:\n"
+    "- infra\n"
+    "- costs\n"
+    "status: active\n"
+    "---\n"
+    "# Alpha\n"
+    "\n"
+    "## Where it stands\n"
+    "\n"
+    "- Sam owns the rollout\n"
+    "- budget is TBD\n"
+    "\n"
+    "## Log\n"
+    "\n"
+    "- 2026-11-01 kickoff\n"
+    "\n"
+    "```\n"
+    "## Log\n"
+    "```\n"
+)
+
+
+def kb(vault, *args: str, stdin: str | None = None, reader: str | None = None):
+    env = {"SCOUT_READER": reader} if reader else {}
+    return runner.invoke(app, ["kb", "edit", *args, "--repo", str(vault)], input=stdin, env=env)
+
+
+def run_ops(vault, path: str, ops, *extra: str, reader: str | None = None):
+    return kb(vault, path, "--ops", "-", *extra, stdin=json.dumps(ops), reader=reader)
+
+
+@pytest.fixture
+def vault(kb_repo):
+    kb_repo.write(NOTE, BODY)
+    kb_repo.write(CONTEXT, "---\ntag: PROJ-1234\nupdated: 2026-11-01\n---\nStatus: waiting\n")
+    kb_repo.write(SECRET, "---\nvisibility: private\n---\nrenew the permit\n")
+    return kb_repo.root
+
+
+def text(vault, rel: str = NOTE) -> str:
+    return (vault / rel).read_text(encoding="utf-8")
+
+
+# ----- replace and regex -----------------------------------------------------------------
+
+
+def test_a_literal_replace_writes_and_prints_only_counts(vault) -> None:
+    result = run_ops(vault, NOTE, [{"op": "replace", "old": "budget is TBD", "new": "budget is 40k"}])
+    assert result.exit_code == 0, result.output
+    assert "budget is 40k" in text(vault) and "budget is TBD" not in text(vault)
+    assert result.stdout.splitlines() == [f"{NOTE}: 1 op applied, +1 -1 lines, written", "  1 replace: 1 match"]
+    assert "budget" not in result.stdout
+
+
+@pytest.mark.parametrize(("want", "code"), [(1, 1), (2, 0), ("all", 0), (3, 1)])
+def test_count_is_the_number_of_matches_expected(vault, want, code: int) -> None:
+    result = run_ops(vault, NOTE, [{"op": "replace", "old": "## Log", "new": "## History", "count": want}])
+    assert result.exit_code == code
+    if code:
+        assert "nothing written" in result.stdout and text(vault) == BODY
+    else:
+        assert text(vault).count("## History") == 2
+
+
+def test_no_match_fails_and_writes_nothing(vault) -> None:
+    result = run_ops(vault, NOTE, [{"op": "replace", "old": "nowhere in the note", "new": "x"}])
+    assert result.exit_code == 1 and text(vault) == BODY
+    assert result.stdout.strip() == f"{NOTE}: nothing written: op 1 (replace): expected 1 match, found 0"
+
+
+def test_all_needs_at_least_one_match(vault) -> None:
+    result = run_ops(vault, NOTE, [{"op": "replace", "old": "zzz", "new": "y", "count": "all"}])
+    assert result.exit_code == 1 and "expected 1 or more matches, found 0" in result.stdout
+
+
+def test_regex_with_groups_and_flags(vault) -> None:
+    ops = [{"op": "regex", "pattern": r"^- (\d{4})-11-01 KICKOFF$", "new": r"- \1-11-02 kickoff", "flags": "mi"}]
+    result = run_ops(vault, NOTE, ops)
+    assert result.exit_code == 0, result.output
+    assert "- 2026-11-02 kickoff\n" in text(vault)
+    assert "kickoff" not in result.stdout
+
+
+def test_a_regex_template_that_names_a_missing_group_fails(vault) -> None:
+    result = run_ops(vault, NOTE, [{"op": "regex", "pattern": "kickoff", "new": r"\2"}])
+    assert result.exit_code == 1 and "template" in result.stdout and text(vault) == BODY
+
+
+# ----- insert and append -----------------------------------------------------------------
+
+
+def test_insert_at_the_end_of_a_section_keeps_its_blank_line(vault) -> None:
+    result = run_ops(vault, NOTE, [{"op": "insert", "heading": "## Where it stands", "text": "- launch on 12-01"}])
+    assert result.exit_code == 0, result.output
+    assert "- budget is TBD\n- launch on 12-01\n\n## Log\n" in text(vault)
+    assert "1 insert: under 1 heading" in result.stdout
+
+
+def test_insert_at_the_start_of_a_section(vault) -> None:
+    result = run_ops(
+        vault, NOTE, [{"op": "insert", "heading": "## Where it stands", "text": "- first\n", "at": "start"}]
+    )
+    assert result.exit_code == 0
+    assert "## Where it stands\n\n- first\n- Sam owns the rollout\n" in text(vault)
+
+
+def test_a_heading_inside_a_code_fence_is_not_a_heading(vault) -> None:
+    result = run_ops(vault, NOTE, [{"op": "insert", "heading": "## Log", "text": "- 2026-11-25 shipped"}])
+    assert result.exit_code == 0, result.output  # one match, not two: the section runs past its code block
+    assert text(vault).endswith("- 2026-11-01 kickoff\n\n```\n## Log\n```\n- 2026-11-25 shipped\n")
+
+
+def test_the_last_section_runs_to_the_end_of_the_note(kb_repo) -> None:
+    kb_repo.write(NOTE, "# A\n\n## Log\n- one\n\n### Detail\n- d\n")
+    result = run_ops(kb_repo.root, NOTE, [{"op": "insert", "heading": "## Log", "text": "- two"}])
+    assert result.exit_code == 0
+    assert text(kb_repo.root) == "# A\n\n## Log\n- one\n\n### Detail\n- d\n- two\n"
+
+
+def test_a_missing_newline_at_the_end_is_added_before_the_insert(kb_repo) -> None:
+    kb_repo.write(NOTE, "## Log\n- one")
+    assert run_ops(kb_repo.root, NOTE, [{"op": "insert", "heading": "## Log", "text": "- two"}]).exit_code == 0
+    assert text(kb_repo.root) == "## Log\n- one\n- two\n"
+
+
+def test_an_empty_section_gets_the_text_right_under_its_heading(kb_repo) -> None:
+    kb_repo.write(NOTE, "## Log\n## Next\n")
+    assert run_ops(kb_repo.root, NOTE, [{"op": "insert", "heading": "## Log", "text": "- one"}]).exit_code == 0
+    assert text(kb_repo.root) == "## Log\n- one\n## Next\n"
+
+
+def test_no_heading_fails_unless_create(vault) -> None:
+    op = {"op": "insert", "heading": "## Decisions", "text": "- go"}
+    assert run_ops(vault, NOTE, [op]).exit_code == 1 and text(vault) == BODY
+    result = run_ops(vault, NOTE, [op | {"create": True}])
+    assert result.exit_code == 0 and text(vault).endswith("```\n\n## Decisions\n\n- go\n")
+    assert "heading created" in result.stdout
+
+
+def test_create_on_an_empty_note(kb_repo) -> None:
+    kb_repo.write(NOTE, "")
+    op = {"op": "insert", "heading": "## Log", "text": "- one", "create": True}
+    assert run_ops(kb_repo.root, NOTE, [op]).exit_code == 0
+    assert text(kb_repo.root) == "## Log\n\n- one\n"
+
+
+def test_two_matching_headings_fail(kb_repo) -> None:
+    kb_repo.write(NOTE, "## Log\n- a\n## Log\n- b\n")
+    result = run_ops(kb_repo.root, NOTE, [{"op": "insert", "heading": "## Log", "text": "- c"}])
+    assert result.exit_code == 1 and "2 headings match" in result.stdout
+
+
+def test_a_heading_in_the_frontmatter_is_not_one(kb_repo) -> None:
+    kb_repo.write(NOTE, "---\ntitle: x\n---\n## Log\n")
+    assert run_ops(kb_repo.root, NOTE, [{"op": "insert", "heading": "## Log", "text": "- a"}]).exit_code == 0
+
+
+def test_append(kb_repo) -> None:
+    kb_repo.write(NOTE, "# A\nlast")
+    result = run_ops(kb_repo.root, NOTE, [{"op": "append", "text": "tail line"}])
+    assert result.exit_code == 0 and text(kb_repo.root) == "# A\nlast\ntail line\n"
+
+
+# ----- frontmatter -----------------------------------------------------------------------
+
+
+def test_set_a_date_field_unquoted(vault) -> None:
+    result = run_ops(vault, NOTE, [{"op": "frontmatter", "field": "last_verified", "value": "2026-11-25"}])
+    assert result.exit_code == 0, result.output
+    assert "last_verified: 2026-11-25\n" in text(vault) and "1 frontmatter: field set" in result.stdout
+
+
+def test_set_a_block_list_replaces_all_its_lines(vault) -> None:
+    result = run_ops(vault, NOTE, [{"op": "frontmatter", "field": "tags", "value": ["infra", "budget"]}])
+    assert result.exit_code == 0, result.output
+    assert "tags:\n- infra\n- budget\nstatus: active\n" in text(vault) and "- costs" not in text(vault)
+
+
+def test_add_and_remove_a_field(vault) -> None:
+    assert run_ops(vault, NOTE, [{"op": "frontmatter", "field": "owner", "value": "Priya"}]).exit_code == 0
+    assert "status: active\nowner: Priya\n---\n" in text(vault)
+    result = run_ops(vault, NOTE, [{"op": "frontmatter", "field": "owner", "remove": True}])
+    assert result.exit_code == 0 and "owner" not in text(vault) and "field removed" in result.stdout
+    again = run_ops(vault, NOTE, [{"op": "frontmatter", "field": "owner", "remove": True}])
+    assert again.exit_code == 0 and "field absent" in again.stdout and "unchanged" in again.stdout
+
+
+@pytest.mark.parametrize("value", [3, 2.5, True, None, "has: a colon", "line one\nline two", "2026-11-25 10:00"])
+def test_values_read_back_as_given(kb_repo, value) -> None:
+    kb_repo.write(NOTE, "---\ntitle: x\nn: 1\n---\nbody\n")
+    result = run_ops(kb_repo.root, NOTE, [{"op": "frontmatter", "field": "n", "value": value}])
+    assert result.exit_code == 0, result.output
+    assert text(kb_repo.root).startswith("---\ntitle: x\n") and text(kb_repo.root).endswith("---\nbody\n")
+
+
+def test_no_frontmatter_fails(kb_repo) -> None:
+    kb_repo.write(NOTE, "# A\n")
+    result = run_ops(kb_repo.root, NOTE, [{"op": "frontmatter", "field": "status", "value": "done"}])
+    assert result.exit_code == 1 and "no frontmatter" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "fm",
+    [
+        "status: a\nstatus: b\n",  # set on two lines
+        "status: [unclosed\n",  # doesn't parse
+        "- a\n- b\n",  # not a mapping
+    ],
+)
+def test_an_odd_frontmatter_fails_closed(kb_repo, fm: str) -> None:
+    kb_repo.write(NOTE, f"---\n{fm}---\nbody\n")
+    result = run_ops(kb_repo.root, NOTE, [{"op": "frontmatter", "field": "status", "value": "done"}])
+    assert result.exit_code == 1 and text(kb_repo.root) == f"---\n{fm}---\nbody\n"
+
+
+def test_a_field_whose_lines_cant_be_told_apart_fails_closed(kb_repo) -> None:
+    # `notes:`'s value runs on an unindented line the edit can't know is its own: the other fields must read back.
+    original = "---\nnotes: >\n  folded\nother: 1\n---\n"
+    kb_repo.write(NOTE, original)
+    result = run_ops(kb_repo.root, NOTE, [{"op": "frontmatter", "field": "notes", "value": "x"}])
+    assert result.exit_code == 0 and "other: 1" in text(kb_repo.root)
+    with pytest.raises(OpFailed):  # `y"` is the value's own line, but unindented: the edited block can't parse
+        apply_ops('---\na: "x\ny"\nb: 1\n---\n', [{"op": "frontmatter", "field": "a", "value": "z"}])
+    edited = apply_ops("---\na: 1\n---\n", [{"op": "frontmatter", "field": "a", "value": "2026-13-45"}])
+    assert edited.text == "---\na: '2026-13-45'\n---\n"  # not a date: quoted, so it reads back as text
+
+
+def test_a_field_whose_next_line_is_another_key_fails_closed() -> None:
+    # `-b: 2` is a key of its own, but starts like a list item: the edit would take it as `a`'s, and the
+    # other fields wouldn't read back.
+    with pytest.raises(OpFailed, match="read back"):
+        apply_ops("---\na: 1\n-b: 2\n---\n", [{"op": "frontmatter", "field": "a", "value": 3}])
+
+
+def test_a_frontmatter_block_of_comments_only() -> None:
+    edited = apply_ops("---\n# c\n---\nbody\n", [{"op": "frontmatter", "field": "a", "value": 1}])
+    assert edited.text == "---\n# c\na: 1\n---\nbody\n"
+
+
+def test_a_pure_add_after_a_last_line_without_newline() -> None:
+    assert apply_ops("a", [{"op": "patch", "diff": "@@ -1,0 +2 @@\n+b\n"}]).text == "a\nb\n"
+
+
+def test_an_empty_frontmatter_block(kb_repo) -> None:
+    kb_repo.write(NOTE, "---\n---\nbody\n")
+    assert run_ops(kb_repo.root, NOTE, [{"op": "frontmatter", "field": "status", "value": "done"}]).exit_code == 0
+    assert text(kb_repo.root) == "---\nstatus: done\n---\nbody\n"
+
+
+# ----- patch -----------------------------------------------------------------------------
+
+PATCH = """\
+--- a/alpha.md
++++ b/alpha.md
+@@ -13,2 +13,3 @@
+ - Sam owns the rollout
+-- budget is TBD
++- budget is 40k
++- launch on 12-01
+"""
+
+
+def test_a_unified_diff_applies(vault) -> None:
+    result = run_ops(vault, NOTE, [{"op": "patch", "diff": PATCH}])
+    assert result.exit_code == 0, result.output
+    assert "- Sam owns the rollout\n- budget is 40k\n- launch on 12-01\n\n## Log" in text(vault)
+    assert "1 patch: 1 hunk" in result.stdout and "+2 -1 lines" in result.stdout
+
+
+def test_a_hunk_off_by_some_lines_applies_where_its_old_lines_are(vault) -> None:
+    moved = PATCH.replace("@@ -13,2 +13,3 @@", "@@ -3,2 +3,3 @@")
+    assert run_ops(vault, NOTE, [{"op": "patch", "diff": moved}]).exit_code == 0
+    assert "budget is 40k" in text(vault)
+
+
+def test_a_hunk_that_matches_nowhere_or_twice_fails(kb_repo) -> None:
+    kb_repo.write(NOTE, "a\nx\nb\nx\n")
+    twice = "@@ -9,1 +9,1 @@\n-x\n+y\n"
+    result = run_ops(kb_repo.root, NOTE, [{"op": "patch", "diff": twice}])
+    assert result.exit_code == 1 and "in 2 places" in result.stdout
+    nowhere = "@@ -1,1 +1,1 @@\n-zzz\n+y\n"
+    assert "anywhere" in run_ops(kb_repo.root, NOTE, [{"op": "patch", "diff": nowhere}]).stdout
+
+
+def test_several_hunks_and_a_pure_add(kb_repo) -> None:
+    kb_repo.write(NOTE, "one\ntwo\nthree\nfour\nfive\n")
+    diff = "@@ -1,1 +1,1 @@\n-one\n+ONE\n@@ -3,0 +4,2 @@\n+3a\n+3b\n@@ -5 +7 @@\n-five\n+FIVE\n"
+    result = run_ops(kb_repo.root, NOTE, [{"op": "patch", "diff": diff}])
+    assert result.exit_code == 0, result.output
+    assert text(kb_repo.root) == "ONE\ntwo\nthree\n3a\n3b\nfour\nFIVE\n"
+
+
+def test_no_newline_at_end_of_file_markers(kb_repo) -> None:
+    kb_repo.write(NOTE, "a\nb")
+    diff = "@@ -2 +2,2 @@\n-b\n\\ No newline at end of file\n+b\n+c\n\\ No newline at end of file\n"
+    assert run_ops(kb_repo.root, NOTE, [{"op": "patch", "diff": diff}]).exit_code == 0
+    assert text(kb_repo.root) == "a\nb\nc"
+    kb_repo.write(NOTE, "a\nb")
+    keep = "@@ -2 +2 @@\n-b\n+B\n"
+    assert run_ops(kb_repo.root, NOTE, [{"op": "patch", "diff": keep}]).exit_code == 0
+    assert text(kb_repo.root) == "a\nB"
+
+
+def test_an_empty_context_line_without_its_space(kb_repo) -> None:
+    kb_repo.write(NOTE, "a\n\nb\n")
+    assert run_ops(kb_repo.root, NOTE, [{"op": "patch", "diff": "@@ -1,3 +1,3 @@\n a\n\n-b\n+c\n"}]).exit_code == 0
+    assert text(kb_repo.root) == "a\n\nc\n"
+
+
+@pytest.mark.parametrize(
+    ("diff", "why"),
+    [
+        ("+++ b/a\n@@ -1 +1 @@\n-a\n+b\n+++ b/c\n@@ -1 +1 @@\n-a\n+b\n", "more than one file"),
+        ("@@ -1,2 +1,1 @@\n-a\n+b\n", "line counts"),
+        ("no hunks here\n", "no hunks"),
+        ("@@ -1 +1 @@\n-a\n+b\nstray\n", "isn't part of a hunk"),
+        ("@@ -1,2 +1,2 @@\n-a\n?b\n+b\n", "isn't a hunk line"),
+        ("@@ -5,0 +6,1 @@\n+x\n", "past the end"),
+    ],
+)
+def test_a_bad_diff_fails(diff: str, why: str) -> None:
+    with pytest.raises(OpFailed, match=why):
+        apply_ops("a\n", [{"op": "patch", "diff": diff}])
+
+
+# ----- several ops, and all-or-nothing ---------------------------------------------------
+
+
+def test_ops_apply_in_order_to_what_the_one_before_left(vault) -> None:
+    ops = [
+        {"op": "replace", "old": "budget is TBD", "new": "budget is 40k"},
+        {"op": "replace", "old": "budget is 40k", "new": "budget is 45k"},
+        {"op": "frontmatter", "field": "last_verified", "value": "2026-11-25"},
+        {"op": "insert", "heading": "## Log", "text": "- 2026-11-25 budget set"},
+    ]
+    result = run_ops(vault, NOTE, ops)
+    assert result.exit_code == 0, result.output
+    assert "budget is 45k" in text(vault) and "last_verified: 2026-11-25" in text(vault)
+    assert result.stdout.splitlines()[0] == f"{NOTE}: 4 ops applied, +3 -2 lines, written"
+
+
+def test_a_failing_op_writes_none_of_them(vault) -> None:
+    ops = [{"op": "replace", "old": "budget is TBD", "new": "x"}, {"op": "replace", "old": "absent", "new": "y"}]
+    result = run_ops(vault, NOTE, ops, "--json")
+    assert result.exit_code == 1 and text(vault) == BODY
+    data = json.loads(result.stdout)
+    assert data["written"] is False and data["failed"] == {
+        "index": 2,
+        "op": "replace",
+        "reason": "expected 1 match, found 0",
+    }
+
+
+def test_check_reports_but_writes_nothing(vault) -> None:
+    result = run_ops(vault, NOTE, [{"op": "replace", "old": "budget is TBD", "new": "x"}], "--check", "--json")
+    assert result.exit_code == 0 and text(vault) == BODY
+    data = json.loads(result.stdout)
+    assert (data["written"], data["changed"], data["check"], data["added"], data["removed"]) == (
+        False,
+        True,
+        True,
+        1,
+        1,
+    )
+    assert data["label"]["path"] == NOTE and data["ops"] == [
+        {"index": 1, "op": "replace", "status": "1 match", "matches": 1}
+    ]
+    assert "would write" in run_ops(vault, NOTE, [{"op": "replace", "old": "TBD", "new": "x"}], "--check").stdout
+
+
+def test_a_note_that_changes_meanwhile_is_not_overwritten(vault, monkeypatch) -> None:
+    real = kb_edit.apply_ops
+
+    def racing(src, ops):
+        (vault / NOTE).write_text(src + "another run's line\n", encoding="utf-8")
+        return real(src, ops)
+
+    monkeypatch.setattr(kb_edit, "apply_ops", racing)
+    result = run_ops(vault, NOTE, [{"op": "replace", "old": "budget is TBD", "new": "x"}])
+    assert result.exit_code == 1 and "changed meanwhile" in result.stdout
+    assert text(vault).endswith("another run's line\n") and "budget is TBD" in text(vault)
+
+
+def test_a_file_of_ops_and_one_op_object(vault, tmp_path) -> None:
+    ops_file = tmp_path / "ops.json"
+    ops_file.write_text(json.dumps({"op": "replace", "old": "budget is TBD", "new": "x"}), encoding="utf-8")
+    assert kb(vault, NOTE, "--ops", str(ops_file)).exit_code == 0 and "budget is TBD" not in text(vault)
+    assert kb(vault, NOTE, "--ops", str(tmp_path / "missing.json")).exit_code == 2
+
+
+def test_an_ops_file_in_the_kb_is_refused(vault) -> None:
+    (vault / "knowledge-base/ops.json").write_text('[{"op": "append", "text": "x"}]', encoding="utf-8")
+    result = kb(vault, NOTE, "--ops", str(vault / "knowledge-base/ops.json"))
+    assert result.exit_code == 2 and text(vault) == BODY
+
+
+def test_an_action_item_context_note(vault) -> None:
+    result = run_ops(vault, CONTEXT, [{"op": "replace", "old": "waiting", "new": "unblocked"}])
+    assert result.exit_code == 0 and "unblocked" in text(vault, CONTEXT)
+
+
+# ----- the rules every KB write keeps ----------------------------------------------------
+
+
+@pytest.mark.parametrize("reader", ["agent:person:priya@example.com", "delegate:helper", "elsewhere"])
+def test_a_reader_that_isnt_owner_or_autonomous_edits_nothing(vault, reader: str) -> None:
+    result = run_ops(vault, NOTE, [{"op": "replace", "old": "budget is TBD", "new": "x"}], reader=reader)
+    assert result.exit_code == 3 and text(vault) == BODY and "budget" not in result.stdout
+
+
+def test_a_scheduled_run_edits_a_private_note_without_printing_it(vault) -> None:
+    result = run_ops(vault, SECRET, [{"op": "replace", "old": "permit", "new": "licence"}], reader="autonomous")
+    assert result.exit_code == 0 and "licence" in text(vault, SECRET) and "permit" not in result.stdout
+
+
+@pytest.mark.parametrize("path", ["README.md", "action-items/2026-11-25.md", "knowledge-base/ontology/schema.yaml"])
+def test_only_kb_notes(vault, path: str) -> None:
+    (vault / path).parent.mkdir(parents=True, exist_ok=True)
+    (vault / path).write_text("x\n", encoding="utf-8")
+    assert run_ops(vault, path, [{"op": "replace", "old": "x", "new": "y"}]).exit_code == 2
+    assert (vault / path).read_text(encoding="utf-8") == "x\n"
+
+
+def test_a_missing_note_or_one_outside_the_vault(vault, tmp_path) -> None:
+    assert run_ops(vault, "knowledge-base/none.md", [{"op": "append", "text": "x"}]).exit_code == 2
+    assert run_ops(vault, str(tmp_path / "x.md"), [{"op": "append", "text": "x"}]).exit_code == 2
+
+
+def test_a_note_that_isnt_utf8(vault) -> None:
+    (vault / NOTE).write_bytes(b"caf\xe9\n")
+    assert run_ops(vault, NOTE, [{"op": "append", "text": "x"}]).exit_code == 2
+
+
+def test_a_hard_linked_note_is_refused_by_the_write_gate(vault) -> None:
+    os.link(vault / NOTE, vault / "elsewhere.md")
+    result = run_ops(vault, NOTE, [{"op": "replace", "old": "budget is TBD", "new": "x"}])
+    assert result.exit_code == 3 and "write gate" in result.stdout and text(vault) == BODY
+
+
+def test_making_a_note_private_is_allowed(vault) -> None:
+    result = run_ops(vault, NOTE, [{"op": "frontmatter", "field": "visibility", "value": "private"}])
+    assert result.exit_code == 0 and "visibility: private" in text(vault)
+
+
+@pytest.mark.parametrize(
+    ("path", "op"),
+    [
+        (SECRET, {"op": "frontmatter", "field": "visibility", "value": "normal"}),
+        (SECRET, {"op": "frontmatter", "field": "visibility", "remove": True}),
+        (NOTE, {"op": "frontmatter", "field": "federation_scope", "value": "org"}),
+        (NOTE, {"op": "frontmatter", "field": "source", "value": "shared:person:priya@example.com"}),
+    ],
+)
+def test_an_edit_that_would_widen_or_relabel_a_note_is_refused(vault, path: str, op) -> None:
+    before = text(vault, path)
+    result = run_ops(vault, path, [op])
+    assert result.exit_code == 3 and "privacy label" in result.stdout and text(vault, path) == before
+
+
+# ----- the ops document ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "why"),
+    [
+        ("not json", "not JSON"),
+        ("[]", "JSON list"),
+        ('"x"', "JSON list"),
+        ('[{"op": "delete"}]', "one of"),
+        ('[{"op": "replace", "old": "a"}]', "missing new"),
+        ('[{"op": "replace", "old": "a", "new": "b", "x": 1}]', "unknown key x"),
+        ('[{"op": "replace", "old": 1, "new": "b"}]', "must be a string"),
+        ('[{"op": "replace", "old": "", "new": "b"}]', "must not be empty"),
+        ('[{"op": "replace", "old": "a", "new": "b", "count": 0}]', "count"),
+        ('[{"op": "replace", "old": "a", "new": "b", "count": true}]', "count"),
+        ('[{"op": "regex", "pattern": "(", "new": "b"}]', "doesn't compile"),
+        ('[{"op": "regex", "pattern": "a", "new": "b", "flags": "q"}]', "flags"),
+        ('[{"op": "insert", "heading": "Status", "text": "b"}]', "markdown heading"),
+        ('[{"op": "insert", "heading": "## S", "text": "b", "at": "middle"}]', "at is"),
+        ('[{"op": "insert", "heading": "## S", "text": "b", "create": "yes"}]', "create"),
+        ('[{"op": "append", "text": "  "}]', "must not be empty"),
+        ('[{"op": "frontmatter", "field": "a b", "value": 1}]', "plain top-level key"),
+        ('[{"op": "frontmatter", "field": "a"}]', "give value"),
+        ('[{"op": "frontmatter", "field": "a", "value": 1, "remove": true}]', "give value"),
+        ('[{"op": "frontmatter", "field": "a", "remove": "yes"}]', "remove must"),
+        ('[{"op": "frontmatter", "field": "a", "value": {"b": 1}}]', "value must"),
+        ('[{"op": "patch", "diff": " "}]', "must not be empty"),
+    ],
+)
+def test_a_bad_ops_document_is_a_usage_error(raw: str, why: str) -> None:
+    with pytest.raises(UsageError, match=why):
+        load_ops(raw)
+
+
+def test_ops_limits() -> None:
+    with pytest.raises(UsageError, match="at most"):
+        check_ops([{"op": "append", "text": "x"}] * (kb_edit.MAX_OPS + 1))
+    with pytest.raises(UsageError, match="bytes"):
+        load_ops(" " * (kb_edit.MAX_OPS_BYTES + 1))
+
+
+def test_a_bad_ops_document_exits_2_and_touches_nothing(vault) -> None:
+    result = kb(vault, NOTE, "--ops", "-", stdin="[{")
+    assert result.exit_code == 2 and text(vault) == BODY
+
+
+def test_line_counts() -> None:
+    assert line_counts("a\nb\n", "a\nc\nd\n") == (2, 1)
+    assert line_counts("a\n", "a\n") == (0, 0)
+
+
+# ----- the read gate lets the form the phases teach through --------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "scripts/scoutctl kb edit knowledge-base/people.md --ops - <<'EOF'\n"
+        '[{"op":"replace","old":"cat knowledge-base/x.md","new":"y","count":2}]\nEOF',
+        "cd /tmp && /x/scripts/scoutctl kb edit knowledge-base/people.md --ops - <<'EOF'\n"
+        '[{"op":"insert","heading":"## Log","text":"- grep -r found it"}]\nEOF',
+        'scripts/scoutctl kb edit knowledge-base/people.md --check --json --ops - <<< \'[{"op":"append","text":"x"}]\'',
+    ],
+)
+def test_the_read_gate_allows_kb_edit_in_a_run(command: str, tmp_path, monkeypatch) -> None:
+    from tests.unit.test_hooks_kb_read_gate import _decision
+
+    v = tmp_path / "vault"
+    (v / "knowledge-base").mkdir(parents=True)
+    (v / "scout-config.yaml").write_text("user: {}\n")
+    (v / "knowledge-base" / "people.md").write_text("# People\n")
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(v))
+    assert _decision(v.resolve(), "Bash", {"command": command}) is None

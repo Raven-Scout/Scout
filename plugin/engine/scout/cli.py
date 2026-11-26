@@ -1909,6 +1909,59 @@ def kb_stat(
     _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_stat(vault, who, paths or (), glob or ()))
 
 
+@kb_app.command("edit")
+def kb_edit(
+    path: str = typer.Argument(..., help="A note under knowledge-base/ or action-items/context/ (any spelling)."),
+    ops: str = typer.Option(
+        ...,
+        "--ops",
+        help="A JSON list of operations, from a file or - for stdin (a quoted heredoc): replace, regex, insert, "
+        "append, frontmatter, patch. See `scout/kb/edit.py`.",
+    ),
+    check: bool = typer.Option(False, "--check", help="Apply the operations and report, but write nothing."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+) -> None:
+    """Change a note by rule, in place of a python/sed script. Prints counts, never the note's text.
+
+    --ops is a JSON list, applied in order: {"op": "replace", "old", "new", "count"} (a literal string; count is
+    the matches expected, default 1, or "all"); {"op": "regex", "pattern", "new", "count", "flags"} (re.sub,
+    flags from imsx); {"op": "insert", "heading", "text", "at": "end"|"start", "create"} (under the one heading
+    that matches the line exactly; create adds it at the end); {"op": "append", "text"}; {"op": "frontmatter",
+    "field", "value"} or {"op": "frontmatter", "field", "remove": true}; {"op": "patch", "diff"} (one file's
+    unified diff).
+
+    All operations apply or nothing is written. Exit 1 = an operation didn't fit (a count, a heading, a hunk);
+    2 = bad --ops or not a note; 3 = refused (the reader, the write gate, or a privacy label it would change).
+    """
+    args = _kb_args("edit", dict(locals()))
+
+    def body(who: str, vault: Path) -> object:
+        from scout.kb.edit import cmd_edit, load_ops
+        from scout.kb.read import UsageError
+
+        if ops == "-":
+            raw = sys.stdin.read()
+        else:
+            from scout.kb.privacy import normalize_rel
+            from scout.kb.raw_read import is_kb_path
+
+            try:
+                in_kb = is_kb_path(normalize_rel(vault, Path(ops).absolute()))
+            except ValueError:
+                in_kb = False  # outside the vault
+            if in_kb:
+                raise UsageError("--ops is a file outside the KB, or - for stdin")
+            try:
+                raw = Path(ops).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as e:
+                raise UsageError(f"can't read --ops {ops}: {e}") from e
+        return cmd_edit(vault, who, path, load_ops(raw), check=check)
+
+    _kb_run(args, reader, repo, as_json, body)
+
+
 @kb_app.command("delta")
 def kb_delta(
     since: str = typer.Option(..., "--since", help="A commit (the commits after it) or a duration: 8h, 2d, 1w."),

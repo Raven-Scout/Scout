@@ -129,7 +129,8 @@ def _deny_bash() -> str:
         f"{MARK} Scheduled runs don't read knowledge-base/ or action-items/context/ with shell commands "
         f"(cat, grep, ls, find, head, tail, sed, awk, wc, git show …), directly or through a variable, a loop, "
         f"xargs or a recursive search from the vault: that skips the privacy labels. {_REPLACEMENT} "
-        "To change a note, Read it and Edit it. To search other folders, name one outside the KB "
+        "To change a note, Read it and Edit it, or change it by rule with `scripts/scoutctl kb edit <path> --ops -`. "
+        "To search other folders, name one outside the KB "
         "(e.g. `rg x scripts/`)."
     )
 

@@ -1,0 +1,18 @@
+- **`scoutctl kb edit <path> --ops -`: a scheduled run changes a KB note by rule, in place of a python script**
+  (`engine/scout/kb/edit.py`). Runs edited notes about once per run with python heredocs, which the read gate
+  can't tell apart from a program that sends the note's text elsewhere (#824 records them as `kb_edit`). The
+  command takes a JSON list of operations, applied in order: a literal `replace` and a `regex` replace, each
+  with the number of matches expected (`count`, default 1, or `"all"`); `insert` at the end or start of the
+  section under a heading (`create` adds a missing one); `append`; set or remove a top-level `frontmatter` field
+  (the block must read back with only that field changed); and a one-file unified-diff `patch`.
+  - All operations apply or nothing is written (exit 1, naming the op and why), and a note that changes while
+    it runs is not overwritten. `--check` reports without writing.
+  - It prints counts and status only: never the note's text, a pattern or a heading.
+  - Only `owner` and `autonomous` edit, only notes under `knowledge-base/` and `action-items/context/`, never a
+    file the write gate protects (a hard-linked note included), and never in a way that changes the note's
+    privacy label, except making it private (exit 3). The commit's privacy check judges the edit as it judges
+    one made with the Edit tool.
+  - `phases/core/privacy.md` and the read gate's deny message point runs at it.
+- **Run health counts the KB edits runs still make with interpreter scripts** (`kb.interpreter_edits`, a note):
+  how many `kb_edit` records each of the last 10 runs left, and, once they stop, how long ago the last one was,
+  for 14 days. The record-only switch `DENY_INTERPRETER_KB_EDITS` stays off.
