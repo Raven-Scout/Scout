@@ -340,6 +340,7 @@ def build_property_graph(
         for prop_key in ("status", "domain", "deadline", "priority"):
             if prop_key in ent and ent[prop_key] is not None and not isinstance(ent[prop_key], (dict, list)):
                 node["props"][prop_key] = str(ent[prop_key])
+        node["_entity"] = dict(ent)
         entity_keys[ename] = rel_key
 
     def placeholder(label: str, target: str) -> str:

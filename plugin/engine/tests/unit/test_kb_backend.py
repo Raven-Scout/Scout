@@ -273,5 +273,5 @@ def test_resolve_backend_kind_precedence_and_validation(tmp_path: Path) -> None:
     assert resolve_backend_kind(vault, kind="files", env={}) == "files"
     with pytest.raises(ConfigError, match="Unsupported KB backend 'bogus'"):
         open_backend(vault, "owner", env={})
-    with pytest.raises(ConfigError, match="Unsupported KB backend 'relate'"):
-        open_backend(vault, "owner", env={"SCOUT_KB_BACKEND": "relate"})
+    relate_b = open_backend(vault, "owner", env={"SCOUT_KB_BACKEND": "relate"})
+    assert relate_b.kind == "relate"

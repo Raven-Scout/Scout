@@ -29,7 +29,7 @@ from scout.kb.read import Match, load_graph, query_rows, resolve, search
 
 BACKEND_ENV = "SCOUT_KB_BACKEND"
 DEFAULT_BACKEND_KIND = "files"
-SUPPORTED_BACKENDS = ("files",)
+SUPPORTED_BACKENDS = ("files", "relate")
 
 
 @dataclass(frozen=True)
@@ -318,12 +318,14 @@ class FilesBackend:
                     q1.append((nxt, new_p))
             return []
 
-        # General k-shortest simple paths in BFS hop order
+        # Up to k shortest simple paths (all of minimum hop length, matching Cypher allShortestPaths)
         found: list[list[tuple[str, str]]] = []
+        shortest_len: int | None = None
         qk: deque[tuple[str, list[tuple[str, str]], frozenset[str]]] = deque([(source, [], frozenset({source}))])
         while qk and len(found) < k:
             node, p, on_path = qk.popleft()
-            if len(p) >= max_hops:
+            limit_hops = max_hops if shortest_len is None else shortest_len
+            if len(p) >= limit_hops:
                 continue
             for rtype, nxt in adj.get(node, []):
                 if allow_rels is not None and rtype not in allow_rels:
@@ -332,10 +334,11 @@ class FilesBackend:
                     continue
                 new_p = [*p, (rtype, nxt)]
                 if nxt == target:
+                    shortest_len = len(new_p)
                     found.append(new_p)
                     if len(found) >= k:
                         break
-                else:
+                elif shortest_len is None:
                     qk.append((nxt, new_p, on_path | {nxt}))
         return found
 
@@ -493,5 +496,9 @@ def open_backend(
     env: Mapping[str, str] | None = None,
 ) -> KBBackend:
     """Open the configured :class:`KBBackend` for ``(vault, reader)``."""
-    resolve_backend_kind(vault, kind=kind, env=env)
+    resolved = resolve_backend_kind(vault, kind=kind, env=env)
+    if resolved == "relate":
+        from scout.kb.relate_backend import RelateBackend
+
+        return RelateBackend(vault, reader, kb_root=kb_root, schema=schema)
     return FilesBackend(vault, reader, kb_root=kb_root, schema=schema)
