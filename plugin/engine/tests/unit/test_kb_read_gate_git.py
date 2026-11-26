@@ -739,6 +739,8 @@ RUN_USAGE = [
     "git config -l --show-origin",
     "git config get user.name",
     "git config list",
+    "git config --global --get user.name",  # a read may name its scope; a write may not (ROUND_6)
+    "git config --system --list",
     'git config user.email "alex@example.com"',  # Step 0, outside the write sandbox
     'git config user.name "Scout Bot"',
     "git remote -v",

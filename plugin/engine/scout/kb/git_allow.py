@@ -219,12 +219,14 @@ def config_write(args: list[str]) -> bool:
 
 def _config(args: list[str]) -> str | None:
     """``git config`` reads only: ``<key>``, ``--get <key> [<pattern>]``, ``--get-regexp <re> [<pattern>]``,
-    ``--list``/``-l``, ``get <key>``, ``list``, each with ``--show-origin`` if wanted; and Step 0's two writes,
+    ``--list``/``-l``, ``get <key>``, ``list``, each with ``--show-origin`` or a ``--global``/``--local``/``--system``
+    scope if wanted; and Step 0's two writes,
     ``git config user.email <v>`` / ``user.name <v>`` with a literal one-line value and nothing else."""
     if config_write(args):
         value = args[1]
         return "write" if any(c in value for c in "\n\r\0") or value.startswith("-") else None
-    words = [a for a in args if a != "--show-origin"]
+    # A read may name the file it reads by scope (`--global --get user.name`); a write never may (above).
+    words = [a for a in args if a not in ("--show-origin", "--global", "--local", "--system")]
     if words[:1] in (["get"], ["list"]):
         rest = words[1:]
         if any(w.startswith("-") for w in rest) or len(rest) != (1 if words[0] == "get" else 0):

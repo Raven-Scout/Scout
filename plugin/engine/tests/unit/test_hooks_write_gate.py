@@ -785,7 +785,7 @@ def test_a_shell_fed_from_somewhere_the_gate_cant_read_is_unresolved(vault: Path
         "for f in notes/a.md notes/b.md; do sed -i '' '/^---$/,/^---$/!s/x/y/g' $f; done",
         "sed -i '' -e 's/`a`/b/' -e 's/$/x/' notes/a.md",
         'echo "$(date +%F)" > notes/today.md',
-        "git commit -m \"$(cat <<'EOF'\nA message that doesn't close its quote\nEOF\n)\"",
+        "scripts/git-safe-commit.sh \"$(cat <<'EOF'\nA message that doesn't close its quote\nEOF\n)\" notes/a.md",
         'scripts/git-safe-commit.sh "$(git rev-parse --abbrev-ref HEAD)"',
     ],
 )
