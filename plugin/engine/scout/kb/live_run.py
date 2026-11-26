@@ -52,6 +52,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from scout.kb import shell_prefixes
+
 if TYPE_CHECKING:
     from scout.kb.other_reads import OtherReads
     from scout.kb.raw_read import _Stripped
@@ -425,9 +427,10 @@ _DETACH = {
     "nohup", "setsid", "disown", "launchctl", "osascript", "open", "tmux", "screen", "script", "at", "batch",
     "daemonize", "start-stop-daemon", "systemd-run", "ssh", "mosh",
 }  # fmt: skip
-# `noglob`, `nocorrect` and `-` are zsh's precommand modifiers: the command after them runs as written.
-_PREFIX = {"sudo", "command", "exec", "nice", "time", "xargs", "builtin", "noglob", "nocorrect", "-"}
-_SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
+# The words that run the next one as written (scout.kb.shell_prefixes.MODIFIERS: zsh's `noglob`, `nocorrect`,
+# `-`, `builtin`, and sudo, nice, time, xargs). env, nohup and the shells are judged here on their own.
+_PREFIX = set(shell_prefixes.MODIFIERS)
+_SHELLS = set(shell_prefixes.SHELLS)
 _KEYWORDS = {"{", "!", "if", "then", "elif", "else", "do", "while", "until"}
 # An unquoted redirect and its target. Found in the masked text, so a quoted ">" is never one.
 _REDIRECT = re.compile(r"(?:(?<=\s)\d+|&)?(>>|>\||>&|>|<<<|<<-?|<&|<>|<)\s*([^\s<>|]*)")
@@ -437,7 +440,7 @@ _NO_VERIFY = "--no-verify"
 _NO_V = "--no-v"
 _RUNS_HOOKS = {"commit", "merge", "rebase", "am", "cherry-pick", "revert", "push", "pull"}
 # Commands that run git for you: their own options come before it, so look for git among their words.
-_GIT_WRAPPERS = _PREFIX | {"timeout", "gtimeout", "caffeinate", "stdbuf", "ionice", "flock", "chronic", "find", "watch"}
+_GIT_WRAPPERS = _PREFIX | shell_prefixes.LAUNCHERS | {"ionice", "flock", "chronic", "find", "watch"}
 _GIT_VALUE_OPTIONS = {"-C", "--git-dir", "--work-tree", "--namespace", "--attr-source"}
 # Commits and refs written without `git commit`, so with no hook.
 _WRITES_COMMITS = {"commit-tree", "fast-import", "filter-branch", "filter-repo"}
@@ -1685,6 +1688,7 @@ def _kb_read(
     oldpwd: str | None = None,
     stdin: list[str] | None = None,
     segment: str = "",
+    writes: list[str] | None = None,
 ) -> str | None:
     """Ask _KB_READ about each file a reading command reads (scout.kb.raw_read's readers, past their prefixes),
     and each input redirect, as the shell hands them over: brace lists expanded, the command's own variables put
@@ -1719,7 +1723,12 @@ def _kb_read(
                     if listed and any(marker in o and o != marker for o in stripped.words[1:]):
                         operands.append(UNSEEN_INPUT)  # a listed path inside a longer word: not one the gate can judge
             targets += [(word, where, how) for word in operands]
-        targets += _other_targets(name, stripped, cwd, fed, oldpwd, stdin or [], words, segment)
+        targets += _other_targets(name, stripped, cwd, fed, oldpwd, stdin or [], words, segment, writes or [])
+        if (name in raw_read._ARCHIVERS or name in raw_read._COMPRESSORS) and not raw_read._other_models(name):
+            # What it archives or compresses, placed as a lister's root (`tar -cf - .`, `zip -r x.zip ~/link`).
+            where = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
+            inputs, _lists = raw_read._archive_inputs(name, stripped.words[1:])
+            targets += [(word, where, "covers") for word in inputs if word != raw_read._UNSEEN]
     for word, where, how in [*targets, *roots]:
         if how == "deny":
             return KB_READ  # a program naming the KB where the scan can't judge it (_other_targets)
@@ -1738,6 +1747,7 @@ def _other_targets(
     stdin: list[str],
     words: list[str] | None = None,
     segment: str = "",
+    writes: list[str] | None = None,
 ) -> list[tuple[str, str, str]]:
     """What :mod:`scout.kb.other_reads` says the command reads beyond its operands, as ``_kb_read`` targets: a
     copy's sources (none when it copies into the KB), the files a stdin list names, the paths a program opens
@@ -1758,7 +1768,10 @@ def _other_targets(
     program = other_reads(name, [_unshield(w) for w in args], stdin) or other  # a program's text as the shell passes it
     where = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
     out: list[tuple[str, str, str]] = []
-    into_kb = any(_judge_read(dest, where, "dest", oldpwd) == KB_READ for dest in other.dests)
+    from scout.kb.raw_read import compressor_stdout_dests
+
+    dests = [*other.dests, *compressor_stdout_dests(name, args, writes or [])]  # `gzip -c a > knowledge-base/a.gz`
+    into_kb = any(_judge_read(dest, where, "dest", oldpwd) == KB_READ for dest in dests)
     if not (into_kb and into_kb_counts(other)):
         out += [(word, where, how) for word, how in other.reads]
         if other.stdin_list:
@@ -2264,6 +2277,9 @@ def expansion_escape(command: str) -> str | None:
     """The form of a parameter expansion in ``command`` that assigns a name that matters (HOME, XDG_CONFIG_HOME, the
     run's own variables) or one built at run time: ``${HOME:=…}``, ``${HOME::=…}``, ``${(P)v::=…}``. Read on the
     whole text, since the parser splits segments at ``(``, and a nested ``sh -c`` or ``eval`` is a substring of it."""
+    from scout.kb import raw_read
+
+    command = raw_read.join_continuations(command)  # `${HO\<NL>ME:=x}` is `${HOME:=x}`
     fd = _NAMED_FD.search(command)
     if fd is not None:
         return _name_form(fd[1])
@@ -2278,7 +2294,10 @@ def even_dollar_escape(command: str) -> str | None:
     HOME'``): bash reads ``$$`` and a plain quote, zsh a ``$`` and then ``$'…'``, and :func:`_ansi_c` keeps bash's
     reading, so the command zsh runs may set HOME unread. The gate asks it last, after :func:`run_escape`, whose own
     reasons (a KB read, a background, either reading) say more. No scheduled run in the replay has one."""
-    return HOME_FORM if _EVEN_DOLLAR_QUOTE.search(command) else None
+    from scout.kb import raw_read
+
+    joined = raw_read.join_continuations(command)
+    return HOME_FORM if _EVEN_DOLLAR_QUOTE.search(command) or _EVEN_DOLLAR_QUOTE.search(joined) else None
 
 
 def _name_form(name: str) -> str | None:
@@ -2513,6 +2532,14 @@ def run_escape(
         )
     try:
         found = _run_escape(command, depth)
+        if found is None and outer:
+            # zsh joins `\<newline>` (`ca\<NL>t …` is cat): judge the joined command too. The written one stays
+            # judged first, since a join inside a comment or a quoted here-document would hide what follows.
+            from scout.kb import raw_read
+
+            joined = raw_read.join_continuations(command)
+            if joined != command:
+                found = _run_escape(joined, depth)
         # Fail closed where the walk had to guess: an unclosed quote or a zsh group it can't rewrite (a run's
         # read), or a variable with more values than are checked (a read or a write).
         guessed = (_STATE["unparsed"] and kb_read is not None) or (
@@ -2599,7 +2626,9 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
     if split:
         command, bodies = _split_heredocs(command, start=len(_STATE["bodies"]))
         _STATE["bodies"].extend(bodies)
-    command = _strip_comments(_ansi_c(command.replace("\\\n", " ")))
+    # Comments first, each to its raw newline (a backslash in one continues nothing: `true # \\<NL>cat x` runs
+    # cat), then the line continuations, as zsh's lexer reads them.
+    command = _strip_comments(_ansi_c(command)).replace("\\\n", " ")
     if _KB_READ is not None:
         command = _zsh_groups(command)
     # Every verdict with where it sits in the command, so the first form in the text names the deny
@@ -2673,7 +2702,7 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
             found = _secret_read(literal_words, literal_reads, cwd)
             stdin = _stdin_for_reads(segment, strings, fed, command) if _KB_READ is not None else []
             if found is None and _KB_READ is not None:
-                found = _kb_read(literal_words, literal_reads, cwd, fed, oldpwd, stdin, segment)
+                found = _kb_read(literal_words, literal_reads, cwd, fed, oldpwd, stdin, segment, targets)
             if found is None and _KB_READ is not None:
                 for program in _other_programs(words, stdin):  # awk's system("…"), perl's backticks: commands too
                     # It runs in this segment's folder: `cd action-items; awk 'BEGIN{system("cat context/x")}'`.
