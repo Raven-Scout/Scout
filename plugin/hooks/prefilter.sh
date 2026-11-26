@@ -218,6 +218,25 @@ bash_pattern() {
     #    A quoted or escaped name (`HO''ME=x`, `H\OME=x`) is matched below, once quotes are removed;
     #    arithmetic (`(( H$v = 1 ))`) and zsh's `${(P)v::=…}` are the `(` and `$` alternatives above.
     alt 'HOME'
+    # -- A quote or backslash inside a word (`gr''ep`, `"gr"ep`, `g\rep`, `fi''nd`): the shell runs the word
+    #    without them, so a program the rules above look for by name need not spell it. Python judges the word
+    #    unquoted. A quote at a word's edge (`'grep'`, `\grep`) leaves the name whole for the rules above. In
+    #    JSON a double quote is \" and a backslash \\ (so a \n or \t in the command does not count). The single
+    #    quote is `[^ -&(-~]`, every printable ASCII character but it (the pattern itself holds no quote); a
+    #    non-ASCII letter between two word characters matches too, and Python judges it.
+    alt '[A-Za-z0-9_]([^ -&(-~]|\\"|\\\\)+[A-Za-z0-9_]'
+    # -- A read that decompresses (zgrep and the like, zcat's kin, a grep with -z, -Z or --decompress): an
+    #    archive's members are notes it reads that no file name shows.
+    alt "$word"'((z|bz|xz|lz|lz4|zstd)[ef]?grep|(z|gz|bz|xz|lz|lz4|zstd)cat|(z|bz|xz)(less|more|diff|cmp))([^A-Za-z0-9_./-]|$)'
+    alt "$word"'[ef]?grep[^;&|]* (-[A-Za-z]*[zZ]|--decompress)'
+    # -- A program that reads an archive's members (unzip -p, bsdtar -xO, 7z e -so, cpio -i, ditto -x) or a
+    #    file whole (gzip and kin). tar is the write rule's above.
+    alt "$word"'(unzip|funzip|zipinfo|zipgrep|zip|bsdtar|gtar|7z|7za|7zz|7zr|ditto|cpio|bsdcpio|pax|gzip|gunzip|bzip2|bunzip2|xz|unxz|lzma|unlzma|zstd|unzstd|lz4|unlz4|brotli|lzip|lunzip|compress|uncompress|pigz|unpigz|pbzip2|lbzip2)([^A-Za-z0-9_./-]|$)'
+    # -- A launcher that runs the word after it (xcrun, arch, gstdbuf, caffeinate): Python strips it.
+    alt "$word_or_path"'(gstdbuf|xcrun|arch|caffeinate)([^A-Za-z0-9_./-]|$)'
+    # -- A backslash-newline (JSON \\\n): zsh joins the words around it (`gr\<NL>ep`), so no rule above need
+    #    match the program or path it spells. Python judges the joined command.
+    alt '\\\\\\n'
 
     # -- A recursive copy, archive or compare from a folder that holds the KB, spelling no path that names
     #    it: `diff -rN . e`, `pax -w .`, `zip -qr - .`, `ditto . x`, `gzip -rc .`. (cp, rsync, tar, find,
@@ -247,6 +266,10 @@ case_pattern() {
     alt "$word"'((ba|z|da|k)?sh)([^A-Za-z0-9_.-]|$)'
     alt "$word"'git[^;&|]* (grep|-c )'
     alt "$word"'git[^;&|]*(commit|am).*([^A-Za-z0-9_-]|\\[nt])-[A-Za-z]*n'
+    alt "$word"'((z|bz|xz|lz|lz4|zstd)[ef]?grep|(z|gz|bz|xz|lz|lz4|zstd)cat|(z|bz|xz)(less|more|diff|cmp))([^A-Za-z0-9_./-]|$)'
+    alt "$word"'[ef]?grep[^;&|]* (-[A-Za-z]*[zZ]|--decompress)'
+    alt "$word"'(unzip|funzip|zipinfo|zipgrep|zip|bsdtar|gtar|7z|7za|7zz|7zr|ditto|cpio|bsdcpio|pax|gzip|gunzip|bzip2|bunzip2|xz|unxz|lzma|unlzma|zstd|unzstd|lz4|unlz4|brotli|lzip|lunzip|compress|uncompress|pigz|unpigz|pbzip2|lbzip2)([^A-Za-z0-9_./-]|$)'
+    alt "$word_or_path"'(gstdbuf|xcrun|arch|caffeinate)([^A-Za-z0-9_./-]|$)'
     alt "$word"'(pax|zip|cpio|ditto|scp|gzip|zstd|lz4)([^A-Za-z0-9_.-]|$)'
     alt "$word"'g?diff[^;&|]* (-[A-Za-z]*r|--recursive)'
     # -- Any byte outside printable ASCII, or a JSON \u escape. The disk folds case the Unicode way, and grep
