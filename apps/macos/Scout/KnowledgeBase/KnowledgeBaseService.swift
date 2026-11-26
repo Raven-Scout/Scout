@@ -25,6 +25,9 @@ final class KnowledgeBaseService: ObservableObject {
 
     /// Bumped whenever `tree` or `index` is replaced; keys per-reparse caches.
     private var generation = 0
+    /// Changes whenever `tree` or `index` is replaced — a cheap key for views
+    /// that rebuild something from the whole index (the web map).
+    var indexGeneration: Int { generation }
     private var networkStatsCache: (generation: Int, hubCap: Int, stats: KBNetworkStats)?
 
     /// The scout directory; the KB lives in its `knowledge-base/` subfolder.
@@ -46,7 +49,11 @@ final class KnowledgeBaseService: ObservableObject {
     /// read by the detached tree build in `buildChildren`.
     private nonisolated static let visibleExtensions: Set<String> = ["md", "yaml", "yml"]
 
-    init(scoutDirectory: URL, fileEvents: any FileSystemEventSource) {
+    /// Unsaved editor drafts, kept across navigation (see `KBDraftStore`).
+    let drafts: KBDraftStore
+
+    init(scoutDirectory: URL, fileEvents: any FileSystemEventSource, drafts: KBDraftStore? = nil) {
+        self.drafts = drafts ?? .shared
         // `contentsOfDirectory(at:)` returns symlink-resolved file URLs, so
         // resolve the root too. Otherwise, when ~/Scout is a symlink, the tree's
         // node URLs (real path) and this root (symlink path) mismatch — breaking
@@ -252,14 +259,14 @@ final class KnowledgeBaseService: ObservableObject {
     /// Extract `[[target]]` / `[[target|alias]]` link targets (the part before
     /// `|`), de-duplicated, preserving original case and first-seen order.
     /// The alias separator may be escaped as `\|` — the form the KB writes
-    /// inside table cells so the pipe isn't taken as a column break.
+    /// inside table cells so the pipe isn't taken as a column break. What
+    /// counts is `Wikilink`'s rule, the one `InlineMarkdownText` renders as
+    /// links, so every link and backlink counted here shows as one.
     nonisolated static func extractWikilinks(_ text: String) -> [String] {
-        guard let re = try? NSRegularExpression(pattern: #"\[\[([^\]|]+?)(?:\\?\|[^\]]+)?\]\]"#) else { return [] }
-        let ns = text as NSString
         var seen = Set<String>()
         var result: [String] = []
-        for m in re.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-            let raw = ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespaces)
+        for m in Wikilink.matches(in: text) {
+            let raw = m.target.trimmingCharacters(in: .whitespaces)
             if !raw.isEmpty, seen.insert(raw.lowercased()).inserted { result.append(raw) }
         }
         return result
@@ -291,6 +298,34 @@ final class KnowledgeBaseService: ObservableObject {
                                       excerpt: excerpt))
         }
         return results.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// A short plain-text summary of a note for the map's side card: its first
+    /// paragraph of prose (frontmatter, headings, the `**Last updated:**`
+    /// header, tables, code and Scout comments skipped), markdown stripped.
+    func summary(for relPath: String, maxLength: Int = 320) -> String {
+        Self.summary(of: index.textByFile[relPath] ?? "", maxLength: maxLength)
+    }
+
+    nonisolated static func summary(of text: String, maxLength: Int = 320) -> String {
+        let segments = KBDocSegment.segments(from: text)
+        guard let para = segments.first(where: { seg in
+            seg.kind == .paragraph && !KBDocSegment.isMetadata(seg)
+                && seg.raw.trimmingCharacters(in: .whitespaces).count > 20
+        }) ?? segments.first(where: { $0.kind == .list }) else { return "" }
+        var s = para.raw.components(separatedBy: "\n")
+            .filter { !ScoutMarker.isMarkerLine($0) }
+            .joined(separator: " ")
+        // [[target|alias]] → alias, [[target]] → target, [text](url) → text.
+        s = s.replacingOccurrences(of: #"\[\[[^\]|]+?\\?\|([^\]]+)\]\]"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"\[\[([^\]]+)\]\]"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"\[([^\]]*)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"[*_`]+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"^\s*(?:[-*+]|\d+[.)])\s+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        if s.count > maxLength { s = String(s.prefix(maxLength - 1)).trimmingCharacters(in: .whitespaces) + "…" }
+        return s
     }
 
     /// The first line of `text` holding a wikilink that resolves to `target`,
@@ -403,11 +438,26 @@ final class KnowledgeBaseService: ObservableObject {
     /// Totals, orphans / weakly-linked / dangling / islands (health) and
     /// hubs / degree / per-type / components (insight), in one pass over the
     /// index's precomputed resolution and edges — pure, so `reparse` runs it
-    /// off the main actor.
+    /// off the main actor. Totals count every note; the rest counts live notes
+    /// only, so an archived snapshot's links or a folder of receipts can't
+    /// swamp the rows (see `KBNoteKind`).
     nonisolated static func computeNetworkStats(tree: [KBNode], index: KBIndex, hubCap: Int) -> KBNetworkStats {
-        let notes = tree.flatMap(\.allFiles).filter { $0.ext == "md" }.map(\.relativePath)
-        guard !notes.isEmpty else { return .empty }
-        let edgeSet = index.edges
+        let allNotes = tree.flatMap(\.allFiles).filter { $0.ext == "md" }.map(\.relativePath)
+        guard !allNotes.isEmpty else { return .empty }
+        // Health and insight cover live notes and the links between them; archive
+        // copies and paperwork are counted on their own (`KBNoteKind`).
+        var archived: [String] = []
+        var paperwork: [String] = []
+        var notes: [String] = []
+        for n in allNotes {
+            switch KBNoteKind.of(n, type: index.typeByFile[n]) {
+            case .live: notes.append(n)
+            case .archived: archived.append(n)
+            case .paperwork: paperwork.append(n)
+            }
+        }
+        let live = Set(notes)
+        let edgeSet = index.edges.filter { live.contains($0.from) && live.contains($0.to) }
         let adj = adjacency(of: edgeSet)
         let degree: (String) -> Int = { adj[$0]?.count ?? 0 }
 
@@ -420,7 +470,7 @@ final class KnowledgeBaseService: ObservableObject {
         // count. `extractWikilinks` already de-dups targets per note, so each
         // (source, target) appears once.
         var dangling: [KBDanglingLink] = []
-        for (source, targets) in index.outByFile {
+        for (source, targets) in index.outByFile where live.contains(source) {
             let resolved = index.resolvedOut[source] ?? []
             for (t, to) in zip(targets, resolved) where to == nil
                 && !KBIndex.isTicketID(t) && !index.existsInVault(t) {
@@ -459,24 +509,32 @@ final class KnowledgeBaseService: ObservableObject {
         for n in notes { counts[KBEntityGroup.of(n, type: index.typeByFile[n]), default: 0] += 1 }
 
         return KBNetworkStats(
-            noteCount: notes.count,
-            linkCount: edgeSet.count,
+            noteCount: allNotes.count,
+            linkCount: index.edges.count,
             orphans: orphans,
             weaklyLinked: weaklyLinked,
             dangling: dangling,
             islands: Array(clusters.dropFirst()),
             topHubs: Array(topHubs),
-            avgDegree: Double(2 * edgeSet.count) / Double(notes.count),
+            avgDegree: notes.isEmpty ? 0 : Double(2 * edgeSet.count) / Double(notes.count),
             maxDegree: notes.map(degree).max() ?? 0,
             byType: KBEntityGroup.allCases.map { KBTypeCount(group: $0, count: counts[$0] ?? 0) },
             clusterCount: clusters.count,
-            largestComponentSize: components.first?.count ?? 0)
+            largestComponentSize: components.first?.count ?? 0,
+            archived: archived.sorted(),
+            paperwork: paperwork.sorted())
     }
 
     /// Full-text search across note names and contents (from the index's cached
     /// text — no disk reads), returning a snippet for the first matching line.
     /// Capped at 30 hits.
     func searchContent(_ query: String) -> [KBSearchHit] {
+        Self.searchContent(query, tree: tree, index: index)
+    }
+
+    /// `searchContent` over a snapshot of the tree and index, so the sidebar
+    /// search can run it off the main actor.
+    nonisolated static func searchContent(_ query: String, tree: [KBNode], index: KBIndex) -> [KBSearchHit] {
         let q = query.lowercased()
         guard q.count >= 2 else { return [] }
 

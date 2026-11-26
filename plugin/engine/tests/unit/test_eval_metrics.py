@@ -202,3 +202,14 @@ def test_a_gate_denial_is_recorded_on_the_call() -> None:
 def test_a_stored_call_without_a_gate_field_loads() -> None:
     stored = {"seq": 1, "name": "Bash", "input": {}, "is_error": False, "position": 0.5}
     assert ToolCall(**stored).gate is None
+
+
+def test_a_call_claude_code_refused_is_marked_denied(m) -> None:
+    """``permission_denials`` names the refused call by id (the KB gate's void report lists it)."""
+    assert [c.input.get("file_path") for c in m.calls if c.denied] == ["/home/someone/.claude/settings.json"]
+    assert sum(c.denied for c in m.calls) == len(m.denials) == 1
+
+
+def test_a_stored_call_without_a_denied_field_loads() -> None:
+    stored = {"seq": 1, "name": "Bash", "input": {}, "is_error": True, "position": 0.5, "gate": None}
+    assert ToolCall(**stored).denied is False

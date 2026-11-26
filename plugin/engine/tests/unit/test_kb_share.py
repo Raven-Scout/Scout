@@ -169,7 +169,7 @@ def test_kb_shares_lists_them_and_a_private_note_is_excluded(vault: Path) -> Non
     assert rows[SOLO]["source"] == "frontmatter" and rows[SOLO]["principals"] == [SAM]
 
     text = kb(vault, "shares").output
-    assert f"{WIDGET}/**  with priya@example.com  (2 note(s))" in text
+    assert f"{WIDGET}/**  with priya@example.com  (2 notes)" in text
     assert "excluded, private (private always wins): 1" in text
     assert SECRET in text
 
@@ -842,7 +842,7 @@ def test_an_empty_folder_uses_the_ceiling_a_new_note_there_would_have(vault: Pat
     (vault / "knowledge-base/projects/empty").mkdir(parents=True)
     (vault / "knowledge-base/people/empty").mkdir(parents=True)
     res = kb(vault, "share", "knowledge-base/projects/empty", "--with", "priya@example.com", "--yes")
-    assert res.exit_code == 0 and "Newly shared: 0 note(s)" in res.output
+    assert res.exit_code == 0 and "Newly shared: 0 notes" in res.output
     assert overlay(vault)["federation_defaults"] == [{"glob": "knowledge-base/projects/empty/**", "scope": [PRIYA]}]
     assert kb(vault, "share", "knowledge-base/people/empty", "--with", "priya@example.com", "--yes").exit_code == 1
 
@@ -887,15 +887,15 @@ def test_a_note_an_earlier_entry_decides_says_so(vault: Path) -> None:
 def test_the_preview_prints_private_links_and_the_switch(vault: Path) -> None:
     _note(vault, PLAN, "name: Widget plan\ntype: project", "Ask [[sam]] first.\n")
     out = kb(vault, "share", WIDGET, "--with", "priya@example.com", "--dry-run").output
-    assert "1 note(s) about to be shared link or name a private note" in out
-    assert f"{PLAN}  line(s) 5" in out
+    assert "1 note about to be shared links to or names a private note" in out
+    assert f"{PLAN}  line 5" in out
     assert "This turns sharing on for this vault" in out
 
 
 def test_the_preview_counts_notes_already_shared(vault: Path) -> None:
     kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes")
     out = kb(vault, "share", WIDGET, "--with", "priya@example.com", "--dry-run").output
-    assert "Already shared with them: 2 note(s)" in out
+    assert "Already shared with them: 2 notes" in out
     assert "This turns sharing on" not in out
 
 
@@ -925,11 +925,14 @@ def test_a_note_unreadable_for_the_link_check_is_skipped(vault: Path) -> None:
 _ORG_WIDGET = f'  federation: {{enabled: true}}\n  federation_defaults:\n    - {{glob: "{WIDGET}/**", scope: org}}\n'
 
 
-def test_a_person_added_to_an_org_entry_stays_unshared_and_the_preview_says_so(vault: Path) -> None:
+def test_adding_a_person_to_an_org_entry_is_refused(vault: Path) -> None:
+    # It used to stay org and admit nobody, silently (S1b, item 5).
     _privacy(vault, _ORG_WIDGET)
-    data = json.loads(kb(vault, "share", WIDGET, "--with", "priya@example.com", "--dry-run", "--json").stdout)
-    assert data["newly_shared"] == []
-    assert {"path": PLAN, "reason": "earlier-entry"} in data["excluded"]
+    before = (vault / "scout-config.yaml").read_text(encoding="utf-8")
+    res = kb(vault, "share", WIDGET, "--with", "priya@example.com", "--yes", "--json")
+    assert res.exit_code == 1
+    assert "with org, which admits nobody" in json.loads(res.stdout)["refused"]
+    assert (vault / "scout-config.yaml").read_text(encoding="utf-8") == before
 
 
 def test_a_subfolder_of_an_org_entry_gets_only_the_named_people(vault: Path) -> None:

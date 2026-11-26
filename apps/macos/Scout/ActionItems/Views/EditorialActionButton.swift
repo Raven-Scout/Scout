@@ -3,16 +3,18 @@ import SwiftUI
 /// Flat editorial action button: the handoff bundle's `.act` / `.act.primary`
 /// language, with an optional keycap hint. Shared by the task action row and
 /// the comment composer and editor so the card reads as one surface.
+///
+/// The keycap is drawn from `keyboardShortcut`, the shortcut the button
+/// binds, so it shows only while the key works. It used to be a separate
+/// string, and Done showed "⌘↵" with nothing bound (UI audit #42).
 struct EditorialActionButton: View {
     enum Style { case primary, plain }
 
     let label: String
     let systemImage: String?
     let style: Style
-    /// Keycap text shown inside the button, e.g. "⌘↵".
-    let shortcut: String?
     /// Bound on the inner `Button` itself, so it works however the caller
-    /// wraps this view.
+    /// wraps this view, and drawn as the keycap. nil: no key, no keycap.
     let keyboardShortcut: KeyboardShortcut?
     let action: () -> Void
 
@@ -22,14 +24,12 @@ struct EditorialActionButton: View {
         _ label: String,
         systemImage: String? = nil,
         style: Style = .plain,
-        shortcut: String? = nil,
         keyboardShortcut: KeyboardShortcut? = nil,
         action: @escaping () -> Void
     ) {
         self.label = label
         self.systemImage = systemImage
         self.style = style
-        self.shortcut = shortcut
         self.keyboardShortcut = keyboardShortcut
         self.action = action
     }
@@ -39,13 +39,13 @@ struct EditorialActionButton: View {
             HStack(spacing: 5) {
                 if let systemImage {
                     Image(systemName: systemImage)
-                        .font(.system(size: 10))
+                        .font(DS.font(.caption2))
                 }
                 Text(label)
-                    .font(DS.sans(11.5, weight: .medium))
-                if let shortcut {
-                    Text(shortcut)
-                        .font(DS.mono(10.5, weight: .medium))
+                    .font(DS.font(.caption, weight: .medium))
+                if let keyboardShortcut {
+                    Text(ShortcutLabel.text(keyboardShortcut))
+                        .font(DS.font(.caption2, .mono, weight: .medium))
                         .foregroundStyle(DS.Ink.p4)
                         .padding(.horizontal, 3)
                         .padding(.vertical, 1)
@@ -66,7 +66,7 @@ struct EditorialActionButton: View {
         }
         .buttonStyle(.plainHit)
         .keyboardShortcut(keyboardShortcut)
-        .help(label)
+        .help(ShortcutLabel.help(label, keyboardShortcut))
         // The system pointer style, not NSCursor push/pop: these buttons often
         // vanish on click (Cancel, Send), and a push without its pop leaves the
         // pointing hand stuck. A disabled button keeps the arrow.

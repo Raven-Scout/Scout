@@ -319,3 +319,79 @@ def test_main_default_target_is_canonical_snapshot_path(tmp_path, monkeypatch):
     rc = snap.main(["--no-also-write-app-fixture"])
     assert rc == 0
     assert fake_canonical.exists()
+
+
+# ----- #543: the snapshot is a pure function of the packaged connectors.yaml ---
+
+
+def _write_overlay(vault: Path, text: str) -> None:
+    overlay = vault / ".scout-state" / "connectors.local.yaml"
+    overlay.parent.mkdir(parents=True, exist_ok=True)
+    overlay.write_text(text, encoding="utf-8")
+
+
+def test_snapshot_bytes_ignore_vault_overlay_and_custom_rows(fake_data_dir: Path, tmp_path: Path):
+    """A developer's vault must not leak into the contract artifact (#543).
+
+    The overlay here does everything a real one can: adds a row (which defaults
+    to the official tier), renames a shipped row and moves another out of the
+    official tier. The vault also has an enabled custom connector.
+    """
+    import yaml
+
+    from scout import custom_connectors as cc
+    from scout.connectors import load_registry
+
+    # repo_dir outside git pins generated_from, so the comparison is on every byte.
+    before = snap.serialize(snap.build_snapshot(repo_dir=tmp_path))
+
+    _write_overlay(
+        fake_data_dir,
+        yaml.safe_dump(
+            {
+                "connectors": {
+                    "mcp:dev_only": {"display_name": "Dev only", "capabilities": ["inbound"]},
+                    "mcp:claude_ai_Slack": {"display_name": "My Slack"},
+                    "mcp:claude_ai_Linear": {"tier": "community"},
+                }
+            }
+        ),
+    )
+    cc.write(
+        fake_data_dir,
+        {
+            "tickets": {
+                "display_name": "Tickets",
+                "probe": {"bash": "tix whoami"},
+                "inbound": {"tools": [{"bash": "tix list"}], "focus": "Changed tickets."},
+            }
+        },
+    )
+    (fake_data_dir / "scout-config.yaml").write_text(
+        yaml.safe_dump({"connectors": {"enabled": ["tickets"]}}), encoding="utf-8"
+    )
+
+    # The vault's rows are live for the running engine...
+    reg = load_registry()
+    assert "mcp:dev_only" in reg and "tickets" in reg
+    assert reg["mcp:claude_ai_Slack"].display_name == "My Slack"
+
+    # ...and absent from the snapshot.
+    after = snap.serialize(snap.build_snapshot(repo_dir=tmp_path))
+    assert after == before
+    assert "Dev only" not in after and "My Slack" not in after
+
+
+def test_check_passes_on_the_committed_snapshot_despite_a_vault_overlay(fake_data_dir: Path):
+    """`--check` on a developer's Mac must agree with CI, which has no vault (#543)."""
+    _write_overlay(fake_data_dir, 'connectors:\n  "mcp:dev_only":\n    display_name: Dev only\n')
+
+    ok, diff = snap.check_snapshot(snap.canonical_snapshot_path())
+    assert ok is True, diff
+
+
+def test_snapshot_survives_a_broken_vault_overlay(fake_data_dir: Path):
+    """A malformed overlay is the vault's problem, not the snapshot's (#543)."""
+    _write_overlay(fake_data_dir, "connectors: [unclosed\n")
+
+    assert len(snap.build_snapshot()["connectors"]) == 11

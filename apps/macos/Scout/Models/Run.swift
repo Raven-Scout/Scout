@@ -10,6 +10,10 @@ enum RunType: String, CaseIterable, Codable, Sendable {
     case consolidation
     case dreaming
     case research
+    /// A reply to the owner's Telegram messages (`run-respond.sh`), started
+    /// by the inbound trigger, or by hand. No schedule runs it, so it has no
+    /// `SlotType` and `RunType(slotKey:)` never returns it.
+    case respond
     case manual
 }
 
@@ -22,13 +26,12 @@ enum RunSource: String, Codable, Sendable {
 
 /// Run outcome classification consumed by the Control Center.
 ///
-/// Exhaustive switches: `RunRow.iconName`. All other consumers
-/// (`RunRow.iconColor`, `RunRow.statusColor`, `NotificationService.verb`,
-/// `AppState.recomputeMenuStatus`) fall through `default` branches to
-/// muted/idle/generic treatment — intentional for statuses that should
-/// de-emphasize in the UI (`.orphaned`, `.skippedBudget`,
-/// `.skippedConcurrency`). When adding a new case, audit those consumers
-/// to decide whether `default` is still correct.
+/// Exhaustive switches: `RunRow.iconName`, `RunStatus.skipReason`,
+/// `ScoutStatus.derive` and `RunNotificationPolicy`. Other consumers
+/// (`RunRow.iconColor`, `RunRow.statusColor`) fall through `default`
+/// branches to muted treatment — intentional for statuses that should
+/// de-emphasize in the UI (`.orphaned` and the skips). When adding a new
+/// case, audit those consumers to decide whether `default` is still correct.
 enum RunStatus: String, Codable, Sendable, CaseIterable {
     case scheduled
     case running
@@ -39,23 +42,44 @@ enum RunStatus: String, Codable, Sendable, CaseIterable {
     case skippedBudget
     case skippedConcurrency
     case rateLimited
+    /// The runner skipped the run on purpose. One case per run-ledger
+    /// outcome (`skipped_gates`, `skipped_sandbox`, …), so the ledger
+    /// (card C8) maps onto these directly (`RunLedgerEntry.runStatus`);
+    /// `RunSkipLine` reads them from the log for runs without a ledger row.
+    case skippedGates
+    case skippedSandbox
+    case skippedRuntime
+    case skippedLease
+    case skippedRedundant
 }
 
-extension RunType {
-    /// Human-readable name without embedded times — the schedule rows already
-    /// show the time, so the display label only needs to convey the kind of
-    /// work ("Consolidation", "Briefing").
-    var displayName: String {
+extension RunStatus {
+    /// The runner decided not to run this session. A skip is a finished
+    /// run, never a running or orphaned one.
+    var isSkip: Bool { skipReason != nil }
+
+    /// The runner held the run back because it couldn't run it safely: the
+    /// privacy check couldn't be confirmed, or write protection couldn't
+    /// start. Unlike a budget or lock skip, every later run stops the same
+    /// way until the owner fixes it, so it never reads as a routine pause.
+    var isSafetySkip: Bool { self == .skippedGates || self == .skippedSandbox }
+
+    /// Why a skipped run didn't run, in the owner's words ("Over budget");
+    /// nil for every status that isn't a skip. The words come from
+    /// `DisplayName.skipReason`, so they match the run's status name
+    /// ("Skipped: over budget") everywhere.
+    var skipReason: String? {
         switch self {
-        case .morningBriefing:    return "Morning briefing"
-        case .weekendBriefing:    return "Weekend briefing"
-        case .consolidation:      return "Consolidation"
-        case .dreaming:           return "Dreaming"
-        case .research:           return "Research"
-        case .manual:             return "Manual run"
+        case .skippedBudget, .skippedConcurrency, .skippedGates, .skippedSandbox,
+             .skippedRuntime, .skippedLease, .skippedRedundant:
+            return DisplayName.skipReason(rawValue)
+        case .scheduled, .running, .success, .failure, .timeout, .orphaned, .rateLimited: return nil
         }
     }
 }
+
+// `RunType.displayName` and `RunStatus.displayName` live in
+// `Utilities/PlainLanguage/DisplayName.swift`, with every other engine label.
 
 extension RunType {
     /// Map a slot key (emitted by `scoutctl schedule list-upcoming`) to a
@@ -103,18 +127,137 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     /// The model the runner passed to claude, from the log's
     /// `=== model: … ===` line; nil for runs logged before per-slot models.
     var model: String? = nil
+    /// Set while the run is queued behind another one for the session lock:
+    /// the longest the wait can last, from the log's "waiting up to Ns for
+    /// the lock" line (`SessionLogService.ParsedBody.lockWaitSecs`). nil once
+    /// the run holds the lock or gave up, and for every log without the line.
+    var lockWait: TimeInterval? = nil
+    /// The schedule this run ran for (`evening-consolidation`, a slot the owner
+    /// made in the app), from the run ledger's `slot`. nil when the run has no
+    /// ledger row: it's still going, it's older than the ledger's window, or an
+    /// older engine wrote it. The log itself never names the slot, and the run
+    /// type can't recover it (several slots share one type), so nothing guesses.
+    var slotKey: String? = nil
+    /// What started the run, from the run ledger's `trigger`: `schedule`,
+    /// `heartbeat`, `manual`, or `event` (a connector-event trigger, whose
+    /// "slot" is the skill it ran, not a schedule). nil without a ledger row,
+    /// or from a runner older than the field.
+    var trigger: String? = nil
+    /// Why the run failed, from the run ledger's `failure_class` (`timeout`,
+    /// `rate_limited`, `auth_race`, …; `ok` for a run that didn't fail). nil
+    /// without a ledger row. The engine classifies the log; the app never
+    /// guesses a class from log text of its own.
+    var failureClass: String? = nil
 
-    static func makeId(type: RunType, startedAt: Date) -> String {
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime]
-        return "\(type.rawValue)-\(iso.string(from: startedAt))"
+    /// How the run was protected, from its run ledger row (card C8's `sandbox` and
+    /// `integrity`); nil without a ledger row. Never worked out from the log.
+    var protection: Protection? = nil
+
+    /// The run's name from its run ledger row's `slot` or `mode`
+    /// (`DisplayName.ledgerRun`): "Overnight research" for a run whose log is
+    /// a plain `scout-…` file that the hour alone would call a briefing. nil
+    /// without a ledger row, or when the row names nothing; `displayName` then
+    /// falls back to the log-name guess.
+    var ledgerName: String? = nil
+
+    /// The key the run ledger names this run by: its row's `slot`, or `mode`
+    /// when the slot is missing or `unknown` (`DisplayName.ledgerRunKey`).
+    /// `ledgerName` comes from it, and so do `showsManualBadge`, `listType`
+    /// and the run list's search, so the name, the badge and the Type filter
+    /// read one key. nil without a ledger row or when the row names nothing.
+    var ledgerKey: String? = nil
+
+    /// `ledgerKey` is one of the schedule's slot keys (`SessionLogService.applyScheduleKeys`). An
+    /// owner may name a schedule `weekly-manual`; it is still a schedule, not a hand-started run,
+    /// for the badge and the Type filter.
+    var ledgerKeyIsSchedule: Bool = false
+
+    /// The ledger's word on a run's write protection and the post-run integrity check.
+    struct Protection: Equatable, Hashable, Sendable {
+        /// enforced | unavailable | off | conflict | failed; nil from an older runner.
+        var sandbox: String?
+        /// When `sandbox` is off: env | switch.
+        var sandboxSource: String? = nil
+        /// clean | restored | unrestored | error | unchecked; nil from an older runner.
+        var integrity: String? = nil
+        /// The runner's mode (`$MODE`), which the integrity check writes into its restoring
+        /// commit's subject ("… a <mode> run changed in git").
+        var mode: String? = nil
     }
 
-    /// Display name for the Control Center. When the typed bucket is `.manual`
-    /// (the catch-all for runs that didn't match any scheduled slot), fall
-    /// back to the runner script's family so the row still tells the user
-    /// what kind of work happened — "Briefing (manual)" beats just "manual".
+    /// The run went ahead without write protection (it was off, unavailable,
+    /// clashed with another setting, or failed to start). A skipped run never
+    /// ran, so it never counts.
+    var ranUnprotected: Bool {
+        guard !status.isSkip, status != .scheduled else { return false }
+        return RunOutcomeDisplay.sandboxIsConcern(protection?.sandbox)
+    }
+
+    /// The post-run integrity check found this run had changed a protected file
+    /// in git: `restored` (Scout put it back) or `unrestored` (it couldn't).
+    var changedProtectedFile: Bool {
+        ["restored", "unrestored"].contains(protection?.integrity ?? "")
+    }
+
+    /// The integrity check didn't run after this run (`error`, or `unchecked`: no start snapshot), so
+    /// nobody knows whether it changed a protected file.
+    var protectedFilesUnchecked: Bool {
+        guard !status.isSkip else { return false }
+        return ["error", "unchecked"].contains(protection?.integrity ?? "")
+    }
+
+    /// The slot "Run again" fires: this run's own, or nil when there isn't one
+    /// to fire. A run started outside the schedule (`manual`,
+    /// `dreaming-manual`, `research-manual`, or any `event` run, whose slot is
+    /// a skill name that `fire-now` doesn't know or, worse, that a schedule
+    /// shares) or one the ledger couldn't name (`unknown`) has none. Neither
+    /// has a Telegram reply: started by hand its ledger slot is `respond`,
+    /// which names no schedule.
+    var rerunSlotKey: String? {
+        guard startedBySchedule, runnerScript != "run-respond.sh",
+              let key = slotKey?.trimmingCharacters(in: .whitespaces), !key.isEmpty,
+              key != "unknown", key != "manual", !key.hasSuffix("-manual")
+        else { return nil }
+        return key
+    }
+
+    /// The ledger says a schedule (or the heartbeat, or a person forcing a
+    /// schedule) started this run. An older row with no `trigger` counts:
+    /// those runners never recorded event runs apart.
+    var startedBySchedule: Bool {
+        switch trigger {
+        case nil, "schedule", "heartbeat", "manual": return true
+        default: return false
+        }
+    }
+
+    /// `<type>-<ISO 8601 start>`, plus `-<pid>` for a run whose log has the
+    /// seconds+PID name (a later run in the same minute). A minute-named log
+    /// keeps the id it always had, so feedback files' `run_id` still match.
+    static func makeId(type: RunType, startedAt: Date, pid: Int? = nil) -> String {
+        let base = "\(type.rawValue)-\(runIdFormatter.string(from: startedAt))"
+        return pid.map { "\(base)-\($0)" } ?? base
+    }
+
+    /// Built once: a new `ISO8601DateFormatter` per id went into ICU for every
+    /// run log at launch and on every log change. Never mutated after setup,
+    /// so it is shared (thread-safe once configured; `UsageTimestampFormatters`).
+    nonisolated(unsafe) private static let runIdFormatter: ISO8601DateFormatter = {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime]
+        return iso
+    }()
+
+    /// The run's name on every page that lists or details runs. The run
+    /// ledger's word wins (`ledgerName`, from the row's slot or mode), since
+    /// the log's file name only says which runner script ran and the hour it
+    /// started (card T2: a 1 AM `overnight-research` run read as "Morning
+    /// briefing"). Without one, the log-name guess: the type, or, when the
+    /// typed bucket is `.manual` (the catch-all for runs that didn't match any
+    /// scheduled slot), the runner script's family so the row still tells the
+    /// user what kind of work happened — "Briefing (manual)" beats just "manual".
     var displayName: String {
+        if let ledgerName { return ledgerName }
         if type != .manual { return type.displayName }
         switch runnerScript {
         case "run-dreaming.sh": return "Dreaming (manual)"
@@ -124,9 +267,69 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
     }
 
     /// True when this run was triggered explicitly (Run-now) rather than by
-    /// launchd. Used to surface a small "manual" badge in run rows.
+    /// launchd. Used to surface a small "manual" badge in run rows. Runs built
+    /// from logs always have `source: .launchdScheduled` (the log never says
+    /// who started it), so the run ledger's `trigger: manual` is what marks a
+    /// hand-started one.
     var wasManuallyTriggered: Bool {
-        source == .manual || source == .retry || type == .manual
+        source == .manual || source == .retry || type == .manual || trigger == "manual"
+    }
+
+    /// Whether a row or header should add its "manual" / "Started by you" mark:
+    /// a hand-started run whose name doesn't already say so. With a ledger
+    /// row, the name's own key decides (`ledgerKey`, slot or mode): a
+    /// `dreaming-manual` run reads "Dreaming (manual)" and gets no badge, an
+    /// `evening-consolidation` run someone started with Run now (fire-now
+    /// records `trigger: manual` with the schedule's slot) reads "Evening
+    /// consolidation" and gets one, and so does a schedule the owner named
+    /// `weekly-manual`. Without a row, the log-name guess calls a `.manual`
+    /// run "Briefing (manual)", so that one gets none.
+    var showsManualBadge: Bool {
+        guard wasManuallyTriggered else { return false }
+        if let key = ledgerKey ?? slotKey.flatMap({ DisplayName.ledgerRunKey(slot: $0, mode: nil) }) {
+            return ledgerKeyIsSchedule || !DisplayName.isHandRunKey(key)
+        }
+        return type != .manual
+    }
+
+    /// The type the run list's Type filter files this run under. The log's
+    /// `type` is a guess from the runner script and the hour (a 1 AM
+    /// `overnight-research` run on `run-scout.sh` reads as a morning
+    /// briefing), so the ledger's key wins. A schedule comes first: a default
+    /// key through `RunType(slotKey:)`, then one the owner made by its
+    /// `slot_type` (`scheduleTypes`, keyed by slot key, from the schedule),
+    /// even one shaped like a hand-run key (`weekly-manual`). Then a run
+    /// started by hand (`manual`, `*-manual`) by its runner script. Anything
+    /// else keeps the log's type.
+    func listType(scheduleTypes: [String: RunType] = [:]) -> RunType {
+        guard let key = ledgerKey else { return type }
+        if let schedule = RunType(slotKey: key) ?? scheduleTypes[key] { return schedule }
+        if DisplayName.isHandRunKey(key) {
+            switch runnerScript {
+            case "run-dreaming.sh": return .dreaming
+            case "run-research.sh": return .research
+            case "run-respond.sh":  return .respond
+            // run-scout.sh: the log's guess is already the runner's, by the hour.
+            default: return type
+            }
+        }
+        return type
+    }
+
+    /// Still in flight, but queued behind another run for the session lock
+    /// rather than working: `status` stays `.running`, and the run's name for
+    /// it is "Waiting for another run".
+    var isWaitingForLock: Bool { status == .running && lockWait != nil }
+
+    /// The run's status in the owner's words. A run waiting for the session
+    /// lock reads "Waiting for another run", not "Running".
+    var statusDisplayName: String {
+        isWaitingForLock ? DisplayName.runStatus(DisplayName.waitingForLockKey) : status.displayName
+    }
+
+    /// Why the run has its status, when that needs saying (`RunStatus.reason`).
+    var statusReason: String? {
+        isWaitingForLock ? DisplayName.runStatusReason(DisplayName.waitingForLockKey) : status.reason
     }
 
     /// Copy with a different `status`. Used by the stale-running reconciler
@@ -139,7 +342,9 @@ struct Run: Identifiable, Equatable, Hashable, Sendable {
             headerStartedAt: headerStartedAt, status: status, exitCode: exitCode, cost: cost, budgetCap: budgetCap,
             logPath: logPath, logSizeBytes: logSizeBytes,
             errorsDetected: errorsDetected, commits: commits, retryOf: retryOf,
-            model: model
+            model: model, lockWait: lockWait, slotKey: slotKey, trigger: trigger, failureClass: failureClass,
+            protection: protection, ledgerName: ledgerName, ledgerKey: ledgerKey,
+            ledgerKeyIsSchedule: ledgerKeyIsSchedule
         )
     }
 }
@@ -160,7 +365,14 @@ extension Run {
         retryOf: Run.ID? = nil,
         runnerScript: String? = nil,
         headerStartedAt: Date? = nil,
-        model: String? = nil
+        model: String? = nil,
+        slotKey: String? = nil,
+        trigger: String? = nil,
+        failureClass: String? = nil,
+        protection: Protection? = nil,
+        ledgerName: String? = nil,
+        ledgerKey: String? = nil,
+        ledgerKeyIsSchedule: Bool = false
     ) -> Run {
         Run(
             id: makeId(type: type, startedAt: startedAt),
@@ -169,6 +381,7 @@ extension Run {
                 switch type {
                 case .dreaming: return "run-dreaming.sh"
                 case .research: return "run-research.sh"
+                case .respond:  return "run-respond.sh"
                 default:        return "run-scout.sh"
                 }
             }(),
@@ -186,7 +399,14 @@ extension Run {
             errorsDetected: [],
             commits: commits,
             retryOf: retryOf,
-            model: model
+            model: model,
+            slotKey: slotKey,
+            trigger: trigger,
+            failureClass: failureClass,
+            protection: protection,
+            ledgerName: ledgerName,
+            ledgerKey: ledgerKey,
+            ledgerKeyIsSchedule: ledgerKeyIsSchedule
         )
     }
 }

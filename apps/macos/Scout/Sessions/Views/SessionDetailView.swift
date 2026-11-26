@@ -13,13 +13,26 @@ struct SessionDetailView: View {
     @AppStorage("cliTerminal")         private var cliTerminal: String = CLITerminal.auto.rawValue
     @AppStorage("customLaunchCommand") private var customLaunchCommand: String = ""
     @State private var confirmingResume = false
-    @State private var launchError: String?
+    @State private var launchFailure: LaunchFailure?
+    /// A resume is finding the folder and opening the terminal.
+    @State private var isResuming = false
+    /// Set when a resume started somewhere it may not work, keyed by the
+    /// session it was about so it never shows under another one.
+    @State private var resumeNote: (sessionID: String, text: String)?
+    @State private var copiedHandoff = false
 
     var body: some View {
-        if let session, let index {
-            content(session, index: index)
-        } else {
-            emptyState
+        Group {
+            if let session, let index {
+                content(session, index: index)
+            } else {
+                emptyState
+            }
+        }
+        // A note or "Copied" belongs to the session it was about.
+        .onChange(of: session?.id) {
+            resumeNote = nil
+            copiedHandoff = false
         }
     }
 
@@ -32,7 +45,7 @@ struct SessionDetailView: View {
                 actions(session, index: index)
                 section("Why") {
                     ForEach(Array(session.stateReasons.enumerated()), id: \.offset) { _, reason in
-                        Text("• \(reason)").font(DS.sans(12.5)).foregroundStyle(DS.Ink.p2)
+                        Text("• \(reason)").font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
                     }
                 }
                 if !session.prs.isEmpty {
@@ -43,7 +56,7 @@ struct SessionDetailView: View {
                 if let prompt = session.transcript?.firstPrompt, !prompt.isEmpty {
                     section("First prompt") {
                         Text(prompt)
-                            .font(DS.sans(12.5))
+                            .font(DS.font(.label))
                             .foregroundStyle(DS.Ink.p2)
                             .lineLimit(14)
                             .textSelection(.enabled)
@@ -52,7 +65,7 @@ struct SessionDetailView: View {
                 if let files = session.transcript?.filesTouched, !files.isEmpty {
                     section("Files touched") {
                         ForEach(files, id: \.self) { path in
-                            Text(path).font(DS.mono(11)).foregroundStyle(DS.Ink.p2).lineLimit(1).truncationMode(.middle)
+                            Text(path).font(DS.font(.caption, .mono)).foregroundStyle(DS.Ink.p2).lineLimit(1).truncationMode(.middle)
                         }
                     }
                 }
@@ -68,33 +81,26 @@ struct SessionDetailView: View {
         } message: {
             Text("It is still running in Claude. Resuming it in a terminal starts a second copy on the same conversation.")
         }
-        .alert("Couldn't resume the session", isPresented: Binding(
-            get: { launchError != nil }, set: { if !$0 { launchError = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(launchError ?? "")
-        }
+        .launchFailureAlert("Couldn't resume the session", failure: $launchFailure)
     }
 
     private func header(_ session: AgentSession, index: SessionIndex) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(session.displayTitle)
-                .font(DS.serif(18, weight: .medium))
+                .dsFont(.title, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
                 .textSelection(.enabled)
             HStack(spacing: 8) {
-                Text(SessionsLayout.projectName(for: session.projectKey, in: index))
-                    .font(DS.sans(11.5, weight: .medium))
-                    .foregroundStyle(DS.Ink.p2)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(DS.Paper.sunk))
+                // A project name is free text and a pill doesn't wrap: shortened
+                // in the middle so it can't widen the header past the page.
+                let project = SessionsLayout.projectName(for: session.projectKey, in: index)
+                DSPill(SessionsHeader.menuTitle(project, limit: 24))
+                    .help(project)
                 SessionStatePill(state: session.state, isOpen: session.isOpen)
                 if session.isOpen {
                     Label("open", systemImage: "circle.fill")
                         .labelStyle(.titleAndIcon)
-                        .font(DS.sans(11))
+                        .font(DS.font(.caption))
                         .foregroundStyle(DS.Status.ok)
                 }
             }
@@ -113,14 +119,37 @@ struct SessionDetailView: View {
     }
 
     private func actions(_ session: AgentSession, index: SessionIndex) -> some View {
-        HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
+            actionButtons(session, index: index)
+            if let resumeNote, resumeNote.sessionID == session.id {
+                Label(resumeNote.text, systemImage: "exclamationmark.triangle")
+                    .font(DS.font(.caption))
+                    .foregroundStyle(DS.Status.warn)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func actionButtons(_ session: AgentSession, index: SessionIndex) -> some View {
+        // Wraps rather than widening the detail pane at the narrow window.
+        FlowLayout(spacing: 8, lineSpacing: 6) {
             Button {
                 if session.isOpen { confirmingResume = true } else { resume(session) }
             } label: {
-                Label("Resume", systemImage: "terminal")
+                if isResuming {
+                    HStack(spacing: 4) {
+                        ProgressView().controlSize(.mini)
+                        Text("Opening…")
+                    }
+                } else {
+                    Label("Resume", systemImage: "terminal")
+                }
             }
-            .disabled(session.cliSessionID == nil)
-            .help("Run claude --resume in your terminal")
+            .disabled(session.cliSessionID == nil || isResuming)
+            .accessibilityLabel(isResuming ? "Opening the terminal" : "Resume")
+            .help(session.cliSessionID == nil
+                  ? "Claude Code didn't record a session id for this one, so it can't be resumed from a terminal"
+                  : "Run claude --resume in your terminal, from the folder the session ran in")
 
             Button {
                 if let url = session.pr?.webURL { NSWorkspace.shared.open(url) }
@@ -144,30 +173,34 @@ struct SessionDetailView: View {
                     for: session, projectName: SessionsLayout.projectName(for: session.projectKey, in: index))
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(text, forType: .string)
+                copiedHandoff = true
+                Task {
+                    try? await Task.sleep(for: .seconds(2))
+                    copiedHandoff = false
+                }
             } label: {
-                Label("Copy handoff", systemImage: "doc.on.doc")
+                Label(copiedHandoff ? "Copied" : "Copy handoff",
+                      systemImage: copiedHandoff ? "checkmark" : "doc.on.doc")
             }
+            .help("Copy a summary of this session to paste into another one")
         }
-        .controlSize(.small)
-        .font(DS.sans(12))
+        .buttonStyle(.ds(.secondary, size: .small))
     }
 
     private func prRow(_ pr: SessionPR) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                Text("\(pr.repo)#\(pr.number)").font(DS.mono(11.5, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                Text("\(pr.repo)#\(pr.number)").font(DS.font(.caption, .mono, weight: .medium)).foregroundStyle(DS.Ink.p1)
                 if pr.stale {
-                    Text("cached").font(DS.sans(10.5)).foregroundStyle(DS.Status.warn)
+                    Text("cached").font(DS.font(.caption2)).foregroundStyle(DS.Status.warn)
                 }
                 Spacer(minLength: 0)
                 if let url = pr.webURL {
                     Button("Open") { NSWorkspace.shared.open(url) }
-                        .buttonStyle(.plainHit)
-                        .font(DS.sans(11.5))
-                        .foregroundStyle(DS.Accent.ink)
+                        .buttonStyle(.ds(.link, size: .small))
                 }
             }
-            Text(prDetail(pr)).font(DS.sans(11.5)).foregroundStyle(DS.Ink.p3)
+            Text(prDetail(pr)).font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
         }
     }
 
@@ -195,9 +228,9 @@ struct SessionDetailView: View {
     private func relatedRow(_ other: AgentSession, prefix: String) -> some View {
         Button { onSelect(other.id) } label: {
             HStack(spacing: 6) {
-                Text(prefix).font(DS.sans(11)).foregroundStyle(DS.Ink.p4)
+                Text(prefix).font(DS.font(.caption)).foregroundStyle(DS.Ink.p4)
                 SessionStateDot(state: other.state, isOpen: other.isOpen)
-                Text(other.displayTitle).font(DS.sans(12.5)).foregroundStyle(DS.Ink.p1).lineLimit(1)
+                Text(other.displayTitle).font(DS.font(.label)).foregroundStyle(DS.Ink.p1).lineLimit(1)
             }
         }
         .buttonStyle(.plainHit)
@@ -208,7 +241,7 @@ struct SessionDetailView: View {
     private func section<Body: View>(_ title: String, @ViewBuilder body: () -> Body) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title.uppercased())
-                .font(DS.sans(10.5, weight: .medium))
+                .font(DS.font(.caption2, weight: .medium))
                 .tracking(0.6)
                 .foregroundStyle(DS.Ink.p4)
             body()
@@ -217,34 +250,34 @@ struct SessionDetailView: View {
 
     private func fact(_ label: String, _ value: String, mono: Bool = false) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label).font(DS.sans(11.5)).foregroundStyle(DS.Ink.p4).frame(width: 78, alignment: .leading)
-            Text(value).font(mono ? DS.mono(11.5) : DS.sans(11.5)).foregroundStyle(DS.Ink.p2).lineLimit(1).truncationMode(.middle)
+            Text(label).font(DS.font(.caption)).foregroundStyle(DS.Ink.p4).frame(width: 78, alignment: .leading)
+            Text(value).font(mono ? DS.font(.caption, .mono) : DS.font(.caption)).foregroundStyle(DS.Ink.p2).lineLimit(1).truncationMode(.middle)
         }
     }
 
     private var emptyState: some View {
         VStack(spacing: 12) {
             Image(systemName: "rectangle.stack.badge.person.crop")
-                .font(.system(size: 36))
+                .font(DS.symbol(36))
                 .foregroundStyle(DS.Ink.p4)
             Text(index == nil ? "No session index yet" : "Pick a session")
-                .font(DS.serif(18, weight: .medium))
+                .dsFont(.title, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p2)
             if let index {
                 let counts = SessionsLayout.stateCounts(index: index, filter: SessionsFilter(), now: now)
                 Text(AgentSessionState.allCases.compactMap { state in
                     counts[state].map { "\($0) \(state.label.lowercased())" }
                 }.joined(separator: " · "))
-                .font(DS.sans(12.5))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p3)
                 if let generated = index.generatedAt {
                     Text("Index built \(SessionsFormat.ago(generated, now: now))")
-                        .font(DS.sans(11.5))
+                        .font(DS.font(.caption))
                         .foregroundStyle(DS.Ink.p4)
                 }
             } else {
-                Text("Scout builds it with `scoutctl session index`.")
-                    .font(DS.sans(12.5))
+                Text("Scout updates this list in the background.")
+                    .font(DS.font(.label))
                     .foregroundStyle(DS.Ink.p3)
             }
         }
@@ -260,17 +293,26 @@ struct SessionDetailView: View {
         return FileManager.default.fileExists(atPath: path)
     }
 
+    /// Off the main thread from the first file read to the terminal opening;
+    /// the button shows progress meanwhile and ignores a second click.
     private func resume(_ session: AgentSession) {
-        guard let id = session.cliSessionID else { return }
+        guard !isResuming else { return }
         let config = CLIConfig(
             claudePathOverride: claudeCLIPath,
             terminal: CLITerminal(rawValue: cliTerminal) ?? .auto,
             customCommand: customLaunchCommand
         )
-        do {
-            try ClaudeLauncher.resume(cliSessionID: id, cwd: SessionsFormat.resumeDirectory(for: session), config: config)
-        } catch {
-            launchError = error.localizedDescription
+        isResuming = true
+        resumeNote = nil
+        Task {
+            defer { isResuming = false }
+            do {
+                if let note = try await SessionResume.run(session, config: config) {
+                    resumeNote = (session.id, note)
+                }
+            } catch {
+                launchFailure = LaunchFailure(error)
+            }
         }
     }
 }

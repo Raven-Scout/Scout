@@ -39,6 +39,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from scout import safe_write
+from scout.plural import count
 from scout.scripts.three_way_merge import MergeResult, MergeUnavailable, three_way_merge
 
 SNAPSHOT_DIR = Path(".scout-state") / "last-rendered"
@@ -301,9 +303,7 @@ def _read(path: Path) -> str | None:
 
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(content, encoding="utf-8", errors=_ERRORS)
-    tmp.replace(path)
+    safe_write.atomic_write_bytes(path, content.encode("utf-8", errors=_ERRORS))
 
 
 def printable(text: str) -> str:
@@ -551,7 +551,7 @@ def resolve(vault: Path, rel: str, *, drop_update: bool = False) -> list[str]:
         missing = [] if drop_update or base is None else _update_changes_missing(base, parked_update, live)
         if missing:
             raise ValueError(
-                f"{rel} doesn't have the parked update yet ({len(missing)} change(s) missing, e.g. the update "
+                f"{rel} doesn't have the parked update yet ({count(len(missing), 'change')} missing, e.g. the update "
                 f"{missing[0]}). Merge it in (draft: {_rel(vault, _drift_path(vault, rel, MERGE_SUFFIX))}), or "
                 f"take it with `cp {_rel(vault, plugin)} {rel}`; to keep your file as it is and drop what it "
                 f"lacks of the update, add --drop-update"
@@ -761,21 +761,39 @@ def privacy_drift(vault: Path) -> list[PrivacyDrift]:
     """
     found: list[PrivacyDrift] = []
     for runner in sorted(vault.glob("run-*.sh")):
-        text = _head_text(runner) if runner.is_file() else None
-        if text is not None and not _READER_EXPORT_RE.search(text):
-            rel = _rel(vault, runner)
+        if not runner.is_file():
+            continue
+        rel = _rel(vault, runner)
+        text = _head_text(runner)
+        # A runner Scout can't read could be launching claude any way it likes (#717 review): report it.
+        if (text is None and _unreadable(runner)) or (text is not None and not _READER_EXPORT_RE.search(text)):
             found.append(PrivacyDrift(rel, "runner-no-reader", _runner_message(rel)))
     scripts = vault / "scripts"
     if scripts.is_dir():
         for path in sorted(scripts.rglob("*")):
-            if not path.is_file() or path.is_symlink():
-                continue
-            if _SKIP_DIRS.intersection(path.relative_to(scripts).parts[:-1]):
-                continue
-            rel = _rel(vault, path)
-            if snapshot_path(vault, rel).is_file():
-                continue  # engine-rendered: the engine keeps it compliant
-            text = _head_text(path)
-            if text is not None and _reads_kb_raw(path, text):
+            # One file that can't be looked at is its own finding, never the end of the scan.
+            try:
+                if not path.is_file() or path.is_symlink():
+                    continue
+                if _SKIP_DIRS.intersection(path.relative_to(scripts).parts[:-1]):
+                    continue
+                rel = _rel(vault, path)
+                if snapshot_path(vault, rel).is_file():
+                    continue  # engine-rendered: the engine keeps it compliant
+                text = _head_text(path)
+                hit = _unreadable(path) if text is None else _reads_kb_raw(path, text)
+            except OSError:
+                rel, hit = _rel(vault, path), True
+            if hit:
                 found.append(PrivacyDrift(rel, "script-raw-kb-read", _script_message(rel)))
     return found
+
+
+def _unreadable(path: Path) -> bool:
+    """True when *path* can't be opened: Scout can't tell what it reads, so it is reported (a binary file,
+    which ``_head_text`` also skips, is not)."""
+    try:
+        with path.open("rb"):
+            return False
+    except OSError:
+        return True

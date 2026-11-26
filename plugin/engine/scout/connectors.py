@@ -19,6 +19,7 @@ import yaml
 
 from scout import paths
 from scout.errors import ConfigError
+from scout.plural import noun
 from scout.schedule import SlotType
 from scout.yaml_safe import load_yaml
 
@@ -127,10 +128,7 @@ def load_registry(data_dir: Path | None = None) -> ConnectorRegistry:
     no writer for the overlay; respecting it keeps v0.8's discover/enable
     flow a small additive change.
     """
-    seed_path = Path(__file__).parent / "connectors.yaml"
-    seed = _load_yaml(seed_path)
-
-    merged = dict(seed.get("connectors", {}))
+    merged = _seed_rows()
     overlay_data_dir = data_dir if data_dir is not None else paths.data_dir()
     overlay_path = overlay_data_dir / ".scout-state" / "connectors.local.yaml"
     if overlay_path.exists():
@@ -148,6 +146,22 @@ def load_registry(data_dir: Path | None = None) -> ConnectorRegistry:
     for key, raw in merged.items():
         connectors[key] = _build_connector(key, raw)
     return ConnectorRegistry(connectors)
+
+
+def load_seed_registry() -> ConnectorRegistry:
+    """The packaged connectors.yaml alone: no vault overlay, no custom rows.
+
+    For anything that must be a pure function of what ships, whichever vault the
+    process happens to run in — the contract snapshot above all (#543). It never
+    resolves or reads a data dir.
+    """
+    return ConnectorRegistry({key: _build_connector(key, raw) for key, raw in _seed_rows().items()})
+
+
+def _seed_rows() -> dict[str, dict[str, Any]]:
+    """Raw rows of the packaged connectors.yaml, in file order."""
+    seed = _load_yaml(Path(__file__).parent / "connectors.yaml")
+    return dict(seed.get("connectors", {}))
 
 
 def _custom_roster_entries(data_dir: Path) -> dict[str, dict[str, Any]]:
@@ -198,7 +212,7 @@ def _custom_roster_entries(data_dir: Path) -> dict[str, dict[str, Any]]:
             "required_in_types": sorted({t for c in members for t in c.required_in_types}),
             "remediation": {
                 "first_fix": first_fix[:180],
-                "detail": f"Custom connector(s) {keys} in connectors.custom.yaml. "
+                "detail": f"Custom {noun(len(members), 'connector')} {keys} in connectors.custom.yaml. "
                 "If the tools were renamed, update each entry there, or re-add it with "
                 "`scoutctl connectors custom add --file <definition>` "
                 "(`scoutctl connectors custom remove <key>` drops one).",

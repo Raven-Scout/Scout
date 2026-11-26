@@ -27,6 +27,13 @@ from scout.scripts.phase_assembly import render_template
 
 TEMPLATE = Path(__file__).resolve().parents[3] / "templates" / "scripts" / "run-outcome.sh.tmpl"
 
+# The sign-in race, as a synthetic line: the CLI's real one names the account's email.
+AUTH_RACE_LINE = (
+    "Claude Code couldn't verify your sign-in with Anthropic yet (its sign-in token was still being "
+    "refreshed, often by another Claude Code process), so it couldn't load your organization's settings "
+    "for alex@example.com."
+)
+
 SCOUTCTL_STUB = """#!/usr/bin/env python3
 import json, sys
 with open({calls!r}, "a") as fh:
@@ -167,6 +174,25 @@ def test_the_row_records_the_model_the_runner_used(vault: Path, outcome: Path) -
     assert row["model"] == "sonnet"
 
 
+def test_the_row_records_awake_length_and_agent_runtime(vault: Path, outcome: Path) -> None:
+    """Spec 2026-11-13 §8.2, §8.6: the runner's awake length and runtime reach the row; junk never does."""
+    _record(
+        outcome, "dreaming-nightly", 0, _log(vault, ""), SCOUT_RUN_AWAKE_S="2712", SCOUT_AGENT_RUNTIME="claude-code"
+    )
+    _record(outcome, "dreaming-nightly", 0, _log(vault, ""), SCOUT_RUN_AWAKE_S="12 x", SCOUT_AGENT_RUNTIME='a", "b')
+    first, second = _ledger(vault)
+    assert (first["awake_s"], first["agent_runtime"]) == (2712, "claude-code")
+    assert "awake_s" not in second and "agent_runtime" not in second
+
+
+def test_a_run_stopped_at_its_timeout_is_class_timeout(vault: Path, outcome: Path) -> None:
+    banner = "=== Scout run timeout: Dummy CLI ran past 45 min of awake time (budget.per_runtime) — stopping it ===\n"
+    _record(outcome, "dreaming-nightly", 124, _log(vault, "working\n" + banner))
+    _record(outcome, "dreaming-nightly", 124, _log(vault, "some other exit 124\n"))
+    _record(outcome, "dreaming-nightly", 1, _log(vault, banner))
+    assert [r["failure_class"] for r in _ledger(vault)] == ["timeout", "unknown", "unknown"]
+
+
 def test_a_row_without_a_model_leaves_it_out(vault: Path, outcome: Path) -> None:
     env = {k: v for k, v in os.environ.items() if k != "SCOUT_MODEL"}
     subprocess.run(
@@ -208,7 +234,7 @@ def test_scout_data_dir_overrides_the_installed_vault_path(vault: Path, outcome:
         # the run spent its money, so it is a budget failure, not a network one.
         pytest.param(
             "API Error: Connection closed mid-response. The response above may be incomplete.\n"
-            "attempt cost: $25.00 (1 attempt(s) recorded); this run so far $25.00\n"
+            "attempt cost: $25.00 (1 attempt recorded); this run so far $25.00\n"
             "budget spent, no retry: this run's attempts spent $25.00 of its $25.00 cap\n"
             "=== Budget spent — no retry (exit 1) ===\n",
             "budget",
@@ -243,6 +269,75 @@ def test_scout_data_dir_overrides_the_installed_vault_path(vault: Path, outcome:
         ),
         # A Mac set up again comes up logged out rather than expired (#267).
         pytest.param("Not logged in · Please run /login\n", "oauth_expired", id="not-logged-in"),
+        # Cloudflare's challenge page in front of the API: the CLI words it as an auth
+        # failure, but no credential was rejected, so "log in again" would be wrong.
+        pytest.param(
+            "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare\n",
+            "network",
+            id="cloudflare-challenge",
+        ),
+        # A retry after the challenge that then hits a real 401 is still an auth failure.
+        pytest.param(
+            "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare\n"
+            "=== Claude retry attempt 2/3 ===\n"
+            "Failed to authenticate. API Error: 401\n",
+            "oauth_expired",
+            id="cloudflare-then-real-401",
+        ),
+        pytest.param(
+            "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare\n"
+            "=== Claude retry attempt 2/2 ===\n"
+            "API Error: Unable to connect to API (ECONNRESET)\n",
+            "network",
+            id="cloudflare-then-econnreset",
+        ),
+        pytest.param(
+            "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare\n"
+            "=== Claude retry attempt 2/2 ===\n"
+            "Error: something unrelated broke\n",
+            "network",
+            id="cloudflare-then-unknown",
+        ),
+        pytest.param(
+            "Research summary: the vendor site returned Attention Required! | Cloudflare\n"
+            "Failed to authenticate. API Error: 401\n",
+            "oauth_expired",
+            id="quoted-cloudflare-then-real-401",
+        ),
+        # The sign-in race (synthetic line): another Claude Code process was refreshing the
+        # shared login. The login is fine, so it is neither oauth_expired nor unknown.
+        pytest.param(f"{AUTH_RACE_LINE}\n", "auth_race", id="auth-race"),
+        pytest.param(
+            f"{AUTH_RACE_LINE}\n"
+            "=== Transient API error detected — sleeping 60s before retry ===\n"
+            "=== Claude retry attempt 2/2 ===\n"
+            f"{AUTH_RACE_LINE}\n"
+            "=== Retry exhausted: 2 attempts, last exit 1 ===\n",
+            "auth_race",
+            id="auth-race-on-every-attempt",
+        ),
+        # The class is the last attempt's: a race the retry got past didn't end the run.
+        pytest.param(
+            f"{AUTH_RACE_LINE}\n=== Claude retry attempt 2/2 ===\nAPI Error: Connection closed mid-response.\n",
+            "network",
+            id="auth-race-then-network",
+        ),
+        pytest.param(
+            f"{AUTH_RACE_LINE}\n=== Claude retry attempt 2/2 ===\nNot logged in · Please run /login\n",
+            "oauth_expired",
+            id="auth-race-then-signed-out",
+        ),
+        pytest.param(
+            f"API Error: Connection closed mid-response.\n=== Claude retry attempt 2/2 ===\n{AUTH_RACE_LINE}\n",
+            "auth_race",
+            id="network-then-auth-race",
+        ),
+        pytest.param("Claude Code couldn't verify your sign-in with Anthropic.\n", "unknown", id="no-race-wording"),
+        pytest.param(
+            "Briefing: two runs stopped because Claude Code couldn't verify your sign-in with Anthropic yet.\n",
+            "unknown",
+            id="quoted-auth-race-is-not-one",
+        ),
         pytest.param("Summary: the CLI was not logged in yesterday\n", "unknown", id="quoted-not-logged-in"),
         # Text that only quotes an auth error, or another service's 403, is not
         # a rejected Claude login: the phrases are the CLI's, at line start.
@@ -664,6 +759,10 @@ def test_a_vault_without_history_is_unmeasured(vault: Path, outcome: Path, setup
         ({"SCOUT_FORCE_MODE": "morning-briefing"}, "schedule"),
         ({"SCOUT_TRIGGER": "heartbeat"}, "heartbeat"),
         ({"SCOUT_TRIGGER": "bogus", "SCOUT_FORCE_MODE": "x"}, "schedule"),
+        # A connector-event trigger forces its skill as the mode, which is no
+        # schedule: the app must not offer to "run again" a schedule by that name.
+        ({"SCOUT_TRIGGER_ID": "pr-opened", "SCOUT_FORCE_MODE": "review-pr"}, "event"),
+        ({"SCOUT_TRIGGER": "event"}, "event"),
     ],
 )
 def test_every_row_names_its_trigger(vault: Path, outcome: Path, env: dict[str, str], expected: str) -> None:

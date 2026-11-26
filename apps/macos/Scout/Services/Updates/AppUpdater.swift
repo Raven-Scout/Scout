@@ -35,7 +35,7 @@ final class AppUpdater: AppUpdateController {
         controller = SPUStandardUpdaterController(
             startingUpdater: false,
             updaterDelegate: delegate,
-            userDriverDelegate: nil
+            userDriverDelegate: delegate
         )
         if enabled {
             controller.startUpdater()
@@ -60,7 +60,12 @@ final class AppUpdater: AppUpdateController {
     /// User-initiated: Sparkle shows "checking…", then found / up to date /
     /// error UI itself, and always finishes the cycle through the delegate's
     /// `didFinishUpdateCycleForUpdateCheck:error:` — including a silent
-    /// cancel. Scheduled checks are Sparkle's own (launch + daily).
+    /// cancel. Scheduled checks are Sparkle's own (launch + hourly).
+    ///
+    /// Also how a scheduled update that Scout is holding back (gentle
+    /// reminders, below) or one already downloaded in the background is
+    /// brought up: Sparkle shows that update's alert in focus instead of
+    /// starting a new check.
     ///
     /// Returns whether a check actually started. `canCheckForUpdates` is
     /// false (and Sparkle declines silently, with no delegate callback at
@@ -73,6 +78,13 @@ final class AppUpdater: AppUpdateController {
         controller.updater.checkForUpdates()
         return true
     }
+
+    /// Sparkle's controller and our delegate, untyped so tests need no Sparkle
+    /// import. Read only by `AppUpdaterTests`, which pins that the controller's
+    /// user driver holds our delegate: passing nil for it in `init` compiles
+    /// and passes every other test.
+    var controllerForTesting: AnyObject { controller }
+    var delegateForTesting: AnyObject { delegate }
 
     /// Sparkle-free so it can be unit tested without starting Sparkle or
     /// importing it; the Sparkle constants are resolved into plain values
@@ -127,7 +139,26 @@ final class AppUpdater: AppUpdateController {
 /// Sparkle calls its delegate on the main thread; we assert that and hop the
 /// result into the service. Sparkle holds the delegate weakly, so
 /// `AppUpdater` keeps the strong reference.
-final class AppUpdaterDelegate: NSObject, @preconcurrency SPUUpdaterDelegate {
+///
+/// Also the standard user driver's delegate, for gentle reminders
+/// (https://sparkle-project.org/documentation/gentle-reminders): Sparkle never
+/// pops its update alert on its own for a scheduled check. Without this,
+/// Scout (which mostly sits in the menu bar) got an alert that could open
+/// behind other apps' windows, where nobody saw it. Instead `UpdateService`
+/// shows the update on every page of the main window and posts one macOS
+/// notification per version, both driven by `didFindValidUpdate` (which also
+/// fires when Sparkle downloads an update in the background, a path that
+/// never reaches the user driver). Clicking either calls `checkForUpdates()`
+/// (through `UpdateService.showAppUpdate()`, which holds the click while
+/// `canCheckForUpdates` is false), bringing the held update up in focus.
+/// Checks the user starts are unchanged: Sparkle always shows those itself.
+///
+/// The hourly schedule (`SUScheduledCheckInterval`) pauses while an update
+/// is held this way: Sparkle schedules no further check until that update
+/// session ends (installed, skipped or dismissed). A newer release published
+/// meanwhile is found when the user opens the held one, or on next launch.
+final class AppUpdaterDelegate: NSObject, @preconcurrency SPUUpdaterDelegate,
+                                @preconcurrency SPUStandardUserDriverDelegate {
     private let onEvent: @MainActor (AppUpdateEvent) -> Void
 
     init(onEvent: @escaping @MainActor (AppUpdateEvent) -> Void) {
@@ -173,4 +204,24 @@ final class AppUpdaterDelegate: NSObject, @preconcurrency SPUUpdaterDelegate {
             localizedDescription: nsError?.localizedDescription ?? ""
         ))
     }
+
+    // MARK: SPUStandardUserDriverDelegate (gentle reminders)
+
+    nonisolated var supportsGentleScheduledUpdateReminders: Bool { true }
+
+    /// Never for a scheduled check: Scout shows the update (banner and
+    /// notification) and the user brings Sparkle's alert up from there. Not
+    /// called for checks the user starts. Side-effect free, as Sparkle asks.
+    nonisolated func standardUserDriverShouldHandleShowingScheduledUpdate(
+        _ update: SUAppcastItem, andInImmediateFocus immediateFocus: Bool
+    ) -> Bool {
+        false
+    }
+
+    /// Sparkle requires this once the method above can return false. The
+    /// reminders it asks for are already up: `didFindValidUpdate` ran first
+    /// and `UpdateService` showed the banner and posted the notification.
+    nonisolated func standardUserDriverWillHandleShowingUpdate(
+        _ handleShowingUpdate: Bool, forUpdate update: SUAppcastItem, state: SPUUserUpdateState
+    ) {}
 }

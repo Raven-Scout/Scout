@@ -35,7 +35,7 @@ struct SchedulesFilterChips: View {
 
     private func typeChip(for type: SlotType) -> some View {
         chip(
-            label: type.rawValue.capitalized,
+            label: type.displayName,
             count: SchedulesFilterMode.count(of: type, in: slots),
             isSelected: filterMode == .type(type),
             dotColor: DS.SlotType.color(for: type)
@@ -60,18 +60,9 @@ struct SchedulesFilterChips: View {
                         .frame(width: 6, height: 6)
                 }
                 Text(label)
-                    .font(DS.sans(12, weight: .medium))
-                Text("\(count)")
-                    .font(DS.mono(11))
-                    .foregroundStyle(isSelected ? DS.Paper.base.opacity(0.85) : DS.Ink.p3)
+                DSChipCount(count)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(
-                Capsule().fill(isSelected ? DS.Ink.p1 : DS.Paper.raised)
-            )
-            .foregroundStyle(isSelected ? DS.Paper.base : DS.Ink.p2)
         }
-        .buttonStyle(.plainHit)
+        .buttonStyle(.dsChip(selected: isSelected))
     }
 }

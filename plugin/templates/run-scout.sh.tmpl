@@ -4,6 +4,20 @@
 
 set -euo pipefail
 
+# Keep only absolute PATH entries before anything runs. A manual run (the scout-briefing skill,
+# the app's Run now) inherits the user's PATH with the vault as cwd, and a relative entry (`.`,
+# `./bin`, an empty one) would let a python3, date or claude planted there run in place of the
+# real one, here and in everything this run starts. A leading `~` becomes $HOME, as bash's own
+# PATH search reads it. (Scheduled runs already get a fixed absolute PATH from their plist.)
+_scout_safe_path=""
+IFS=: read -r -a _scout_path_entries <<<"${PATH:-}" || true
+for _scout_path_entry in ${_scout_path_entries[@]+"${_scout_path_entries[@]}"}; do
+    case "$_scout_path_entry" in \~ | \~/*) [ -z "${HOME:-}" ] || _scout_path_entry="$HOME${_scout_path_entry#"~"}" ;; esac
+    case "$_scout_path_entry" in /*) _scout_safe_path="${_scout_safe_path:+$_scout_safe_path:}$_scout_path_entry" ;; esac
+done
+export PATH="${_scout_safe_path:-/usr/bin:/bin}"
+unset _scout_safe_path _scout_path_entries _scout_path_entry
+
 SCOUT_DIR="{{SCOUT_DIR}}"
 # Exported so any consumer of scout-plugin's engine package (scout.kb, etc.)
 # resolves the user's vault. Required by Plan 5+.
@@ -11,8 +25,16 @@ export SCOUT_DATA_DIR="$SCOUT_DIR"
 LOG_DIR="$SCOUT_DIR/.scout-logs"
 CLAUDE_BIN="{{CLAUDE_BIN}}"
 SCOUTCTL_BIN="{{SCOUTCTL_BIN}}"
-TIMESTAMP=$(date +%Y-%m-%d_%H-%M)
-LOG_FILE="$LOG_DIR/scout-$TIMESTAMP.log"
+# One log per run. The run claims the minute-named log atomically (noclobber,
+# so an existing file is never truncated); if another run in the same minute
+# already holds it, this run logs to a seconds+PID name instead. Readers parse
+# both forms (scout/health.py, the app's SessionLogService).
+mkdir -p "$LOG_DIR"
+STAMP=$(date +%Y-%m-%d_%H-%M-%S)
+LOG_FILE="$LOG_DIR/scout-${STAMP%-*}.log"
+if ! ( set -C; : >"$LOG_FILE" ) 2>/dev/null; then
+    LOG_FILE="$LOG_DIR/scout-$STAMP-$$.log"
+fi
 LOCK_FILE="$LOG_DIR/.scout-session.lock"
 
 # Ensure log directory exists
@@ -101,6 +123,7 @@ Step 4: Commit results to git.
 Step 5: If anything material changed, send the wrap notification summarizing what was found and changed, as SKILL.md's notification sections direct: they name the channel and recipient. Send every notification section SKILL.md has (in a stock install, Slack Notification and, when Telegram is set up, Telegram Notification as well; the vault's notify.wrap_channels setting decides which are there). Do not assume Slack: {{USER_NAME}} may have moved the wrap off Slack on purpose, for example because it is an employer-controlled workspace and runs carry personal content, and this prompt must not contradict that. If SKILL.md has no notification section, send nothing and say so in your final message.
 
 Important:
+- A denied tool call denies that call only, never Bash or the run. If its message says what to do instead, do that and never get the same thing another way; otherwise redo a shell command as plain single commands, with no command substitution, variables or loops and only paths inside {{SCOUT_DIR}}, or with Read/Edit, and carry on.
 - Use 'gh' CLI for all GitHub operations (not GitHub MCP).
 - The knowledge base and action items are in {{SCOUT_DIR}}/knowledge-base/ and {{SCOUT_DIR}}/action-items/.
 - Always use [[wikilinks]] when referencing KB files.
@@ -141,11 +164,149 @@ if [ -x "$BUDGET_CHECK" ]; then
     fi
 fi
 
+# The agent CLI for this run (spec 2026-11-13 §8.2): SCOUT_AGENT_RUNTIME, else the slot's
+# `agent_runtime:` in .scout-state/schedule.yaml, else scout-config's agent_runtimes.default,
+# else claude-code, resolved by the engine (scout/agent_runtimes/resolve.py). A resolver failure
+# falls back to claude-code, the default, as model resolve falls back to opus. A refused runtime
+# never falls back: `agent-runtime check` says why, and the run is skipped (skipped_runtime), or
+# skipped_budget when the runtime is past its daily token ceiling. For claude-code the check is
+# the gate probe below and nothing more. An engine without the command (exit 2) launches claude
+# directly, as before.
+SCOUT_AGENT_RUNTIME="$("$SCOUTCTL_BIN" agent-runtime resolve --slot "$MODE" 2>>"$LOG_FILE" || true)"
+# Anything but one runtime id (lower-case letters, digits, dashes) is a failed resolve.
+case "$SCOUT_AGENT_RUNTIME" in
+    *[!a-z0-9-]*) echo "=== agent runtime resolve gave no runtime id: $SCOUT_AGENT_RUNTIME ===" >> "$LOG_FILE"; SCOUT_AGENT_RUNTIME="" ;;
+esac
+# The fallback goes into the run's ledger row (agent_runtime_fallback), so run health can say the slot
+# didn't run where it was set to (agent_runtime.fallback), not only this log.
+SCOUT_AGENT_RUNTIME_FALLBACK=""
+if [ -z "$SCOUT_AGENT_RUNTIME" ]; then
+    echo "=== agent runtime resolve failed — running on claude-code ===" >> "$LOG_FILE"
+    SCOUT_AGENT_RUNTIME=claude-code
+    SCOUT_AGENT_RUNTIME_FALLBACK=resolve_failed
+fi
+# Exported so the session's hooks and the run's ledger rows can name it.
+export SCOUT_AGENT_RUNTIME SCOUT_AGENT_RUNTIME_FALLBACK
+# The CLI the run starts: this runner's claude for claude-code; any other runtime finds its own.
+AGENT_BIN_ARGS=()
+# Any other runtime is named to the gate probe and the write sandbox below, so its adapter's probe and
+# sandbox paths apply (#652 S6). For claude-code both run exactly as before.
+RUNTIME_ARGS=()
+GATE_TARGET="$CLAUDE_BIN"
+if [ "$SCOUT_AGENT_RUNTIME" = claude-code ]; then
+    AGENT_BIN_ARGS=(--bin "$CLAUDE_BIN")
+else
+    RUNTIME_ARGS=(--runtime "$SCOUT_AGENT_RUNTIME")
+    GATE_TARGET="$SCOUT_AGENT_RUNTIME"
+fi
+
+# Gate probe: Scout's privacy gates are Claude Code hooks, and a claude that
+# doesn't load hooks (bare mode, which Claude Code's docs say will become the -p
+# default) would run with every gate off. Before each run, `scoutctl gates probe`
+# checks for free against a local fake endpoint that this claude, with these
+# flags, fires the kb-read-gate (cached per claude version for 24 h); if it
+# doesn't, or the probe can't tell, the run is skipped (spec 2026-11-13 §3.5).
+# A missing scoutctl skips the run too: the hooks run another scoutctl (the
+# plugin's), so a broken one here says nothing about whether claude loads them.
+GATE_RC=127
+if [ -x "$SCOUTCTL_BIN" ]; then
+    GATE_RC=0
+    "$SCOUTCTL_BIN" gates probe --cached --vault "$SCOUT_DIR" --claude-bin "$CLAUDE_BIN" ${RUNTIME_ARGS[@]+"${RUNTIME_ARGS[@]}"} >> "$LOG_FILE" 2>&1 || GATE_RC=$?
+fi
+if [ "$GATE_RC" -eq 4 ] || [ "$GATE_RC" -eq 5 ]; then
+    GATE_CAUSE=endpoint
+    [ "$GATE_RC" -eq 5 ] && GATE_CAUSE=launcher
+    echo "=== Gate probe: Scout couldn't check its privacy hooks safely here ($GATE_CAUSE; see scoutctl gates probe) — skipping this run ===" >> "$LOG_FILE"
+    scout_record_skip "gates_unsafe_$GATE_CAUSE"
+    exit 0
+elif [ "$GATE_RC" -ne 0 ]; then
+    echo "=== Gate probe failed, or scoutctl is missing at $SCOUTCTL_BIN: Scout's privacy hooks are not known to load in $GATE_TARGET — skipping this run (scoutctl gates probe) ===" >> "$LOG_FILE"
+    scout_record_skip skipped_gates
+    exit 0
+fi
+
+# Write sandbox (Phase 1c, spec 2026-11-15): the session, and every process it
+# starts, runs under a sandbox-exec profile that denies writes to what decides
+# whether Scout's gates run (the vault's git hooks and config, agent settings,
+# the engine, these runner scripts …), so no shell trick or hook timeout can
+# switch them off. `scoutctl sandbox profile` builds it here, outside the
+# sandbox, from the engine's protected-path list, self-tests it, and prints it;
+# claude-with-retry gets it by value. Its exit code is the status: 0 sandboxed;
+# 6 no OS sandbox here, 7 turned off (`scoutctl sandbox off`), 8 Claude Code's
+# own Bash sandbox is on (they can't nest): the run goes ahead as before and run
+# health says so; anything else (3, or no scoutctl) skips the run, because a
+# sandbox expected here couldn't be set up.
+SANDBOX_RC=127
+SCOUT_SANDBOX_PROFILE=""
+# SCOUT_RUN_SANDBOX=off (tests, the eval harness) is the switch scoutctl reads too; a run can't set it for
+# a later run (launchd refuses setenv from inside the sandbox, and its plists are protected).
+case "$(printf '%s' "${SCOUT_RUN_SANDBOX:-}" | tr '[:upper:]' '[:lower:]')" in
+    0|off|false|no) SANDBOX_RC=7 ;;
+esac
+if [ "$SANDBOX_RC" -ne 7 ] && [ -x "$SCOUTCTL_BIN" ]; then
+    SANDBOX_RC=0
+    # SCOUT_CLAUDE_BIN: the claude this runner starts, whose install the profile protects even when it isn't on
+    # the scheduler's PATH (nvm, npm-global, connectors.inputs.claude_bin).
+    SCOUT_SANDBOX_PROFILE="$(SCOUT_CLAUDE_BIN="$CLAUDE_BIN" "$SCOUTCTL_BIN" sandbox profile --vault "$SCOUT_DIR" ${RUNTIME_ARGS[@]+"${RUNTIME_ARGS[@]}"} 2>>"$LOG_FILE")" || SANDBOX_RC=$?
+fi
+case "$SANDBOX_RC" in
+    0) SCOUT_SANDBOX_STATUS=enforced ;;
+    6) SCOUT_SANDBOX_STATUS=unavailable ;;
+    7) SCOUT_SANDBOX_STATUS=off ;;
+    8) SCOUT_SANDBOX_STATUS=conflict ;;
+    *) SCOUT_SANDBOX_STATUS=failed ;;
+esac
+if [ "$SCOUT_SANDBOX_STATUS" = enforced ] && [ -z "$SCOUT_SANDBOX_PROFILE" ]; then
+    SCOUT_SANDBOX_STATUS=failed
+fi
+[ "$SCOUT_SANDBOX_STATUS" = enforced ] || SCOUT_SANDBOX_PROFILE=""
+# Who turned it off, for the run-outcome row and the doctor: the environment
+# (SCOUT_RUN_SANDBOX, meant for tests and the eval harness) or the owner's switch file.
+SCOUT_SANDBOX_SOURCE=""
+if [ "$SCOUT_SANDBOX_STATUS" = off ]; then
+    SCOUT_SANDBOX_SOURCE=switch
+    [ -n "${SCOUT_RUN_SANDBOX:-}" ] && SCOUT_SANDBOX_SOURCE=env
+fi
+export SCOUT_SANDBOX_STATUS SCOUT_SANDBOX_SOURCE
+if [ "$SCOUT_SANDBOX_STATUS" = failed ]; then
+    echo "=== Write sandbox: couldn't be set up here (exit $SANDBOX_RC; see scoutctl sandbox status) — skipping this run ===" >> "$LOG_FILE"
+    scout_record_skip skipped_sandbox
+    exit 0
+fi
+echo "=== write sandbox: $SCOUT_SANDBOX_STATUS ===" >> "$LOG_FILE"
+
+AGENT_EXEC=1
+AGENT_RC=0
+"$SCOUTCTL_BIN" agent-runtime check --slot "$MODE" --runtime "$SCOUT_AGENT_RUNTIME" ${AGENT_BIN_ARGS[@]+"${AGENT_BIN_ARGS[@]}"} >> "$LOG_FILE" 2>&1 || AGENT_RC=$?
+if [ "$AGENT_RC" -eq 2 ] && [ "$SCOUT_AGENT_RUNTIME" = claude-code ]; then
+    echo "=== agent runtime: this engine has no agent-runtime command — launching claude directly ===" >> "$LOG_FILE"
+    AGENT_EXEC=0
+elif [ "$AGENT_RC" -eq 4 ]; then
+    echo "=== agent runtime $SCOUT_AGENT_RUNTIME: past its daily token ceiling — skipping this run ===" >> "$LOG_FILE"
+    scout_record_skip skipped_budget
+    exit 0
+elif [ "$AGENT_RC" -ne 0 ]; then
+    echo "=== agent runtime $SCOUT_AGENT_RUNTIME refused here (exit $AGENT_RC; see above, or scoutctl agent-runtime check) — skipping this run ===" >> "$LOG_FILE"
+    scout_record_skip skipped_runtime
+    exit 0
+fi
+echo "=== agent runtime: $SCOUT_AGENT_RUNTIME ===" >> "$LOG_FILE"
+
 # The Claude model for this run: SCOUT_MODEL, else the slot's `model:` in
 # .scout-state/schedule.yaml, else scout-config's models.default, else opus —
 # resolved by the engine (scout/models.py). A resolver failure never blocks the
 # run: it goes ahead on opus, the default, and the reason lands in this log.
-SCOUT_MODEL="$("$SCOUTCTL_BIN" model resolve --slot "$MODE" 2>>"$LOG_FILE" || true)"
+# Another runtime's model comes from its own settings (agent_runtimes.<id>.model), never models.default.
+MODEL_RUNTIME_ARGS=()
+if [ "$SCOUT_AGENT_RUNTIME" != claude-code ]; then
+    MODEL_RUNTIME_ARGS=(--runtime "$SCOUT_AGENT_RUNTIME")
+fi
+SCOUT_MODEL="$("$SCOUTCTL_BIN" model resolve --slot "$MODE" ${MODEL_RUNTIME_ARGS[@]+"${MODEL_RUNTIME_ARGS[@]}"} 2>>"$LOG_FILE" || true)"
+if [ -z "$SCOUT_MODEL" ] && [ "$SCOUT_AGENT_RUNTIME" != claude-code ]; then
+    echo "=== model resolve failed for $SCOUT_AGENT_RUNTIME — skipping this run (opus is Claude Code's) ===" >> "$LOG_FILE"
+    scout_record_skip skipped_runtime
+    exit 0
+fi
 if [ -z "$SCOUT_MODEL" ]; then
     echo "=== model resolve failed — running on opus ===" >> "$LOG_FILE"
     SCOUT_MODEL=opus
@@ -157,7 +318,21 @@ echo "=== model: $SCOUT_MODEL ===" >> "$LOG_FILE"
 # The session's --name. Every retry attempt gets the same one, so the cost step
 # below can find each attempt's transcript by it.
 RUN_NAME="{{INSTANCE_NAME_LOWER}}-${MODE}-$(date +%Y%m%d-%H%M)"
+# Integrity start state (spec 2026-11-15 §13): the protected tracked files (runner
+# scripts, agent settings, .scout-state/schedule.yaml …) as HEAD, the index and every
+# branch, tag and stash ref hold them now. Taken outside the sandbox and kept in this
+# shell's memory, never in a file, so nothing the session does can change it.
+SCOUT_INTEGRITY_START=""
+if [ -x "$SCOUTCTL_BIN" ]; then
+    SCOUT_INTEGRITY_START="$("$SCOUTCTL_BIN" sandbox snapshot --vault "$SCOUT_DIR" 2>>"$LOG_FILE" || true)"
+fi
 START_TIME=$(date +%s)
+# The run's start on a clock that stops while the host sleeps (scout-lock.sh's
+# _scout_awake_now): `agent-runtime exec` counts a run timeout in awake time from
+# here (spec 2026-11-13 §8.6, Jordan 2026-11-16), and the run-outcome row records
+# the run's awake length. Exported, so every retry attempt shares this one start.
+SCOUT_RUN_AWAKE_STARTED="$(_scout_awake_now)"
+export SCOUT_RUN_AWAKE_STARTED
 
 # Run Claude in print mode through the retry wrapper — capture exit code without triggering set -e.
 # Wrapper handles log redirection and retries on transient API errors (socket close,
@@ -165,18 +340,70 @@ START_TIME=$(date +%s)
 # With SCOUTCTL_BIN, the run's type and start, it records each failed attempt's spend
 # and gives a retry only what this run has left of its cap (#561).
 EXIT_CODE=0
-cd "$SCOUT_DIR" && SCOUTCTL_BIN="$SCOUTCTL_BIN" SCOUT_RUN_TYPE="$MODE" SCOUT_RUN_STARTED="$START_TIME" \
-    "$SCOUT_DIR/scripts/claude-with-retry.sh" \
-    "$LOG_FILE" \
-    "$CLAUDE_BIN" \
-    --permission-mode auto \
-    --model "$SCOUT_MODEL" \
-    --max-budget-usd {{MAX_BUDGET}} \
-    --name "$RUN_NAME" \
-    -p "$PROMPT" \
-    || EXIT_CODE=$?
+if [ "$AGENT_EXEC" -eq 1 ]; then
+    # Through `scoutctl agent-runtime exec`, which replaces itself with the runtime's CLI, inside the
+    # same sandbox. For claude-code that CLI is claude with the else branch's argv, word for word
+    # (tests/unit/test_agent_runtime_cli.py). SCOUT_AGENT_BIN is only for the wrapper's messages.
+    cd "$SCOUT_DIR" && SCOUTCTL_BIN="$SCOUTCTL_BIN" SCOUT_SANDBOX_PROFILE="$SCOUT_SANDBOX_PROFILE" SCOUT_RUN_TYPE="$MODE" SCOUT_RUN_STARTED="$START_TIME" SCOUT_AGENT_BIN="$CLAUDE_BIN" \
+        "$SCOUT_DIR/scripts/claude-with-retry.sh" \
+        "$LOG_FILE" \
+        "$SCOUTCTL_BIN" agent-runtime exec --runtime "$SCOUT_AGENT_RUNTIME" ${AGENT_BIN_ARGS[@]+"${AGENT_BIN_ARGS[@]}"} \
+        --model "$SCOUT_MODEL" \
+        --max-budget-usd {{MAX_BUDGET}} \
+        --name "$RUN_NAME" \
+        -p "$PROMPT" \
+        || EXIT_CODE=$?
+else
+    cd "$SCOUT_DIR" && SCOUTCTL_BIN="$SCOUTCTL_BIN" SCOUT_SANDBOX_PROFILE="$SCOUT_SANDBOX_PROFILE" SCOUT_RUN_TYPE="$MODE" SCOUT_RUN_STARTED="$START_TIME" \
+        "$SCOUT_DIR/scripts/claude-with-retry.sh" \
+        "$LOG_FILE" \
+        "$CLAUDE_BIN" \
+        --permission-mode auto \
+        --model "$SCOUT_MODEL" \
+        --max-budget-usd {{MAX_BUDGET}} \
+        --name "$RUN_NAME" \
+        -p "$PROMPT" \
+        || EXIT_CODE=$?
+fi
 END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
+# The run's awake length, for the run-outcome row (the doctor compares it with the
+# slot's timeout). Left empty when either reading isn't on the awake clock.
+SCOUT_RUN_AWAKE_S=""
+read -r AWAKE_CLOCK0 AWAKE_T0 <<<"$SCOUT_RUN_AWAKE_STARTED" || true
+read -r AWAKE_CLOCK1 AWAKE_T1 <<<"$(_scout_awake_now)" || true
+if [ "${AWAKE_CLOCK0:-}" = awake ] && [ "${AWAKE_CLOCK1:-}" = awake ]; then
+    case "${AWAKE_T0:-}${AWAKE_T1:-}" in
+        ''|*[!0-9]*) ;;
+        *) [ "$AWAKE_T1" -ge "$AWAKE_T0" ] && SCOUT_RUN_AWAKE_S=$((AWAKE_T1 - AWAKE_T0)) ;;
+    esac
+fi
+export SCOUT_RUN_AWAKE_S
+
+# Post-run integrity check (spec 2026-11-15 §13), outside the sandbox and before any
+# post-session step: the sandbox keeps the session from writing a protected file, but
+# git may still commit a changed copy of one. `scoutctl sandbox verify` compares HEAD,
+# the index and every ref the run moved with the start state, puts any changed
+# protected file back in a new commit, and says so here; run-outcome records it and
+# run health turns red. It never changes this run's exit code.
+SCOUT_INTEGRITY=unchecked
+if [ -n "$SCOUT_INTEGRITY_START" ]; then
+    INTEGRITY_RC=0
+    SCOUT_INTEGRITY=error
+    printf '%s' "$SCOUT_INTEGRITY_START" | "$SCOUTCTL_BIN" sandbox verify --vault "$SCOUT_DIR" --label "$MODE" >> "$LOG_FILE" 2>&1 || INTEGRITY_RC=$?
+    case "$INTEGRITY_RC" in
+        0) SCOUT_INTEGRITY=clean ;;
+        10) SCOUT_INTEGRITY=restored ;;
+        11) SCOUT_INTEGRITY=unrestored ;;
+    esac
+elif [ -x "$SCOUTCTL_BIN" ]; then
+    # scoutctl is here but took no start snapshot: that's a check that couldn't run, and run health says so.
+    SCOUT_INTEGRITY=error
+    echo "=== integrity check: scoutctl took no start snapshot (see above) — not checked ===" >> "$LOG_FILE"
+else
+    echo "=== integrity check: no scoutctl, so no start snapshot — not checked ===" >> "$LOG_FILE"
+fi
+export SCOUT_INTEGRITY
 
 echo "=== {{INSTANCE_NAME}} run finished at $(date) (exit code: $EXIT_CODE, duration: ${DURATION}s) ===" >> "$LOG_FILE"
 
@@ -198,6 +425,11 @@ POST_BACKFILL="$SCOUT_DIR/scripts/post-session-backfill.sh"
 if [ -x "$POST_BACKFILL" ]; then
     "$POST_BACKFILL" >> "$LOG_FILE" 2>&1 || true
 fi
+
+# Record what changed in Scout's own brain (the changes map). Reads the vault's git log from
+# where the last scan stopped, so commits made while runs were skipped are still read;
+# idempotent, never fatal, and it writes no session content.
+"$SCOUTCTL_BIN" changes scan >> "$LOG_FILE" 2>&1 || true
 
 # Record how this run ended, out-of-band. This has to be a runner step, not a
 # session step: the failure being watched for is a run that never reaches its
@@ -232,4 +464,13 @@ if [ -x "$SCOUTCTL_BIN" ] && "$SCOUTCTL_BIN" budget record-run "$MODE" --name "$
     :
 elif [ -x "$COST_TRACKER" ]; then
     "$COST_TRACKER" "$MODE" {{MAX_BUDGET}} 0 "$EXIT_CODE" "runner" 2>/dev/null || true
+fi
+
+# Delegate mirrors (#550 V2c): push what this run changed to the owner's agents' mirrors.
+# Last, after the cost record, so the run's own bookkeeping never waits on a push. Only a vault
+# that links one has the state file, and `--if-moved` skips a mirror HEAD hasn't moved for.
+# A failure is recorded for run health and `scoutctl bootstrap doctor`; it never changes this
+# run's exit code.
+if [ -x "$SCOUTCTL_BIN" ] && [ -f "$SCOUT_DIR/.scout-state/delegate-mirrors.json" ]; then
+    "$SCOUTCTL_BIN" delegate sync --all --if-moved >> "$LOG_FILE" 2>&1 || true
 fi

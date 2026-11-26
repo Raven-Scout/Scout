@@ -160,14 +160,9 @@ nonisolated extension ActionItemsParser {
 
     /// `owner/repo#N` GitHub shorthand. Compiled once — `parseRefs` runs per
     /// task, and `NSRegularExpression` compilation dominates the cost
-    /// (cf. `InlineMarkdownText.wikilinkRe`).
+    /// (cf. `Wikilink.regex`).
     private static let ghShorthandRe = try! NSRegularExpression(
         pattern: #"^([A-Za-z0-9][\w.\-]*/[A-Za-z0-9][\w.\-]*)#(\d{1,7})$"#
-    )
-
-    /// `[[entity]]` / `[[entity|Label]]` wikilink ref.
-    private static let wikilinkRe = try! NSRegularExpression(
-        pattern: #"^\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]$"#
     )
 
     /// Parse the ` · `-separated token list from a task's `- Refs:` sub-bullet
@@ -201,11 +196,9 @@ nonisolated extension ActionItemsParser {
                 continue
             }
 
-            // 3. Entity wikilink `[[path]]` / `[[path|Label]]`.
-            if let m = wikilinkRe.firstMatch(in: token, range: full) {
-                let path = ns.substring(with: m.range(at: 1))
-                let label = m.range(at: 2).location == NSNotFound ? nil : ns.substring(with: m.range(at: 2))
-                result.append(.entity(path: path, label: label))
+            // 3. Entity wikilink `[[path]]` / `[[path|Label]]`, by `Wikilink`'s rule.
+            if let link = Wikilink.whole(token) {
+                result.append(.entity(path: link.target, label: link.alias))
                 continue
             }
 
@@ -324,6 +317,8 @@ nonisolated extension ActionItemsParser {
         /// Leading-whitespace width to strip from a continuation line: the
         /// last detail bullet's indent + 2 (`- `).
         var detailContentIndent = 0
+        /// Which `--index` the engine gives each comment line (#556).
+        var engineComments = EngineCommentIndex()
 
         func closeDetailWindow() {
             detailWindowOpen = false
@@ -475,6 +470,9 @@ nonisolated extension ActionItemsParser {
             let line = lines[i]
             let stripped = line.trimmingCharacters(in: .whitespaces)
             let isIndented = line.first == " " || line.first == "\t"
+            // Fed every line, whatever branch handles it below: the engine's
+            // lister reads the raw file and knows nothing of fences or tables.
+            let engineIndexForLine = engineComments.advance(line)
 
             // A non-blank line at column 0 ends the task's sub-list: a new
             // task, a top-level bullet, a paragraph, an HTML comment, `---`,
@@ -668,6 +666,7 @@ nonisolated extension ActionItemsParser {
                 inDetailFence = false
                 detailContentIndent = 0
                 planMarkWindowOpen = true
+                engineComments.sawTask(lineNumber: i + 1, line: line)
                 i += 1; continue
             }
 
@@ -806,8 +805,7 @@ nonisolated extension ActionItemsParser {
                 let nsLine = line as NSString
                 if let plan = last.plan.merging(
                     key: nsLine.substring(with: pm.range(at: 1)),
-                    value: nsLine.substring(with: pm.range(at: 2)),
-                    commentsBefore: last.comments.count
+                    value: nsLine.substring(with: pm.range(at: 2))
                 ) {
                     currentTasks[currentTasks.count - 1] = last.replacingPlan(plan)
                     i += 1; continue
@@ -825,7 +823,13 @@ nonisolated extension ActionItemsParser {
                 let nsLine = line as NSString
                 let author = nsLine.substring(with: cm.range(at: 2))
                 let body = nsLine.substring(with: cm.range(at: 3))
-                let newComment = TaskComment(author: author, timestamp: "", text: body)
+                // Addressable only when the engine lists this line under the
+                // same task the app binds it to. After a blank line, or under
+                // a child task, it does not.
+                let newComment = TaskComment(
+                    author: author, timestamp: "", text: body,
+                    engineIndex: engineComments.ownerLine == last.lineNumber ? engineIndexForLine : nil
+                )
                 let updated = ActionTask(
                     id: last.id,
                     lineNumber: last.lineNumber,

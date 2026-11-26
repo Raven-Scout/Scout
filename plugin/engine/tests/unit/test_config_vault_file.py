@@ -142,7 +142,6 @@ def test_bootstrap_install_config_reaches_governor_and_loader(tmp_path: Path) ->
             enabled_connectors=set(),
             connector_inputs={"max_budget": "5.00"},
             skip_jobs=True,
-            skip_claude=True,
         )
     )
 

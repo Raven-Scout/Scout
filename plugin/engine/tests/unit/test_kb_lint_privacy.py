@@ -513,6 +513,50 @@ def test_a_run_may_not_touch_the_privacy_block(vault: Path) -> None:
     assert checks(vault, RUN) == []
 
 
+def test_a_run_may_not_let_a_delegate_mirror_ship_files_unscanned(vault: Path) -> None:
+    """``allow_unscanned`` (#550) is the owner's alone: a scheduled run's commit that adds it is refused."""
+    text = _read(vault, "scout-config.yaml")
+    opt_in = '  delegates:\n    grok:\n      allow_unscanned: ["attachments/*.zip"]\n'
+    stage(vault, "scout-config.yaml", text + opt_in)
+    assert checks(vault, RUN) == [("scout-config.yaml", "privacy-widening", True, None)]
+
+
+@pytest.mark.parametrize("flag", ["include_private", "ignore_sync_only"])
+def test_a_run_may_not_turn_a_delegate_flag_on(vault: Path, flag: str) -> None:
+    text = _read(vault, "scout-config.yaml")
+    stage(vault, "scout-config.yaml", text + f"  delegates:\n    duet:\n      {flag}: true\n")
+    assert checks(vault, RUN) == [("scout-config.yaml", "privacy-widening", True, None)]
+    assert checks(vault) == []  # the owner may
+
+
+def test_a_run_may_not_rename_a_committed_twin_into_the_config(vault: Path) -> None:
+    """With no config at HEAD, the rename's source is not the baseline: HEAD had no privacy block at all."""
+    text = _read(vault, "scout-config.yaml") + "  delegates:\n    duet:\n      include_private: true\n"
+    git(vault, "rm", "-q", "scout-config.yaml")
+    stage(vault, "notes/twin.yaml", text)
+    commit(vault)
+    git(vault, "mv", "notes/twin.yaml", "scout-config.yaml")
+    assert ("scout-config.yaml", "privacy-widening", True, None) in checks(vault, RUN)
+    assert ("scout-config.yaml", "privacy-widening", True, None) not in checks(vault)
+
+
+@pytest.mark.parametrize("flag", ["include_private", "ignore_sync_only"])
+@pytest.mark.parametrize("spelling", ["yes", "True", "on", "TRUE", "Yes"])
+def test_a_run_may_not_respell_a_delegate_flag_as_a_plain_true(vault: Path, flag: str, spelling: str) -> None:
+    """``yes`` loads as True but counts as off, so ``yes`` -> ``true`` changes no loaded data yet turns the flag on."""
+    import yaml
+
+    text = _read(vault, "scout-config.yaml")
+    off = text + f"  delegates:\n    duet:\n      {flag}: {spelling}\n"
+    stage(vault, "scout-config.yaml", off)
+    commit(vault)
+    on = off.replace(f"{flag}: {spelling}", f"{flag}: true")
+    assert yaml.safe_load(off)["privacy"] == yaml.safe_load(on)["privacy"]  # what the old check compared
+    stage(vault, "scout-config.yaml", on)
+    assert checks(vault, RUN) == [("scout-config.yaml", "privacy-widening", True, None)]
+    assert checks(vault) == []
+
+
 def test_a_run_adding_a_private_link_to_a_draft_is_blocked_too(vault: Path) -> None:
     n = append(vault, DRAFT, "See [[sam]].")
     assert checks(vault, RUN) == [(DRAFT, "private-link", True, n)]
@@ -705,6 +749,9 @@ def test_an_unlinked_vault_ignores_a_leftover_host_cache(vault: Path) -> None:
 
 
 # ----- a run adding to a note that is already shared (#569) -----------------------
+# These pin the freeze, which `privacy.shared_edits: refuse` keeps; the default, `checked`, is below.
+
+REFUSE = "  shared_edits: refuse\n"
 
 SOURCE = "knowledge-base/sources/2026-11/2026-11-02-widget-sync.md"
 _SHARE_SOURCES = (
@@ -723,9 +770,9 @@ def _share(vault: Path, overlay: str) -> None:
     git(vault, "add", "scout-config.yaml")
 
 
-def _shared_source(vault: Path) -> None:
-    """A meeting note shared with Priya by a folder default, committed by the owner."""
-    _share(vault, _SHARE_SOURCES)
+def _shared_source(vault: Path, edits: str = REFUSE) -> None:
+    """A meeting note shared with Priya by a folder default, committed by the owner (``refuse`` by default)."""
+    _share(vault, _SHARE_SOURCES + edits)
     stage(vault, SOURCE, _SOURCE_TEXT)
     commit(vault, "share source notes with Priya")
 
@@ -742,7 +789,7 @@ def test_a_run_may_not_add_a_pages_fact_to_a_shared_source_note(vault: Path) -> 
 
 
 def test_a_run_may_not_add_to_a_page_shared_by_a_folder_default(vault: Path) -> None:
-    _share(vault, _SHARE_TOPICS)
+    _share(vault, _SHARE_TOPICS + REFUSE)
     commit(vault, "share topics/misc with Priya")
     n = append(vault, PLAIN, "A new fact from another page.")
     assert checks(vault, RUN) == [(PLAIN, "privacy-widening", True, n)]
@@ -809,6 +856,707 @@ def test_a_run_may_add_to_a_note_while_sharing_is_off(vault: Path) -> None:
     append(vault, SOURCE, "The widget budget moves to next quarter ([[widget]]).")
     append(vault, WIDGET, "A new fact.")
     assert checks(vault, RUN) == []
+
+
+# ----- privacy.shared_edits: checked (the default) ---------------------------------
+# A run may keep a shared note current: its added or reworded lines pass when they pass the
+# private-link / private-mention scan, with no %%privacy:allow%% pass. Everything else stays refused.
+
+_PRIYA_AND_ALEX = "federation_scope: ['person:priya@example.com', 'person:alex@example.com']\n"
+
+
+def test_a_run_may_add_a_fact_to_a_shared_note(vault: Path) -> None:
+    _shared_source(vault, edits="")
+    append(vault, SOURCE, "The widget budget moves to next quarter ([[widget]]).")
+    assert checks(vault, RUN) == []
+    rc, out = hook(vault, RUN)
+    assert rc == 0, out
+
+
+def test_a_run_may_reword_a_line_of_a_shared_note(vault: Path) -> None:
+    _shared_source(vault, edits="")
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("next week.", "next week, at a lower price."))
+    assert checks(vault, RUN) == []
+
+
+def test_a_run_may_add_to_a_page_shared_by_a_folder_default(vault: Path) -> None:
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    append(vault, PLAIN, "A new fact from another page.")
+    assert checks(vault, RUN) == []
+
+
+@pytest.mark.parametrize(
+    ("line", "check"),
+    [
+        ("See [[sam]] for the details.", "private-link"),
+        ("Ask Sammy about the rollout.", "private-mention"),
+        ("The task-renew-permit list is due.", "private-mention"),
+    ],
+)
+def test_a_checked_line_naming_a_private_note_blocks(vault: Path, line: str, check: str) -> None:
+    _shared_source(vault, edits="")
+    n = append(vault, SOURCE, line)
+    found = privacy_staged(vault, env=RUN)
+    assert [(f.path, f.check, f.blocking, f.line) for f in found] == [(SOURCE, check, True, n)]
+    assert "already shared" in found[0].message and "no %%privacy:allow%% pass" in found[0].message
+    assert_no_private_words(found[0].message)
+
+
+def test_a_checked_reword_of_an_owner_marked_line_gets_no_marker_pass(vault: Path) -> None:
+    """The owner allowed one line; a run rewording it can't bring more of that note in under the marker."""
+    _shared_source(vault, edits="")
+    marked = append(vault, SOURCE, "Context from [[sam]]. %%privacy:allow sam%%")
+    assert checks(vault) == []
+    commit(vault, "owner: allow one link")
+    stage(vault, SOURCE, _read(vault, SOURCE).replace("Context from", "More context from"))
+    assert checks(vault, RUN) == [(SOURCE, "private-link", True, marked)]
+    # Leaving the marked line as it is and adding elsewhere passes.
+    stage(vault, SOURCE, _read(vault, SOURCE).replace("More context from", "Context from"))
+    append(vault, SOURCE, "The pilot moved a week.")
+    assert checks(vault, RUN) == []
+
+
+def test_a_checked_edit_may_not_add_a_marker(vault: Path) -> None:
+    _shared_source(vault, edits="")
+    n = append(vault, SOURCE, "See [[sam]]. %%privacy:allow sam%%")
+    assert checks(vault, RUN) == [(SOURCE, "privacy-widening", True, n), (SOURCE, "private-link", True, n)]
+
+
+@pytest.mark.parametrize(
+    ("old_fm", "new_fm"),
+    [
+        pytest.param("", "federation_scope: org\n", id="set"),
+        pytest.param(_PRIYA_AND_ALEX, "federation_scope: org\n", id="widen"),
+        pytest.param(_PRIYA_AND_ALEX, "federation_scope: ['person:priya@example.com']\n", id="narrow"),
+    ],
+)
+def test_a_checked_edit_may_not_change_federation_scope(vault: Path, old_fm: str, new_fm: str) -> None:
+    _shared_source(vault, edits="")
+    if old_fm:
+        stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\n" + old_fm, 1))
+        commit(vault, "owner: the note's own scope")
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\n" + new_fm, 1) + "A new fact.\n")
+    # `org` is over a meeting note's ceiling too, which only warns.
+    assert [c for c in checks(vault, RUN) if c[2]] == [(SOURCE, "privacy-widening", True, None)]
+    assert [c for c in checks(vault) if c[2]] == []
+
+
+def test_a_checked_edit_may_reorder_a_scope_list(vault: Path) -> None:
+    """The same people in another order: not a change of who reads it."""
+    _shared_source(vault, edits="")
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\n" + _PRIYA_AND_ALEX, 1))
+    commit(vault, "owner: the note's own scope")
+    swapped = "federation_scope: ['person:alex@example.com', 'person:priya@example.com']\n"
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\n" + swapped, 1))
+    assert checks(vault, RUN) == []
+
+
+def test_a_checked_edit_may_not_make_a_private_note_normal(vault: Path) -> None:
+    _shared_source(vault, edits="")
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\nvisibility: private\n", 1))
+    commit(vault, "owner: keep this one private")
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\nvisibility: normal\n", 1))
+    assert (SOURCE, "privacy-widening", True, None) in checks(vault, RUN)
+
+
+def test_a_checked_edit_may_not_widen_a_share_by_moving_the_note(vault: Path) -> None:
+    """A move from a share with Priya to a share with the whole org, with an edit on the way."""
+    _share(vault, _SHARE_TOPICS + '    - {glob: "knowledge-base/topics/wide/**", scope: org}\n')
+    commit(vault, "owner: two shares")
+    moved = "knowledge-base/topics/wide/plain.md"
+    (vault / "knowledge-base/topics/wide").mkdir(parents=True)
+    git(vault, "mv", PLAIN, moved)
+    append(vault, moved, "A new fact.")
+    assert checks(vault, RUN) == [(moved, "privacy-widening", True, None)]
+
+
+def test_a_checked_edit_still_refuses_the_privacy_block(vault: Path) -> None:
+    """A run can't switch the freeze off: the privacy: block is the owner's."""
+    _shared_source(vault)  # refuse
+    text = _read(vault, "scout-config.yaml").replace(REFUSE, "")
+    stage(vault, "scout-config.yaml", text)
+    append(vault, SOURCE, "A new fact.")
+    assert ("scout-config.yaml", "privacy-widening", True, None) in checks(vault, RUN)
+
+
+def test_refuse_anywhere_wins(vault: Path) -> None:
+    """``refuse`` committed, ``checked`` only on disk: the run's commit is still checked against the freeze."""
+    _shared_source(vault)  # refuse, committed
+    (vault / "scout-config.yaml").write_text(
+        _read(vault, "scout-config.yaml").replace(REFUSE, ""), encoding="utf-8"
+    )  # unstaged
+    n = append(vault, SOURCE, "A new fact.")
+    assert checks(vault, RUN) == [(SOURCE, "privacy-widening", True, n)]
+
+
+def test_shared_edits_refuse_restores_the_freeze(vault: Path) -> None:
+    _shared_source(vault)  # refuse
+    n = append(vault, SOURCE, "A new fact.")
+    found = privacy_staged(vault, env=RUN)
+    assert [(f.path, f.check, f.blocking, f.line) for f in found] == [(SOURCE, "privacy-widening", True, n)]
+    assert "already shared" in found[0].message and "review queue" in found[0].message
+
+
+@pytest.mark.parametrize(
+    ("value", "expected", "warned"),
+    [("checked", "checked", False), ("refuse", "refuse", False), ("sometimes", "refuse", True), (True, "refuse", True)],
+)
+def test_the_shared_edits_switch_parses_and_fails_closed(value: object, expected: str, warned: bool) -> None:
+    from scout.kb.privacy import load_policy, policy_from_overlay
+
+    policy = policy_from_overlay({"shared_edits": value})
+    assert policy.shared_edits == expected
+    assert ("privacy-overlay-invalid" in policy.warnings) is warned
+    assert load_policy(None).shared_edits == "checked"
+    # It labels nothing, so the policy Agnes indexes by doesn't change.
+    assert "shared_edits" not in policy.to_json()
+
+
+def test_a_config_that_doesnt_load_keeps_refuse_not_checked() -> None:
+    """A broken scout-config.yaml keeps only what narrows: ``refuse`` stays, ``checked`` adds nothing."""
+    from scout.kb.privacy import policy_from_config_text
+
+    broken = "user:\n  date: 2026-13-45\nprivacy:\n  shared_edits: refuse\n"
+    assert policy_from_config_text(broken).shared_edits == "refuse"
+
+
+def test_a_checked_latin1_edit_keeps_the_freeze(vault: Path) -> None:
+    """Lossy decoding would turn ``é`` into U+FFFD and hide the term it spelled, so non-UTF-8 isn't checked."""
+    _shared_source(vault, edits="")
+    stage_bytes(vault, SOURCE, (_SOURCE_TEXT + "Ask Ren\xe9 about it.\n").encode("utf-8").replace(b"\xc3\xa9", b"\xe9"))
+    assert [c[1] for c in checks(vault, RUN) if c[2]] == ["privacy-widening"]
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["Ask S&#97;mmy about it.", "Ask Sa**mm**y about it.", "Ask Sa<!-- -->mmy about it.", "Ask S<b></b>ammy."],
+    ids=["entity", "bold", "comment", "tag"],
+)
+def test_a_checked_line_hiding_a_name_in_markup_blocks(vault: Path, line: str) -> None:
+    _shared_source(vault, edits="")
+    n = append(vault, SOURCE, line)
+    assert checks(vault, RUN) == [(SOURCE, "private-mention", True, n)]
+
+
+def test_a_term_split_across_an_unchanged_and_an_added_line_blocks(vault: Path) -> None:
+    _shared_source(vault, edits="")
+    append(vault, SOURCE, "Remember the task")
+    commit(vault, "owner: a reminder")
+    n = append(vault, SOURCE, "renew permit list before Friday.")
+    assert checks(vault, RUN) == [(SOURCE, "private-mention", True, n)]
+
+
+def test_a_checked_rename_with_a_private_name_blocks(vault: Path) -> None:
+    _shared_source(vault, edits="")
+    moved = SOURCE.replace("widget-sync", "widget-sync-notes")
+    git(vault, "mv", SOURCE, moved)
+    n = append(vault, moved, "Ask Sammy about it.")
+    assert checks(vault, RUN) == [(moved, "private-mention", True, n)]
+
+
+def test_refuse_on_disk_wins_over_checked_at_head(vault: Path) -> None:
+    _shared_source(vault, edits="")  # checked, committed
+    (vault / "scout-config.yaml").write_text(_read(vault, "scout-config.yaml") + REFUSE, encoding="utf-8")  # unstaged
+    n = append(vault, SOURCE, "A new fact.")
+    assert checks(vault, RUN) == [(SOURCE, "privacy-widening", True, n)]
+
+
+def test_a_checked_line_naming_a_note_shared_with_fewer_people_blocks(vault: Path) -> None:
+    """This note reaches Priya and Alex; a note shared with Priya alone is as closed to Alex as a private one."""
+    _shared_source(vault, edits="")
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\n" + _PRIYA_AND_ALEX, 1))
+    narrow = "knowledge-base/sources/2026-11/2026-11-03-budget.md"
+    stage(vault, narrow, "---\nkind: meeting\ntitle: Quarterly vendor shortlist\n---\n# Budget\n")
+    commit(vault, "owner: two meeting notes")
+    n = append(vault, SOURCE, "The Quarterly vendor shortlist is final.")
+    assert checks(vault, RUN) == [(SOURCE, "private-mention", True, n)]
+    # The narrow note itself may say it, and so may a note shared with the same people (the owner's commit).
+    stage(vault, SOURCE, _read(vault, SOURCE).replace("The Quarterly vendor shortlist is final.\n", ""))
+    append(vault, narrow, "The Quarterly vendor shortlist is final.")
+    assert checks(vault, RUN) == []
+
+
+def test_a_checked_quote_of_a_note_shared_with_you_blocks(vault: Path) -> None:
+    from scout.kb import shared_reads
+    from tests.unit.test_shared_reads import SENTENCE, read_response
+
+    _shared_source(vault, edits="")
+    shared_reads.record_tool_call(vault, {}, read_response())
+    outbound.clear_cache()
+    n = append(vault, SOURCE, SENTENCE)
+    assert checks(vault, RUN) == [(SOURCE, "private-mention", True, n)]
+
+
+_CLIENTS = "  local_only_add: ['knowledge-base/clients/**']\n"
+
+
+def test_a_checked_line_naming_a_local_only_note_blocks(vault: Path) -> None:
+    """A local-only note never leaves this computer, so its name mustn't reach a share either."""
+    _shared_source(vault, edits=_CLIENTS)
+    stage(vault, "knowledge-base/clients/hush.md", "---\ntitle: Hush Deal Terms\n---\n# Terms\n")
+    commit(vault, "owner: a local-only note")
+    n = append(vault, SOURCE, "The Hush Deal Terms are final.")
+    assert checks(vault, RUN) == [(SOURCE, "private-mention", True, n)]
+
+
+_NARROW = "knowledge-base/sources/2026-11/2026-11-03-budget.md"
+_NARROW_TEXT = "---\nkind: meeting\ntitle: Quarterly vendor shortlist\n---\n# Budget\n"
+
+
+@pytest.mark.parametrize("unstaged", ["deleted", "widened"])
+def test_a_narrower_note_changed_only_on_disk_still_counts(vault: Path, unstaged: str) -> None:
+    """The committed version is narrower; an unstaged delete or widening on disk mustn't drop its name."""
+    _shared_source(vault, edits="")
+    stage(vault, SOURCE, _SOURCE_TEXT.replace("kind: meeting\n", "kind: meeting\n" + _PRIYA_AND_ALEX, 1))
+    stage(vault, _NARROW, _NARROW_TEXT)
+    commit(vault, "owner: two meeting notes")
+    if unstaged == "deleted":
+        (vault / _NARROW).unlink()
+    else:
+        (vault / _NARROW).write_text(_NARROW_TEXT.replace("kind: meeting\n", "kind: meeting\n" + _PRIYA_AND_ALEX))
+    n = append(vault, SOURCE, "The Quarterly vendor shortlist is final.")
+    assert checks(vault, RUN) == [(SOURCE, "private-mention", True, n)]
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Ask Sa<!--\n-->mmy about it.", "Ask Sa<b\n></b>mmy about it."],
+    ids=["comment", "tag"],
+)
+def test_markup_over_a_line_break_still_hides_nothing(vault: Path, text: str) -> None:
+    _shared_source(vault, edits="")
+    first = append(vault, SOURCE, text.split("\n")[0])
+    second = append(vault, SOURCE, text.split("\n")[1])
+    assert checks(vault, RUN) == [(SOURCE, "private-mention", True, first), (SOURCE, "private-mention", True, second)]
+
+
+def test_a_link_split_inside_a_name_still_blocks(vault: Path) -> None:
+    _shared_source(vault, edits="")
+    n = append(vault, SOURCE, "Ask [Sa](x)mmy about it.")
+    assert checks(vault, RUN) == [(SOURCE, "private-mention", True, n)]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "if a < b\nSa**mm**y Rivers\nx -> y",
+        "cost <= 5\nS&#97;mmy Rivers\nok ->",
+        "`a < b`\nSa**mm**y Rivers\n`c > d`",
+        "a < b\n[Sa](x)mmy Rivers\nc > d",
+        "see <!-- draft\nSa**mm**y Rivers\nx -> y",
+        "a < Sa**mm**y > b",
+        "Ask Sa![](x)mmy about it.",
+    ],
+    ids=["less-than", "less-or-equal", "code spans", "link", "unclosed comment", "one line", "image link"],
+)
+def test_a_less_than_or_an_unclosed_comment_hides_nothing(vault: Path, text: str) -> None:
+    """Only a real tag (`<` then a letter) is markup; an unclosed `<!--` is literal text. Neither may
+    swallow the lines after it and the name they hide."""
+    _shared_source(vault, edits="")
+    numbers = [append(vault, SOURCE, line) for line in text.split("\n")]
+    hit = next(n for n, line in zip(numbers, text.split("\n"), strict=True) if "mm" in line)
+    assert checks(vault, RUN) == [(SOURCE, "private-mention", True, hit)]
+
+
+# What the line scan can't see, pinned so the docs and the code agree: these PASS by design. Terms come
+# from a private note's path and frontmatter, never its body; the phase rule covers the rest.
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(f"Note: {CANARIES['knowledge-base/people/sam.md']}.", id="a private note's body text"),
+        pytest.param("S. asked about the rollout; the new hire will follow up.", id="initials and a role"),
+        pytest.param("Ask S\u0430mmy about it.", id="a Cyrillic look-alike letter"),
+        pytest.param("The permit renew task is on the list.", id="a reordered name"),
+        pytest.param("See task.renew.permit and task/renew/permit.", id="parts joined by a dot or a slash"),
+    ],
+)
+def test_what_the_checked_scan_cannot_see_passes(vault: Path, line: str) -> None:
+    _shared_source(vault, edits="")
+    append(vault, SOURCE, line)
+    assert checks(vault, RUN) == []
+
+
+def test_an_uppercase_md_note_is_in_the_privacy_scope(vault: Path) -> None:
+    from scout.kb.lint_config import in_privacy_scope
+
+    assert in_privacy_scope("knowledge-base/topics/misc/Plan.MD", ())
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    rel = "knowledge-base/topics/misc/Plan.MD"
+    stage(vault, rel, "# Plan\n\nSee [[sam]] for the details.\n")
+    assert checks(vault) == [(rel, "private-link", True, 3)]
+
+
+def test_an_uppercase_md_note_renamed_from_lowercase_is_still_checked(vault: Path) -> None:
+    """#605: a rename .md -> .MD, and an append after it, are checked like any shared note."""
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    upper = PLAIN[:-3] + ".MD"
+    git(vault, "mv", PLAIN, "knowledge-base/topics/misc/plain-tmp.md")  # two steps: a case-only rename
+    git(vault, "mv", "knowledge-base/topics/misc/plain-tmp.md", upper)  # needs them on macOS
+    assert checks(vault) == [] and checks(vault, RUN) == []  # a pure rename adds nothing
+    n = append(vault, upper, "See [[sam]] for the details.")
+    assert checks(vault) == checks(vault, RUN) == [(upper, "private-link", True, n)]
+    commit(vault, "rename to .MD and append")  # the owner's commit; the hook isn't run here
+    n = append(vault, upper, "Sammy has the notes.")
+    assert checks(vault) == checks(vault, RUN) == [(upper, "private-mention", True, n)]
+
+
+def test_a_new_uppercase_md_note_is_checked_in_a_run_too(vault: Path) -> None:
+    """#605: a run's new ``.MD`` in a shared folder gets the note's checks, not the non-note path's."""
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    rel = "knowledge-base/topics/misc/Plan.MD"
+    stage(vault, rel, "---\nvisibility: private\nfederation_scope: org\n---\nSee [[sam]].\n")
+    found = checks(vault, RUN)
+    assert (rel, "privacy-contradiction", False, None) in found  # its frontmatter is read, as a note's is
+    assert (rel, "privacy-widening", True, None) in found
+
+
+# ----- symlinks and type changes (#606) --------------------------------------------
+
+
+def stage_link(vault: Path, rel: str, target: str) -> None:
+    path = vault / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink() or path.exists():
+        path.unlink()
+    path.symlink_to(target)
+    git(vault, "add", "--", rel)
+
+
+LINK = "knowledge-base/topics/misc/link.md"
+_LINK = "link-leaves-scope"
+
+
+def test_a_shared_note_replaced_by_a_symlink_is_checked_like_a_modification(vault: Path) -> None:
+    """A type change (git status T) wasn't listed at all, so nothing looked at it."""
+    _share(vault, _SHARE_TOPICS + REFUSE)
+    stage(vault, "knowledge-base/topics/misc/other.md", "# Other\n\nA stand-in note.\n")
+    commit(vault, "share topics/misc with Priya")
+    stage_link(vault, PLAIN, "other.md")  # the target stays in the share: only the change itself counts
+    assert checks(vault) == []
+    # As any run's edit to a shared note is under `shared_edits: refuse`: the link's text is its one new line.
+    assert checks(vault, RUN) == [(PLAIN, "privacy-widening", True, 1)]
+
+
+def test_a_shared_file_replaced_by_a_symlink_to_a_private_note_blocks(vault: Path) -> None:
+    stage_link(vault, DRAFT, "../knowledge-base/people/sam.md")
+    assert (DRAFT, _LINK, False, None) in checks(vault)
+    found = checks(vault, RUN)
+    assert found and all(f[:3] == (DRAFT, "privacy-widening", True) for f in found)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param("../../people/sam.md", id="a private note"),
+        pytest.param("../../people", id="a folder that isn't shared"),
+        pytest.param("../other/rollout.md", id="a note outside the share"),
+        pytest.param("../../../trading/positions.md", id="a local-only file"),
+        pytest.param("../../../../elsewhere/notes.md", id="outside the vault"),
+        pytest.param("/etc/hosts", id="an absolute path"),
+    ],
+)
+def test_a_shared_symlink_whose_target_leaves_the_share_is_reported(vault: Path, target: str) -> None:
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    stage_link(vault, LINK, target)
+    assert (LINK, _LINK, False, None) in checks(vault)  # the owner is told
+    assert (LINK, "privacy-widening", True, None) in checks(vault, RUN)  # a run is stopped
+    rc, out = hook(vault, RUN)
+    assert rc == 1 and "symlink" in out
+    assert_no_private_words(out)
+
+
+@pytest.mark.parametrize("target", ["plain.md", "../misc/plain.md", "."])
+def test_a_shared_symlink_whose_target_stays_in_the_share_passes(vault: Path, target: str) -> None:
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    stage_link(vault, LINK, target)
+    assert checks(vault) == [] and checks(vault, RUN) == []
+
+
+@pytest.mark.parametrize(
+    ("rel", "target", "reported"),
+    [
+        pytest.param("notes/positions", "../trading/positions.md", True, id="out of a path that uploads"),
+        pytest.param("notes/elsewhere", "../../elsewhere", True, id="out of the vault"),
+        pytest.param("notes/plain", "../knowledge-base/topics/misc/plain.md", False, id="to a note that uploads"),
+        pytest.param("notes/sam", "../knowledge-base/people/sam.md", False, id="unshared link to a private note"),
+        pytest.param("trading/latest", "../../elsewhere/positions.md", False, id="the link itself is local-only"),
+    ],
+)
+def test_a_symlink_into_a_local_only_path_is_reported(vault: Path, rel: str, target: str, reported: bool) -> None:
+    """A link that uploads names its target: one in a local-only path, or outside the vault, is reported."""
+    stage_link(vault, rel, target)
+    assert checks(vault) == ([(rel, _LINK, False, None)] if reported else [])
+    assert checks(vault, RUN) == ([(rel, "privacy-widening", True, None)] if reported else [])
+
+
+def test_a_local_only_file_replaced_by_a_symlink_is_listed(vault: Path) -> None:
+    """The type change in a local-only path is seen (it adds nothing to check: the link stays home)."""
+    from scout.kb.git_io import staged_paths
+
+    stage_link(vault, POSITIONS, "archive/positions.md")
+    assert [(sp.rel, sp.head_rel, sp.symlink) for sp in staged_paths(vault)] == [(POSITIONS, POSITIONS, True)]
+    assert checks(vault) == [] and checks(vault, RUN) == []
+
+
+MISC = "knowledge-base/topics/misc/"
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param("draft.md", id="as written"),
+        pytest.param("DRAFT.md", id="another case of the name"),
+        pytest.param("Draft.MD", id="another case of the suffix"),
+        pytest.param("../MISC/draft.md", id="another case of a folder"),
+        pytest.param("../../People/sam.md", id="another case, outside the share"),
+        pytest.param("draft.md/", id="a trailing slash"),
+    ],
+)
+def test_a_shared_symlink_reaches_no_private_note_by_another_spelling(vault: Path, target: str) -> None:
+    """A case-insensitive disk opens ``DRAFT.md`` as ``draft.md``: the target is found the way the disk finds it."""
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    stage_link(vault, LINK, target)
+    assert (LINK, _LINK, False, None) in checks(vault)
+    assert (LINK, "privacy-widening", True, None) in checks(vault, RUN)
+
+
+def test_a_shared_symlink_reaches_no_private_note_by_another_unicode_form(vault: Path) -> None:
+    import unicodedata
+
+    _share(vault, _SHARE_TOPICS)
+    name = unicodedata.normalize("NFC", "r\u00e9sum\u00e9.md")
+    stage(vault, MISC + name, "---\nvisibility: private\n---\n# A stand-in private note\n")
+    commit(vault, "share topics/misc with Priya")
+    git(vault, "update-index", "--add", "--cacheinfo", "120000", _blob(vault, unicodedata.normalize("NFD", name)), LINK)
+    assert (LINK, _LINK, False, None) in checks(vault)
+    assert (LINK, "privacy-widening", True, None) in checks(vault, RUN)
+
+
+def _blob(vault: Path, text: str) -> str:
+    import subprocess
+
+    done = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"], cwd=vault, input=text.encode(), capture_output=True, check=True
+    )
+    return done.stdout.decode().strip()
+
+
+def test_a_chain_of_symlinks_is_followed_to_its_end(vault: Path) -> None:
+    """The owner's link to a private note is a warning; a run's link to that link reaches the same note."""
+    _share(vault, _SHARE_TOPICS)
+    stage_link(vault, MISC + "link2.md", "draft.md")
+    stage_link(vault, MISC + "ok2.md", "plain.md")
+    commit(vault, "share topics/misc with Priya")
+    stage_link(vault, LINK, "link2.md")
+    assert checks(vault) == [(LINK, _LINK, False, None)]
+    assert checks(vault, RUN) == [(LINK, "privacy-widening", True, None)]
+    stage_link(vault, LINK, "ok2.md")  # a chain that ends inside the share is fine
+    assert checks(vault) == [] and checks(vault, RUN) == []
+
+
+def test_a_symlink_through_a_linked_folder_is_followed(vault: Path) -> None:
+    _share(vault, _SHARE_TOPICS)
+    stage_link(vault, MISC + "ppl", "../../people")
+    commit(vault, "share topics/misc with Priya")  # the owner's commit; the hook isn't run here
+    stage_link(vault, LINK, "ppl/sam.md")
+    assert checks(vault) == [(LINK, _LINK, False, None)]
+    assert checks(vault, RUN) == [(LINK, "privacy-widening", True, None)]
+
+
+def test_a_symlink_loop_is_reported(vault: Path) -> None:
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    stage_link(vault, MISC + "a.md", "b.md")
+    stage_link(vault, MISC + "b.md", "a.md")
+    assert checks(vault) == [(MISC + "a.md", _LINK, False, None), (MISC + "b.md", _LINK, False, None)]
+    assert [f[1:3] for f in checks(vault, RUN)] == [("privacy-widening", True)] * 2
+
+
+def test_a_runs_symlink_to_nothing_in_the_commit_is_refused(vault: Path) -> None:
+    """A run's link must name a file or folder of the commit: what a missing name opens can't be checked."""
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    stage_link(vault, LINK, "not-there.md")
+    assert checks(vault) == []  # the owner's is judged by its path, which stays in the share
+    assert checks(vault, RUN) == [(LINK, "privacy-widening", True, None)]
+    stage_link(vault, "notes/later", "not-there")  # unshared, but it uploads
+    assert checks(vault, RUN) == [
+        (LINK, "privacy-widening", True, None),
+        ("notes/later", "privacy-widening", True, None),
+    ]
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param("../.env.local", id="a secret file"),
+        pytest.param("../.claude/settings.json", id="a path the host always keeps local"),
+        pytest.param("../Scans/scan.md", id="a path on the host's cached list, in another case"),
+    ],
+)
+def test_a_symlink_to_a_path_repo_sync_keeps_home_is_reported(vault: Path, target: str) -> None:
+    """Local-only as repo sync counts it (the host's lists and secret files too), not only the vault's policy."""
+    _with_scan(vault)
+    stage(vault, ".env.local", "A_STAND_IN=1\n")
+    stage(vault, ".claude/settings.json", "{}\n")
+    commit(vault, "stand-ins")
+    _linked(vault, ["Scans/"])
+    stage_link(vault, "notes/there", target)
+    assert checks(vault) == [("notes/there", _LINK, False, None)]
+    assert checks(vault, RUN) == [("notes/there", "privacy-widening", True, None)]
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param("../../people/sam.md/../../topics/misc/plain.md", id="through a private note"),
+        pytest.param(
+            "../../../trading/positions.md/../../knowledge-base/topics/misc/plain.md", id="through a local-only path"
+        ),
+        pytest.param("sub/../plain.md", id="through a folder that isn't there"),
+        pytest.param("./sub/../plain.md", id="the same, after a dot"),
+    ],
+)
+def test_a_symlink_whose_target_backs_out_of_a_name_is_reported(vault: Path, target: str) -> None:
+    """The link's text is what uploads: it may not spell a path it then backs out of with ``..``."""
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    stage_link(vault, LINK, target)
+    assert checks(vault) == [(LINK, _LINK, False, None)]
+    assert checks(vault, RUN) == [(LINK, "privacy-widening", True, None)]
+
+
+def test_two_names_one_disk_opens_as_the_same_file_are_not_guessed_between(vault: Path) -> None:
+    """``plain.md`` is open and ``PLAIN.md`` private: which one the link opens depends on the disk."""
+    _share(vault, _SHARE_TOPICS)
+    commit(vault, "share topics/misc with Priya")
+    private = _blob(vault, "---\nvisibility: private\n---\n# A stand-in private note\n")
+    git(vault, "update-index", "--add", "--cacheinfo", "100644", private, MISC + "PLAIN.md")
+    stage_link(vault, LINK, "plain.md")
+    assert (LINK, _LINK, False, None) in checks(vault)
+    assert (LINK, "privacy-widening", True, None) in checks(vault, RUN)
+
+
+_CONFIG = "scout-config.yaml"
+_WIDER = "vault_name: demo\nprivacy:\n  local_only_add: []\n"
+
+
+@pytest.mark.parametrize(
+    ("at_head", "name"),
+    [
+        pytest.param("vault_name: demo\n", "vault_name: demo", id="HEAD has no privacy block"),
+        pytest.param(
+            "privacy: {shared_edits: refuse}\n", "privacy: {shared_edits: refuse}", id="the name spells HEAD's block"
+        ),
+    ],
+)
+def test_a_run_may_not_turn_the_config_into_a_symlink(vault: Path, at_head: str, name: str) -> None:
+    """Git stores the link as its target's name, and the engine reads the file behind it.
+
+    A name that parses as the YAML at HEAD made the commit's ``privacy:`` block
+    look unchanged, while the policy on disk was whatever the target held.
+    """
+    stage(vault, _CONFIG, at_head)
+    commit(vault, "the owner's config")
+    stage(vault, name, _WIDER)
+    stage_link(vault, _CONFIG, name)
+    assert (_CONFIG, "privacy-widening", True, None) in checks(vault, RUN)
+    assert hook(vault, RUN)[0] != 0
+    assert (_CONFIG, _LINK, False, None) in checks(vault)  # the owner is told
+
+
+def _index_link(vault: Path, rel: str, target: str) -> None:
+    """Stage a symlink without writing it (the path may be one git ignores)."""
+    git(vault, "update-index", "--add", "--cacheinfo", "120000", _blob(vault, target), rel)
+
+
+@pytest.mark.parametrize(
+    "rel", ["connectors.custom.yaml", ".scout-state/triggers.yaml", ".scout-state/schedule.yaml", ".mcp.json"]
+)
+def test_a_run_may_not_make_a_file_the_engine_reads_a_symlink(vault: Path, rel: str) -> None:
+    stage(vault, "notes/stand-in.yaml", "a: 1\n")
+    commit(vault, "a stand-in")
+    _index_link(vault, rel, "notes/stand-in.yaml" if "/" not in rel else "../notes/stand-in.yaml")
+    assert (rel, "privacy-widening", True, None) in checks(vault, RUN)
+    assert all(f[0] != rel or not f[2] for f in checks(vault))  # the owner may
+
+
+def test_a_run_may_not_turn_a_linked_engine_file_back_into_a_file(vault: Path) -> None:
+    """The other type change: the commit's "old" text would be the link's target name."""
+    rel = "connectors.custom.yaml"
+    stage(vault, "notes/stand-in.yaml", "a: 1\n")
+    stage_link(vault, rel, "notes/stand-in.yaml")
+    commit(vault, "the owner's link")
+    (vault / rel).unlink()
+    stage(vault, rel, "a: 2\n")
+    assert (rel, "privacy-widening", True, None) in checks(vault, RUN)
+    assert checks(vault) == []
+
+
+_REPLACED = "settings-file-replaced"
+
+
+@pytest.mark.parametrize("name", ["Scout-Config.yaml", "SCOUT-CONFIG.YAML"])
+def test_a_run_may_not_rename_the_config_to_another_case(vault: Path, name: str) -> None:
+    """Git then has no ``scout-config.yaml``, and a case-insensitive disk still opens the renamed file as it."""
+    stage(vault, _CONFIG, "vault_name: demo\n")  # no privacy: block, as in a new vault
+    commit(vault, "the owner's config")
+    git(vault, "mv", _CONFIG, name)
+    stage(vault, name, _WIDER)
+    assert (name, "privacy-widening", True, None) in checks(vault, RUN)
+    assert hook(vault, RUN)[0] != 0
+    assert (name, _REPLACED, False, None) in checks(vault)
+
+
+@pytest.mark.parametrize(
+    ("rel", "twin"),
+    [(_CONFIG, "Scout-Config.yaml"), ("connectors.custom.yaml", "Connectors.Custom.yaml"), (".mcp.json", ".MCP.json")],
+)
+def test_a_run_may_not_add_a_settings_file_under_a_second_spelling(vault: Path, rel: str, twin: str) -> None:
+    """Two index entries a case-insensitive disk holds as one file: the last one checked out wins."""
+    stage(vault, rel, "vault_name: demo\n")
+    commit(vault, "the owner's file")
+    git(vault, "update-index", "--add", "--cacheinfo", "100644", _blob(vault, _WIDER), twin)
+    assert (twin, "privacy-widening", True, None) in checks(vault, RUN)
+    assert (twin, _REPLACED, False, None) in checks(vault)
+
+
+def test_a_run_may_not_drop_a_config_that_is_still_on_disk(vault: Path) -> None:
+    """Untracked, it is still the policy Scout reads, and now no commit shows what it says."""
+    stage(vault, _CONFIG, "vault_name: demo\n")
+    commit(vault, "the owner's config")
+    git(vault, "rm", "-q", "--cached", _CONFIG)
+    assert checks(vault, RUN) == [(_CONFIG, "privacy-widening", True, None)]
+    assert checks(vault) == []
+
+
+def _index_gitlink(vault: Path, rel: str) -> None:
+    git(vault, "update-index", "--add", "--cacheinfo", "160000", git(vault, "rev-parse", "HEAD").strip(), rel)
+
+
+@pytest.mark.parametrize("rel", [_CONFIG, "knowledge-base/topics/misc/sub.md", ".scout-state"])
+def test_a_gitlink_is_reported_not_read(vault: Path, rel: str) -> None:
+    """A gitlink (a submodule's entry) has no text to read: it is named, and a run's is refused."""
+    _index_gitlink(vault, rel)
+    assert (rel, _REPLACED, False, None) in checks(vault)
+    assert (rel, "privacy-widening", True, None) in checks(vault, RUN)
+    hook(vault)  # the other lint rules don't read it either
+    assert hook(vault, RUN)[0] != 0
+
+
+def test_a_runs_gitlink_anywhere_is_refused(vault: Path) -> None:
+    _index_gitlink(vault, "notes/sub")
+    assert checks(vault) == []
+    assert checks(vault, RUN) == [("notes/sub", "privacy-widening", True, None)]
 
 
 # ----- a run changing a non-note file in a share (#594) ---------------------------

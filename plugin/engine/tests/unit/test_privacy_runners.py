@@ -301,6 +301,11 @@ def _drift_vault(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (v / "scripts" / "unrelated.sh").write_text("#!/bin/bash\nfind . -name '*.log'\n", encoding="utf-8")
+    # The #453 pattern: a sender that runs the readers and pipes what they print on (it reads nothing itself).
+    (v / "scripts" / "send-digest.sh").write_text(
+        "#!/bin/bash\n{ python3 scripts/enrich.py; bash scripts/people.sh; bash scripts/grep-kb.bash; } | send-it\n",
+        encoding="utf-8",
+    )
     # Runners that only look compliant: an inline (unexported) owner reader, a commented export.
     (v / "run-inline.sh").write_text("#!/bin/bash\nSCOUT_READER=owner claude -p go\n", encoding="utf-8")
     (v / "run-commented.sh").write_text("#!/bin/bash\n# export SCOUT_MODE=x\nclaude -p go\n", encoding="utf-8")
@@ -348,9 +353,57 @@ def test_drift_reports_a_vault_script_reading_the_kb_without_scoutctl_kb(tmp_pat
 def test_doctor_warns_about_privacy_drift(tmp_path: Path) -> None:
     from scout.scripts.bootstrap_doctor import _check_vault_drift
 
-    warnings, _notes = _check_vault_drift(vault=_drift_vault(tmp_path))
-    assert any("run-extra.sh" in w and "SCOUT_READER" in w for w in warnings)
+    warnings, _notes, groups, meta = _check_vault_drift(vault=_drift_vault(tmp_path))
+    assert any("run-commented.sh" in w and "SCOUT_READER" in w for w in warnings)
     assert any("scripts/enrich.py" in w for w in warnings)
+    # One warning per rule, however many files break it (#505); each group lists every file.
+    privacy = [w for w in warnings if w.startswith("privacy: ")]
+    assert len(privacy) == 2
+    assert {g.kind: g.items for g in groups} == {
+        "privacy.runner-no-reader": ("run-commented.sh", "run-extra.sh", "run-inline.sh", "run-owner.sh"),
+        "privacy.script-raw-kb-read": ("scripts/enrich.py", "scripts/grep-kb.bash", "scripts/people.sh"),
+    }
+    assert {g.summary for g in groups} == set(privacy)
+    scripts = next(g.summary for g in groups if g.kind == "privacy.script-raw-kb-read")
+    assert scripts.startswith(
+        "privacy: 3 vault scripts read the knowledge base directly, not through `scoutctl kb`, so what they "
+        "produce carries no privacy labels: scripts/enrich.py, scripts/grep-kb.bash and 1 more. To fix, "
+    )
+    assert "`scoutctl bootstrap drift` lists them all" in scripts and "CANARY" not in scripts
+    # High risk (R13): send-digest.sh runs all three and pipes what they print on (#453).
+    assert meta[scripts].risk == "high" and meta[scripts].id == "privacy.script-raw-kb-read"
+    assert set(meta[scripts].digests) == set(meta[scripts].items)
+    runners = next(g.summary for g in groups if g.kind == "privacy.runner-no-reader")
+    assert meta[runners].risk == "high" and set(meta[runners].digests) == set(meta[runners].items)
+
+
+def test_a_reader_nothing_runs_and_that_sends_nothing_is_low_risk(tmp_path: Path) -> None:
+    from scout.scripts.bootstrap_doctor import _check_vault_drift
+
+    v = _drift_vault(tmp_path)
+    (v / "scripts" / "send-digest.sh").unlink()
+    warnings, _notes, groups, meta = _check_vault_drift(vault=v)
+    (internal,) = [g for g in groups if g.kind == "privacy.script-raw-kb-read.internal"]
+    assert internal.items == ("scripts/enrich.py", "scripts/grep-kb.bash", "scripts/people.sh")
+    assert internal.summary.startswith(
+        "privacy: 3 vault scripts read the knowledge base directly, not through `scoutctl kb`, but mention no way "
+        "to send what they read and no other vault script runs them"
+    )
+    assert meta[internal.summary].risk == "low" and set(meta[internal.summary].digests) == set(internal.items)
+    assert "CANARY" not in internal.summary and "CANARY" not in (meta[internal.summary].reason or "")
+
+
+def test_one_file_breaking_a_privacy_rule_keeps_its_own_warning(tmp_path: Path) -> None:
+    from scout.scripts.bootstrap_doctor import _check_vault_drift
+
+    v = tmp_path / "Scout"
+    (v / "scripts").mkdir(parents=True)
+    (v / "scripts" / "enrich.py").write_text("open('knowledge-base/a.md').read()\n", encoding="utf-8")
+    warnings, _notes, groups, _meta = _check_vault_drift(vault=v)
+    assert groups == []
+    assert [w for w in warnings if w.startswith("privacy: ")] == [
+        f"privacy: {f.message}" for f in vault_drift.privacy_drift(v)
+    ]
 
 
 # ----- vault scripts: vault-freshness.py, recurring-task-status.py --------------------

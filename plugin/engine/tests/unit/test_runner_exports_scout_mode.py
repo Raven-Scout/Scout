@@ -24,19 +24,22 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[3]  # …/scout-plugin
 TEMPLATES = REPO_ROOT / "templates"
 
-# (template, default MODE when the dispatcher's SCOUT_FORCE_MODE is unset)
+# (template, the line that sets MODE). The dispatcher's SCOUT_FORCE_MODE wins, with a default for
+# a manual run; run-respond.sh fixes MODE=respond, since run_skill sets SCOUT_FORCE_MODE to the
+# skill's name (scout-respond), which is no slot.
 RUNNERS = [
-    ("run-scout.sh.tmpl", "manual"),
-    ("run-dreaming.sh.tmpl", "dreaming-manual"),
-    ("run-research.sh.tmpl", "research-manual"),
+    ("run-scout.sh.tmpl", 'MODE="${SCOUT_FORCE_MODE:-manual}"'),
+    ("run-dreaming.sh.tmpl", 'MODE="${SCOUT_FORCE_MODE:-dreaming-manual}"'),
+    ("run-research.sh.tmpl", 'MODE="${SCOUT_FORCE_MODE:-research-manual}"'),
+    ("run-respond.sh.tmpl", "MODE=respond"),
 ]
 
 EXPORT_LINE = 'export SCOUT_MODE="$MODE"'
 CLAUDE_LAUNCH = '"$SCOUT_DIR/scripts/claude-with-retry.sh"'
 
 
-@pytest.mark.parametrize(("name", "default_mode"), RUNNERS)
-def test_runner_exports_scout_mode_between_mode_resolution_and_claude_launch(name: str, default_mode: str) -> None:
+@pytest.mark.parametrize(("name", "mode_line"), RUNNERS)
+def test_runner_exports_scout_mode_between_mode_resolution_and_claude_launch(name: str, mode_line: str) -> None:
     """MODE is resolved, then exported as SCOUT_MODE, then claude is launched — in that order.
 
     Order matters: an export before the assignment exports an empty string (which
@@ -45,7 +48,7 @@ def test_runner_exports_scout_mode_between_mode_resolution_and_claude_launch(nam
     """
     text = (TEMPLATES / name).read_text(encoding="utf-8")
 
-    mode_assign = text.index(f'MODE="${{SCOUT_FORCE_MODE:-{default_mode}}}"')
+    mode_assign = text.index(f"\n{mode_line}\n")
     export = text.index(EXPORT_LINE)
     launch = text.index(CLAUDE_LAUNCH)
 

@@ -3,7 +3,7 @@ import SwiftUI
 extension BoardState {
     var color: Color {
         switch self {
-        case .mine: DS.Priority.urgent
+        case .mine: DS.Attention.you
         case .doing: DS.SlotType.consolidation
         case .waiting: DS.Priority.todo
         case .blocked: DS.Ink.p3

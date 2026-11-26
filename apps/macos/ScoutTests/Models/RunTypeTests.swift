@@ -52,6 +52,7 @@ struct RunTypeTests {
             "consolidation",
             "dreaming",
             "research",
+            "respond",
             "manual",
         ]))
     }
@@ -71,13 +72,36 @@ struct UpcomingRunDecodingTests {
         #expect(upc?.id == "morning-briefing-2026-05-08T12:00:00Z")
     }
 
-    @Test func unknownSlotKeyYieldsNil() {
+    /// Only a `slot_type` this build doesn't know yields nil.
+    @Test func unknownSlotTypeYieldsNil() {
         let upc = UpcomingRun(
             slotKey: "mystery-slot",
             slotType: "mystery",
             scheduledAtUTC: "2026-05-08T12:00:00Z"
         )
         #expect(upc == nil)
+    }
+
+    /// Finding #17: a slot made in the app (a key the table doesn't know)
+    /// takes its type from `slot_type` instead of disappearing.
+    @Test func unknownSlotKeyTakesItsTypeFromSlotType() {
+        let cases: [(String, String, RunType)] = [
+            ("late-research", "research", .research),
+            ("focus-hour", "consolidation", .consolidation),
+            ("deep-dreaming", "dreaming", .dreaming),
+            ("noon-briefing", "briefing", .morningBriefing),
+            ("sunday-weekend-briefing", "briefing", .weekendBriefing),
+            ("on-demand", "manual", .manual),
+        ]
+        for (key, type, expected) in cases {
+            let upc = UpcomingRun(slotKey: key, slotType: type, scheduledAtUTC: "2026-05-08T12:00:00Z")
+            #expect(upc?.type == expected, "\(key)")
+        }
+    }
+
+    /// A known key still wins over `slot_type`.
+    @Test func knownSlotKeyWinsOverSlotType() {
+        #expect(RunType(slotKey: "weekend-briefing", slotType: "briefing") == .weekendBriefing)
     }
 
     @Test func malformedTimestampYieldsNil() {

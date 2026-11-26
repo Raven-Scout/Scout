@@ -6,6 +6,8 @@ struct ActionItemsView: View {
     @EnvironmentObject var writerBox: ActionItemsWriterBox
     @EnvironmentObject var envCheck: ActionItemsEnvironmentState
     @EnvironmentObject var displayProfile: DisplayProfileService
+    @EnvironmentObject var vaultUndo: VaultUndoController
+    @Environment(\.undoManager) private var undoManager
     let scoutDirectory: URL
     let actionItemsDirectory: URL
 
@@ -34,42 +36,59 @@ struct ActionItemsView: View {
     /// A row a cross-ref paged in; scrolled to once it appears.
     @State private var pendingScrollID: UUID?
     @FocusState private var searchFocused: Bool
+    /// The keyboard-current card (#50) and the list's own focus, which the
+    /// arrow keys need. See `ActionItemsKeyboardContext`.
+    @State private var cursorTaskID: UUID?
+    @State private var navigableRows: [ActionItemsKeyboardContext.Row] = []
+    @State private var commentEditorFocused = false
+    @State private var toggleRequest: ActionItemsKeyboardContext.ToggleRequest?
+    @FocusState private var listFocused: Bool
+    /// A click on a card gives the list the keys once its actions have run.
+    @State private var clickFocus = CardClickFocus()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if !envCheck.result.ok {
                 environmentBanner
             }
+            // The view switch, View menu and Select keep their size; the
+            // filters take what is left and step down into menus to fit it
+            // (`FilterChipsView`), so nothing is pushed off either edge.
             HStack(spacing: 10) {
                 if viewMode == .topics {
                     Spacer(minLength: 0)
                 } else {
                     FilterChipsView(filter: $filter)
                 }
-                EditorialSegmentedControl(
-                    selection: $displayProfile.currentView,
-                    options: ActionItemsViewMode.allCases.map { ($0.displayName, $0) }
-                )
-                if !ActionItemsDisplayMenu.options(for: viewMode).isEmpty {
-                    ActionItemsDisplayMenu(mode: viewMode)
-                }
-                if viewMode == .list, case .loaded = docService.state {
-                    Button {
-                        toggleSelectionMode()
-                    } label: {
-                        Label(isSelecting ? "Done" : "Select", systemImage: isSelecting ? "checkmark" : "checkmark.circle")
-                            .font(DS.sans(11.5, weight: .medium))
+                HStack(spacing: 10) {
+                    EditorialSegmentedControl(
+                        selection: $displayProfile.currentView,
+                        options: ActionItemsViewMode.allCases.map { ($0.displayName, $0) }
+                    )
+                    if !ActionItemsDisplayMenu.options(for: viewMode).isEmpty {
+                        ActionItemsDisplayMenu(mode: viewMode)
                     }
-                    .buttonStyle(.borderless)
-                    .help(isSelecting ? "Finish selecting action items" : "Select multiple action items to copy")
+                    if viewMode == .list, case .loaded = docService.state {
+                        Button {
+                            toggleSelectionMode()
+                        } label: {
+                            Label(isSelecting ? "Done" : "Select", systemImage: isSelecting ? "checkmark" : "checkmark.circle")
+                                .font(DS.font(.caption, weight: .medium))
+                        }
+                        .buttonStyle(.borderless)
+                        .help(isSelecting ? "Finish selecting action items" : "Select multiple action items to copy")
+                    }
                 }
+                .fixedSize()
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 8)
             .background(DS.Paper.base.opacity(0.94))
             .overlay(alignment: .bottom) { EditorialRule() }
             content
+                .environment(\.actionItemsWritesEnabled, Self.writesEnabled(envCheck.result))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(DS.Paper.base)
@@ -77,7 +96,7 @@ struct ActionItemsView: View {
         .searchFocused($searchFocused)
         .background {
             Button("Find") { searchFocused = true }
-                .keyboardShortcut("f", modifiers: .command)
+                .keyboardShortcut(AppShortcut.find)
                 .frame(width: 0, height: 0)
                 .opacity(0)
         }
@@ -92,6 +111,7 @@ struct ActionItemsView: View {
                     Image(systemName: "folder")
                 }
                 .help("Reveal in Finder")
+                .accessibilityLabel("Reveal in Finder")
             }
         }
         .overlay(alignment: .top) {
@@ -112,6 +132,11 @@ struct ActionItemsView: View {
         .onAppear {
             load()
             relayout()
+            reconcileCursor()
+        }
+        // Opening the page with the check failed tries it once more.
+        .task {
+            if !envCheck.result.ok { await envCheck.recheck?() }
         }
         .onChange(of: displayedDate) { _, _ in
             endSelectionMode()
@@ -130,15 +155,19 @@ struct ActionItemsView: View {
         .onChange(of: docService.state) { _, _ in
             relayout()
             reconcileSelection()
+            reconcileCursor()
         }
         .onChange(of: filter) { _, _ in
             relayout()
             reconcileSelection()
+            reconcileCursor()
         }
         .onChange(of: display) { _, _ in
             relayout()
             reconcileSelection()
+            reconcileCursor()
         }
+        .onChange(of: windows) { _, _ in reconcileCursor() }
     }
 
     // MARK: - Content
@@ -153,7 +182,8 @@ struct ActionItemsView: View {
                 columns: layout?.boardColumns ?? ActionBoardColumn.columns(from: boardSections(doc)),
                 scoutDirectory: scoutDirectory,
                 density: display.density,
-                fields: display.fields
+                fields: display.fields,
+                openList: { displayProfile.currentView = .list }
             )
         } else if case .loaded(let doc) = docService.state, viewMode == .topics {
             TopicBoardView(
@@ -161,7 +191,8 @@ struct ActionItemsView: View {
                 fileDate: doc.date,
                 actionItemsDirectory: actionItemsDirectory,
                 scoutDirectory: scoutDirectory,
-                search: filter.searchText
+                search: filter.searchText,
+                doneRange: displayProfile.binding(\.topics.doneRange)
             )
         } else {
             listContent
@@ -179,7 +210,76 @@ struct ActionItemsView: View {
                     scroll(to: id, proxy: proxy)
                 })
                 .environment(\.highlightedTaskID, highlightedTaskID)
+                .environment(\.actionItemsKeyboard, keyboardContext)
+                .environment(\.cardClickFocus, clickFocus)
+                .onAppear { clickFocus.start() }
+                .onDisappear { clickFocus.stop() }
+                .onPreferenceChange(CommentEditorFocusedKey.self) { focused in
+                    // A comment sent or cancelled takes its editor (and the
+                    // focus) away: hand the keys back to the list unless
+                    // another field took them.
+                    if commentEditorFocused, !focused, !searchFocused { listFocused = true }
+                    commentEditorFocused = focused
+                }
+                // The list takes keyboard focus (a click on a card, or opening
+                // the page) so the arrows move the current card rather than
+                // scroll; the current card rings while it has the keys (T4).
+                .dsFocusContainer($listFocused, showsCursor: listOwnsKeys)
+                // Each handler acts only while the list itself has focus, never
+                // for keys typed into a comment editor or left over by a
+                // focused button inside it (`listOwnsKeys`).
+                .keyboardListNavigation(
+                    when: listOwnsKeys,
+                    ids: { navigableRows.map(\.id) },
+                    selection: $cursorTaskID,
+                    announce: { id in
+                        navigableRows.first { $0.id == id }.map { ActionItemsParser.plainSubject($0.subject) }
+                    }
+                ) { id in
+                    scroll(to: id, proxy: proxy, anchor: nil)
+                }
+                .onKeyPress(keys: [.return, .space], phases: .down) { press in
+                    guard listOwnsKeys, press.modifiers.isEmpty, let id = cursorTaskID else { return .ignored }
+                    toggleRequest = .init(id: id, serial: (toggleRequest?.serial ?? 0) + 1)
+                    return .handled
+                }
+                .onKeyPress(.escape) {
+                    guard listOwnsKeys, cursorTaskID != nil else { return .ignored }
+                    cursorTaskID = nil
+                    return .handled
+                }
+                // Only when nothing holds the keys (the app just opened):
+                // arriving from the sidebar leaves them there.
+                .dsFocusOnAppear($listFocused)
         }
+    }
+
+    private var listOwnsKeys: Bool {
+        ActionItemsKeyboardContext.listOwnsKeys(listFocused: listFocused, commentEditorFocused: commentEditorFocused)
+    }
+
+    private var keyboardContext: ActionItemsKeyboardContext {
+        ActionItemsKeyboardContext(
+            cursorID: cursorTaskID,
+            ringID: KeyboardListNavigation.ringed(cursorTaskID, in: navigableRows.map(\.id)),
+            commitKeyFree: !commentEditorFocused && !searchFocused,
+            toggleRequest: toggleRequest,
+            focusCard: StableAction { id in
+                clickFocus.clicked(id, setCursor: { cursorTaskID = $0 }, focusList: { listFocused = true })
+            })
+    }
+
+    /// Keep the current card on screen after a write or a filter change: the
+    /// same card if it's still drawn, else the one now in its place.
+    private func reconcileCursor() {
+        let previous = navigableRows
+        guard case .loaded(let doc) = docService.state else {
+            navigableRows = []
+            cursorTaskID = nil
+            return
+        }
+        navigableRows = ActionItemsKeyboardContext.navigableRows(in: listSections(doc), windows: windows)
+        cursorTaskID = ActionItemsKeyboardContext.reconcile(cursor: cursorTaskID, previous: previous, rows: navigableRows)
     }
 
     @ViewBuilder
@@ -304,13 +404,15 @@ struct ActionItemsView: View {
         }
     }
 
-    private func scroll(to id: UUID, proxy: ScrollViewProxy) {
+    /// `anchor: nil` scrolls only as far as it takes to show the row, as the
+    /// arrow keys want; a cross-ref jump centres it.
+    private func scroll(to id: UUID, proxy: ScrollViewProxy, anchor: UnitPoint? = .center) {
         // After this update's layout, so a row that just appeared has a frame.
         DispatchQueue.main.async {
             if reduceMotion {
-                proxy.scrollTo(id, anchor: .center)
+                proxy.scrollTo(id, anchor: anchor)
             } else {
-                withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
+                withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: anchor) }
             }
         }
     }
@@ -320,18 +422,18 @@ struct ActionItemsView: View {
     private var dateline: some View {
         HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text(longDate(displayedDate))
-                .font(DS.serif(28, weight: .medium))
+                .dsFont(.display, .serif, weight: .medium)
                 .foregroundStyle(DS.Ink.p1)
             Text(weekLabel(displayedDate))
-                .font(DS.sans(14))
+                .font(DS.font(.headline))
                 .foregroundStyle(DS.Ink.p3)
             Spacer(minLength: 0)
             VStack(alignment: .trailing, spacing: 2) {
                 Text("repo ~/Scout")
-                    .font(DS.mono(12))
+                    .font(DS.font(.label, .mono))
                     .foregroundStyle(DS.Ink.p4)
                 Text(displayedDate, style: .date)
-                    .font(DS.mono(12))
+                    .font(DS.font(.label, .mono))
                     .foregroundStyle(DS.Ink.p4)
             }
         }
@@ -393,70 +495,65 @@ struct ActionItemsView: View {
             || trimmed.hasPrefix("**this run’s headline")  // curly-apostrophe variant
     }
 
-    /// Lift the leading `**…**` markdown bold span out of a preamble
-    /// paragraph and treat it as the headline; everything after becomes the
-    /// collapsible body. Falls back to "first sentence" + "rest" if no
-    /// leading bold exists.
+    /// Headline and body of one preamble paragraph (`PreambleSplit`).
     fileprivate func splitPreamble(_ raw: String) -> (headline: String, body: String) {
-        let s = raw.trimmingCharacters(in: .whitespaces)
-        if s.hasPrefix("**") {
-            // Find the closing `**` that isn't immediately back-to-back.
-            var idx = s.index(s.startIndex, offsetBy: 2)
-            while idx < s.endIndex {
-                if let closeRange = s.range(of: "**", range: idx..<s.endIndex) {
-                    let head = String(s[s.index(s.startIndex, offsetBy: 2)..<closeRange.lowerBound])
-                    let rest = String(s[closeRange.upperBound...])
-                        .trimmingCharacters(in: .whitespaces)
-                    // Strip a leading period or em-dash separator from the body
-                    // so the headline doesn't appear to dangle.
-                    let cleaned = rest.drop(while: { ".—– ".contains($0) })
-                    return (head.trimmingCharacters(in: .whitespaces), String(cleaned))
-                }
-                idx = s.index(after: idx)
-            }
-        }
-        // No leading bold — split on the first sentence boundary.
-        if let dot = s.firstIndex(where: { $0 == "." || $0 == ":" }) {
-            let head = String(s[..<dot])
-            let body = String(s[s.index(after: dot)...]).trimmingCharacters(in: .whitespaces)
-            return (head, body)
-        }
-        return (s, "")
+        PreambleSplit.split(raw)
     }
 
     private var environmentBanner: some View {
-        return HStack(spacing: 6) {
-            Image(systemName: "exclamationmark.triangle.fill")
-            Text("Action Items writes disabled — \(envCheck.result.message ?? "scoutctl unavailable")")
-        }
-        .font(DS.sans(11))
-        .foregroundStyle(.white)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(DS.Status.err.opacity(0.85))
+        ProblemView(problem: Self.environmentProblem(envCheck.result), actions: environmentActions)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
     }
+
+    /// Try again reruns the check, so writes come back without a restart;
+    /// Open Settings lands on Settings ▸ Engine, where the fix line points.
+    private var environmentActions: [ProblemAction] {
+        var actions: [ProblemAction] = []
+        if let recheck = envCheck.recheck {
+            actions.append(.retry { Task { await recheck() } })
+        }
+        actions.append(ProblemAction("Open Settings") { HelpActions.showEngineSettings(openSettings) })
+        return actions
+    }
+
+    /// The engine check failed, so Done, Snooze and comments can't be saved:
+    /// `writesEnabled(_:)` turns them off, and the banner says so. The
+    /// check's own message goes to Details.
+    static func environmentProblem(_ result: ActionItemsEnvironmentResult) -> Problem {
+        let details = result.message ?? "scoutctl unavailable"
+        var problem = result.engineTooOld
+            ? Problem.engineTooOld("Action Items", details: details)
+            : Problem.engineUnavailable("Action Items", details: details)
+        problem.impact = "You can read your action items, but marking them done, snoozing and commenting are turned off until it works."
+        return problem
+    }
+
+    /// Whether the card controls that save (Done, Snooze, Reopen, comments)
+    /// are on. Off exactly when the banner above says they are.
+    static func writesEnabled(_ result: ActionItemsEnvironmentResult) -> Bool { result.ok }
 
     private func missingState(url: URL) -> some View {
         let isFuture = displayedDate > Self.today()
         return VStack(spacing: 14) {
             Image(systemName: isFuture ? "calendar" : "calendar.badge.exclamationmark")
-                .font(.largeTitle)
+                .font(DS.symbol(26))
                 .foregroundStyle(DS.Ink.p3)
             Text(isFuture
                  ? "No action items yet for \(shortDate(displayedDate)) — snoozed tasks will land here, and the morning briefing will fill it in on the day."
                  : "No action items for \(shortDate(displayedDate)) — morning briefing runs at 08:03.")
-                .font(DS.serif(14))
+                .dsFont(.headline, .serif)
                 .foregroundStyle(DS.Ink.p2)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 440)
             HStack(spacing: 10) {
                 if let prev = Calendar(identifier: .iso8601).date(byAdding: .day, value: -1, to: displayedDate) {
                     Button("Previous day") { displayedDate = prev }
+                        .buttonStyle(.dsSecondary)
                 }
                 if !Calendar.current.isDate(displayedDate, inSameDayAs: Self.today()) {
                     Button("Today") { displayedDate = Self.today() }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.dsSecondary)
                 }
             }
         }
@@ -466,7 +563,7 @@ struct ActionItemsView: View {
 
     private func toastView(_ text: String) -> some View {
         Text(text)
-            .font(DS.sans(12))
+            .font(DS.font(.label))
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(RoundedRectangle(cornerRadius: 8).fill(.ultraThinMaterial))
@@ -499,18 +596,60 @@ struct ActionItemsView: View {
     // MARK: - Actions
 
     private func handleOp(_ op: WriteOp, lineNumber: Int?) async throws {
+        // The cards' controls are off already; this catches any path that
+        // still reaches a write while the check fails.
+        guard Self.writesEnabled(envCheck.result) else { throw ActionItemsWritesOffError() }
+        let writer = writerBox.writer
+        let date = displayedDate
         do {
-            _ = try await writerBox.writer.submit(op, displayedDate: displayedDate)
+            let result = try await writer.submit(op, displayedDate: date, shownDigest: docService.shownDigest)
             await docService.reparseCurrent()
             if case .reopen(let subject, let shortPrefix) = op {
                 revealReopened(subject: subject, shortPrefix: shortPrefix)
             }
+            if let step = Self.undoStep(for: op, result: result, writer: writer, date: date,
+                                        writesEnabled: { [envCheck] in Self.writesEnabled(envCheck.result) }) {
+                vaultUndo.register(step, with: undoManager) { [docService] in
+                    await docService.reparseCurrent()
+                }
+            } else if let why = result.undoUnavailable {
+                vaultUndo.noteNotUndoable(op.actionName, why)
+            }
         } catch let err as ActionItemsWriterError {
+            // Whatever happened, show what's in the file now (C10).
+            await docService.reparseCurrent()
             if case .cliNonZeroExit(_, _, let kind) = err, kind == .environment {
-                await MainActor.run { setToast("Environment problem — check python3 install.") }
+                await MainActor.run { setToast("Couldn't save: Scout's engine isn't working. See Settings ▸ Engine.") }
             }
             throw err
         }
+    }
+
+    /// How a completed write is undone: the engine's inverse when the op has
+    /// one (mark done ↔ reopen, by `[#TAG]`), otherwise restoring the day
+    /// file's bytes. nil when the write changed nothing.
+    ///
+    /// The engine inverse is a `scoutctl action-items` write like any other,
+    /// so it asks `writesEnabled` at the moment of undo or redo and refuses
+    /// while the engine check fails (R2). A byte restore doesn't run the
+    /// engine and isn't gated.
+    static func undoStep(for op: WriteOp, result: WriteResult, writer: ActionItemsWriter, date: Date,
+                         writesEnabled: @escaping @MainActor () -> Bool = { true }) -> UndoStep? {
+        if let inverse = op.inverse {
+            return UndoStep(
+                actionName: op.actionName,
+                undo: {
+                    guard writesEnabled() else { throw ActionItemsWritesOffError() }
+                    _ = try await writer.submit(inverse, displayedDate: date)
+                },
+                redo: {
+                    guard writesEnabled() else { throw ActionItemsWritesOffError() }
+                    _ = try await writer.submit(op, displayedDate: date)
+                }
+            )
+        }
+        guard let change = result.change else { return nil }
+        return .restoring(change) { change, direction in try await writer.restore(change, direction) }
     }
 
     private func setToast(_ text: String) {
@@ -542,13 +681,13 @@ struct ActionItemsView: View {
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(DS.Accent.ink)
             Text("\(selectedTaskIDs.count) selected")
-                .font(DS.sans(12, weight: .semibold))
+                .font(DS.font(.label, weight: .semibold))
                 .foregroundStyle(DS.Ink.p1)
             Button(allVisibleTasksSelected ? "Clear" : "Select all") {
                 toggleSelectAll()
             }
             .buttonStyle(.borderless)
-            .font(DS.sans(11))
+            .font(DS.font(.caption))
             .help("Select or clear every action item currently visible")
             Spacer()
             Button {
@@ -556,12 +695,10 @@ struct ActionItemsView: View {
             } label: {
                 Label("Copy", systemImage: "doc.on.doc")
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .tint(DS.Accent.fill)
-            .keyboardShortcut("c", modifiers: [.command, .shift])
+            .buttonStyle(.ds(.primary, size: .small))
+            .keyboardShortcut(AppShortcut.copySelected)
             .disabled(selectedTaskIDs.isEmpty)
-            .help("Copy selected items with full context (⌘⇧C)")
+            .help(ShortcutLabel.help("Copy selected items with full context", AppShortcut.copySelected))
 
             Menu {
                 ForEach([ClaudeLauncher.CopyFormat.concise, .markdownChecklist]) { format in
@@ -579,6 +716,7 @@ struct ActionItemsView: View {
             .menuIndicator(.hidden)
             .disabled(selectedTaskIDs.isEmpty)
             .help("Choose a concise or Markdown copy format")
+            .accessibilityLabel("Copy format")
 
             Button("Done") { endSelectionMode() }
                 .buttonStyle(.borderless)
@@ -874,4 +1012,22 @@ final class ActionItemsWriterBox: ObservableObject {
 @MainActor
 final class ActionItemsEnvironmentState: ObservableObject {
     @Published var result: ActionItemsEnvironmentResult = .okResult
+    /// Runs the check again and publishes its result: the banner's Try
+    /// again. `AppState` sets it; nil in previews and view tests.
+    var recheck: (@MainActor () async -> Void)?
+}
+
+private struct ActionItemsWritesEnabledKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// Whether Done, Snooze, Reopen and comments can be saved. Every one of
+    /// them runs `scoutctl action-items`, the command the environment check
+    /// probes, so when that check fails they are turned off rather than left
+    /// to fail one at a time (R2; audit #44).
+    var actionItemsWritesEnabled: Bool {
+        get { self[ActionItemsWritesEnabledKey.self] }
+        set { self[ActionItemsWritesEnabledKey.self] = newValue }
+    }
 }

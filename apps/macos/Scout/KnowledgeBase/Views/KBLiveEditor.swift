@@ -18,6 +18,8 @@ import AppKit
 /// stays correct no matter where the window sits.
 struct KBLiveEditor: NSViewRepresentable {
     @Binding var text: String
+    /// ⌘F opens this text view's find bar (UI audit #77).
+    var find: KBFindController? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -31,6 +33,8 @@ struct KBLiveEditor: NSViewRepresentable {
         tv.delegate = context.coordinator
         tv.isRichText = false
         tv.allowsUndo = true
+        tv.usesFindBar = true
+        tv.isIncrementalSearchingEnabled = true
         tv.isAutomaticQuoteSubstitutionEnabled = false
         tv.isAutomaticDashSubstitutionEnabled = false
         tv.isAutomaticTextReplacementEnabled = false
@@ -40,6 +44,7 @@ struct KBLiveEditor: NSViewRepresentable {
         tv.typingAttributes = Coordinator.baseAttributes
         tv.string = text
         context.coordinator.textView = tv
+        find?.textView = tv
 
         // Restyle newly revealed text when the user scrolls.
         scroll.contentView.postsBoundsChangedNotifications = true
@@ -62,9 +67,13 @@ struct KBLiveEditor: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let tv = scroll.documentView as? NSTextView else { return }
+        find?.textView = tv
         if tv.string != text {
             context.coordinator.isProgrammatic = true
             let sel = tv.selectedRange()
+            // Typing undo recorded against the old text would replay its
+            // ranges onto the new one (a reload, or a reverted save: C10).
+            context.coordinator.textUndo.removeAllActions()
             tv.string = text
             let len = (text as NSString).length
             tv.setSelectedRange(NSRange(location: min(sel.location, len), length: 0))
@@ -83,7 +92,15 @@ struct KBLiveEditor: NSViewRepresentable {
         /// or deleting a fence delimiter would leave stale styling below.
         private var lastBlockRanges: [NSRange] = []
 
+        /// The note's own typing history (C10). The window's undo manager
+        /// also holds vault changes (Mark Done, Approve, …) from every page;
+        /// with its own manager, ⌘Z while typing a note stops at the note's
+        /// text instead of reaching past it into those.
+        let textUndo = UndoManager()
+
         init(_ parent: KBLiveEditor) { self.parent = parent }
+
+        func undoManager(for view: NSTextView) -> UndoManager? { textUndo }
 
         func textDidChange(_ notification: Notification) {
             guard let tv = textView, !isProgrammatic else { return }
@@ -110,22 +127,41 @@ struct KBLiveEditor: NSViewRepresentable {
 
         // MARK: - Fonts & colors
 
-        static let bodyFont = serif(14)
-        static let baseAttributes: [NSAttributedString.Key: Any] = [
-            .font: bodyFont, .foregroundColor: NSColor(DS.Ink.p1),
-        ]
+        // Computed, not stored: sizes follow Settings ▸ General ▸ Text size
+        // (`TextScale`), applied on the next restyle.
+        static var bodyFont: NSFont { serif(14) }
+        static var baseAttributes: [NSAttributedString.Key: Any] {
+            [.font: bodyFont, .foregroundColor: NSColor(DS.Ink.p1), .paragraphStyle: bodyParagraph]
+        }
 
+        /// The bundled Newsreader is set tighter than the system serif, so
+        /// the editor adds the same leading `dsFont(_:.serif)` does.
+        static var bodyParagraph: NSParagraphStyle {
+            let style = NSMutableParagraphStyle()
+            if DS.BrandFont.available { style.lineSpacing = (bodyFont.pointSize * DS.serifExtraLeading).rounded() }
+            return style
+        }
+
+        /// The bundled brand faces by PostScript name (their family is
+        /// "Newsreader 16pt", so the name "Newsreader" finds nothing).
         static func serif(_ size: CGFloat) -> NSFont {
-            NSFont(name: "Newsreader", size: size)
-                ?? NSFont(name: "New York", size: size)
-                ?? NSFont.systemFont(ofSize: size)
+            let size = DS.scaled(size)
+            if DS.BrandFont.available, let font = NSFont(name: DS.BrandFont.newsreader(.regular), size: size) { return font }
+            return NSFont(name: "New York", size: size) ?? NSFont.systemFont(ofSize: size)
         }
         static func mono(_ size: CGFloat) -> NSFont {
-            NSFont(name: "JetBrains Mono", size: size)
-                ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+            let size = DS.scaled(size)
+            if DS.BrandFont.available, let font = NSFont(name: DS.BrandFont.jetBrainsMono(.regular), size: size) { return font }
+            return NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
         }
+        /// No bundled brand face sets a bold style bit (the heaviest is
+        /// SemiBold), so trait conversion can't find one; take the SemiBold
+        /// face by name instead.
         static func bold(_ font: NSFont) -> NSFont {
-            NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
+            if let name = DS.BrandFont.boldFace(of: font.fontName), let face = NSFont(name: name, size: font.pointSize) {
+                return face
+            }
+            return NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
         }
         static func italic(_ font: NSFont) -> NSFont {
             NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)

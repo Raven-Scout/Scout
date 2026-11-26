@@ -36,16 +36,38 @@ Rules:
   any file from a path repo sync keeps home to one it uploads
   (:func:`_local_only_moves`, #562), widens a note's effective share
   whatever the cause (a move into a shared folder, a dropped
-  ``federation_scope: none``, a ``kind`` change; #586), or adds text to a
-  note already shared (an effective share at HEAD and in the commit, #569).
-  The last is a content check: the label doesn't change, but the people the
-  note is shared with would read whatever the run brought in from notes they
-  can't see. A removed or moved line, or a new note in a shared folder, isn't
-  refused. The owner's interactive commits aren't checked. A non-note file a
-  share covers (``.csv``, ``.xlsx``, extensionless, …) gets the same guard in
-  a scheduled run (:func:`_non_note_findings`, #594): its text is compared
-  line by line, one that isn't UTF-8 text blocks on any change, and one new to
-  the share has its lines checked for private notes.
+  ``federation_scope: none``, a ``kind`` change; #586), or, with
+  ``privacy.shared_edits: refuse``, adds text to a note already shared (an
+  effective share at HEAD and in the commit, #569). The last is a content
+  check: the label doesn't change, but the people the note is shared with
+  would read whatever the run brought in. A removed or moved line, or a new
+  note in a shared folder, isn't refused. The owner's interactive commits
+  aren't checked. A non-note file a share covers (``.csv``, ``.xlsx``,
+  extensionless, …) gets the same guard in a scheduled run, in either
+  ``shared_edits`` mode (:func:`_non_note_findings`, #594): its text is
+  compared line by line, one that isn't UTF-8 text blocks on any change, and
+  one new to the share has its lines checked for private notes.
+- **Checked edits to a shared note** (``privacy.shared_edits: checked``, the
+  default): a scheduled run may add or reword lines of a ``.md`` note with an
+  effective share at HEAD and in the commit whose staged bytes are UTF-8 text
+  (:func:`_checked_edit`). Each added or changed line gets the
+  ``private-link`` / ``private-mention`` scan (:func:`scout.kb.outbound.find_mentions`,
+  which also reads each line with HTML entities decoded and markup stripped)
+  against the slug, ``name:``, ``title:``, aliases and links of every note
+  private at HEAD, in the index or on disk, every local-only note and every
+  note whose effective share leaves out someone this note is shared with
+  (:func:`_narrower_notes`, each version in play), and
+  the notes shared with this person (:func:`scout.kb.outbound.with_shared`:
+  their paths, titles and quotes). As for an outbound send, no
+  ``%%privacy:allow%%`` marker allows a hit. **Terms come from frontmatter and
+  paths, never a note's body**, and nothing here sees email, Slack or a
+  meeting: a run that restates a private fact without naming its note passes,
+  as does anything from an unshared note or a connector. Every ``privacy-widening`` rule
+  above still applies to the same commit, and changing the note's declared
+  ``federation_scope`` at all, narrower included, blocks too. The mode is the
+  strictest of the commit's, HEAD's and the working tree's policy, so
+  ``refuse`` anywhere wins, and a run can't change it (the ``privacy:`` block
+  is the owner's).
 - ``privacy-check-failed`` (**block**): raised as :class:`PolicyUnreadable`
   when a scheduled run's commit policy doesn't parse
   (``privacy-overlay-unreadable``); interactively that is a warning.
@@ -64,7 +86,8 @@ this vault's own sharing switch says. ``shared-source-private`` blocks one that
 isn't private; an explicit ``visibility: normal`` is the owner's call (a warning)
 and blocks only in a scheduled run. ``shared-source-reshared`` (**block**, always)
 refuses one in a shared file. ``shared-source-malformed`` warns. Other ``source:``
-values are left alone. The classifier never reads ``source:``, so labels don't change.
+values are left alone. Both blocking checks block in every lint mode (``PRIVACY_BLOCKING``). The classifier
+reads ``source:`` for one thing: such a note's federation ceiling is ``none``, so no folder default shares it.
 
 No message names a private note, its title or a matched term: findings carry
 the staged file, a line number and the rule id. The hook runs
@@ -73,6 +96,7 @@ the staged file, a line number and the rule id. The hook runs
 
 from __future__ import annotations
 
+import posixpath
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -82,11 +106,15 @@ from typing import Any
 import yaml
 
 from scout.kb.git_io import (
+    SYMLINK_MODE,
     StagedPath,
     head_blob,
+    head_paths,
     head_text_lossy,
+    index_modes,
     index_text_lossy,
     staged_blob,
+    staged_gitlinks,
     staged_paths,
     staged_text_lossy,
     tracked_files,
@@ -115,6 +143,7 @@ from scout.kb.privacy import (
     Policy,
     classify,
     decode_head,
+    delegate_flags_on,
     label_file,
     label_from_facts,
     load_policy,
@@ -122,9 +151,11 @@ from scout.kb.privacy import (
     policy_from_config_text,
     read_head,
 )
+from scout.kb.privacy import scope_widens as _widens
 from scout.kb.read import all_labels, policy_hash
 from scout.kb.shared_reads import parse_shared_source, shared_sources
-from scout.repo_sync import LocalOnlyRules, RepoSyncError, host_cache_problem, load_host_cache, load_state
+from scout.plural import count
+from scout.repo_sync import LocalOnlyRules, RepoSyncError, fold, host_cache_problem, load_host_cache, load_state
 from scout.yaml_safe import load_yaml
 
 __all__ = ["ALLOW_MARKER_RE", "PolicyUnreadable", "format_report", "privacy_report", "privacy_staged"]
@@ -142,6 +173,9 @@ _MESSAGES = {
     "shared-source-reshared": "this note cites a note someone shared with you (source: shared:…), and this file is "
     "shared — your sharing must not pass on theirs; move it out of the shared file or the share",
     "shared-source-malformed": "source: shared: isn't shared:<owner-email>:<vault path>",
+    "delegate-source-private": "this note holds an agent's text (source: delegate:…, or a note in "
+    "knowledge-base/from-agents/ not promoted), so it stays visibility: private; to let agents read it, the owner "
+    "runs scoutctl inbox review promote",
     "visibility-value": "visibility isn't normal/private (the note counts as private), "
     "or federation_scope doesn't parse (it counts as none)",
     "privacy-contradiction": "visibility: private with a federation_scope other than none",
@@ -155,6 +189,28 @@ _MESSAGES = {
     "is missing or out of date, so the move can't be checked against it. A scheduled run must not run scoutctl "
     "repo sync after this commit: leave it to the owner. Owner: run scoutctl repo sync yourself; it refuses to "
     "push a move out of a path Agnes keeps local-only, and says how to allow one",
+    "link-leaves-scope": "this symlink points outside what its own path shares or uploads: at a private, "
+    "local-only or less widely shared file, through too many links, by a path that backs out of a name with two dots, "
+    "at a name two files share but for its case, or outside the vault. Git stores a link as "
+    "its target's path, so whoever gets the link reads that name; point it inside the same share, or remove it",
+    "link-widening": "a scheduled run may not add or retarget a symlink that points outside what its own path "
+    "shares or uploads (a private, local-only or less widely shared file, or a path outside the vault), or at "
+    "a name that isn't in the commit — leave that to the owner",
+    "engine-file-link": "a scheduled run may not make a settings file a symlink, or a linked one a file "
+    "(scout-config.yaml, any file at the top of the vault or in a dot-folder, any .yaml, .yml, .json or .toml): "
+    "git stores a link as its target's name, and Scout reads the file behind it — leave that to the owner",
+    "settings-file-case": "this settings file's name differs only in case (or Unicode form) from one Scout reads "
+    "or one already in the vault. A disk that ignores case holds them as one file, so what Scout reads isn't what "
+    "the commit shows under the usual name. Use the usual spelling",
+    "settings-file-case-run": "a scheduled run may not add or rename a settings file under a name that differs "
+    "only in case from one Scout reads or one already in the vault — leave that to the owner",
+    "gitlink": "this path is a gitlink (a submodule's entry), so it has no content the checks can read",
+    "gitlink-run": "a scheduled run may not add or change a gitlink (a submodule's entry): what it brings in "
+    "can't be checked — leave that to the owner",
+    "config-removed": "a scheduled run may not take scout-config.yaml out of the commit while it holds a "
+    "privacy: block or is still on this computer — leave that to the owner",
+    "config-link": "scout-config.yaml is a symlink: this commit is checked as if the file held the link's target "
+    "name, while Scout reads the file behind it. Commit the settings as a regular file",
     "privacy-overlay-unreadable": "scout-config.yaml doesn't parse, so the engine's default privacy policy applies, "
     "plus the stricter settings in its privacy: block if that part reads cleanly; "
     "a scheduled run's commit is refused until it does",
@@ -184,17 +240,11 @@ def _path_default(rel: str, policy: Policy) -> str | None:
     return next((v for g, v in policy.visibility_defaults if glob_match(g, rel)), None)
 
 
-def _widens(head: FederationScope, staged: FederationScope) -> bool:
-    """Whether ``staged`` admits someone ``head`` didn't (``org`` admits every listed principal)."""
-    if staged == "none" or staged == head:
-        return False
-    if staged == "org":
-        return True
-    if head == "org":
-        return False
-    if head == "none":
-        return True
-    return bool(set(staged) - set(head))
+def _same_scope(a: FederationScope, b: FederationScope) -> bool:
+    """Whether two scopes admit the same principals (a list's order doesn't count)."""
+    if isinstance(a, tuple) and isinstance(b, tuple):
+        return set(a) == set(b)
+    return a == b
 
 
 @dataclass
@@ -209,6 +259,17 @@ class _Ctx:
     config_removed: bool = False  # HEAD has scout-config.yaml, the index doesn't
     head_config: str | None = None
     _terms: PrivateTerms | None = None
+    _notes: list[PrivateNote] | None = None
+    _checked_terms: dict[Any, PrivateTerms] = field(default_factory=dict)
+    _index: tuple[dict[str, tuple[str, str]], dict[str, str], frozenset[str]] | None = None
+    _sync: tuple[Any, tuple[str, ...], bool] | None = None
+    _home: LocalOnlyRules | None = None
+    _head_names: dict[str, set[str]] | None = None
+
+    @property
+    def shared_edits_checked(self) -> bool:
+        """Whether every policy in play lets a run add checked lines to a shared note (``refuse`` anywhere wins)."""
+        return all(p.shared_edits == "checked" for p in (self.policy, self.head_policy, self.disk_policy))
 
     @property
     def shared_globs(self) -> tuple[str, ...]:
@@ -219,10 +280,89 @@ class _Ctx:
     def is_shared(self, rel: str, label: Label) -> bool:
         return label.shared_file or any(glob_match(g, rel) for g in self.shared_globs)
 
+    def index(self) -> tuple[dict[str, tuple[str, str]], dict[str, str], frozenset[str]]:
+        """The commit's files and folders, each keyed by :func:`scout.repo_sync.fold` of its path,
+        and the keys more than one of them has.
+
+        A file maps to its path as written and its mode, a folder to its path
+        as written. Folded, because a case-insensitive disk opens ``DRAFT.md``
+        as ``draft.md``, and one that normalises Unicode opens either form.
+        Two names with one key (``plain.md`` and ``PLAIN.md``, or a file and a
+        folder) are one name on such a disk and two on another, so which one a
+        link opens isn't known: the third value lists those keys.
+        """
+        if self._index is None:
+            files: dict[str, tuple[str, str]] = {}
+            folders: dict[str, str] = {}
+            clashes: set[str] = set()
+            for path, mode in index_modes(self.repo).items():
+                key = fold(path)
+                if key in files:
+                    clashes.add(key)
+                files[key] = (path, mode)
+                parent = posixpath.dirname(path)
+                while parent:
+                    key = fold(parent)
+                    if folders.setdefault(key, parent) != parent:
+                        clashes.add(key)
+                    parent = posixpath.dirname(parent)
+            clashes.update(files.keys() & folders.keys())
+            self._index = (files, folders, frozenset(clashes))
+        return self._index
+
+    def head_names(self) -> dict[str, set[str]]:
+        """HEAD's paths by :func:`scout.repo_sync.fold` of each."""
+        if self._head_names is None:
+            names: dict[str, set[str]] = {}
+            for path in head_paths(self.repo):
+                names.setdefault(fold(path), set()).add(path)
+            self._head_names = names
+        return self._head_names
+
+    def sync_inputs(self) -> tuple[Any, tuple[str, ...], bool]:
+        """What repo sync adds to the policies' Local-Only rules: the upload allowlist pinned for the
+        link (None: not linked), the host's list as last cached, and whether that cache is missing or stale."""
+        if self._sync is None:
+            try:
+                state = load_state(self.repo)
+            except RepoSyncError:
+                state = None  # repo sync refuses this state, so it uploads nothing; the config's allowlist still counts
+            host_entries: tuple[str, ...] = ()
+            unchecked = False
+            if state is not None:
+                cache = load_host_cache(self.repo, agnes_url=state.agnes_url)
+                host_entries = cache.local_only_paths if cache is not None else ()
+                unchecked = host_cache_problem(cache) is not None
+            self._sync = (state.sync_only if state is not None else None, host_entries, unchecked)
+        return self._sync
+
+    def stays_home(self, rel: str) -> bool:
+        """Whether repo sync keeps ``rel`` on this computer under any policy in play: local-only by the
+        vault's rules, the host's built-in and cached lists or an allowlist, or a secret file."""
+        if self._home is None:
+            pinned, host_entries, _ = self.sync_inputs()
+            self._home = LocalOnlyRules.build(
+                [self.head_policy, self.policy, self.disk_policy], host_entries, pinned=pinned
+            )
+        return self._home.refused(rel)
+
+    def private_notes(self) -> list[PrivateNote]:
+        if self._notes is None:
+            self._notes = _union_notes(self)
+        return self._notes
+
     def terms(self) -> PrivateTerms:
         if self._terms is None:
-            self._terms = _union_terms(self)
+            self._terms = with_shared(terms_of(self.private_notes()), self.repo)
         return self._terms
+
+    def checked_terms(self, scope: FederationScope) -> PrivateTerms:
+        """:meth:`terms` plus every note shared more narrowly than ``scope`` (a checked edit's terms)."""
+        key = frozenset(scope) if isinstance(scope, tuple) else scope
+        if key not in self._checked_terms:
+            notes = [*self.private_notes(), *_narrower_notes(self, scope)]
+            self._checked_terms[key] = with_shared(terms_of(notes), self.repo)
+        return self._checked_terms[key]
 
 
 def _context(repo: Path, env: Mapping[str, str]) -> _Ctx:
@@ -247,7 +387,7 @@ def _context(repo: Path, env: Mapping[str, str]) -> _Ctx:
     )
 
 
-def _union_terms(ctx: _Ctx) -> PrivateTerms:
+def _union_notes(ctx: _Ctx) -> list[PrivateNote]:
     """Every note private at HEAD, in the index or on disk (each under its own policy)."""
     repo = ctx.repo
     notes: list[PrivateNote] = list(private_terms(repo, ctx.disk_policy).notes)
@@ -270,7 +410,57 @@ def _union_terms(ctx: _Ctx) -> PrivateTerms:
             window = _head_window(rel, text)
             if classify(rel, window, policy).visibility == "private":
                 notes.append(note_from_text(rel, window))
-    return with_shared(terms_of(notes), repo)
+    return notes
+
+
+def _narrower(label: Label, scope: FederationScope) -> bool:
+    """Whether a note labelled ``label`` is closed to some reader of a note shared with ``scope``.
+
+    Local-only (it never leaves this computer), or shared but with fewer people. Private
+    notes are already in :meth:`_Ctx.private_notes`. A normal note with no effective share
+    isn't counted: its names are the vault's ordinary words (people, projects), which
+    readers of a shared page are told about by design.
+    """
+    if label.visibility == "private":
+        return False
+    if label.local_only:
+        return True
+    return label.federation_scope != "none" and _widens(label.federation_scope, scope)
+
+
+def _narrower_notes(ctx: _Ctx, scope: FederationScope) -> list[PrivateNote]:
+    """Every note :func:`_narrower` than ``scope``: on disk under the commit's and the working
+    tree's policy, and, as :func:`_union_notes` does, the index and HEAD versions of every
+    uncommitted path under the commit's and HEAD's policy, so an unstaged delete or widening
+    can't drop one."""
+    root = ctx.repo.resolve()
+    seen: set[str] = set()
+    notes: list[PrivateNote] = []
+
+    def add(rel: str, text: str | None) -> None:
+        seen.add(rel)
+        notes.append(note_from_text(rel, text))
+
+    policies = [ctx.policy]
+    if policy_hash(ctx.disk_policy) != policy_hash(ctx.policy):
+        policies.append(ctx.disk_policy)
+    for policy in policies:
+        for rel, label in all_labels(root, policy).items():
+            if rel not in seen and _md(rel) and _narrower(label, scope):
+                add(rel, read_head(root / rel)[0])
+    for rel in sorted(uncommitted_paths(ctx.repo)):
+        if not _md(rel):
+            continue
+        for text, policy in (
+            (index_text_lossy(ctx.repo, rel), ctx.policy),
+            (head_text_lossy(ctx.repo, rel), ctx.head_policy),
+        ):
+            if text is None:
+                continue
+            window = _head_window(rel, text)
+            if _narrower(classify(rel, window, policy), scope):
+                add(rel, window)
+    return notes
 
 
 def privacy_staged(repo: Path, *, env: Mapping[str, str]) -> list[Finding]:
@@ -282,13 +472,31 @@ def privacy_staged(repo: Path, *, env: Mapping[str, str]) -> list[Finding]:
             raise PolicyUnreadable("the commit's scout-config.yaml doesn't parse")
         out.append(Finding(CONFIG_FILE, "privacy-overlay-unreadable", False, _MESSAGES["privacy-overlay-unreadable"]))
     paths = staged_paths(repo)
+    for rel in staged_gitlinks(repo):
+        if ctx.scheduled:
+            out.append(Finding(rel, "privacy-widening", True, _MESSAGES["gitlink-run"]))
+        elif _engine_file(rel) or _md(rel):
+            out.append(Finding(rel, "settings-file-replaced", False, _MESSAGES["gitlink"]))
     if ctx.scheduled:
         out += _local_only_moves(ctx, paths)
     for sp in paths:
         rel = sp.rel
+        if _engine_file(rel) and _other_spelling(ctx, rel):
+            if ctx.scheduled:
+                out.append(Finding(rel, "privacy-widening", True, _MESSAGES["settings-file-case-run"]))
+                continue
+            out.append(Finding(rel, "settings-file-replaced", False, _MESSAGES["settings-file-case"]))
+        if (sp.symlink or sp.type_change) and _engine_file(rel):
+            if ctx.scheduled:
+                out.append(Finding(rel, "privacy-widening", True, _MESSAGES["engine-file-link"]))
+                continue
+            if rel == CONFIG_FILE and sp.symlink:
+                out.append(Finding(rel, "link-leaves-scope", False, _MESSAGES["config-link"]))
         if rel == CONFIG_FILE:
             out += _config_findings(ctx, sp)
             continue
+        if sp.symlink:
+            out += _link_findings(ctx, sp)
         staged: str | None = None
         if not in_privacy_scope(rel, ctx.shared_globs):
             if not _md(rel):
@@ -299,10 +507,166 @@ def privacy_staged(repo: Path, *, env: Mapping[str, str]) -> list[Finding]:
             if _facts(rel, staged).declared == "none" and not shared_sources(_head_window(rel, staged)):
                 continue  # R23: a note declaring federation_scope is shared wherever it lives
         out += _file_findings(ctx, sp, staged if staged is not None else staged_text_lossy(repo, rel))
-    if ctx.scheduled and ctx.config_removed and _privacy_block(_config_data(ctx.head_config)) is not None:
-        # Deleting the config drops its privacy: block (staged_paths lists no deletions).
-        out.append(Finding(CONFIG_FILE, "privacy-widening", True, _MESSAGES["config-widening"]))
+    if ctx.scheduled and ctx.config_removed:
+        # Deleting the config drops its privacy: block (staged_paths lists no deletions). And one that is
+        # still on disk, under any spelling the disk may open as this name, is still the policy Scout reads.
+        if _privacy_block(_config_data(ctx.head_config)) is not None:
+            out.append(Finding(CONFIG_FILE, "privacy-widening", True, _MESSAGES["config-widening"]))
+        elif _config_on_disk(repo):
+            out.append(Finding(CONFIG_FILE, "privacy-widening", True, _MESSAGES["config-removed"]))
     return out
+
+
+_SETTINGS_SUFFIXES = (".yaml", ".yml", ".json", ".toml")
+
+
+def _engine_file(rel: str) -> bool:
+    """Whether ``rel`` is where Scout or its host keeps settings: ``scout-config.yaml`` and the
+    other files at the top of the vault, anything in a dot-folder (``.scout-state/``, ``.claude/``),
+    a dot-file, or a settings format anywhere. Wider than the files the engine reads today, on purpose."""
+    parts = rel.split("/")
+    return len(parts) == 1 or any(p.startswith(".") for p in parts) or rel.lower().endswith(_SETTINGS_SUFFIXES)
+
+
+# Settings files Scout or its host reads by name: another spelling of one is never an ordinary file.
+_SETTINGS_NAMES = {
+    fold(name): name
+    for name in (
+        CONFIG_FILE,
+        "connectors.custom.yaml",
+        ".mcp.json",
+        ".scout-state/schedule.yaml",
+        ".scout-state/triggers.yaml",
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+    )
+}
+
+
+def _other_spelling(ctx: _Ctx, rel: str) -> bool:
+    """Whether ``rel`` is a second spelling of a name: of a settings file Scout reads, of a path at
+    HEAD, or of another entry in the commit. A disk that ignores case holds the two as one file."""
+    key = fold(rel)
+    return (
+        _SETTINGS_NAMES.get(key, rel) != rel
+        or key in ctx.index()[2]
+        or any(path != rel for path in ctx.head_names().get(key, ()))
+    )
+
+
+def _config_on_disk(repo: Path) -> bool:
+    key = fold(CONFIG_FILE)
+    return any(fold(entry.name) == key for entry in repo.iterdir())
+
+
+_LINK_HOPS = 8  # how many links a link may lead through; more reads as a loop
+
+
+def _link_findings(ctx: _Ctx, sp: StagedPath) -> list[Finding]:
+    """A staged symlink whose target leaves the link's own scope (#606).
+
+    Git stores a link as its target's path, and repo sync mirrors it as that
+    name, never the file behind it. So the link is labelled by its path alone,
+    and what it leads to (:func:`_link_end`) must be at least as open: a link
+    that uploads may not name a path repo sync keeps home or one outside the
+    vault, and a shared link may not name a private note, a file no share
+    covers, or one shared with fewer people. A folder is judged by what a file
+    in it would be. A link in a local-only path stays home, so it may point
+    anywhere. A scheduled run's link blocks, and so does one of its links that
+    names nothing in the commit, since what that opens can't be checked; the
+    owner gets a warning, and a link of theirs to a missing name is judged by
+    its path. The link's text is still checked as the file's content by the
+    callers, as before.
+    """
+    rel = sp.rel
+    link = classify(rel, None, ctx.policy)
+    if link.local_only:
+        return []
+    end = _link_end(ctx, rel)
+    if end is not None:
+        path, kind = end
+        if kind == "file":
+            names = [(path, _head_window(path, index_text_lossy(ctx.repo, path)))]
+        elif kind == "folder":
+            names = [(f"{path}/x", None)]
+        else:
+            names = [] if ctx.scheduled else [(path, None), (f"{path}/x", None)]
+        if any(_as_open(ctx, link, n, classify(n, window, ctx.policy)) for n, window in names):
+            return []
+    if ctx.scheduled:
+        return [Finding(rel, "privacy-widening", True, _MESSAGES["link-widening"])]
+    return [Finding(rel, "link-leaves-scope", False, _MESSAGES["link-leaves-scope"])]
+
+
+def _link_end(ctx: _Ctx, rel: str) -> tuple[str, str] | None:
+    """Where the staged symlink ``rel`` leads in the commit: a path and ``file``, ``folder`` or ``missing``.
+
+    None when it leaves the vault, a target isn't text or backs out of a name
+    it spelled (:func:`_link_target`), it leads through more than
+    :data:`_LINK_HOPS` links (a loop), or a name on the way is one of two the
+    disk may take for each other. Names are matched the way a case-insensitive
+    disk matches them (:meth:`_Ctx.index`), and a link on the way, to a file
+    or as a folder of the path, is followed.
+    """
+    files, folders, clashes = ctx.index()
+    path = _link_target(ctx, rel)
+    for _ in range(_LINK_HOPS):
+        if path is None:
+            return None
+        parts = path.split("/")
+        if any(fold("/".join(parts[:i])) in clashes for i in range(1, len(parts) + 1)):
+            return None
+        key = fold(path)
+        entry = files.get(key)
+        if entry is not None and entry[1] != SYMLINK_MODE:
+            return entry[0], "file"
+        if entry is not None:
+            path = _link_target(ctx, entry[0])
+            continue
+        if key in folders:
+            return folders[key], "folder"
+        for i in range(1, len(parts)):
+            on_the_way = files.get(fold("/".join(parts[:i])))
+            if on_the_way is not None and on_the_way[1] == SYMLINK_MODE:
+                path = _link_target(ctx, on_the_way[0], "/".join(parts[i:]))
+                break
+        else:
+            return path, "missing"
+    return None
+
+
+def _link_target(ctx: _Ctx, link: str, rest: str = "") -> str | None:
+    """The vault path the symlink at ``link`` names (``rest`` appended), or None outside the vault or not text.
+
+    None too when the target has a ``..`` after a name (``a/../b``). The text
+    is what uploads, so it may not spell a private path and then back out of
+    it; and where ``a`` is a link, the disk would back out of ``a``'s target,
+    not of ``a``. Leading ``..`` (``../b``) is the ordinary way up.
+    """
+    target = _as_text(staged_blob(ctx.repo, link))
+    if target is None or target.startswith("/"):
+        return None
+    named = False
+    for part in target.split("/"):
+        if part == ".." and named:
+            return None
+        named = named or part not in ("", ".", "..")
+    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(link), target, rest))
+    return None if resolved in (".", "..") or resolved.startswith("../") else resolved
+
+
+def _as_open(ctx: _Ctx, link: Label, rel: str, label: Label) -> bool:
+    """Whether everyone who gets the symlink labelled ``link`` may also see ``rel`` (labelled ``label``)."""
+    if label.local_only or ctx.stays_home(rel):
+        return False
+    link_shared_file = ctx.is_shared(link.path, link)
+    if not link_shared_file and link.federation_scope == "none":
+        return True  # a link nobody else reads: the mirror gets its name, as it would the target's own
+    if label.visibility == "private":
+        return False
+    if link_shared_file and not ctx.is_shared(rel, label):
+        return False
+    return not _widens(label.federation_scope, link.federation_scope)
 
 
 def _local_only_moves(ctx: _Ctx, paths: list[StagedPath]) -> list[Finding]:
@@ -321,23 +685,13 @@ def _local_only_moves(ctx: _Ctx, paths: list[StagedPath]) -> list[Finding]:
     moves = [(sp.head_rel, sp.rel) for sp in paths if sp.head_rel is not None and sp.head_rel != sp.rel]
     if not moves:
         return []
-    try:
-        state = load_state(ctx.repo)
-    except RepoSyncError:
-        state = None  # repo sync refuses this state, so it uploads nothing; the config's allowlist still counts
-    pinned = state.sync_only if state is not None else None
     # A linked vault adds the host's list as last cached (#596): a missing or stale
     # cache still counts what it has, and every other move that would upload gets
     # a warning, since the hook can't ask Agnes. The cache only adds blocks: it
     # judges sources, never the destination, so a stale entry or a cache a run
     # wrote can't make a destination count as staying home. Sync re-checks every
     # move against the list it fetches (repo_sync.host_only_moves).
-    host_entries: tuple[str, ...] = ()
-    unchecked = False
-    if state is not None:
-        cache = load_host_cache(ctx.repo, agnes_url=state.agnes_url)
-        host_entries = cache.local_only_paths if cache is not None else ()
-        unchecked = host_cache_problem(cache) is not None
+    pinned, host_entries, unchecked = ctx.sync_inputs()
     was = LocalOnlyRules.build([ctx.head_policy, ctx.policy, ctx.disk_policy], host_entries, pinned=pinned)
     now = LocalOnlyRules.build([ctx.policy], (), pinned=pinned)
     out: list[Finding] = []
@@ -364,24 +718,60 @@ def _file_findings(ctx: _Ctx, sp: StagedPath, staged: str) -> list[Finding]:
         head_label = label_from_facts(sp.head_rel, head_facts, ctx.head_policy)
 
     out += _provenance_findings(ctx, rel, staged, facts, label)
+    checked = _checked_edit(ctx, sp, label, head_label)
     if ctx.is_shared(rel, label):
         # A file that wasn't shared at HEAD (or didn't exist) has every line checked.
         was_shared = (
             head_label is not None and sp.head_rel is not None and _head_was_shared(ctx, sp.head_rel, head_label)
         )
         base = head_text if was_shared else None
-        out += _shared_findings(ctx, rel, staged, added_line_numbers(base, staged))
+        added = added_line_numbers(base, staged)
+        if checked:
+            out += _shared_findings(
+                ctx, rel, staged, added, markers_allow=False, terms=ctx.checked_terms(label.federation_scope)
+            )
+        else:
+            out += _shared_findings(ctx, rel, staged, added)
     if ctx.scheduled:
-        out += _widening(ctx, sp, staged, facts, label, head_text, head_facts, head_label)
+        out += _widening(ctx, sp, staged, facts, label, head_text, head_facts, head_label, checked=checked)
     return out
 
 
+def _checked_edit(ctx: _Ctx, sp: StagedPath, label: Label, head_label: Label | None) -> bool:
+    """Whether this is a scheduled run's edit to a note already shared that ``shared_edits: checked`` lets through.
+
+    A ``.md`` note at HEAD and in the commit with an effective share on both
+    sides, whose staged bytes are UTF-8 text: lossy decoding would turn a
+    Latin-1 ``é`` into U+FFFD, and the term it spelled would never match, so
+    such a note keeps the freeze. The caller then scans the added lines with
+    no marker pass, and :func:`_widening` drops only its added-text block for it.
+    """
+    return (
+        ctx.scheduled
+        and ctx.shared_edits_checked
+        and sp.head_rel is not None
+        and _md(sp.head_rel)
+        and _md(sp.rel)
+        and head_label is not None
+        and head_label.federation_scope != "none"
+        and label.federation_scope != "none"
+        and _as_text(staged_blob(ctx.repo, sp.rel)) is not None
+    )
+
+
 def _provenance_findings(ctx: _Ctx, rel: str, staged: str, facts: NoteFacts, label: Label) -> list[Finding]:
-    """A note built from someone's shared note stays private and out of the reader's own sharing (Agnes §7)."""
+    """A note built from someone's shared note stays private and out of the reader's own sharing (Agnes §7).
+
+    So does an agent's text the owner accepted and hasn't promoted (#550 V4b2): a run may never make it normal."""
+    out: list[Finding] = []
+    if _md(rel) and facts.state == "ok" and label.delegate_source and label.visibility != "private":
+        out.append(
+            Finding(rel, "delegate-source-private", ctx.scheduled or facts.visibility != "normal",
+                    _MESSAGES["delegate-source-private"])
+        )  # fmt: skip
     sources = shared_sources(_head_window(rel, staged))
     if not sources:
-        return []
-    out: list[Finding] = []
+        return out
 
     def finding(check: str, blocking: bool) -> None:
         out.append(Finding(rel, check, blocking, _MESSAGES[check]))
@@ -400,19 +790,48 @@ def _head_was_shared(ctx: _Ctx, head_rel: str, head_label: Label) -> bool:
     return head_label.shared_file or any(glob_match(g, head_rel) for g in ctx.head_policy.shared_files)
 
 
-def _shared_findings(ctx: _Ctx, rel: str, staged: str, added: set[int]) -> list[Finding]:
+def _shared_findings(
+    ctx: _Ctx,
+    rel: str,
+    staged: str,
+    added: set[int],
+    *,
+    markers_allow: bool = True,
+    terms: PrivateTerms | None = None,
+) -> list[Finding]:
+    """``private-link`` / ``private-mention`` on the ``added`` lines of a shared file.
+
+    ``markers_allow=False`` (a run's checked edit to a note already shared) scans as an
+    outbound send does: a ``%%privacy:allow%%`` marker allows nothing, so a run that
+    rewords a line the owner marked can't bring more of that note in under it. ``terms``
+    defaults to :meth:`_Ctx.terms`; a checked edit passes :meth:`_Ctx.checked_terms`.
+    """
     if not added:
         return []
-    terms = ctx.terms()
+    if terms is None:
+        terms = ctx.terms()
     lines = staged.split("\n")
     out: list[Finding] = []
-    for n in find_mentions(staged, terms, allow_markers=True):
+    for n in find_mentions(staged, terms, allow_markers=markers_allow):
         if n not in added:
             continue
         line = lines[n - 1] if n <= len(lines) else ""
-        check = "private-link" if linked_slugs(line, terms) - marker_slugs(line) else "private-mention"
-        out.append(Finding(rel, check, True, _MESSAGES[check].format(n=n), n))
+        linked = linked_slugs(line, terms) - (marker_slugs(line) if markers_allow else set())
+        check = "private-link" if linked else "private-mention"
+        message = _MESSAGES[check] if markers_allow else _CHECKED_MESSAGES[check]
+        out.append(Finding(rel, check, True, message.format(n=n), n))
     return out
+
+
+_CHECKED_HINT = (
+    "this note is already shared, and a scheduled run's added or reworded lines in it get no %%privacy:allow%% "
+    "pass — take the private material out of the line, or leave the line as it was"
+)
+_CHECKED_MESSAGES = {
+    "private-link": "line {n} links a private note or one shared with fewer people — " + _CHECKED_HINT,
+    "private-mention": "line {n} names a private note or one shared with fewer people, or quotes a note shared "
+    "with you — " + _CHECKED_HINT,
+}
 
 
 def added_marker_lines(old: str | None, new: str) -> list[int]:
@@ -454,7 +873,11 @@ def _widening(
     head_text: str | None,
     head_facts: NoteFacts | None,
     head: Label | None,
+    *,
+    checked: bool = False,
 ) -> list[Finding]:
+    """A scheduled run's ``privacy-widening`` blocks. ``checked`` (:func:`_checked_edit`) lifts only the
+    added-text block on a note already shared; every other block here still applies."""
     rel = sp.rel
     out: list[Finding] = []
 
@@ -473,15 +896,28 @@ def _widening(
             and _path_default(rel, ctx.policy) == "private"
         ):
             block("remove the visibility: private line of a note — leave that to the owner")
+    if head is not None and head.delegate_source and not label.delegate_source:
+        block("promote an agent's note (its source: delegate:… or promoted_from) — leave that to the owner")
+    if (facts.promoted or facts.delegate_scope is not None) and (
+        head_facts is None or (head_facts.promoted, head_facts.delegate_scope) != (facts.promoted, facts.delegate_scope)
+    ):
+        block("set or change promoted_from or delegate_scope — leave that to the owner")
+    elif head_facts is not None and head_facts.delegate_scope is not None and facts.delegate_scope is None:
+        block("remove a note's delegate_scope — leave that to the owner")
     if _widens(head_declared, label.federation_scope_declared):
         block("set or widen federation_scope — leave that to the owner")
     elif head is not None and _widens(head.federation_scope, label.federation_scope):
         # The effective scope: a move into a shared folder, a dropped `federation_scope: none`, a kind change.
         block("widen who this note is shared with — leave that to the owner")
+    elif checked and not _same_scope(head_declared, label.federation_scope_declared):
+        # A checked edit may change the note's text, never who it is shared with, narrower included.
+        block("change federation_scope — leave that to the owner")
     for n in added_marker_lines(head_text, staged):
         block("add a %%privacy:allow%% marker — only the owner may", n)
     if head is not None and head.federation_scope != "none" and label.federation_scope != "none":
-        if _md(rel):
+        if checked:
+            pass  # its added lines were scanned with no marker pass (_file_findings)
+        elif _md(rel):
             first = _first_new_line(head_text, staged)
             if first is not None:
                 block(_ADD_TO_SHARED.format(what="note"), first)
@@ -625,11 +1061,14 @@ def _privacy_block(data: Any) -> Any:
 
 
 def _config_findings(ctx: _Ctx, sp: StagedPath) -> list[Finding]:
-    staged = _config_data(staged_text_lossy(ctx.repo, sp.rel))
+    staged_text = staged_text_lossy(ctx.repo, sp.rel)
     out: list[Finding] = []
     if ctx.scheduled:
-        head = _config_data(head_text_lossy(ctx.repo, sp.head_rel)) if sp.head_rel else None
-        if _privacy_block(head) != _privacy_block(staged):
+        head_text = ctx.head_config  # HEAD's config, never a rename's source: a twin renamed into place is new
+        # The loaded block, and what the delegate flags act on: `yes` -> `true` loads the same but turns a flag on.
+        if _privacy_block(_config_data(head_text)) != _privacy_block(_config_data(staged_text)) or (
+            delegate_flags_on(head_text) != delegate_flags_on(staged_text)
+        ):
             out.append(
                 Finding(
                     sp.rel,
@@ -694,8 +1133,9 @@ def privacy_report(repo: Path) -> PrivacyReport:
 
 def format_report(rep: PrivacyReport) -> list[str]:
     lines = [
-        f"privacy: {len(rep.markers)} marker(s), {len(rep.unmarked)} unmarked private link(s)/mention(s) "
-        f"in shared files, {len(rep.problems)} frontmatter problem(s)"
+        f"privacy: {count(len(rep.markers), 'marker')}, "
+        f"{count(len(rep.unmarked), 'unmarked private link or mention', 'unmarked private links or mentions')} "
+        f"in shared files, {count(len(rep.problems), 'frontmatter problem')}"
     ]
     lines += [f"  marker    {rel}:{n}  allow {target}" for rel, n, target in rep.markers]
     lines += [f"  unmarked  {rel}:{n}  links or names a private note" for rel, n in rep.unmarked]

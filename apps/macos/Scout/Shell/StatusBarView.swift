@@ -1,7 +1,7 @@
 import Combine
 import SwiftUI
 
-/// Persistent bottom strip across the main window — daemon health, next-run
+/// Persistent bottom strip across the main window — Scout's status, next-run
 /// ETA, today's cost, and the active view label. Matches the design's
 /// .statusbar language from Scout.html (the handoff bundle).
 ///
@@ -9,75 +9,129 @@ import SwiftUI
 /// downgrades when a value is unavailable (e.g. budget not yet loaded).
 struct StatusBarView: View {
     @EnvironmentObject var state: AppState
+    @Environment(\.openSettings) private var openSettings
     let viewLabel: String
 
     @State private var now: Date = Date()
     private let tick = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        HStack(spacing: 14) {
-            health
-            spacer
-            nextRun
-            spacer
-            todayCost
-            Spacer()
-            viewItem
+        Self.chrome {
+            HStack(spacing: 14) {
+                health
+                spacer
+                nextRun
+                spacer
+                todayCost
+                Spacer()
+                viewItem
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
-        .frame(height: 26)
-        .background(
-            LinearGradient(
-                colors: [DS.Paper.base, DS.Paper.sunk],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
-        .overlay(alignment: .top) { EditorialRule(color: DS.Rule.hard) }
         .onReceive(tick) { now = $0 }
     }
 
+    /// The strip around the bar's row: 26 pt at Standard text, taller when
+    /// the row is. A fixed 26 pt let the row spill upward at Largest text,
+    /// over the bottom of the page, whose safe area reserved only 26 pt: the
+    /// last Schedules card ended under the bar (UI audit T4 hand re-check).
+    static func chrome<Row: View>(@ViewBuilder _ row: () -> Row) -> some View {
+        row()
+            .padding(.horizontal, 14)
+            .padding(.vertical, verticalPadding)
+            .frame(minHeight: minHeight)
+            .background(
+                LinearGradient(
+                    colors: [DS.Paper.base, DS.Paper.sunk],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .overlay(alignment: .top) { EditorialRule(color: DS.Rule.hard) }
+    }
+
+    static let minHeight: CGFloat = 26
+    /// 5, not 6: the Standard row is 16 pt, so the bar stays 26 pt there, as
+    /// it looked when the fixed height squeezed a 6 pt padding to 5.
+    static let verticalPadding: CGFloat = 5
+
     // MARK: - Cells
 
-    private var health: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(daemonColor)
-                .frame(width: 6, height: 6)
-                .shadow(color: daemonColor.opacity(0.4), radius: 0)
-                .overlay(
-                    Circle()
-                        .strokeBorder(daemonColor.opacity(0.22), lineWidth: 2)
-                        .frame(width: 10, height: 10)
-                )
-            Text("Scout daemon ·")
-                .font(DS.sans(11))
-                .foregroundStyle(DS.Ink.p3)
-            Text(daemonLabel)
-                .font(DS.mono(11))
-                .foregroundStyle(DS.Ink.p2)
+    /// Where the health cell's button goes for a fix, as the menu-bar panel's does.
+    enum Destination: Equatable { case health, engineSettings }
+
+    /// One case per fix (UI audit T4 review). `.setUp` has none: the panel's
+    /// "Set up Scout…" opens this window, whose detail is already the setup
+    /// flow while the engine isn't set up, right above this bar.
+    nonisolated static func destination(for fix: ScoutStatus.Fix?) -> Destination? {
+        switch fix {
+        case .openHealth: .health
+        case .openSettings: .engineSettings
+        case .setUp, nil: nil
         }
+    }
+
+    /// `AppState.status`, the same status as the menu-bar icon and panel.
+    /// When it has a fix, the cell is its button: the Health page for a problem
+    /// it explains (UI audit T4), Settings ▸ Engine for a repair.
+    private var health: some View {
+        let status = state.status
+        let color = status.tone.color
+        let destination = Self.destination(for: status.fix)
+        return Button {
+            switch destination {
+            case .health: state.requestedSidebar = .health
+            case .engineSettings: HelpActions.showEngineSettings(openSettings)
+            case nil: break
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(color)
+                    .frame(width: 6, height: 6)
+                    .overlay(
+                        Circle()
+                            .strokeBorder(color.opacity(0.22), lineWidth: 2)
+                            .frame(width: 10, height: 10)
+                    )
+                Text("Scout ·")
+                    .font(DS.font(.caption))
+                    .foregroundStyle(DS.Ink.p3)
+                Text(status.title)
+                    .font(DS.font(.caption, weight: .medium))
+                    .foregroundStyle(DS.Ink.p2)
+                    .lineLimit(1)
+                if destination != nil, let fix = status.fix {
+                    Text(fix.title)
+                        .font(DS.font(.caption, weight: .medium))
+                        .foregroundStyle(DS.Accent.ink)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(destination == nil)
+        .help(status.detail)
+        .accessibilityLabel("Scout: \(status.title). \(status.detail)")
     }
 
     private var nextRun: some View {
         HStack(spacing: 6) {
             Text("next run")
-                .font(DS.sans(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
             Text(nextRunValue)
-                .font(DS.mono(11))
+                .font(DS.font(.caption, .mono))
                 .foregroundStyle(DS.Ink.p2)
         }
     }
 
     private var todayCost: some View {
         HStack(spacing: 6) {
-            Text("today")
-                .font(DS.sans(11))
+            Text("runs today")
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
             Text(todayCostValue)
-                .font(DS.mono(11))
+                .font(DS.font(.caption, .mono))
                 .foregroundStyle(DS.Ink.p2)
         }
     }
@@ -85,10 +139,10 @@ struct StatusBarView: View {
     private var viewItem: some View {
         HStack(spacing: 6) {
             Text("view")
-                .font(DS.sans(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
             Text(viewLabel)
-                .font(DS.mono(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p2)
         }
     }
@@ -101,43 +155,34 @@ struct StatusBarView: View {
 
     // MARK: - Derived values
 
-    private var daemonColor: Color {
-        switch state.menuBarStatus {
-        case .running:        return DS.Status.warn
-        case .lastFailed:     return DS.Status.err
-        case .budgetSkipped:  return DS.Status.warn
-        case .idle:           return DS.Status.ok
-        }
-    }
-
-    private var daemonLabel: String {
-        switch state.menuBarStatus {
-        case .running:        return "running"
-        case .lastFailed:     return "last run failed"
-        case .budgetSkipped:  return "budget skip"
-        case .idle:           return "healthy"
-        }
-    }
-
     private var nextRunValue: String {
         guard let next = state.scheduleService.upcoming.first(where: { $0.type != .manual }) else {
             return "—"
         }
         let mins = max(0, Int(next.scheduledAt.timeIntervalSince(now) / 60))
-        if mins < 60 { return "\(next.type.displayName) · \(mins)m" }
+        if mins < 60 { return "\(next.displayName) · \(mins)m" }
         let hh = mins / 60, mm = mins % 60
-        return "\(next.type.displayName) · \(hh)h\(mm > 0 ? " \(mm)m" : "")"
+        return "\(next.displayName) · \(hh)h\(mm > 0 ? " \(mm)m" : "")"
     }
 
+    /// Today's cost of Scout's scheduled runs, from the same engine summary as
+    /// the usage card, so the two never disagree. "≥" or "unknown" when some or
+    /// all runs reported no cost, instead of a $0 that was never measured.
     private var todayCostValue: String {
-        let cal = Calendar.current
-        let runs = state.sessionLogService.runs.filter { cal.isDateInToday($0.startedAt) }
-        let total = runs.compactMap(\.cost).reduce(Decimal(0), +)
-        let nsTotal = NSDecimalNumber(decimal: total)
-        let fmt = NumberFormatter()
-        fmt.numberStyle = .currency
-        fmt.currencyCode = "USD"
-        fmt.maximumFractionDigits = 2
-        return fmt.string(from: nsTotal) ?? "$0.00"
+        guard let today = state.scoutUsageService.summary?.today else { return "—" }
+        return UsageFormat.shortCost(today)
+    }
+}
+
+extension ScoutStatus.Tone {
+    /// The one colour per tone the icon's panel and the status bar share.
+    var color: Color {
+        switch self {
+        case .ok:      return DS.Status.ok
+        case .warn:    return DS.Status.warn
+        case .err:     return DS.Status.err
+        case .active:  return DS.Accent.fill
+        case .neutral: return DS.Ink.p4
+        }
     }
 }

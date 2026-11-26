@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		BEEE45A02F9599AB0078191D /* Grape in Frameworks */ = {isa = PBXBuildFile; productRef = BEEE45A22F9599AB0078191D /* Grape */; };
 		5AC0FFEE2F9599AB00000003 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 5AC0FFEE2F9599AB00000002 /* Sparkle */; };
 /* End PBXBuildFile section */
 
@@ -44,7 +43,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				BEEE45A02F9599AB0078191D /* Grape in Frameworks */,
 				5AC0FFEE2F9599AB00000003 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -98,7 +96,6 @@
 			);
 			name = Scout;
 			packageProductDependencies = (
-				BEEE45A22F9599AB0078191D /* Grape */,
 				5AC0FFEE2F9599AB00000002 /* Sparkle */,
 			);
 			productName = Scout;
@@ -155,7 +152,6 @@
 			mainGroup = BEEE454B2F95613D0078191D;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				BEEE45A12F9599AB0078191D /* XCRemoteSwiftPackageReference "Grape" */,
 				5AC0FFEE2F9599AB00000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -239,14 +235,6 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		BEEE45A12F9599AB0078191D /* XCRemoteSwiftPackageReference "Grape" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/SwiftGraphs/Grape";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.1.0;
-			};
-		};
 		5AC0FFEE2F9599AB00000001 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/sparkle-project/Sparkle";
@@ -258,11 +246,6 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		BEEE45A22F9599AB0078191D /* Grape */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = BEEE45A12F9599AB0078191D /* XCRemoteSwiftPackageReference "Grape" */;
-			productName = Grape;
-		};
 		5AC0FFEE2F9599AB00000002 /* Sparkle */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 5AC0FFEE2F9599AB00000001 /* XCRemoteSwiftPackageReference "Sparkle" */;
@@ -409,7 +392,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.18.11;
+				MARKETING_VERSION = 0.18.23;
 				PRODUCT_BUNDLE_IDENTIFIER = com.scout.Scout.dev;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -443,7 +426,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.18.11;
+				MARKETING_VERSION = 0.18.23;
 				PRODUCT_BUNDLE_IDENTIFIER = com.scout.Scout;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -464,7 +447,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 0.18.11;
+				MARKETING_VERSION = 0.18.23;
 				PRODUCT_BUNDLE_IDENTIFIER = com.scout.ScoutTests.dev;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -483,7 +466,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 0.18.11;
+				MARKETING_VERSION = 0.18.23;
 				PRODUCT_BUNDLE_IDENTIFIER = com.scout.ScoutTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;

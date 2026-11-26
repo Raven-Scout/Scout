@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // Persistent parse cache for session run logs.
@@ -15,8 +16,11 @@ extension SessionLogService {
     /// On-disk cache of parsed log bodies, keyed by log file name.
     struct ParseCache: Codable, Equatable {
         /// Bump when `Entry`/`ParsedBody` shape changes so stale caches are
-        /// discarded rather than mis-decoded.
-        static let version = 2
+        /// discarded rather than mis-decoded. 3: `DetectedError` gained a kind
+        /// and a block, and the scanner finds tracebacks, so every log is
+        /// re-scanned once (card R3). 4: `ParsedBody` gained `lockWaitSecs`, so a
+        /// log cached while it waited for the session lock is read again.
+        static let version = 4
 
         var version: Int
         var entries: [String: Entry]
@@ -89,17 +93,95 @@ extension SessionLogService {
 
     /// Default cache location: the per-user caches directory, kept OUT of the
     /// logs directory so writing it never trips that directory's file watcher.
-    /// A single fixed file is fine — the cache self-validates per entry (name +
-    /// size + mtime), so a stale or shared file degrades to a cache miss, never
-    /// to wrong data.
-    nonisolated static func defaultParseCacheURL() -> URL? {
+    ///
+    /// One file per app build (bundle ID) and per vault. It used to be one fixed
+    /// `Caches/Scout/session-parse-cache.json` shared by every build and vault,
+    /// so a dev build or a second vault rewrote the installed app's cache on
+    /// every launch and each then re-parsed every log. Entries self-validate
+    /// (name + size + mtime), so sharing never gave wrong data, only misses.
+    ///
+    /// It is not counts only: each entry keeps the log's parsed fields,
+    /// including up to 200 characters of every error line it matched
+    /// (`DetectedError.snippet`). Like the logs themselves, it stays in the
+    /// owner's own caches directory and the path never names the vault.
+    nonisolated static func defaultParseCacheURL(
+        scoutDirectory: URL,
+        bundleIdentifier: String? = Bundle.main.bundleIdentifier
+    ) -> URL? {
         let fm = FileManager.default
         guard let base = try? fm.url(
             for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true
         ) else { return nil }
-        let dir = base.appendingPathComponent("Scout", isDirectory: true)
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("session-parse-cache.json")
+        let url = parseCacheURL(
+            cachesDirectory: base, scoutDirectory: scoutDirectory, bundleIdentifier: bundleIdentifier
+        )
+        try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        return url
+    }
+
+    /// Pure path rule behind `defaultParseCacheURL`:
+    /// `<caches>/Scout/parse-cache/<bundle id>/<vault key>.json`. The vault key
+    /// is a hash of the standardized vault path, so a path never becomes a
+    /// file name and two spellings of one vault share a cache.
+    nonisolated static func parseCacheURL(
+        cachesDirectory: URL, scoutDirectory: URL, bundleIdentifier: String?
+    ) -> URL {
+        let bundle = sanitizedComponent(bundleIdentifier ?? "") ?? "unknown-bundle"
+        return cachesDirectory
+            .appendingPathComponent("Scout", isDirectory: true)
+            .appendingPathComponent("parse-cache", isDirectory: true)
+            .appendingPathComponent(bundle, isDirectory: true)
+            .appendingPathComponent("\(vaultKey(scoutDirectory)).json")
+    }
+
+    /// The bundle ID of the shipping app, the only build allowed to delete the
+    /// old shared cache file.
+    nonisolated static let shippingBundleIdentifier = "com.scout.Scout"
+
+    /// Delete the old shared `<caches>/Scout/session-parse-cache.json` once
+    /// this build keeps its own per-vault cache. Only the shipping app does it,
+    /// so a dev build (`com.scout.Scout.dev`) can't delete the file the
+    /// installed app still reads before it updates. Only that one file goes;
+    /// the `Scout/` folder holds the new `parse-cache/` tree. Returns whether a
+    /// file was removed. Safe to call on every launch: a missing file is a no-op.
+    @discardableResult
+    nonisolated static func removeLegacyParseCache(
+        cachesDirectory: URL,
+        bundleIdentifier: String?,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        guard bundleIdentifier == shippingBundleIdentifier else { return false }
+        let legacy = cachesDirectory
+            .appendingPathComponent("Scout", isDirectory: true)
+            .appendingPathComponent("session-parse-cache.json")
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: legacy.path, isDirectory: &isDirectory), !isDirectory.boolValue
+        else { return false }
+        return (try? fileManager.removeItem(at: legacy)) != nil
+    }
+
+    /// `removeLegacyParseCache` against the per-user caches directory and this
+    /// process's bundle ID. Called once at launch.
+    nonisolated static func removeLegacyParseCacheAtLaunch() {
+        guard let base = try? FileManager.default.url(
+            for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: false
+        ) else { return }
+        removeLegacyParseCache(cachesDirectory: base, bundleIdentifier: Bundle.main.bundleIdentifier)
+    }
+
+    /// First 16 hex digits of the SHA-256 of the vault's standardized path.
+    nonisolated static func vaultKey(_ scoutDirectory: URL) -> String {
+        let path = scoutDirectory.standardizedFileURL.resolvingSymlinksInPath().path
+        let digest = SHA256.hash(data: Data(path.utf8))
+        return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// A bundle ID as one safe path component, or nil when nothing usable is left.
+    nonisolated private static func sanitizedComponent(_ raw: String) -> String? {
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
+        let cleaned = String(raw.map { allowed.contains($0) ? $0 : "-" })
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return cleaned.isEmpty ? nil : cleaned
     }
 
     /// Load the cache, or an empty one if absent/unreadable/corrupt (any failure

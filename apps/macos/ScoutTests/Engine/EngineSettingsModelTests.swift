@@ -38,6 +38,7 @@ struct EngineSettingsModelTests {
                                      doctor: DoctorReport(severity: .red, errors: ["launchd: com.scout.heartbeat not registered"], warnings: ["w"]),
                                      lastError: nil, bundledVersion: nil)
         #expect(m2.healthLabel == "Needs attention")
+        #expect(m2.healthTone == .err)
         #expect(m2.messages == ["launchd: com.scout.heartbeat not registered", "w"])
     }
 
@@ -53,7 +54,7 @@ struct EngineSettingsModelTests {
     @Test func vaultNotBootstrappedShowsHonestHealthLabel() {
         let m = EngineSettingsModel(state: .managed(install, vaultBootstrapped: false),
                                     doctor: DoctorReport(severity: .green, errors: [], warnings: []), lastError: nil, bundledVersion: nil)
-        #expect(m.healthLabel == "Vault not set up")
+        #expect(m.healthLabel == "Scout folder not set up")
         #expect(!m.healthIsOK)
         #expect(m.messages.isEmpty)
     }
@@ -85,7 +86,7 @@ struct EngineSettingsModelTests {
     @Test func gatingStatesKeepTheirOwnLabelsOverADoctorError() {
         let err = "doctor output not understood: Traceback"
         let unset = EngineSettingsModel(state: .managed(install, vaultBootstrapped: false), doctor: nil, lastError: err, bundledVersion: nil)
-        #expect(unset.healthLabel == "Vault not set up")
+        #expect(unset.healthLabel == "Scout folder not set up")
         #expect(!unset.messages.contains(err))
         let broken = EngineSettingsModel(state: .broken(install, reason: "engine pointer names a missing scoutctl: /s"),
                                          doctor: nil, lastError: err, bundledVersion: nil)
@@ -103,7 +104,7 @@ struct EngineSettingsModelTests {
         #expect(notInstalled.setupAction == .setUp && notInstalled.setupHelp != nil)
         let unset = EngineSettingsModel(state: .managed(install, vaultBootstrapped: false), doctor: nil, lastError: nil, bundledVersion: "0.11.0")
         #expect(unset.setupAction == .setUp)
-        #expect(unset.setupHelp == "The engine is installed; finish setting up your vault.")
+        #expect(unset.setupHelp == "The engine is installed; finish setting up your Scout folder.")
         #expect(!unset.canUpdate)         // finish onboarding first, as the launch upgrade does
         for state in [EngineState.broken(install, reason: "r"), .broken(nil, reason: "r")] {
             let broken = EngineSettingsModel(state: state, doctor: nil, lastError: nil, bundledVersion: nil)
@@ -207,17 +208,17 @@ struct EngineSettingsModelTests {
         let red = RunHealth.Finding(id: "auth.expired", severity: "red", since: nil, summary: "Your Claude login expired.", fix: "f", source: "ledger")
         let m = model(runHealth(.red, findings: [note, red]))
         #expect(m.runsLabel == "Failing")
+        #expect(m.runsTone == .err)   // red, as the Health page paints it (UI audit T4)
         #expect(m.runsHelp == "Your Claude login expired.")
-        #expect(!m.runsIsOK)
     }
 
     @Test func runsRowYellowAndGreen() {
         let y = model(runHealth(.yellow))
         #expect(y.runsLabel == "Warnings")
-        #expect(!y.runsIsOK)
+        #expect(y.runsTone == .warn)
         let g = model(runHealth(.green, lastOkAt: "2026-10-11T11:00:00Z"))
         #expect(g.runsLabel == "Healthy")
-        #expect(g.runsIsOK)
+        #expect(g.runsTone == .ok)
         #expect(g.runsHelp.hasPrefix("Last successful run "))
         #expect(g.runsHelp != "Last successful run 2026-10-11T11:00:00Z")   // rendered relative, not raw
     }
@@ -232,7 +233,7 @@ struct EngineSettingsModelTests {
     private let limitLog = "/Users/alex/Scout/.scout-logs/scout-2026-10-13_13-00.log"
     private func paused(until: String?) -> RunHealth.Finding {
         RunHealth.Finding(id: "runs.paused", severity: "yellow", since: nil,
-                          summary: "Claude usage limit — runs paused until 2026-10-15T12:00:00Z. The last 5 scheduled run(s) failed on the limit.",
+                          summary: "Claude usage limit — runs paused until 2026-10-15T12:00:00Z. The last 5 scheduled runs failed on the limit.",
                           fix: "Nothing to fix: the first scheduled run after the reset picks up.", source: "ledger",
                           detail: limitLine, log: limitLog, until: until)
     }
@@ -241,7 +242,7 @@ struct EngineSettingsModelTests {
         let m = model(runHealth(.yellow, findings: [paused(until: "2026-10-15T12:00:00Z")]))
         #expect(m.runsLabel == "Paused")
         #expect(m.runsIsPaused)
-        #expect(!m.runsIsOK)
+        #expect(m.runsTone == .neutral)   // a pause lifts by itself: grey, not amber
         #expect(m.runsHelp.hasPrefix("Claude usage limit: Scout resumes "))
         #expect(!m.runsHelp.contains("2026-10-15T12:00:00Z"))   // a local date and time, not ISO-Z
         #expect(m.runsDetail == limitLine)
@@ -257,12 +258,12 @@ struct EngineSettingsModelTests {
 
     @Test func runsRowFailingShowsTheErrorLineFixAndLog() {
         let failing = RunHealth.Finding(id: "runs.failing", severity: "red", since: nil,
-                                        summary: "The last 2 scheduled run(s) failed (network).", fix: "Run scoutctl bootstrap doctor",
+                                        summary: "The last 2 scheduled runs failed (network).", fix: "Run scoutctl bootstrap doctor",
                                         source: "ledger", detail: "API Error: Connection error (ECONNRESET)", log: "/v/.scout-logs/x.log")
         let m = model(runHealth(.red, findings: [failing]))
         #expect(m.runsLabel == "Failing")
         #expect(!m.runsIsPaused)
-        #expect(m.runsHelp == "The last 2 scheduled run(s) failed (network).")
+        #expect(m.runsHelp == "The last 2 scheduled runs failed (network).")
         #expect(m.runsDetail == "API Error: Connection error (ECONNRESET)")
         #expect(m.runsFix == "Run scoutctl bootstrap doctor")
         #expect(m.runsLogURL == URL(fileURLWithPath: "/v/.scout-logs/x.log"))
@@ -320,8 +321,130 @@ struct EngineSettingsModelTests {
     @Test func runsRowAbsentWithoutRunHealth() {
         let m = model(nil)
         #expect(m.runsLabel == "Unknown")
-        #expect(!m.runsIsOK)
+        #expect(m.runsTone == .neutral)
         #expect(!m.showsRuns)
         #expect(model(runHealth(.green)).showsRuns)
+    }
+
+    // MARK: every finding, grouped by severity (card C3)
+
+    @Test func findingGroupsListEveryFindingWorstFirst() {
+        func f(_ id: String, _ sev: String, _ summary: String, log: String? = nil) -> RunHealth.Finding {
+            RunHealth.Finding(id: id, severity: sev, since: nil, summary: summary, fix: id == "a" ? "" : "fix \(id)",
+                              source: "x", detail: id == "b" ? "the run's own line" : nil, log: log)
+        }
+        let rh = runHealth(.red, findings: [
+            f("n", "note", "a note"), f("a", "red", "first red"), f("y", "yellow", "a warning"),
+            f("b", "red", "second red", log: "/tmp/scout-2026-11-16_07-00.log"), f("z", "purple", "a severity from the future"),
+        ])
+        let m = EngineSettingsModel(state: .managed(install, vaultBootstrapped: true),
+                                    doctor: DoctorReport(severity: .red, errors: ["install error"], warnings: ["install warning"], runHealth: rh),
+                                    lastError: nil, bundledVersion: nil)
+        let groups = m.findingGroups
+        #expect(groups.map(\.severity) == [.problem, .warning, .note])
+        // Within a severity, scheduled runs come before the install (R1's shared order).
+        #expect(groups[0].items.map(\.summary) == ["first red", "second red", "install error"])
+        #expect(groups[1].items.map(\.summary) == ["a warning", "a severity from the future", "install warning"])
+        #expect(groups[2].items.map(\.summary) == ["a note"])
+        // Every finding, not just the first actionable one.
+        #expect(groups.flatMap(\.items).count == 7)
+        let second = groups[0].items[1]
+        #expect(second.detail == "the run's own line")
+        #expect(second.fix == "fix b")
+        #expect(second.logURL?.lastPathComponent == "scout-2026-11-16_07-00.log")
+        #expect(groups[0].items[0].fix == nil)   // an empty fix is no fix
+        #expect(Set(groups.flatMap(\.items).map(\.id)).count == 7)   // ids stay unique for ForEach
+        #expect(m.findingCountsLabel == "3 problems · 3 warnings · 1 note")
+    }
+
+    @Test func findingGroupsEmptyWhenNothingToShow() {
+        #expect(model(runHealth(.green)).findingGroups.isEmpty)
+        #expect(model(runHealth(.green)).findingCountsLabel == nil)
+        #expect(EngineSettingsModel(state: .notInstalled, doctor: nil, lastError: nil, bundledVersion: nil).findingGroups.isEmpty)
+    }
+
+    @Test func greenWithWarningsIsNotPlainHealthy() {
+        let m = EngineSettingsModel(state: .managed(install, vaultBootstrapped: true),
+                                    doctor: DoctorReport(severity: .yellow, errors: [], warnings: ["w"]), lastError: nil, bundledVersion: nil)
+        #expect(m.healthIsOK)
+        #expect(m.healthTone == .warn)
+        #expect(model(runHealth(.green)).healthTone == .ok)
+    }
+
+    /// T4 review: Settings colours a state as the status bar does (`ScoutStatus`), so a broken
+    /// engine or a doctor that couldn't run is red in both, and unfinished setup amber in both.
+    @Test func healthToneMatchesTheStatusBar() {
+        func tone(_ state: EngineState, error: String? = nil) -> ScoutStatus.Tone {
+            EngineSettingsModel(state: state, doctor: nil, lastError: error, bundledVersion: nil).healthTone
+        }
+        func bar(_ state: EngineState, error: String? = nil) -> ScoutStatus.Tone {
+            ScoutStatus.derive(engine: state, doctor: nil, doctorError: error, latestRun: nil).tone
+        }
+        let set = EngineState.managed(install, vaultBootstrapped: true)
+        let cases: [(EngineState, String?)] = [(.notInstalled, nil), (.managed(install, vaultBootstrapped: false), nil),
+                                               (.broken(install, reason: "gone"), nil), (set, "could not run scoutctl"), (set, nil)]
+        for (state, error) in cases {
+            #expect(tone(state, error: error) == bar(state, error: error), "\(state)")
+        }
+        #expect(tone(.broken(install, reason: "gone")) == .err)
+        #expect(tone(set, error: "could not run scoutctl") == .err)
+        #expect(tone(.notInstalled) == .warn)
+        #expect(tone(set) == .neutral)   // the first check is still out
+    }
+
+    // MARK: one story with every other health surface (UI audit R1)
+
+    @Test func aHealthyInstallWithFailingRunsIsNotHealthy() {
+        let red = RunHealth(severity: .red, evaluatedAt: "x", lastOkAt: nil, findings: [
+            .init(id: "runs.failing", severity: "red", since: nil, summary: "Runs keep failing", fix: "f", source: "ledger"),
+        ], slots: [])
+        let yellow = RunHealth(severity: .yellow, evaluatedAt: "x", lastOkAt: nil, findings: [
+            .init(id: "runs.failed_today", severity: "yellow", since: nil, summary: "morning-briefing failed today", fix: "f", source: "ledger"),
+        ], slots: [])
+        func label(_ rh: RunHealth) -> String {
+            EngineSettingsModel(state: .managed(install, vaultBootstrapped: true),
+                                doctor: DoctorReport(severity: .green, errors: [], warnings: [], runHealth: rh),
+                                lastError: nil, bundledVersion: nil).healthLabel
+        }
+        #expect(label(red) == "Needs attention")
+        #expect(label(yellow) == "Needs a look")
+    }
+
+    /// UI audit T4: "1 problem · 3 warnings" read "Healthy, with warnings" because the install's
+    /// yellow was checked before the run's red. The worse verdict wins, in its own colour.
+    @Test func aYellowInstallWithAFailingRunNeedsFixingInRed() {
+        let red = RunHealth(severity: .red, evaluatedAt: "x", lastOkAt: nil, findings: [
+            .init(id: "runs.failing", severity: "red", since: nil, summary: "Runs keep failing", fix: "f", source: "ledger"),
+        ], slots: [])
+        let m = EngineSettingsModel(state: .managed(install, vaultBootstrapped: true),
+                                    doctor: DoctorReport(severity: .yellow, errors: [], warnings: ["w1", "w2", "w3"], runHealth: red),
+                                    lastError: nil, bundledVersion: nil)
+        #expect(m.findingCountsLabel == "1 problem · 3 warnings")
+        #expect(m.healthLabel == "Needs attention")
+        #expect(m.healthTone == .err)
+        #expect(!m.healthIsOK)
+        #expect(m.runsLabel == "Failing")
+        #expect(m.runsTone == .err)
+        // Warnings alone are amber; nothing at all is green.
+        let warn = EngineSettingsModel(state: .managed(install, vaultBootstrapped: true),
+                                       doctor: DoctorReport(severity: .yellow, errors: [], warnings: ["w"]), lastError: nil, bundledVersion: nil)
+        #expect(warn.healthTone == .warn && warn.healthLabel == "Needs a look")
+        #expect(model(runHealth(.green)).healthTone == .ok)
+        #expect(model(runHealth(.green)).healthLabel == "Healthy")
+    }
+
+    @Test func groupedWarningsAreOneItemWithTheirFiles() {
+        let files = (1...34).map { "scripts/check-\($0).py" }
+        let summary = "privacy: 34 vault scripts read the knowledge base directly, …"
+        let doctor = DoctorReport(severity: .yellow, errors: [], warnings: ["runner backup present: run-scout.sh.bak.1", summary],
+                                  warningGroups: [.init(kind: "privacy.script-raw-kb-read", summary: summary, items: files)])
+        let m = EngineSettingsModel(state: .managed(install, vaultBootstrapped: true), doctor: doctor, lastError: nil, bundledVersion: nil)
+        let warnings = m.findingGroups.first { $0.severity == .warning }?.items ?? []
+        #expect(warnings.count == 2)
+        let grouped = warnings[1]
+        #expect(grouped.summary == "34 scripts in your Scout folder read the knowledge base directly, without Scout's privacy labels")
+        #expect(grouped.items == files)
+        #expect(grouped.fix?.contains("scoutctl kb files") == true)
+        #expect(m.findingCountsLabel == "2 warnings")
     }
 }

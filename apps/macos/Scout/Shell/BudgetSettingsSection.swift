@@ -174,7 +174,7 @@ struct BudgetSettingsSection: View {
                 format: "%dh window → $%.2f budget · sessions skip at $%.2f",
                 values.hours, gate.windowBudgetUSD, gate.skipThresholdUSD
             ))
-            .font(DS.mono(11.5))
+            .font(DS.font(.caption, .mono))
             .foregroundStyle(DS.Ink.p2)
         }
     }
@@ -202,7 +202,7 @@ struct BudgetSettingsSection: View {
             )
         case .vault:
             Text(settings.configPath)
-                .font(DS.mono(10.5))
+                .font(DS.font(.caption2, .mono))
                 .foregroundStyle(DS.Ink.p4)
         }
     }
@@ -215,32 +215,22 @@ struct BudgetSettingsSection: View {
             Task { await save(current) }
         } label: {
             Text(isSaving ? "Saving…" : "Save")
-                .font(DS.sans(12.5, weight: .medium))
-                .foregroundStyle(disabled ? DS.Ink.p4 : .white)
-                .padding(.horizontal, 14)
-                .frame(height: 28)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(disabled ? DS.Paper.sunk : DS.Accent.fill)
-                        .overlay(RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-                )
         }
-        .buttonStyle(.plainHit)
+        .buttonStyle(.dsPrimary)
         .disabled(disabled)
         .padding(.top, 2)
     }
 
     private func advisory(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(DS.sans(11.5))
+            .font(DS.font(.caption))
             .foregroundStyle(color)
             .fixedSize(horizontal: false, vertical: true)
     }
 
     private func message(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(DS.sans(12.5))
+            .font(DS.font(.label))
             .foregroundStyle(color)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.vertical, 14)

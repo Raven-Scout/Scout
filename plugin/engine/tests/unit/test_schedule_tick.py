@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -817,6 +818,51 @@ def test_fire_now_happy_path_emits_slot_fired(tmp_path, monkeypatch):
     assert ev.payload.get("pid_spawned") == 7777
 
 
+def _one_slot_vault(tmp_path: Path, monkeypatch, slot: str = "evening-slot") -> None:
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
+    (tmp_path / ".scout-state").mkdir()
+    (tmp_path / ".scout-logs").mkdir()
+    (tmp_path / ".scout-state" / "schedule.yaml").write_text(
+        f"schema_version: 1\nslots:\n  {slot}:\n"
+        "    type: consolidation\n    runner: run-scout.sh\n    fires_at_local: '00:01'\n"
+        "    weekdays: [Mon, Tue, Wed, Thu, Fri, Sat, Sun]\n"
+        "    missed_window_hours: 24\n    on_miss: fire\n    cooldown_minutes: 5\n"
+    )
+
+
+def test_fire_now_tells_the_run_a_person_started_it(tmp_path, monkeypatch):
+    """Run now records `trigger: manual` with the schedule's own slot, so the app can mark the
+    run "Started by you" while still naming it after its schedule."""
+    _one_slot_vault(tmp_path, monkeypatch)
+    monkeypatch.delenv("SCOUT_TRIGGER", raising=False)
+    from scout.scripts.schedule_tick import fire_now
+
+    with patch("scout.scripts.schedule_tick.subprocess.Popen") as mock_popen:
+        mock_popen.return_value.pid = 4242
+        ev = fire_now("evening-slot")
+    assert ev.kind == "slot.fired"
+    env = mock_popen.call_args.kwargs["env"]
+    assert env["SCOUT_TRIGGER"] == "manual"
+    assert env["SCOUT_FORCE_MODE"] == "evening-slot"
+
+
+def test_the_tick_leaves_the_trigger_to_the_runner(tmp_path, monkeypatch):
+    """A scheduled fire sets no SCOUT_TRIGGER, so run-outcome.sh records `schedule` from SCOUT_FORCE_MODE."""
+    _one_slot_vault(tmp_path, monkeypatch)
+    monkeypatch.delenv("SCOUT_TRIGGER", raising=False)
+    with (
+        patch("scout.scripts.schedule_tick._now", return_value=_FROZEN_NOW),
+        patch("scout.scripts.schedule_tick._network_ready", return_value=True),
+        patch("scout.scripts.schedule_tick.subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value.pid = 4343
+        tick_run()
+    mock_popen.assert_called_once()
+    env = mock_popen.call_args.kwargs["env"]
+    assert "SCOUT_TRIGGER" not in env
+    assert env["SCOUT_FORCE_MODE"] == "evening-slot"
+
+
 def test_fire_now_runner_missing_emits_fire_failed(tmp_path, monkeypatch):
     monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path))
     (tmp_path / ".scout-state").mkdir()
@@ -824,7 +870,7 @@ def test_fire_now_runner_missing_emits_fire_failed(tmp_path, monkeypatch):
     sched = tmp_path / ".scout-state" / "schedule.yaml"
     sched.write_text(
         "schema_version: 1\nslots:\n  any-slot:\n"
-        "    type: briefing\n    runner: nonexistent-runner.sh\n    fires_at_local: '08:00'\n"
+        "    type: briefing\n    runner: run-dreaming.sh\n    fires_at_local: '08:00'\n"
         "    weekdays: [Mon]\n    missed_window_hours: 4\n    on_miss: fire\n    cooldown_minutes: 60\n"
     )
     from scout.scripts.schedule_tick import fire_now

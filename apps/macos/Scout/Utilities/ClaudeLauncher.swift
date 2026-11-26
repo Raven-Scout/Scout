@@ -60,7 +60,8 @@ enum ClaudeLauncher {
     /// Why a CLI session is being opened. An action item starts a fresh
     /// `claude` with its context on the clipboard; resume reopens an existing
     /// session (`claude --resume <id>`) and leaves the clipboard alone.
-    enum CLIPurpose: Equatable {
+    /// `nonisolated`: the tmux launch builds its argv off the main thread.
+    nonisolated enum CLIPurpose: Equatable, Sendable {
         case actionItem
         case resume(cliSessionID: String)
 
@@ -72,8 +73,19 @@ enum ClaudeLauncher {
         }
     }
 
-    enum LaunchError: LocalizedError {
-        case ghosttyNotInstalled  // reserved for a future explicit .ghostty target; not thrown by .auto
+    /// `nonisolated` so the off-main launch steps (`runAppleScript` from a
+    /// detached task) can throw it and callers anywhere can read its text.
+    nonisolated enum LaunchError: LocalizedError, Equatable {
+        /// Thrown by `GhosttyLauncher`; `.auto` falls back to Terminal.app instead.
+        case ghosttyNotInstalled
+        /// macOS refused to open or bring forward Ghostty.
+        case ghosttyLaunchFailed(String)
+        /// System Events refused to type into another app: Scout lacks
+        /// Accessibility permission.
+        case accessibilityDenied
+        /// macOS refused to let Scout control another app (AppleScript error
+        /// -1743): Scout lacks Automation permission for it.
+        case automationDenied(String)
         case claudeDesktopNotInstalled
         case claudeCLINotFound
         case scriptWriteFailed(String)
@@ -82,10 +94,28 @@ enum ClaudeLauncher {
         case terminalLaunchFailed(String)
         case customCommandEmpty
 
+        /// The System Settings pane that fixes this error, if one does.
+        var settingsURL: URL? {
+            switch self {
+            case .accessibilityDenied:
+                return URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+            case .automationDenied:
+                return URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")
+            default:
+                return nil
+            }
+        }
+
         var errorDescription: String? {
             switch self {
             case .ghosttyNotInstalled:
-                return "Ghostty.app isn't installed. Install it from https://ghostty.org to use this option."
+                return "Ghostty.app isn't installed. Install it from https://ghostty.org, or pick a different terminal in Settings."
+            case .ghosttyLaunchFailed(let msg):
+                return "Couldn't open Ghostty: \(msg)"
+            case .accessibilityDenied:
+                return "Scout isn't allowed to type into Ghostty. Turn on Scout in System Settings ▸ Privacy & Security ▸ Accessibility, then try again."
+            case .automationDenied(let msg):
+                return "Scout isn't allowed to control the terminal (\(msg)). Turn on Scout in System Settings ▸ Privacy & Security ▸ Automation, then try again."
             case .claudeDesktopNotInstalled:
                 return "Claude.app isn't installed. Download Claude Desktop from https://claude.ai/download to use this option."
             case .claudeCLINotFound:
@@ -104,7 +134,10 @@ enum ClaudeLauncher {
         }
     }
 
-    static func launch(target: Target, prompt: String) throws {
+    /// Async so the window never hangs on a launch: finding `claude` through
+    /// a login shell and asking tmux for a session run off the main thread,
+    /// and a Ghostty launch reports its failure here instead of to the log.
+    static func launch(target: Target, prompt: String) async throws {
         // Clipboard is the universal fallback. Ghostty's tmux-based flow
         // needs it for ⌘V into the claude TUI; the Claude Desktop URL-prefill
         // sometimes drops the `q` param during screen transitions, and the
@@ -113,7 +146,7 @@ enum ClaudeLauncher {
         NSPasteboard.general.setString(prompt, forType: .string)
 
         switch target {
-        case .cli(let cwd, let config):  try launchCLI(cwd: cwd, config: config, purpose: .actionItem)
+        case .cli(let cwd, let config):  try await launchCLI(cwd: cwd, config: config, purpose: .actionItem)
         case .claudeDesktop(let mode):   try launchClaudeDesktop(prompt: prompt, mode: mode)
         }
     }
@@ -121,8 +154,8 @@ enum ClaudeLauncher {
     /// Reopen an existing Claude Code session in the configured terminal:
     /// `claude --resume <cliSessionID>` run from `cwd`. Unlike `launch`, this
     /// does not touch the clipboard.
-    static func resume(cliSessionID: String, cwd: URL, config: CLIConfig) throws {
-        try launchCLI(cwd: cwd, config: config, purpose: .resume(cliSessionID: cliSessionID))
+    static func resume(cliSessionID: String, cwd: URL, config: CLIConfig) async throws {
+        try await launchCLI(cwd: cwd, config: config, purpose: .resume(cliSessionID: cliSessionID))
     }
 
     /// Build the prompt text for a task — subject, plus body, recent
@@ -246,7 +279,7 @@ enum ClaudeLauncher {
     /// POSIX single-quote a string so it survives as one shell argument,
     /// regardless of spaces or metacharacters. Embedded single quotes are
     /// closed, backslash-escaped, and reopened (`'\''`).
-    static func shellQuote(_ s: String) -> String {
+    nonisolated static func shellQuote(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
@@ -283,19 +316,19 @@ enum ClaudeLauncher {
     }
 
     /// The shell command run inside Terminal.app / iTerm2: cd to the working
-    /// dir, print the clipboard-paste hint, then exec claude. Mirrors
-    /// `makeGhosttyScript`'s double-quote escaping.
-    static func makeTerminalShellCommand(
+    /// dir, print the clipboard-paste hint, then exec claude. The folder and
+    /// the claude path are single-quoted (`shellQuote`), as in
+    /// `makeGhosttyScript`: inside double quotes `$(…)`, backticks and `$VAR`
+    /// still expand, so a folder named `proj$(…)` ran that command on Resume.
+    nonisolated static func makeTerminalShellCommand(
         claudePath: String, cwd: String, purpose: CLIPurpose = .actionItem
     ) -> String {
-        let cwdEsc = shellDoubleQuoteEscape(cwd)
-        let claudeEsc = shellDoubleQuoteEscape(claudePath)
         let banner = purpose == .actionItem
             ? "Scout: action-item context copied to your clipboard. Paste with Cmd+V."
             : "Scout: resuming a Claude Code session."
-        return "cd \"\(cwdEsc)\" && clear && "
+        return "cd \(shellQuote(cwd)) && clear && "
             + "echo \(shellQuote(banner)) && "
-            + "exec \"\(claudeEsc)\""
+            + "exec \(shellQuote(claudePath))"
             + purpose.arguments.map { " " + shellQuote($0) }.joined()
     }
 
@@ -339,18 +372,23 @@ enum ClaudeLauncher {
     /// Common Homebrew + system paths. Scout.app is launched by macOS with
     /// a minimal PATH, so we probe absolute locations instead of relying on
     /// `which`.
-    private static let tmuxPaths = [
+    private nonisolated static let tmuxPaths = [
         "/opt/homebrew/bin/tmux",
         "/usr/local/bin/tmux",
         "/usr/bin/tmux",
     ]
 
-    private static func launchCLI(cwd: URL, config: CLIConfig, purpose: CLIPurpose) throws {
-        guard let claudePath = resolveClaudePath(override: config.claudePathOverride) else {
+    private static func launchCLI(cwd: URL, config: CLIConfig, purpose: CLIPurpose) async throws {
+        // A login-shell spawn can take as long as a full shell startup.
+        let override = config.claudePathOverride
+        let resolved = await Task.detached(priority: .userInitiated) {
+            resolveClaudePath(override: override)
+        }.value
+        guard let claudePath = resolved else {
             throw LaunchError.claudeCLINotFound
         }
         switch config.terminal {
-        case .auto:        try launchAuto(claudePath: claudePath, cwd: cwd, purpose: purpose)
+        case .auto:        try await launchAuto(claudePath: claudePath, cwd: cwd, purpose: purpose)
         case .terminalApp: try launchTerminalApp(claudePath: claudePath, cwd: cwd, purpose: purpose)
         case .iterm2:      try launchITerm(claudePath: claudePath, cwd: cwd, purpose: purpose)
         case .custom:
@@ -360,15 +398,19 @@ enum ClaudeLauncher {
 
     /// Auto: Ghostty+tmux → fresh Ghostty window → Terminal.app fallback, so
     /// it works whether or not the user runs Ghostty.
-    private static func launchAuto(claudePath: String, cwd: URL, purpose: CLIPurpose) throws {
+    private static func launchAuto(claudePath: String, cwd: URL, purpose: CLIPurpose) async throws {
         if let ghosttyURL = NSWorkspace.shared.urlForApplication(
             withBundleIdentifier: ghosttyBundleID
         ) {
-            if launchViaTmux(claudePath: claudePath, cwd: cwd, purpose: purpose) {
-                activateGhostty(ghosttyURL: ghosttyURL)
+            // tmux is two child processes waited on to exit: off the main thread.
+            let viaTmux = await Task.detached(priority: .userInitiated) {
+                launchViaTmux(claudePath: claudePath, cwd: cwd, purpose: purpose)
+            }.value
+            if viaTmux {
+                try await activateGhostty(ghosttyURL: ghosttyURL)
                 return
             }
-            try launchFreshGhosttyWindow(ghosttyURL: ghosttyURL, claudePath: claudePath, cwd: cwd, purpose: purpose)
+            try await launchFreshGhosttyWindow(ghosttyURL: ghosttyURL, claudePath: claudePath, cwd: cwd, purpose: purpose)
             return
         }
         try launchTerminalApp(claudePath: claudePath, cwd: cwd, purpose: purpose)
@@ -387,7 +429,9 @@ enum ClaudeLauncher {
     ///
     /// - If `override` is non-empty, it is authoritative: returned only if it
     ///   is an executable file, otherwise nil (so a typo'd override surfaces a
-    ///   "not found" error instead of being masked by the probe fallback).
+    ///   "not found" error instead of being masked by the probe fallback). A
+    ///   leading `~` expands against `home`, so an override saved as
+    ///   `~/.local/bin/claude` still resolves (#715 review).
     /// - If `override` is empty, probe well-known locations, then ask the
     ///   user's login shell (picks up mise/asdf/nvm-style installs).
     ///
@@ -397,10 +441,19 @@ enum ClaudeLauncher {
     /// `Task.detached`, since the login-shell spawn below can block for the
     /// length of a full shell startup and must never do that on the main
     /// thread (e.g. a prerequisites screen polling every few seconds).
-    nonisolated static func resolveClaudePath(override: String) -> String? {
+    nonisolated static func resolveClaudePath(override: String,
+                                              home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String? {
         let trimmed = override.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
-            return FileManager.default.isExecutableFile(atPath: trimmed) ? trimmed : nil
+            let path: String
+            if trimmed == "~" {
+                path = home.path
+            } else if trimmed.hasPrefix("~/") {
+                path = home.appendingPathComponent(String(trimmed.dropFirst(2))).path
+            } else {
+                path = trimmed
+            }
+            return FileManager.default.isExecutableFile(atPath: path) ? path : nil
         }
         if let direct = claudePaths.first(where: {
             FileManager.default.isExecutableFile(atPath: $0)
@@ -431,7 +484,7 @@ enum ClaudeLauncher {
 
     /// Returns true if a tmux session was found and a `claude` window was
     /// successfully spawned in it.
-    private static func launchViaTmux(claudePath: String, cwd: URL, purpose: CLIPurpose) -> Bool {
+    private nonisolated static func launchViaTmux(claudePath: String, cwd: URL, purpose: CLIPurpose) -> Bool {
         guard let tmuxPath = tmuxPaths.first(where: {
             FileManager.default.isExecutableFile(atPath: $0)
         }) else { return false }
@@ -461,7 +514,7 @@ enum ClaudeLauncher {
 
     /// argv for `tmux new-window`: claude and its arguments as separate argv
     /// entries, so no shell quoting is involved.
-    static func makeTmuxNewWindowArguments(
+    nonisolated static func makeTmuxNewWindowArguments(
         session: String, claudePath: String, cwd: String, purpose: CLIPurpose = .actionItem
     ) -> [String] {
         ["new-window", "-t", "\(session):", "-c", cwd, "-n", "claude", claudePath] + purpose.arguments
@@ -469,7 +522,7 @@ enum ClaudeLauncher {
 
     /// Lists tmux sessions and returns the first attached one (or the first
     /// session overall if none are attached).
-    private static func firstTmuxSession(tmuxPath: String) -> String? {
+    private nonisolated static func firstTmuxSession(tmuxPath: String) -> String? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: tmuxPath)
         task.environment = tmuxEnvironment()
@@ -501,20 +554,23 @@ enum ClaudeLauncher {
         return String(parts[1])
     }
 
-    private static func tmuxEnvironment() -> [String: String] {
+    private nonisolated static func tmuxEnvironment() -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["TMPDIR"] = "/tmp"
         return env
     }
 
-    private static func activateGhostty(ghosttyURL: URL) {
+    /// Claude is already running in its tmux window by now, so the message
+    /// says so: only bringing Ghostty forward failed.
+    private static func activateGhostty(ghosttyURL: URL) async throws {
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
         config.createsNewApplicationInstance = false
-        NSWorkspace.shared.openApplication(at: ghosttyURL, configuration: config) { _, error in
-            if let error {
-                NSLog("ClaudeLauncher: activate(Ghostty) failed: \(error.localizedDescription)")
-            }
+        do {
+            _ = try await NSWorkspace.shared.openApplication(at: ghosttyURL, configuration: config)
+        } catch {
+            throw LaunchError.ghosttyLaunchFailed(
+                "Claude started in a new tmux window, but Ghostty couldn't be brought to the front (\(error.localizedDescription)).")
         }
     }
 
@@ -523,7 +579,7 @@ enum ClaudeLauncher {
         claudePath: String,
         cwd: URL,
         purpose: CLIPurpose
-    ) throws {
+    ) async throws {
         let scriptURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("scout-launch-claude-\(UUID().uuidString).sh")
         do {
@@ -546,20 +602,17 @@ enum ClaudeLauncher {
         config.createsNewApplicationInstance = true
         config.arguments = ["--command=\(scriptURL.path)"]
 
-        NSWorkspace.shared.openApplication(at: ghosttyURL, configuration: config) { _, error in
-            if let error {
-                NSLog("ClaudeLauncher: openApplication(Ghostty) failed: \(error.localizedDescription)")
-            }
+        do {
+            _ = try await NSWorkspace.shared.openApplication(at: ghosttyURL, configuration: config)
+        } catch {
+            try? FileManager.default.removeItem(at: scriptURL)
+            throw LaunchError.ghosttyLaunchFailed(error.localizedDescription)
         }
     }
 
-    static func makeGhosttyScript(claudePath: String, cwd: URL, purpose: CLIPurpose = .actionItem) -> String {
-        let cwdEsc = cwd.path
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        let claudeEsc = claudePath
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
+    /// Single-quoted folder and claude path, for the reason on
+    /// `makeTerminalShellCommand`.
+    nonisolated static func makeGhosttyScript(claudePath: String, cwd: URL, purpose: CLIPurpose = .actionItem) -> String {
         let banner = purpose == .actionItem
             ? """
               echo "Scout: action-item context copied to your clipboard."
@@ -571,11 +624,11 @@ enum ClaudeLauncher {
         // by absolute path rather than relying on PATH lookup.
         return """
         #!/bin/bash
-        cd "\(cwdEsc)" || exit 1
+        cd \(shellQuote(cwd.path)) || exit 1
         clear
         \(banner)
         echo
-        exec "\(claudeEsc)"\(arguments)
+        exec \(shellQuote(claudePath))\(arguments)
         """
     }
 
@@ -617,18 +670,35 @@ enum ClaudeLauncher {
         }
     }
 
-    /// Run an AppleScript source string. Surfaces compile and execution errors
-    /// (including Automation-permission denial) as `terminalLaunchFailed`.
-    /// Internal (not private) so `TerminalHandoff.run` reuses it.
-    static func runAppleScript(_ source: String) throws {
+    /// Run an AppleScript source string. Surfaces compile and execution
+    /// errors: a permission refusal as `automationDenied` or
+    /// `accessibilityDenied` (so the alert can open the right System Settings
+    /// pane), anything else as `terminalLaunchFailed`.
+    /// Internal (not private) so `TerminalHandoff.run` and `GhosttyLauncher`
+    /// reuse it; `nonisolated` because `GhosttyLauncher` runs its script, with
+    /// its `delay`s, off the main thread.
+    nonisolated static func runAppleScript(_ source: String) throws {
         guard let script = NSAppleScript(source: source) else {
             throw LaunchError.terminalLaunchFailed("Could not compile the launch AppleScript.")
         }
         var errorInfo: NSDictionary?
         script.executeAndReturnError(&errorInfo)
         if let errorInfo {
-            let msg = (errorInfo[NSAppleScript.errorMessage] as? String) ?? "unknown AppleScript error"
-            throw LaunchError.terminalLaunchFailed(msg)
+            throw appleScriptError(
+                number: errorInfo[NSAppleScript.errorNumber] as? Int,
+                message: errorInfo[NSAppleScript.errorMessage] as? String)
+        }
+    }
+
+    /// AppleScript's error numbers for "not allowed": -1743 is a missing
+    /// Automation grant; -1719 and -25211 are System Events refusing
+    /// keystrokes without Accessibility.
+    nonisolated static func appleScriptError(number: Int?, message: String?) -> LaunchError {
+        let msg = message ?? "unknown AppleScript error"
+        switch number {
+        case -1743:          return .automationDenied(msg)
+        case -1719, -25211:  return .accessibilityDenied
+        default:             return .terminalLaunchFailed(msg)
         }
     }
 

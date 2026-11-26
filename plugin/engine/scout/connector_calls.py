@@ -7,6 +7,11 @@ Two writers append to it, often at the same moment: the PostToolUse hook
 report (``scripts/connector_health_report``); run health reads the run ledger
 and runner logs, not these files.
 
+A row carries the call's ``tool_use`` id as ``id`` when the writer knows it.
+The Stop hook skips a call whose id is already in the ledger for its session,
+so a call is one row however many times Stop fires and whichever writer got
+there first. Rows from an older engine have no ``id``.
+
 Bounds (#66), the same for every vault:
 
 - **Retention:** files dated more than :data:`RETAIN_DAYS` (30) days ago are
@@ -36,6 +41,9 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import IO
+
+from scout import safe_write
+from scout.plural import count
 
 try:
     import fcntl
@@ -136,7 +144,7 @@ def append_rows(path: Path, lines: Sequence[str], *, max_bytes: int = MAX_DAY_BY
     if not lines:
         return 0
     new_day = not path.exists()
-    with path.open("a", encoding="utf-8") as f:
+    with safe_write.open_append(path) as f:
         # Hooks fire concurrently for parallel tool calls. O_APPEND only
         # guarantees atomicity up to PIPE_BUF (~512B on some macOS FS), so
         # large rows can interleave. An exclusive advisory lock serializes
@@ -158,7 +166,7 @@ def append_rows(path: Path, lines: Sequence[str], *, max_bytes: int = MAX_DAY_BY
     dropped = len(lines) - len(kept)
     if dropped:
         print(
-            f"connector-log: {path.name} reached its {max_bytes} byte daily cap; dropped {dropped} row(s)",
+            f"connector-log: {path.name} reached its {max_bytes} byte daily cap; dropped {count(dropped, 'row')}",
             file=sys.stderr,
         )
     if new_day:

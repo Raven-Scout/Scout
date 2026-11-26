@@ -18,6 +18,7 @@ from scout.hooks import kb_read_label as hook
 from scout.kb.ontology import clear_frontmatter_cache
 from tests.eval.harness.checks.privacy_canary import LABEL_COMMAND, label_key, leading_indicators
 from tests.eval.harness.metrics import ToolCall
+from tests.unit._prefilter_root import with_prefilter
 from tests.unit.privacy_vault_helpers import build_privacy_vault
 
 PLUGIN = Path(__file__).parent.parent.parent.parent
@@ -204,7 +205,7 @@ def _entry() -> dict:
 
 def _sh(env: dict, payload: str, cwd: Path, root: Path = PLUGIN) -> subprocess.CompletedProcess[str]:
     clean = {k: v for k, v in os.environ.items() if k not in ("SCOUT_MODE", "SCOUT_READER", "SCOUT_DATA_DIR")}
-    full = {**clean, **env, "CLAUDE_PLUGIN_ROOT": str(root)}
+    full = {**clean, **env, "CLAUDE_PLUGIN_ROOT": str(with_prefilter(root))}
     return subprocess.run(
         ["sh", "-c", _entry()["hooks"][0]["command"]],
         env=full,
@@ -226,7 +227,9 @@ def test_a_read_naming_no_kb_path_exits_in_the_shell(vault, tmp_path):
 
 
 def test_owner_outside_a_vault_exits_in_the_shell(tmp_path):
-    payload = json.dumps({"tool_name": "Read", "tool_input": {"file_path": str(tmp_path / "knowledge-base/x.md")}})
+    payload = json.dumps(
+        {"cwd": str(tmp_path), "tool_name": "Read", "tool_input": {"file_path": str(tmp_path / "knowledge-base/x.md")}}
+    )
     res = _sh({}, payload, tmp_path, root=tmp_path / "missing")
     assert res.returncode == 0 and res.stdout == ""
 

@@ -2,7 +2,8 @@
 # Release Scout: one version, one tag, one GitHub release.
 # Spec: docs/superpowers/specs/2026-10-05-unified-release-design.md
 #
-#   scripts/release.sh prepare [patch|minor|major|X.Y.Z]  # bump everything on release/vX.Y.Z, open the release PR
+#   scripts/release.sh prepare [patch|minor|major|X.Y.Z]  # bump everything on release/vX.Y.Z, open the release PR;
+#                                                        # the changelog.d/ fragments become the [X.Y.Z] sections
 #   scripts/release.sh finalize vX.Y.Z                    # after the PR merges: build, sign, notarize, publish
 #   scripts/release.sh rc vX.Y.Z-rc.N                     # release candidate from HEAD: a pre-release, never Latest
 #
@@ -156,11 +157,12 @@ kb_gate_reminder() {
   echo "  On ${release_branch}, before merging the release PR (1 session on your Claude login, no API key):"
   echo "    plugin/scripts/eval.sh kb-gate"
   echo "  Merge only on \"verdict\": \"pass\" (exit 0) from a report whose commit is ${release_branch}'s head,"
-  echo "  with that JSON report pasted into the release PR."
+  echo "  with that JSON report pasted into the release PR. \"void\" (exit 3) is no verdict: the session"
+  echo "  did nothing (its \"void\" lists the denied calls), so rerun it; \"fail\" (exit 1) blocks the release."
 }
 
 cmd_prepare() {
-  local level="${1:-}" slug prev app_prev since app_since new branch rel today notes body t
+  local level="${1:-}" slug prev app_prev since app_since new branch rel today notes body t frag_dir
   slug="$(require_slug)"
   require_clean_synced_main
   vers check >/dev/null || die "versions drift across the manifests; run: versioning check"
@@ -189,6 +191,9 @@ cmd_prepare() {
   for rel in plugin/CHANGELOG.md apps/macos/CHANGELOG.md; do
     if grep -q "^## \[$new\]" "$REPO_ROOT/$rel"; then die "$rel already has a [$new] section"; fi
   done
+  # Every changelog.d/ fragment must parse before anything changes; promote writes them into [$new].
+  "$PY" -m scout.scripts.changelog --repo-root "$REPO_ROOT" check >/dev/null \
+    || die "a changelog fragment does not parse (above); fix it on main first"
   [ "${SCOUT_RELEASE_SKIP_LINT:-0}" = 1 ] || run_lint
   git -C "$REPO_ROOT" checkout -q -b "$branch"
   vers set "$new" >/dev/null
@@ -199,6 +204,10 @@ cmd_prepare() {
     plugin/.claude-plugin/plugin.json \
     plugin/engine/pyproject.toml plugin/engine/scout/__init__.py \
     apps/macos/Scout.xcodeproj/project.pbxproj plugin/CHANGELOG.md apps/macos/CHANGELOG.md
+  # promote deleted the fragments it assembled; the release commit deletes them too.
+  for frag_dir in plugin/changelog.d apps/macos/changelog.d; do
+    [ -z "$(git -C "$REPO_ROOT" ls-files -- "$frag_dir")" ] || git -C "$REPO_ROOT" add -A -- "$frag_dir"
+  done
   git -C "$REPO_ROOT" commit -q -m "release: v$new"
   mkdir -p "$REPO_ROOT/.release"
   notes="$REPO_ROOT/.release/notes-v$new.md"
@@ -359,7 +368,22 @@ build_and_publish() {
     fi
   fi
 
-  set -- "$dmg"
+  # scout-release.json: install.sh downloads it from /releases/latest/download/ to learn the current
+  # version, and GitHub's download counter on it is how the project counts installer runs (PRIVACY.md).
+  # Every release carries one, so that URL never 404s once a release has it. An rc carries one too
+  # (version = the release it leads to, tag = the rc), for testing; /latest/ never serves a prerelease.
+  # $v and $tag passed the tag-shape regexes, so they need no JSON escaping.
+  printf '{"name": "scout", "version": "%s", "tag": "%s"}\n' "$v" "$tag" > "$build/release/scout-release.json"
+
+  set -- "$dmg" "$build/release/scout-release.json"
+  if [ "$kind" = release ]; then
+    # The website's Download for Mac button links to /releases/latest/download/Scout.dmg, which
+    # starts the download directly. This is a plain copy of the DMG signed, notarized and stapled
+    # above: nothing re-signs it. An rc isn't Latest, so it doesn't get one. Sparkle's appcast
+    # keeps the versioned name.
+    cp "$dmg" "$build/release/Scout.dmg"
+    set -- "$@" "$build/release/Scout.dmg"
+  fi
   [ ! -f "$build/appcast.xml" ] || set -- "$@" "$build/appcast.xml"
 
   if [ "${SKIP_RELEASE:-0}" = 1 ]; then

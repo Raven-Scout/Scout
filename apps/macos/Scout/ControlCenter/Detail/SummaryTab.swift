@@ -25,10 +25,10 @@ struct SummaryTab: View {
                             .foregroundStyle(.secondary)
                             .italic()
                         Text("Showing the last lines so you can still see what happened:")
-                            .font(.caption)
+                            .font(DS.font(.caption2))
                             .foregroundStyle(.secondary)
                         Text(fallbackPreview)
-                            .font(.system(.body, design: .monospaced))
+                            .font(DS.font(.body, .mono))
                             .textSelection(.enabled)
                             .padding(8)
                             .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
@@ -112,11 +112,11 @@ struct SummaryTab: View {
         switch block {
         case .heading(let text):
             Text(attributed(text))
-                .font(.title3)
+                .font(DS.font(.headline))
                 .fontWeight(.semibold)
         case .paragraph(let text):
             Text(attributed(text))
-                .font(.body)
+                .font(DS.font(.body))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         case .bullet(let items):
@@ -146,25 +146,38 @@ struct SummaryTab: View {
 
     // MARK: - Load
 
+    /// What a run log shows: its summary block, else its last lines.
+    nonisolated struct Loaded: Sendable {
+        let summary: String?
+        let fallbackPreview: String
+    }
+
     private func load() async {
-        do {
-            let data = try Data(contentsOf: logPath)
-            let text = String(data: data, encoding: .utf8) ?? ""
-            let extracted = Self.extractSummary(from: text)
-            await MainActor.run {
-                summary = extracted
-                if extracted == nil {
-                    fallbackPreview = Self.tail(text, lines: 20)
-                }
-            }
-        } catch {
-            await MainActor.run { loadFailed = true }
+        // Reading the log and stripping its tail happen off the main actor:
+        // the log is any size and the tail is untrusted text.
+        let url = logPath
+        let loaded = await Task.detached(priority: .userInitiated) { Self.read(url) }.value
+        guard !Task.isCancelled else { return }
+        if let loaded {
+            summary = loaded.summary
+            fallbackPreview = loaded.fallbackPreview
+            loadFailed = false
+        } else {
+            loadFailed = true
         }
+    }
+
+    /// The log at `url`, or nil when it can't be read.
+    nonisolated static func read(_ url: URL) -> Loaded? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let text = String(data: data, encoding: .utf8) ?? ""
+        let extracted = extractSummary(from: text)
+        return Loaded(summary: extracted, fallbackPreview: extracted == nil ? fallbackPreview(of: text) : "")
     }
 
     /// Pull the body from the first `**SCOUT … complete…` (or `Run summary`)
     /// marker until the trailing run-finished banner.
-    static func extractSummary(from text: String) -> String? {
+    nonisolated static func extractSummary(from text: String) -> String? {
         let lines = text.components(separatedBy: "\n")
         var startIdx: Int? = nil
         for (i, line) in lines.enumerated() {
@@ -192,7 +205,14 @@ struct SummaryTab: View {
         return body.isEmpty ? nil : body
     }
 
-    static func tail(_ text: String, lines n: Int) -> String {
+    /// The last lines of a log with no summary block, as plain text: the
+    /// session's own markdown (`**Housekeeping:**`) showed raw in the
+    /// monospaced box (UI audit T3), and a log tail isn't worth rendering.
+    nonisolated static func fallbackPreview(of text: String) -> String {
+        PlainText.strippingMarkdown(tail(text, lines: 20))
+    }
+
+    nonisolated static func tail(_ text: String, lines n: Int) -> String {
         let arr = text.components(separatedBy: "\n")
         return arr.suffix(n).joined(separator: "\n")
     }

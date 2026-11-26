@@ -41,7 +41,6 @@ def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
             enabled_connectors=set(),
             connector_inputs={},
             skip_jobs=True,
-            skip_claude=True,
         )
     )
     monkeypatch.setenv("SCOUT_DATA_DIR", str(v))

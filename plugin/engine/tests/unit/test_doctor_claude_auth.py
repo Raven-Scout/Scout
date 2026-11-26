@@ -111,7 +111,7 @@ def test_expiring_token_warns_with_the_date(tmp_path: Path) -> None:
     _save(tmp_path, age_days=350)
     warnings, _ = _check_claude_auth(home=tmp_path, vault=vault, now=NOW)
     assert len(warnings) == 1
-    assert "expires in 15 day(s)" in warnings[0] and "scoutctl auth setup-token" in warnings[0]
+    assert "expires in 15 days" in warnings[0] and "scoutctl auth setup-token" in warnings[0]
 
 
 def test_lapsed_token_warns(tmp_path: Path) -> None:
@@ -119,7 +119,7 @@ def test_lapsed_token_warns(tmp_path: Path) -> None:
     _wrapper(vault, exports=True)
     _save(tmp_path, age_days=370)
     warnings, _ = _check_claude_auth(home=tmp_path, vault=vault, now=NOW)
-    assert "expired about 5 day(s) ago" in warnings[0]
+    assert "expired about 5 days ago" in warnings[0]
 
 
 def test_stored_token_with_an_old_wrapper_warns_to_upgrade(tmp_path: Path) -> None:
@@ -232,7 +232,7 @@ def test_health_expiring_token_is_yellow(tmp_path: Path) -> None:
     assert report.severity == "yellow"
     (f,) = report.findings
     assert f.id == "auth.token_expiring" and f.severity == "yellow"
-    assert "25 day(s)" in f.summary and "2026-11-06" in f.summary
+    assert "25 days" in f.summary and "2026-11-06" in f.summary
     assert f.fix == "Open Terminal and run: scoutctl auth setup-token"
     assert FAKE not in json.dumps(report.to_dict())
 
@@ -240,7 +240,7 @@ def test_health_expiring_token_is_yellow(tmp_path: Path) -> None:
 def test_health_lapsed_token_says_so(tmp_path: Path) -> None:
     _save(tmp_path, age_days=400)
     (f,) = health.evaluate(_vault(tmp_path), now=NOW, home=tmp_path).findings
-    assert "expired about 35 day(s) ago" in f.summary
+    assert "expired about 35 days ago" in f.summary
 
 
 def test_health_rejected_stored_token_points_at_the_token_not_the_login(tmp_path: Path) -> None:
@@ -252,7 +252,7 @@ def test_health_rejected_stored_token_points_at_the_token_not_the_login(tmp_path
     auth = next(f for f in report.findings if f.id == "auth.expired")
     assert auth.severity == "red"
     assert "stored Claude token was rejected" in auth.summary
-    assert "2 failed run(s)" in auth.summary
+    assert "2 failed runs" in auth.summary
     assert "scoutctl auth setup-token" in auth.fix and "claude auth login" not in auth.fix
 
 

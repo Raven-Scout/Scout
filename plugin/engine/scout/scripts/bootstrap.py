@@ -6,7 +6,7 @@
 3. Managed files    — plugin-owned scripts, hooks, runners, render.py, parser.py;
                       a vault's edits are kept, merged or parked (vault_drift)
 4. .gitignore       — append-only merge
-5. Cat 4 assembled  — SKILL/DREAMING/RESEARCH (3-way merge on upgrade; see brain_merge)
+5. Cat 4 assembled  — SKILL/DREAMING/RESEARCH/RESPOND (3-way merge on upgrade; see brain_merge)
 6. Job lifecycle    — launchd / cron
 7. Version stamp    — scout-config.yaml plugin.version_*
 8. Doctor smoke     — runs bootstrap_doctor.run_doctor
@@ -28,8 +28,9 @@ from pathlib import Path
 import yaml
 
 from scout import config as scout_config
-from scout import custom_connectors, yaml_blocks
+from scout import custom_connectors, safe_write, yaml_blocks
 from scout.errors import ConfigError
+from scout.plural import noun
 from scout.scripts import brain_merge, vault_drift
 from scout.scripts.bootstrap_doctor import DoctorReport, run_doctor
 from scout.scripts.bootstrap_lock import (
@@ -41,11 +42,11 @@ from scout.scripts.custom_assembly import render_custom_sections
 from scout.scripts.install_schedule_plist import resolve_scoutctl_bin
 from scout.scripts.migrate_perfile import migrate_perfile
 from scout.scripts.phase_assembly import (
-    WRAP_CHANNELS,
     parse_phase_file,
     parse_wrap_channels,
     render_template,
     select_sections,
+    wrap_channels_problem,
 )
 from scout.scripts.three_way_merge import three_way_merge
 from scout.scripts.vault_drift import VaultEdit
@@ -66,7 +67,6 @@ class BootstrapConfig:
     enabled_connectors: set[str]
     connector_inputs: dict[str, str]
     skip_jobs: bool = False
-    skip_claude: bool = False
     managed_by: str = "unknown"
     # Install-time auto-update preference from /scout-setup. None = not asked:
     # leave scout-config.yaml's auto_update block untouched.
@@ -103,6 +103,8 @@ class UpgradeResult:
     skipped: list[str] = field(default_factory=list)
     # Brain files whose live copy still holds conflict markers: left alone.
     conflict_markers: list[str] = field(default_factory=list)
+    # Brain files missing from the vault that the upgrade wrote from the assembly.
+    installed: list[str] = field(default_factory=list)
     # Every vault edit to a managed file the upgrade kept, merged, or parked.
     vault_edits: list[VaultEdit] = field(default_factory=list)
     pointer: Path | None = None
@@ -173,7 +175,8 @@ _CAT_MERGE_FILES = {
 
 _CAT1_TEMPLATES = (
     # scout-tz.sh first: it is the runtime timezone resolver every other script
-    # (and the assembled brain files) call via TZ="$(scripts/scout-tz.sh)".
+    # calls via TZ="$(scripts/scout-tz.sh)", and the assembled brain files as
+    # `scripts/scout-tz.sh date '+FORMAT'` (no command substitution: #742).
     ("scripts/scout-tz.sh", "templates/scripts/scout-tz.sh.tmpl"),
     # How the brain files call the engine (`scripts/scoutctl …`): finds it when
     # it isn't on PATH, and points it at this vault wherever the vault lives.
@@ -238,6 +241,7 @@ _CAT1B_RUNNERS = (
     ("run-scout.sh", "templates/run-scout.sh.tmpl"),
     ("run-dreaming.sh", "templates/run-dreaming.sh.tmpl"),
     ("run-research.sh", "templates/run-research.sh.tmpl"),
+    ("run-respond.sh", "templates/run-respond.sh.tmpl"),
 )
 
 
@@ -321,9 +325,9 @@ def _auto_update_enabled(cfg: BootstrapConfig) -> str:
 
 def _atomic_write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    tmp.replace(path)
+    # A random temp name made O_EXCL | O_NOFOLLOW: a symlink a run planted beside a protected file (a runner
+    # script, a settings file) is never written through.
+    safe_write.atomic_write_text(path, content)
 
 
 def merge_gitignore(vault_text: str, template_text: str) -> str:
@@ -510,7 +514,7 @@ def load_custom(cfg: BootstrapConfig) -> dict[str, custom_connectors.CustomConne
 def _assemble(
     cfg: BootstrapConfig, kind: str, *, custom: dict[str, custom_connectors.CustomConnector] | None = None
 ) -> str:
-    """Assemble SKILL/DREAMING/RESEARCH from phase files, then add custom-connector sections
+    """Assemble SKILL/DREAMING/RESEARCH/RESPOND from phase files, then add custom-connector sections
     (appended; in RESEARCH, just before the first ``deep-research`` section).
 
     ``custom=None`` loads ``connectors.custom.yaml`` from the vault; the custom-change
@@ -525,7 +529,8 @@ def _assemble(
     # Map assembly target → which modes this assembly is consumed by.
     # SKILL.md is read by BOTH briefing- and consolidation-type runs (run-scout.sh
     # auto-detects which); DREAMING.md by dreaming runs only; RESEARCH.md by
-    # research runs only. Phases declaring `mode: [...]` get filtered to only
+    # research runs only; RESPOND.md by respond runs only (answering the
+    # owner's Telegram messages). Phases declaring `mode: [...]` get filtered to only
     # those whose mode list intersects the target. Phases with no `mode:`
     # (legacy / cross-cutting) land in every target.
     if kind == "SKILL":
@@ -534,6 +539,9 @@ def _assemble(
     elif kind == "DREAMING":
         sources = [phases_root / "core", phases_root / "modes"]
         target_modes = {"dreaming"}
+    elif kind == "RESPOND":
+        sources = [phases_root / "core", phases_root / "respond"]
+        target_modes = {"respond"}
     else:  # RESEARCH
         sources = [phases_root / "core", phases_root / "research"]
         target_modes = {"research"}
@@ -614,6 +622,7 @@ class _Cat4Outcome:
     skipped: list[str] = field(default_factory=list)  # already-pending sidecars
     held: list[str] = field(default_factory=list)  # live files that still hold conflict markers
     backups: list[str] = field(default_factory=list)  # parked copies of live files replaced on the fingerprint alone
+    installed: list[str] = field(default_factory=list)  # live files that were missing and got the assembly
 
 
 def _stage_cat4_upgrade(
@@ -656,7 +665,11 @@ def _stage_cat4_upgrade(
         name = f"{kind}.md"
         ours = _assemble(cfg, kind, custom=custom)
         live = cfg.vault / name
-        theirs = live.read_text(encoding="utf-8") if live.exists() else ours
+        # A missing live file (a brain kind new to this vault, or one an
+        # earlier engine recorded as installed without writing it) reads as
+        # ``ours``, so decide() advances and the write below installs it.
+        live_exists = live.exists()
+        theirs = live.read_text(encoding="utf-8") if live_exists else ours
         snap = snapshot_dir / name
         base = snap.read_text(encoding="utf-8") if snap.exists() else None
         proposed_path = _proposed_path(snapshot_dir, name)
@@ -686,7 +699,7 @@ def _stage_cat4_upgrade(
                 proposal = result.content
             else:
                 new_live = result.content
-        # ADVANCE: live already equals ours.
+        # ADVANCE: live already equals ours (or is missing, and gets ours).
 
         if proposal is not None:
             # The assembly is kept so `bootstrap resolve` can make it the base.
@@ -694,14 +707,16 @@ def _stage_cat4_upgrade(
             _atomic_write(sidecar, proposal)
             out.conflicts.append(sidecar.name)
             continue
-        if new_live != theirs:
-            if prov.snapshot is None and theirs != proposed:
+        if not live_exists or new_live != theirs:
+            if live_exists and prov.snapshot is None and theirs != proposed:
                 # Only the fingerprint vouches for the base (a vault from before
                 # provenance): park the file being replaced, once, like any
                 # vault copy an upgrade replaces.
                 parked = vault_drift.park_vault_copy(cfg.vault, name, theirs)
                 out.backups.append(parked.relative_to(cfg.vault).as_posix())
             _atomic_write(live, new_live)
+            if not live_exists:
+                out.installed.append(name)
         # Live has absorbed ``ours``: it becomes the merge base.
         _atomic_write(snap, ours)
         records[name] = brain_merge.Provenance.assembled(ours)
@@ -766,7 +781,6 @@ def config_from_vault(
     plugin_root: Path,
     plugin_version: str,
     skip_jobs: bool = False,
-    skip_claude: bool = False,
     managed_by: str = "unknown",
 ) -> BootstrapConfig:
     """BootstrapConfig for an existing vault, read back from its scout-config.yaml.
@@ -803,12 +817,9 @@ def config_from_vault(
         raise ValueError("scout-config.yaml: connectors 'inputs' must be a mapping")
     enabled = set(connectors.get("enabled") or [])
     wrap_channels = parse_wrap_channels(_submapping("notify").get("wrap_channels"))
-    if wrap_channels is not None and not wrap_channels & normalize_connector_keys(enabled):
-        print(
-            f"warning: scout-config.yaml: notify.wrap_channels ({', '.join(sorted(wrap_channels))}) "
-            f"names no enabled connector among {', '.join(WRAP_CHANNELS)}: runs will send no wrap notification",
-            file=sys.stderr,
-        )
+    if problem := wrap_channels_problem(wrap_channels, enabled):
+        # Also a `bootstrap doctor` warning (_check_wrap_channels): stderr alone is easy to miss.
+        print(f"warning: {problem}", file=sys.stderr)
     return BootstrapConfig(
         vault=vault,
         plugin_root=plugin_root,
@@ -822,7 +833,6 @@ def config_from_vault(
         enabled_connectors=enabled,
         connector_inputs=dict(inputs or {}),
         skip_jobs=skip_jobs,
-        skip_claude=skip_claude,
         managed_by=managed_by,
         wrap_channels=wrap_channels,
     )
@@ -1011,9 +1021,9 @@ def _stage_seed_schedule(cfg: BootstrapConfig) -> None:
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     if src.exists():
-        shutil.copy2(src, target)
+        safe_write.atomic_write_bytes(target, src.read_bytes())
     else:
-        target.write_text("schema_version: 1\nslots: {}\n", encoding="utf-8")
+        safe_write.atomic_write_text(target, "schema_version: 1\nslots: {}\n")
 
 
 def _dump_at(value: dict, indent: int) -> str:
@@ -1278,7 +1288,7 @@ def _refuse_pending_sidecars(vault: Path) -> None:
     pending = blocking_sidecars(vault)
     if pending:
         raise RuntimeError(
-            f"Unresolved proposed-merge sidecar(s): {pending}. "
+            f"Unresolved proposed-merge {noun(len(pending), 'sidecar')}: {pending}. "
             f"Edit each to remove conflict markers, then "
             f"`mv <file>.proposed-merge <file>`, then re-run /scout-update."
         )
@@ -1300,7 +1310,7 @@ def install(cfg: BootstrapConfig) -> InstallResult:
     cfg.vault.mkdir(parents=True, exist_ok=True)
     marker = cfg.vault / INSTALL_INCOMPLETE_MARKER
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.touch()
+    safe_write.atomic_write_text(marker, "")
     lock = cfg.vault / ".scout-logs" / ".scout-session.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     acquire_lock_with_wait(lock)
@@ -1387,6 +1397,34 @@ def _stage_privacy_report(vault: Path) -> None:
         print(f"  {line}", file=sys.stderr)
 
 
+SHARED_EDITS_NOTICE = (
+    "privacy: scheduled runs may now add to notes you share, after the commit hook checks each line for private "
+    "note names (privacy.shared_edits: checked, the default). The hook can't see a paraphrase. To keep shared "
+    "notes frozen, set `shared_edits: refuse` under `privacy:` in scout-config.yaml and commit it."
+)
+
+
+def _stage_shared_edits_notice(vault: Path) -> None:
+    """Say on stderr, at every upgrade until the owner picks a mode, that runs may edit shared notes.
+
+    Only when sharing is on and ``privacy.shared_edits`` isn't set: the default ``checked``
+    loosened what a run may commit to a shared note, and an upgrade must not do that unsaid.
+    Never edits (repeated upgrades stay byte-identical) and never fails the upgrade.
+    """
+    from scout.kb.privacy import load_policy
+    from scout.yaml_safe import load_yaml_key
+
+    try:
+        if not load_policy(vault).federation_enabled:
+            return
+        block = load_yaml_key((vault / "scout-config.yaml").read_text(encoding="utf-8"), "privacy")
+    except Exception:  # noqa: BLE001 - a notice must never fail the upgrade
+        return
+    if isinstance(block, dict) and "shared_edits" in block:
+        return
+    print(SHARED_EDITS_NOTICE, file=sys.stderr)
+
+
 def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
     """Run the upgrade pipeline. Refuses if no vault, an interrupted install, or a legacy (pre-Plan-8) vault."""
     _refuse_interrupted_install(cfg.vault)
@@ -1428,6 +1466,7 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         _stage_install_git_hook(cfg)
         pointer = _stage_write_engine_pointer(cfg)
         _stage_privacy_report(cfg.vault)
+        _stage_shared_edits_notice(cfg.vault)
     finally:
         release_lock(lock)
     report = run_doctor(vault=cfg.vault, check_jobs=not cfg.skip_jobs)
@@ -1438,6 +1477,7 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         backups=_parked_copies(vault_edits) + cat4.backups,
         skipped=cat4.skipped,
         conflict_markers=cat4.held,
+        installed=cat4.installed,
         vault_edits=vault_edits,
         pointer=pointer,
     )

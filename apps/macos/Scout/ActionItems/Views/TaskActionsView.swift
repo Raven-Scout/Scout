@@ -8,6 +8,9 @@ struct TaskActionsView: View {
     let kind: ActionSection.Kind
     let displayedDate: Date
     let scoutDirectory: URL
+    /// The key Done binds, and shows as its keycap: ⌘↵ on the keyboard-current
+    /// card while no comment editor has focus, else nil (UI audit #42).
+    var doneShortcut: KeyboardShortcut? = nil
     let onOp: @MainActor (WriteOp) async -> Void
 
     @State private var showingSnooze = false
@@ -15,6 +18,8 @@ struct TaskActionsView: View {
     @State private var didCopy = false
     @State private var copyResetTask: Task<Void, Never>?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Off while the engine check fails; Launch and Copy still work.
+    @Environment(\.actionItemsWritesEnabled) private var writesEnabled
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -23,13 +28,17 @@ struct TaskActionsView: View {
                     EditorialActionButton("Reopen", systemImage: "arrow.uturn.backward") {
                         Task { await onOp(.reopen(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
                     }
+                    .disabled(!writesEnabled)
                 } else {
-                    EditorialActionButton("Done", systemImage: "checkmark", style: .primary, shortcut: "⌘↵") {
+                    EditorialActionButton("Done", systemImage: "checkmark", style: .primary,
+                                          keyboardShortcut: doneShortcut) {
                         Task { await onOp(.markDone(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
                     }
+                    .disabled(!writesEnabled)
                     EditorialActionButton("Snooze", systemImage: "moon.zzz") {
                         showingSnooze = true
                     }
+                    .disabled(!writesEnabled)
                     .popover(isPresented: $showingSnooze) {
                         SnoozePopoverView(sourceDate: displayedDate) { target in
                             await onOp(.snooze(
@@ -49,7 +58,7 @@ struct TaskActionsView: View {
             }
             if let launchError {
                 Text(launchError)
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Status.err)
             }
         }
@@ -66,10 +75,10 @@ struct TaskActionsView: View {
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: 10))
+                        .font(DS.font(.caption2))
                         .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                     Text(didCopy ? "Copied" : "Copy")
-                        .font(DS.sans(11.5, weight: .medium))
+                        .font(DS.font(.caption, weight: .medium))
                 }
                 .foregroundStyle(didCopy ? DS.Status.ok : DS.Ink.p3)
                 .padding(.leading, 10)
@@ -91,13 +100,14 @@ struct TaskActionsView: View {
                 }
             } label: {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 8))
+                    .font(DS.font(.micro))
                     .foregroundStyle(DS.Ink.p4)
                     .padding(.horizontal, 6)
                     .frame(height: 24)
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
+            .accessibilityLabel("Copy format")
             .menuIndicator(.hidden)
             .fixedSize()
             .help("Choose a copy format")
@@ -105,7 +115,9 @@ struct TaskActionsView: View {
         .keyWindowPointingHand()
     }
 
-    private func copyTaskPrompt(format: ClaudeLauncher.CopyFormat) {
+    /// Puts one action item on the clipboard in `format`. Also the card's
+    /// context menu Copy.
+    static func copy(_ task: ActionTask, format: ClaudeLauncher.CopyFormat, scoutDirectory: URL) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(
             ClaudeLauncher.prompt(
@@ -114,6 +126,10 @@ struct TaskActionsView: View {
             ),
             forType: .string
         )
+    }
+
+    private func copyTaskPrompt(format: ClaudeLauncher.CopyFormat) {
+        Self.copy(task, format: format, scoutDirectory: scoutDirectory)
         didCopy = true
         // Cancel the previous reset so a rapid second copy keeps its
         // confirmation for the full 1.5 s instead of being snapped back

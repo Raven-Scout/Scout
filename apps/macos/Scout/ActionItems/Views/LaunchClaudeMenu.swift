@@ -7,10 +7,15 @@ import SwiftUI
 struct LaunchClaudeMenu: View {
     enum Style { case split, icon }
 
-    /// Built only when a launch happens, not on every render.
-    let prompt: () -> String
+    /// Built only when a launch happens, not on every render. May fetch it (the
+    /// engine builds "Resolve with Claude" prompts); a throw launches nothing and
+    /// goes to `launchError`.
+    let prompt: @MainActor () async throws -> String
     let scoutDirectory: URL
     var style: Style = .split
+    /// The split button's label.
+    var title: String = "Launch Claude Code"
+    var helpText: String = "Launch this action item in Claude Code or Claude Desktop"
     /// The item's own Claude session (`- Session:`): a `claude.ai` link opens,
     /// a local session id resumes in the terminal.
     var session: String?
@@ -18,10 +23,20 @@ struct LaunchClaudeMenu: View {
     @Binding var launchError: String?
 
     init(prompt: @escaping () -> String, scoutDirectory: URL, style: Style = .split, session: String? = nil, launchError: Binding<String?>) {
-        self.prompt = prompt
+        self.prompt = { prompt() }
         self.scoutDirectory = scoutDirectory
         self.style = style
         self.session = session
+        _launchError = launchError
+    }
+
+    /// A launcher whose prompt is fetched at click time, under its own title.
+    init(title: String, help: String, asyncPrompt: @escaping @MainActor () async throws -> String,
+         scoutDirectory: URL, launchError: Binding<String?>) {
+        self.prompt = asyncPrompt
+        self.scoutDirectory = scoutDirectory
+        self.title = title
+        self.helpText = help
         _launchError = launchError
     }
 
@@ -42,12 +57,21 @@ struct LaunchClaudeMenu: View {
     @AppStorage("claudeCLIPath")       private var claudeCLIPath: String = ""
     @AppStorage("cliTerminal")         private var cliTerminal: String = CLITerminal.auto.rawValue
     @AppStorage("customLaunchCommand") private var customLaunchCommand: String = ""
+    /// A launch is finding `claude` or opening the terminal; a second click
+    /// meanwhile would open a second one.
+    @State private var isLaunching = false
+    /// A launch macOS refused for a missing permission: shown as an alert
+    /// with a button to the System Settings pane, not as inline text.
+    @State private var permissionFailure: LaunchFailure?
 
     var body: some View {
-        switch style {
-        case .split: split
-        case .icon:  icon
+        Group {
+            switch style {
+            case .split: split
+            case .icon:  icon
+            }
         }
+        .launchFailureAlert("Couldn't open Claude", failure: $permissionFailure)
     }
 
     private var split: some View {
@@ -57,9 +81,9 @@ struct LaunchClaudeMenu: View {
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "sparkles")
-                        .font(.system(size: 10))
-                    Text("Launch Claude Code")
-                        .font(DS.sans(11.5, weight: .medium))
+                        .font(DS.font(.caption2))
+                    Text(title)
+                        .font(DS.font(.caption, weight: .medium))
                 }
                 .foregroundStyle(DS.Ink.p3)
                 .padding(.leading, 10)
@@ -73,7 +97,7 @@ struct LaunchClaudeMenu: View {
                 menuItems
             } label: {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 8))
+                    .font(DS.font(.micro))
                     .foregroundStyle(DS.Ink.p4)
                     .padding(.horizontal, 6)
                     .frame(height: 24)
@@ -82,8 +106,10 @@ struct LaunchClaudeMenu: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .accessibilityLabel("More ways to launch in Claude")
         }
-        .help("Launch this action item in Claude Code or Claude Desktop")
+        .disabled(isLaunching)
+        .help(helpText)
         .keyWindowPointingHand()
     }
 
@@ -92,7 +118,7 @@ struct LaunchClaudeMenu: View {
             menuItems
         } label: {
             Image(systemName: "sparkles")
-                .font(.system(size: 11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p3)
                 .frame(width: 24, height: 22)
                 .contentShape(Rectangle())
@@ -100,7 +126,8 @@ struct LaunchClaudeMenu: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Launch this action item in Claude Code or Claude Desktop")
+        .help(helpText)
+        .accessibilityLabel("Launch in Claude")
         .keyWindowPointingHand()
     }
 
@@ -116,7 +143,7 @@ struct LaunchClaudeMenu: View {
         Button {
             launch(.cli(cwd: scoutDirectory, config: cliConfig))
         } label: {
-            Label(cliMenuLabel, systemImage: "terminal")
+            Label(Self.cliMenuLabel(for: CLITerminal(rawValue: cliTerminal) ?? .auto), systemImage: "terminal")
         }
         Divider()
         Button {
@@ -136,7 +163,7 @@ struct LaunchClaudeMenu: View {
     }
 
     @ViewBuilder
-    private func sessionItem(_ session: String) -> some View {
+    private func sessionItem(_ session: String) -> some View { // ds-guard: menu items
         switch SessionReference(session) {
         case .cloud(let url):
             Button {
@@ -163,12 +190,8 @@ struct LaunchClaudeMenu: View {
             launch(.claudeDesktop(.code(folder: scoutDirectory)))
             return
         }
-        do {
-            try ClaudeLauncher.resume(cliSessionID: id, cwd: folder, config: cliConfig)
-            launchError = nil
-        } catch {
-            launchError = error.localizedDescription
-        }
+        let config = cliConfig
+        run { try await ClaudeLauncher.resume(cliSessionID: id, cwd: folder, config: config) }
     }
 
     private var cliConfig: CLIConfig {
@@ -179,21 +202,54 @@ struct LaunchClaudeMenu: View {
         )
     }
 
-    private var cliMenuLabel: String {
-        switch CLITerminal(rawValue: cliTerminal) ?? .auto {
-        case .auto:        return "Launch Claude Code (Auto)"
+    /// The terminal item's label. Only the split button says "Launch Claude
+    /// Code" (it opens Claude Desktop); this item opens a terminal, so it
+    /// names the terminal like its siblings (audit #51: two items had the
+    /// same name and opened different apps).
+    static func cliMenuLabel(for terminal: CLITerminal) -> String {
+        switch terminal {
+        case .auto:        return "Open in a terminal → Claude Code"
         case .terminalApp: return "Open in Terminal.app → Claude Code"
         case .iterm2:      return "Open in iTerm2 → Claude Code"
         case .custom:      return "Open in custom terminal → Claude Code"
         }
     }
 
+    /// The prompt is built (or fetched) inside `run`, so `isLaunching` covers it.
     private func launch(_ target: ClaudeLauncher.Target) {
-        do {
-            try ClaudeLauncher.launch(target: target, prompt: prompt())
-            launchError = nil
-        } catch {
-            launchError = error.localizedDescription
+        guard !isLaunching else { return }
+        let make = prompt
+        run {
+            let text = try await make()
+            try await ClaudeLauncher.launch(target: target, prompt: text)
+        }
+    }
+
+    /// What the host's inline text says for a launch that failed for a reason other
+    /// than a missing permission (a prompt the engine couldn't build, among others).
+    static func launchErrorText(for error: Error) -> String {
+        LaunchFailure(error).message
+    }
+
+    /// One launch at a time. A permission refusal gets the alert with its
+    /// System Settings button; anything else goes to the host's inline text.
+    private func run(_ body: @escaping @MainActor () async throws -> Void) {
+        guard !isLaunching else { return }
+        isLaunching = true
+        Task {
+            defer { isLaunching = false }
+            do {
+                try await body()
+                launchError = nil
+            } catch {
+                let failure = LaunchFailure(error)
+                if failure.settingsURL != nil {
+                    launchError = nil
+                    permissionFailure = failure
+                } else {
+                    launchError = Self.launchErrorText(for: error)
+                }
+            }
         }
     }
 }

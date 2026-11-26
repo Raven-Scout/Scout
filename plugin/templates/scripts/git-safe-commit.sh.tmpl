@@ -30,6 +30,8 @@
 #   3  could not take the commit mutex within LOCK_WAIT_SECS
 #   4  nothing to commit from the given paths (not an error for the caller)
 #   5  git failed: a lock that is not provably stale, a hook, a bad path
+#   6  (a scheduled run only) queued: the commit broker didn't answer, so the
+#      commit lands after the session; there is no SHA yet
 #
 # The mutex lives under .scout-cache/ (gitignored), so it never shows in
 # `git status`: `flock` on .scout-cache/commit.lock where flock exists, else an
@@ -72,6 +74,15 @@ for p in "$@"; do
       ;;
   esac
 done
+
+# A scheduled run with its commit broker (Phase 1d, spec 2026-11-16): the run's
+# sandbox can't write the git dir, so the broker, outside it, checks the paths and
+# runs this same script (its mutex, the pre-commit hook) with them. Same output,
+# SHA and exit codes; 6 means the broker didn't answer and the commit was queued
+# for after the session (no SHA yet). SCOUT_LINT_OVERRIDE goes along with it.
+if [ -n "${SCOUT_RUN_BROKER:-}" ]; then
+  exec "$VAULT/scripts/scoutctl" broker commit -- "$MSG" "$@"
+fi
 
 cd "$VAULT" 2>/dev/null || die 2 "vault not found: $VAULT"
 GIT_DIR_PATH="$(git rev-parse --git-dir 2>/dev/null)" || die 5 "not a git repository: $VAULT"
@@ -184,8 +195,28 @@ for p in "$@"; do
 done
 [ "${#STAGE[@]}" -gt 0 ] || die 4 "nothing to commit — none of the given paths can be staged"
 
+# On a failed add or commit (a hook refusal), take back what this helper staged,
+# so the next bare `git commit` (the owner's) doesn't carry it. A scheduled run
+# can't unstage anything itself. Index entries the paths had before (something
+# the owner staged) are put back as they were.
+unstage_ours() {
+  if [ "${#ADD[@]}" -gt 0 ]; then
+    git reset -q -- "${ADD[@]}" >/dev/null 2>&1 || true
+    if [ -n "$INDEX_BEFORE" ]; then
+      printf '%s\n' "$INDEX_BEFORE" | git update-index --index-info >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+INDEX_BEFORE=""
 if [ "${#ADD[@]}" -gt 0 ]; then
-  git add -- "${ADD[@]}" || die 5 "git add failed"
+  INDEX_BEFORE="$(git ls-files -s -- "${ADD[@]}" 2>/dev/null || true)"
+  # Stopped mid-commit (the run broker's drain stopped by its watchdog): take back what we staged first.
+  trap 'unstage_ours; exit 143' TERM INT
+  git add -- "${ADD[@]}" || {
+    unstage_ours
+    die 5 "git add failed"
+  }
 fi
 
 # Only the paths with staged changes: a peer's staged file is not ours to
@@ -198,5 +229,52 @@ done
 
 # A pathspec-scoped commit, not a bare `git commit`: the bare form writes the
 # whole index, so anything a peer left staged would ride along.
-git commit -q -m "$MSG" -- "${COMMIT[@]}" || die 5 "git commit failed"
-echo "git-safe-commit: committed $(git rev-parse --short HEAD) (${#COMMIT[@]} path(s))" >&2
+# GIT_REFLOG_ACTION tags this commit's reflog entry with a nonce only this
+# helper knows, so the sha below is the commit git just made, never "whatever
+# HEAD is now": the owner's own commits don't take this mutex.
+NONCE="git-safe-commit-$$-$(date +%s)-$RANDOM$RANDOM"
+# Only entries added from here on can be ours: an older line that carries the
+# nonce (planted by a run that could write .git/logs) never names the commit.
+# Pure bash: a no-flock host runs this with a PATH that may lack wc and tr.
+reflog_count() {
+  local n=0 _l
+  while IFS= read -r _l; do n=$((n + 1)); done < <(git reflog show --format=%H HEAD 2>/dev/null || true)
+  echo "$n"
+}
+# Newest first, the entries since BEFORE; the oldest match is ours (a hook that
+# commits inherits the nonce).
+our_sha() {
+  local new=$(($(reflog_count) - BEFORE)) h gs sha=""
+  if [ "$new" -gt 0 ]; then
+    while IFS=$'\t' read -r h gs; do
+      case "$gs" in "$NONCE: "* | "$NONCE") sha="$h" ;; esac
+    done < <(git reflog show --format='%H%x09%gs' -n "$new" HEAD 2>/dev/null || true)
+  fi
+  echo "$sha"
+}
+BEFORE="$(reflog_count)"
+# The reflog alone can't say HEAD stayed put (core.logAllRefUpdates=false keeps
+# none), so a failed commit compares HEAD too: moved means a sha or unresolved.
+HEAD_BEFORE="$(git rev-parse -q --verify HEAD 2>/dev/null || true)"
+# The last stdout line is for the run broker, which records the commit as the
+# run's (the changes map, scout.changes.run_commits): `scout-commit <sha>`,
+# `scout-commit unresolved` (a commit may have been made but can't be named: a
+# gap the readers see, never a guess) or `scout-commit none` (HEAD didn't move).
+GIT_REFLOG_ACTION="$NONCE" git commit -q -m "$MSG" -- "${COMMIT[@]}" || {
+  # git can fail after HEAD moved (the new index couldn't be written): then a
+  # commit exists, and it is still named.
+  if [ "$(reflog_count)" -gt "$BEFORE" ] ||
+    [ "$(git rev-parse -q --verify HEAD 2>/dev/null || true)" != "$HEAD_BEFORE" ]; then
+    trap - TERM INT
+    SHA="$(our_sha)"
+    echo "scout-commit ${SHA:-unresolved}"
+  else
+    unstage_ours
+    echo "scout-commit none"
+  fi
+  die 5 "git commit failed"
+}
+trap - TERM INT  # committed: nothing of ours is left staged to take back
+SHA="$(our_sha)"
+echo "git-safe-commit: committed $(git rev-parse --short "${SHA:-HEAD}") (${#COMMIT[@]} path(s))" >&2
+echo "scout-commit ${SHA:-unresolved}"

@@ -12,6 +12,7 @@ import pytest
 
 from scout.hooks import kb_read_gate as gate
 from scout.kb.raw_read import raw_kb_read, search_reads_kb
+from tests.unit._prefilter_root import with_prefilter
 
 PLUGIN = Path(__file__).parent.parent.parent.parent
 RUN = {"SCOUT_MODE": "morning-briefing", "SCOUT_READER": "autonomous"}
@@ -202,6 +203,117 @@ def test_run_may_read_its_run_env(vault, command):
     assert _decision(vault, "Bash", {"command": command}) is None
 
 
+# --- a run may not point HOME elsewhere: the gate expands ~ and $HOME with the run's own -------------------
+
+
+def _owner_state() -> str:
+    return str(Path.home() / ".local" / "state")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The gate read `~` as the run's HOME, so these wrote the owner's stores unseen (review of #792).
+        "HOME={state}/scout ; echo x >> ~/run-limits.json",
+        "export HOME={state} ; cp /dev/null ~/scout/run-limits.json",
+        "HOME={state}/scout/run-brokers sh -c 'echo x > $HOME/lab-vetoes.jsonl'",
+        "env HOME={state}/scout python3 -c \"open('x','w')\"",
+        "unset HOME; echo x > ~/x",
+        "for HOME in {state}/scout; do echo x > ~/run-limits.json; done",
+        # review of #800: each of these changes `~`, verified in zsh -f with a run's options
+        "typeset H\\OME=$PWD/h; git commit -m msg",
+        "export HO''ME=$PWD/h; git commit -m msg",
+        "export HO\\ME=$PWD/h; git commit -m msg",
+        "printf -v HO''ME %s $PWD/h; git commit -m msg",
+        "read HO''ME <<< $PWD/h; git commit -m msg",
+        "unset HO''ME",
+        "IFS= read -r HOME <<< $PWD/h; git commit -m msg",
+        "HOME+=/.claude; echo x >> ~/settings.json",
+        "HOME[1,-1]=$PWD/h; git commit -m msg",
+        ": ${{HOME::=$PWD/h}}; git commit -m msg",
+        "echo ${{HOME::=/x}}",
+        ": ${{HOME:=/x}}",
+        "select HOME in $PWD/h; do break; done <<< 1; git commit -m msg",
+        "nocorrect export HOME=$PWD/h; git commit -m msg",
+        "- export HOME=$PWD/h; git commit -m msg",
+        "noglob HOME=/x true",
+        # a name built at run time
+        "v=HO; v+=ME; : ${{(P)v::=$PWD/h}}; git commit -m msg",
+        "v=HO; v+=ME; export $v=$PWD/h; git commit -m msg",
+        'v=HO; v+=ME; typeset "$v=$PWD/h"; git commit -m msg',
+        "v=HO; v+=ME; read $v <<< $PWD/h; git commit -m msg",
+        'v=HO; v+=ME; eval "$v=$PWD/h"; git commit -m msg',
+        # review 2 of #800: a name built in part, or by a glob, which the shell may expand to HOME
+        "read HOM? <<< $PWD/h; git commit -m msg",
+        "export HOM?=.claude; echo x >> ~/settings.json",
+        "v=OME; export H$v=$PWD/h; git commit -m msg",
+        "v=OME; read H$v <<< /x; echo x >> ~/settings.json",
+        "v=OME; printf -v H$v /x; echo x >> ~/settings.json",
+        'v=OME; typeset "H${{v}}=/x"; echo x >> ~/settings.json',
+        'v=OME; eval "H${{v}}=/x"; echo x >> ~/settings.json',
+        "v=HOME; : ${{(P)${{v}}::=/x}}; echo x >> ~/settings.json",
+        "read -d '' HOME <<< /x",
+        # review 3 of #800: verified to skip the commit hook in zsh
+        "\\read HOM? <<< h; git commit -qm m1",
+        "print -v HOM? h; git commit -qm m2",
+        "print -v HOME /p/h; git commit -m m",
+        "zstyle :x y /p/h; zstyle -s :x y HOM?; git commit -m m",
+        "zformat -f HOM? /p/h; git commit -m m",
+        "strftime -s HOM? %s; git commit -m m",
+        "repeat 1 read HOM? <<< /p/h; git commit -m m",
+        "pr''intf -v HOM? /p/h; git commit -m m",
+        "\\typeset H$v=/p/h; git commit -m m",
+        "exec {{HOME}}>/dev/null; echo x >> ~/settings.json",
+        # review 4 of #800: a $'…' escape spells the builtin, or print's option is built at run time
+        "eval $'\\x72ead HOM? <<< h'; git commit -qm m",
+        "eval $'\\162ead HOM? <<< h'; git commit -qm m",
+        "$'\\x72ead' HOM? <<< h; git commit -qm m",
+        "x=v; print -$x HOM? /p/h; git commit -qm m",
+    ],
+)
+def test_run_denies_a_command_that_points_home_elsewhere(vault, command):
+    reason = _denied(_decision(vault, "Bash", {"command": command.format(state=_owner_state())}))
+    assert "HOME" in reason and "SCOUT_MODE" not in reason
+    assert not (vault / ".scout-logs").exists() or not _events(vault), "a HOME change isn't a hook skip"
+
+
+def test_run_denies_an_even_dollar_run_before_an_escaped_quote(vault):
+    # zsh reads a `$` and then $'…', so this runs `read HOME`; bash reads `$$` and a plain quote. Either the read gate
+    # (which can't judge it) or the HOME rule after it denies.
+    _denied(_decision(vault, "Bash", {"command": "eval $$'; \\x72ead HOME <<< /p/h'; git commit -qm m"}))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "HOME=$HOME python3 scripts/clock-status.py",
+        'HOME="$HOME" ls notes',
+        "echo $HOME",
+        "ls ~/Documents",
+        "export HOME",
+        "HOME=~ ls",
+        "HOME=$HOME/ ls",
+        'echo "HOME is $HOME"',
+        "read -r HOME_DIR <<< x",
+        'while IFS= read -r line; do echo "$line"; done < notes.txt',
+        "read -t $T ans",
+        'read -p "$prompt" ans',
+        "read -r -d '' body <<< x",
+        "printf -v out '%s' x",
+        'getopts "ab:" opt',
+        "let i=$i+1",
+        "for f in $HOME/docs/*; do echo $f; done",
+        'echo "${HOME=}"',
+    ],
+)
+def test_run_may_keep_or_read_its_home(vault, command):
+    assert _decision(vault, "Bash", {"command": command}) is None
+
+
+def test_owner_session_may_set_home(vault):
+    assert _decision(vault, "Bash", {"command": "HOME=/tmp/x ls"}, env={}) is None
+
+
 @pytest.mark.parametrize("env", [{}, {"SCOUT_READER": "owner"}])
 def test_owner_session_may_change_the_run_env(vault, env):
     assert _decision(vault, "Bash", {"command": "env -u SCOUT_MODE git commit -m x"}, env=env) is None
@@ -227,6 +339,11 @@ def _events(vault: Path) -> list[dict]:
         ("git --config-env=core.hooksPath=D commit -m x", "--config-env core.hooksPath"),
         ("git config core.hooksPath /dev/null", "git config core.hooksPath"),
         ("GIT_CONFIG_COUNT=1 git commit -m x", "GIT_CONFIG_*"),
+        ("XDG_CONFIG_HOME=./x git commit -m x", "XDG_CONFIG_HOME"),
+        ("export XDG_CONFIG_HOME=./x; git commit -m x", "XDG_CONFIG_HOME"),
+        ("XDG_CONFIG_HOME+=/x; git commit -m x", "XDG_CONFIG_HOME"),
+        (": ${XDG_CONFIG_HOME:=./x}; git commit -m x", "XDG_CONFIG_HOME"),
+        ("IFS= read -r XDG_CONFIG_HOME <<< ./x; git commit -m x", "XDG_CONFIG_HOME"),
         ("git commit-tree abc -m x", "commit-tree"),
         ("git update-ref refs/heads/main abc", "update-ref"),
         ("rm .git/hooks/pre-commit", ".git/hooks"),
@@ -372,7 +489,7 @@ def _sh(
     env: dict, payload: str, cwd: Path, root: Path = PLUGIN, matcher: str = "Grep|Glob|Bash"
 ) -> subprocess.CompletedProcess[str]:
     clean = {k: v for k, v in os.environ.items() if k not in ("SCOUT_MODE", "SCOUT_READER", "SCOUT_DATA_DIR")}
-    full = {**clean, **env, "CLAUDE_PLUGIN_ROOT": str(root)}
+    full = {**clean, **env, "CLAUDE_PLUGIN_ROOT": str(with_prefilter(root))}
     cmd = _entry(matcher)["hooks"][0]["command"]
     return subprocess.run(
         ["sh", "-c", cmd], env=full, cwd=cwd, input=payload, capture_output=True, text=True, timeout=60
@@ -455,6 +572,75 @@ def test_a_run_env_change_or_detach_reaches_python_from_the_shell(vault, tmp_pat
     assert res.returncode == 2
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "HOME=/tmp/x scripts/scoutctl status",
+        "export HOME=/tmp/x",
+        "unset HOME",
+        "read HOME",
+        "printf -v HOME %s x",
+        # quoted or escaped: matched once the shell stage has removed quotes and backslashes (review of #800)
+        "typeset H\\OME=/tmp/x; git commit -m msg",
+        "export HO''ME=/tmp/x; git commit -m msg",
+        "unset HO''ME",
+        "export SCOUT_MO''DE=x; git commit -m msg",
+        "unset SCOUT_REA''DER",
+        # a name built at run time names no HOME at all
+        "export $v=/tmp/x; git commit -m msg",
+        'typeset "$v=/tmp/x"; git commit -m msg',
+        "read $v <<< /tmp/x; git commit -m msg",
+        'printf -v "$v" %s x',
+        ": ${(P)v::=/tmp/x}",
+        # a name built by a glob or in part: the builtin's name, anywhere in the command, sends it on
+        "read HOM? <<< /tmp/x; git commit -m msg",
+        "IFS= read -r H$v <<< /tmp/x",
+        "v=OME; for H$v in /x; do :; done",
+        "(( H$v = 1 ))",
+        # the builtin's own name quoted or escaped, or behind a quoted prefix value (review 3 of #800)
+        '"read" HOM? <<< /tmp/x; git commit -m msg',
+        "r''ead HOM? <<< /tmp/x",
+        "\\read HOM? <<< /tmp/x",
+        'ex""port H$v=/tmp/x',
+        'X="a b" read HOM? <<< /tmp/x',
+        "ls\n'read' HOM? <<< /tmp/x",
+        "\\typeset H$v=/tmp/x",
+        "e''xport HOM?=x",
+        "pr''intf -v HOM? /tmp/x",
+        "print -v HOM? h; git commit -qm m2",
+        "zstyle -s :x y HOM?",
+        "zformat -f HOM? /tmp/x",
+        "strftime -s HOM? %s",
+        "repeat 1 read HOM? <<< /tmp/x",
+        "zparseopts -A HOM? a",
+        # a $'…' escape can spell any word, and print's option may be built at run time (review 4 of #800)
+        "$'\\x72ead' HOM? <<< /tmp/x",
+        "$'\\162ead' HOM? <<< /tmp/x",
+        "x=v; print -$x HOM? /tmp/x",
+        "print -`echo v` HOM? /tmp/x",
+        # the shell stage doesn't look for command position, so a builtin's name used as a plain word goes on too;
+        # Python allows these (about 1.8% of replayed run calls newly reach it)
+        "scripts/scoutctl kb read projects/widgets/widgets.md",
+        "git log --format=export -1",
+        'echo "read the notes"',
+    ],
+)
+def test_a_home_change_reaches_python_from_the_shell(vault, tmp_path, command):
+    # No KB word and no other trigger: only the HOME, run-env or built-name rules send it to Python (here: missing,
+    # so exit 2).
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 2
+
+
+def test_a_home_change_is_denied_through_the_real_cli(vault):
+    payload = _payload("Bash", {"command": "export HOME=/tmp/x ; echo x >> ~/run-limits.json"}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
+    assert res.returncode == 0, res.stderr
+    out = json.loads(res.stdout)["hookSpecificOutput"]
+    assert out["permissionDecision"] == "deny" and "HOME" in out["permissionDecisionReason"]
+
+
 def test_a_run_env_change_is_denied_through_the_real_cli(vault):
     payload = _payload("Bash", {"command": "env -u SCOUT_MODE git commit -m x"}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
@@ -464,7 +650,14 @@ def test_a_run_env_change_is_denied_through_the_real_cli(vault):
 
 @pytest.mark.parametrize(
     "command",
-    ["git add notes/a.md && git commit -m x 2>&1", "scripts/git-safe-commit.sh msg notes/a.md >&2", "ls notes"],
+    [
+        "git add notes/a.md && git commit -m x 2>&1",
+        "scripts/git-safe-commit.sh msg notes/a.md >&2",
+        "ls notes",
+        "git status --short",
+        'echo "reading the notes"',  # a builtin's name only as part of a word
+        "scripts/scoutctl health --json",
+    ],
 )
 def test_ordinary_run_commands_still_exit_in_the_shell(vault, tmp_path, command):
     payload = _payload("Bash", {"command": command}, vault).getvalue()
@@ -547,10 +740,8 @@ def test_a_hook_skip_reaches_python_from_the_shell(vault, tmp_path, command):
         "git commit -q -m 'a; b' -- notes/a.md",
         "git commit --amend --no-edit",
         "git commit -F notes/msg.txt",
-        "git mv notes/a.md notes/b.md",
         "git merge -n feature",
         "git push origin main",
-        "git config user.email alex@example.com",
         "scripts/git-safe-commit.sh 'kb: note' notes/a.md",
         "scripts/scoutctl kb search commit",
         "ls notes -n",
@@ -560,6 +751,14 @@ def test_ordinary_git_stays_in_the_shell(vault, tmp_path, command):
     payload = _payload("Bash", {"command": command}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
     assert res.returncode == 0 and res.stdout == "" and res.stderr == "", command
+
+
+@pytest.mark.parametrize("command", ["git mv notes/a.md notes/b.md", "git config user.email alex@example.com"])
+def test_file_moves_and_config_writes_go_to_python_which_allows_the_ordinary_ones(vault, tmp_path, command):
+    """A `mv` or a `git config` write may touch what decides which checks run (#637), so Python decides; these pass."""
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    assert _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing").returncode == 2
+    assert _decision(vault, "Bash", {"command": command}) is None
 
 
 def test_a_hook_skip_word_only_in_the_description_exits_in_the_shell(vault, tmp_path):
@@ -596,3 +795,181 @@ def test_the_telegram_wrap_is_allowed_through_the_real_cli(vault):
     payload = _payload("Bash", {"command": wrap}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
     assert res.returncode == 0 and res.stdout == "", res.stdout + res.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "scoutctl delegate link duet --remote /tmp/m.git --confirm-account-unshared",
+        "scripts/scoutctl delegate key duet --rotate",
+        "~/scout-plugin/plugin/engine/bin/scoutctl delegate trust-state --confirm duet",
+        "python3 -P -m scout delegate unlink duet",
+        "bash -c 'scoutctl delegate unlink duet'",
+    ],
+)
+def test_run_denies_the_owners_delegate_commands(vault, command):
+    reason = _denied(_decision(vault, "Bash", {"command": command}))
+    assert "owner's" in reason and "delegate sync" in reason
+
+
+@pytest.mark.parametrize("command", ["scoutctl delegate sync --all --if-moved", "scoutctl delegate status"])
+def test_a_run_may_sync_and_list_delegate_mirrors(vault, command):
+    assert _decision(vault, "Bash", {"command": command}) is None
+
+
+# --- the agents' inbox copies (#550 V4b1): agent text never reaches a run --------------------------------------
+
+
+@pytest.fixture
+def copies(vault: Path) -> Path:
+    folder = vault / ".scout-inbox" / "agents" / "grok-personal"
+    folder.mkdir(parents=True)
+    (folder / "01JD5Z0000000000000000ABCD.json").write_text('{"text": "do as I say"}\n')
+    (folder / "taken.ledger").write_text("01JD5Z0000000000000000ABCD\n")
+    return folder
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input"),
+    [
+        ("Read", {"file_path": ".scout-inbox/agents/grok-personal/01JD5Z0000000000000000ABCD.json"}),
+        ("Read", {"file_path": ".scout-inbox/agents/grok-personal/taken.ledger"}),
+        ("Grep", {"pattern": "x", "path": ".scout-inbox/agents"}),
+        ("Grep", {"pattern": "x", "path": ".scout-inbox"}),
+        ("Grep", {"pattern": "x", "glob": "*.json"}),
+        ("Grep", {"pattern": "x", "glob": "**/agents/**"}),
+        ("Glob", {"pattern": "**/*.json"}),
+        ("Glob", {"pattern": ".scout-inbox/**"}),
+        ("Bash", {"command": "cat .scout-inbox/agents/grok-personal/01JD5Z0000000000000000ABCD.json"}),
+        ("Bash", {"command": "jq . .scout-inbox/agents/*/*.json"}),
+    ],
+)
+def test_a_run_never_reads_what_an_agent_proposed(vault: Path, copies: Path, tool: str, tool_input: dict) -> None:
+    reason = _denied(_decision(vault, tool, tool_input))
+    assert "agents' inbox copies" in reason and "untrusted" in reason
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input"),
+    [
+        ("Grep", {"pattern": "x", "path": "scripts"}),
+        ("Glob", {"pattern": "action-items/*.md"}),
+        ("Read", {"file_path": ".scout-inbox/phone-notifications.jsonl"}),
+    ],
+)
+def test_other_files_stay_readable(vault: Path, copies: Path, tool: str, tool_input: dict) -> None:
+    assert _decision(vault, tool, tool_input) is None
+
+
+def test_the_owner_still_reads_the_copies(vault: Path, copies: Path) -> None:
+    path = ".scout-inbox/agents/grok-personal/01JD5Z0000000000000000ABCD.json"
+    assert _decision(vault, "Read", {"file_path": path}, env={}) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["scoutctl inbox apply --all", "scripts/scoutctl inbox sync", "python3 -P -m scout inbox pull grok-personal"],
+)
+def test_a_run_never_pulls_or_applies_an_inbox(vault: Path, command: str) -> None:
+    reason = _denied(_decision(vault, "Bash", {"command": command}))
+    assert "inbox" in reason and "owner's" in reason
+
+
+def test_the_shell_prefilters_send_the_copies_to_the_gate(vault: Path, copies: Path) -> None:
+    env = {**RUN, "SCOUT_DATA_DIR": str(vault)}
+    read = _payload("Read", {"file_path": str(copies / "01JD5Z0000000000000000ABCD.json")}, vault).getvalue()
+    res = _sh(env, read, vault, matcher="Read")
+    assert '"deny"' in res.stdout and "agents' inbox copies" in res.stdout, res.stdout + res.stderr
+    bash = _payload("Bash", {"command": "head .scout-inbox/agents/grok-personal/taken.ledger"}, vault).getvalue()
+    res = _sh(env, bash, vault)
+    assert '"deny"' in res.stdout, res.stdout + res.stderr
+    cmd = _payload("Bash", {"command": "scoutctl inbox apply --all"}, vault).getvalue()
+    res = _sh(env, cmd, vault)
+    assert '"deny"' in res.stdout, res.stdout + res.stderr
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input"),
+    [
+        ("Grep", {"pattern": "x", "glob": "*.js?n"}),
+        ("Grep", {"pattern": "x", "glob": "*.[j]son"}),
+        ("Glob", {"pattern": "*/*/*/*.tmp"}),
+        ("Bash", {"command": "cat .scout-in*/agents/*/*"}),
+    ],
+)
+def test_the_copies_are_judged_by_what_a_filter_matches(vault: Path, copies: Path, tool: str, tool_input: dict) -> None:
+    assert "agents' inbox copies" in _denied(_decision(vault, tool, tool_input))
+
+
+# --- round 2: a glob never holds the gate past its timeout (a hook that times out allows the call) -------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat knowledge-base/personal/x.md /*/*/*/*/*/*/*/zz",
+        "cat knowledge-base/x.md; touch /*/*/*/*/*/*/*/zz",
+        "touch ~/*/*/*/*/zz",
+    ],
+)
+def test_a_glob_too_wide_to_judge_is_refused_fast(vault: Path, command: str) -> None:
+    import time
+
+    started = time.monotonic()
+    reason = _denied(_decision(vault, "Bash", {"command": command}))
+    assert time.monotonic() - started < 5  # the hook's own timeout is 15 s
+    # The first form in the text names the deny: a KB read before the wide glob is denied as one.
+    assert "more files than Scout's gate checks" in reason or "knowledge-base/" in reason
+
+
+def test_a_glob_with_too_many_matches_is_refused(vault: Path) -> None:
+    many = vault / "many"
+    many.mkdir()
+    for i in range(300):
+        (many / f"f{i}.txt").write_text("x")
+    assert "more files than Scout's gate checks" in _denied(_decision(vault, "Bash", {"command": "touch many/*"}))
+    assert _decision(vault, "Bash", {"command": "ls many"}) is None
+
+
+def test_a_slow_glob_is_refused_not_waited_for(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    monkeypatch.setattr(gate, "GLOB_BUDGET_S", 0.2)
+
+    def slow(pattern: str, **_kw: object) -> object:
+        time.sleep(1)
+        yield pattern
+
+    monkeypatch.setattr(gate.glob, "iglob", slow)
+    assert gate._glob_targets(str(vault / "a*")) is None
+    assert gate._glob_targets(str(vault / "plain")) == [str(vault / "plain")]
+
+
+@pytest.mark.parametrize("glob_filter", ["*.{json,ledger}", "{a,*.js{o,}n}", "*.{md,{ledger,x}}"])
+def test_brace_filters_are_expanded_before_judging(vault: Path, copies: Path, glob_filter: str) -> None:
+    assert "agents' inbox copies" in _denied(_decision(vault, "Grep", {"pattern": "x", "glob": glob_filter}))
+
+
+def test_the_prefilter_takes_any_space_before_an_inbox_command(vault: Path) -> None:
+    env = {**RUN, "SCOUT_DATA_DIR": str(vault)}
+    cmd = _payload("Bash", {"command": "scoutctl inbox\tsync"}, vault).getvalue()
+    res = _sh(env, cmd, vault)
+    assert '"deny"' in res.stdout, res.stdout + res.stderr
+
+
+@pytest.mark.parametrize(
+    "command", ["scoutctl inbox review", "scoutctl inbox review accept 01JD5Z0000000000000000ABCD"]
+)
+def test_the_prefilter_sends_inbox_review_to_the_gate(vault: Path, command: str) -> None:
+    """#550 V4b2: the review prints agents' text, which never reaches a run."""
+    env = {**RUN, "SCOUT_DATA_DIR": str(vault)}
+    res = _sh(env, _payload("Bash", {"command": command}, vault).getvalue(), vault)
+    assert '"deny"' in res.stdout, res.stdout + res.stderr
+
+
+def test_a_run_may_read_an_agents_accepted_note(vault: Path) -> None:
+    """#550 V4b2: from-agents/ is write-protected, not hidden: runs read it, marked [from-agent]."""
+    rel = "knowledge-base/from-agents/grok-personal/01JD5Z0000000000000000ABCD.md"
+    (vault / rel).parent.mkdir(parents=True, exist_ok=True)
+    (vault / rel).write_text("---\nsource: delegate:grok-personal\nvisibility: private\n---\nText.\n")
+    assert _decision(vault, "Read", {"file_path": str(vault / rel)}) is None

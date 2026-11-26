@@ -14,6 +14,31 @@ final class SessionLogService: ObservableObject {
     private let timeZone: TimeZone
     private var watchTask: Task<Void, Never>?
     private var sweepTimer: Timer?
+    /// Statuses from the run ledger (`scoutctl runs --json`), by log file name.
+    /// A ledger row is the record of a finished run, so it wins over what the
+    /// log's lines suggested; runs without a row (older engines, a run still
+    /// going) keep their log-derived status.
+    private var ledgerStatuses: [String: RunStatus] = [:]
+    /// Each ledger row's slot key, by log file name: the schedule a run ran
+    /// for, which "Run again" fires (`Run.slotKey`).
+    private var ledgerSlots: [String: String] = [:]
+    /// Each ledger row's `trigger`, by log file name (`Run.trigger`).
+    private var ledgerTriggers: [String: String] = [:]
+    /// Each ledger row's `failure_class`, by log file name (`Run.failureClass`).
+    private var ledgerFailureClasses: [String: String] = [:]
+    /// Each ledger row's write protection and integrity check, by log file name (`Run.protection`).
+    private var ledgerProtection: [String: Run.Protection] = [:]
+    /// Each ledger row's run name (`DisplayName.ledgerRun` of its slot or mode), by log file name
+    /// (`Run.ledgerName`): the ledger, not the log's file name, says what kind of run it was.
+    private var ledgerNames: [String: String] = [:]
+    /// Each ledger row's slot-or-mode key (`DisplayName.ledgerRunKey`), by log file name
+    /// (`Run.ledgerKey`): the key the name, the "Started by you" badge and the Type filter share.
+    private var ledgerKeys: [String: String] = [:]
+    /// The last ledger rows, by log file name, so a schedule change can rename runs without a new read.
+    private var ledgerEntries: [String: RunLedgerEntry] = [:]
+    /// The schedule's slot keys (`applyScheduleKeys`): a ledger key in it is a schedule, even one the
+    /// owner shaped like a hand-run key (`weekly-manual`), for the name, the badge and the Type filter.
+    private var scheduleKeys: Set<String> = []
 
     /// Where parsed-log results are cached between launches. `nil` (production
     /// default) resolves to the per-user caches directory; tests inject a temp
@@ -44,6 +69,13 @@ final class SessionLogService: ObservableObject {
         let runnerScript: String
         let type: RunType
         let startedAt: Date
+        /// The runner's PID when the log has the seconds+PID name a run falls
+        /// back to when another run already claimed this minute's log; nil for
+        /// the minute-named log.
+        var pid: Int? = nil
+        /// `-SS-PID` (as written in the name) for a seconds+PID log, nil for a
+        /// minute-named one. Keeps per-run file names (feedback) apart.
+        var uniqueSuffix: String? = nil
     }
 
     nonisolated static func parseFilename(
@@ -51,20 +83,38 @@ final class SessionLogService: ObservableObject {
         timeZone: TimeZone = .current
     ) -> ParsedFilename? {
         let name = url.deletingPathExtension().lastPathComponent
-        // Accept: scout-YYYY-MM-DD_HH-MM, dreaming-YYYY-MM-DD_HH-MM, research-YYYY-MM-DD_HH-MM
+        // Accept <runner>-YYYY-MM-DD_HH-MM (the run that claimed the minute's
+        // log, and every log written before unique names) and
+        // <runner>-YYYY-MM-DD_HH-MM-SS-PID (a later run in the same minute),
+        // for runner scout, dreaming, research or respond. A log from a runner
+        // this build doesn't know is left out (nil), never filed as another
+        // kind, so a newer engine's runs can't read as, say, a briefing.
         guard let underscoreIdx = name.firstIndex(of: "_") else { return nil }
         let head = String(name[..<underscoreIdx])                       // "scout-2026-04-19"
         let tail = String(name[name.index(after: underscoreIdx)...])    // "08-03"
         let headParts = head.components(separatedBy: "-")
         guard headParts.count == 4 else { return nil }
         let runner = headParts[0]
-        guard ["scout", "dreaming", "research"].contains(runner) else { return nil }
+        guard Self.runnerScripts[runner] != nil else { return nil }
 
         let tailParts = tail.components(separatedBy: "-")
-        guard tailParts.count == 2 else { return nil }
+        guard tailParts.count == 2 || tailParts.count == 4,
+              tailParts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) })
+        else { return nil }
+        var second = 0
+        var pid: Int? = nil
+        var uniqueSuffix: String? = nil
+        if tailParts.count == 4 {
+            guard tailParts[2].count == 2, let s = Int(tailParts[2]), s < 60,
+                  let p = Int(tailParts[3]), p > 0
+            else { return nil }
+            second = s
+            pid = p
+            uniqueSuffix = "-\(tailParts[2])-\(tailParts[3])"
+        }
 
         // Log filenames carry the system's local-clock time at the moment the
-        // shell script ran (`date "+%Y-%m-%d_%H-%M"`). Parsing them in any
+        // shell script ran (`date "+%Y-%m-%d_%H-%M-%S"`). Parsing them in any
         // fixed zone breaks the moment the user travels — the run's wall
         // clock would shift, and downstream `since`/`until` git filters
         // would window past the actual commits. Honor the caller-supplied
@@ -75,21 +125,25 @@ final class SessionLogService: ObservableObject {
         components.day = Int(headParts[3])
         components.hour = Int(tailParts[0])
         components.minute = Int(tailParts[1])
+        components.second = second
         components.timeZone = timeZone
         guard let date = Calendar(identifier: .gregorian).date(from: components) else { return nil }
 
-        let runnerScript: String = {
-            switch runner {
-            case "scout": return "run-scout.sh"
-            case "dreaming": return "run-dreaming.sh"
-            case "research": return "run-research.sh"
-            default: return "run-scout.sh"
-            }
-        }()
-
+        guard let runnerScript = Self.runnerScripts[runner] else { return nil }
         let type = deriveType(runner: runner, date: date, timeZone: timeZone)
-        return ParsedFilename(runnerScript: runnerScript, type: type, startedAt: date)
+        return ParsedFilename(runnerScript: runnerScript, type: type, startedAt: date,
+                              pid: pid, uniqueSuffix: uniqueSuffix)
     }
+
+    /// The log-name prefix each runner writes under `.scout-logs/`
+    /// (`<prefix>-YYYY-MM-DD_HH-MM.log`) and the runner script that writes it.
+    /// Mirrors `_RUN_LOG_GLOBS` in `plugin/engine/scout/health.py`.
+    nonisolated static let runnerScripts: [String: String] = [
+        "scout":    "run-scout.sh",
+        "dreaming": "run-dreaming.sh",
+        "research": "run-research.sh",
+        "respond":  "run-respond.sh",
+    ]
 
     nonisolated static func deriveType(
         runner: String,
@@ -127,6 +181,8 @@ final class SessionLogService: ObservableObject {
             return .dreaming
         case "research":
             return .research
+        case "respond":
+            return .respond
         default:
             return .manual
         }
@@ -144,6 +200,12 @@ final class SessionLogService: ObservableObject {
         let errorsDetected: [DetectedError]
         /// From the runner's `=== model: <model> ===` line; nil for older logs.
         var model: String? = nil
+        /// Set while the run is queued behind another one for the session
+        /// lock: its log has the lock library's "waiting up to Ns for the
+        /// lock" line and nothing has ended the wait yet (no "Lock acquired"
+        /// line, no skip). The value is that N, the longest the wait can last
+        /// (`SCOUT_LOCK_WAIT_SECS`). nil for every other log.
+        var lockWaitSecs: Int? = nil
     }
 
     // Compiled once and reused. `parseBody` runs on every FSEvent for a log
@@ -185,10 +247,29 @@ final class SessionLogService: ObservableObject {
     // wrapper case-insensitively and without pinning the instance name.
     // (`finishRegex` still pins the literal "Scout" instance name — correct for
     // the default install, but the same latent limitation for custom instances.)
+    // The line must say "skipping": the lock library also writes
+    // `=== Another … session running (PID …) — waiting up to Ns for the lock ===`
+    // for a run that then gets the lock and runs (card C3).
     private static let concurrencyRegex = try! NSRegularExpression(
-        pattern: #"=== Another .+? session running"#,
+        pattern: #"=== Another .+? session running.*skipping"#,
         options: [.caseInsensitive]
     )
+    // `=== Another … session running (PID …) — waiting up to 1800s for the lock ===`
+    // and, once the wait ends with the lock, `=== Lock acquired after 412s wait ===`
+    // (`scout_lock_acquire` in plugin/templates/scripts/scout-lock.sh.tmpl).
+    // The runner takes the lock before it writes anything else, so between the
+    // two the waiting line is the log's only content: it sleeps in 30 s polls,
+    // writing nothing, and its progress watcher starts only once it holds the lock.
+    private static let lockWaitRegex = try! NSRegularExpression(
+        pattern: #"=== Another .+? session running.*waiting up to (\d+)s for the lock"#,
+        options: [.caseInsensitive]
+    )
+    private static let lockAcquiredRegex = try! NSRegularExpression(
+        pattern: #"=== Lock acquired after"#,
+        options: [.caseInsensitive]
+    )
+    /// The wait `SCOUT_LOCK_WAIT_SECS` gives when the line's number can't be read.
+    nonisolated static let defaultLockWaitSecs = 1800
     private static let budgetRegex = try! NSRegularExpression(pattern: #"=== Budget check: skipping this run ==="#)
     private static let rateLimitRegex = try! NSRegularExpression(pattern: #"Rate limit detected"#)
     // `=== model: sonnet ===`, written by the runner before the session starts.
@@ -228,6 +309,8 @@ final class SessionLogService: ObservableObject {
             status = .timeout
         } else if hasBudgetSkip {
             status = .skippedBudget
+        } else if let skip = RunSkipLine.status(in: text) {
+            status = skip
         } else if hasConcurrencySkip {
             status = .skippedConcurrency
         } else if hasRateLimit {
@@ -251,6 +334,17 @@ final class SessionLogService: ObservableObject {
             model = String(text[modelRange])
         }
 
+        // Still waiting for the session lock: the wait line, and nothing since
+        // that ended the wait. A run that got the lock, or gave up and skipped
+        // (`.skippedConcurrency`), is judged like any other.
+        var lockWaitSecs: Int? = nil
+        if status == .running,
+           let match = lockWaitRegex.firstMatch(in: text, range: range),
+           lockAcquiredRegex.firstMatch(in: text, range: range) == nil {
+            let secs = Range(match.range(at: 1), in: text).flatMap { Int(text[$0]) }
+            lockWaitSecs = secs ?? defaultLockWaitSecs
+        }
+
         let errors = scanErrors(in: text)
         return ParsedBody(
             startedAt: startedAt,
@@ -259,23 +353,59 @@ final class SessionLogService: ObservableObject {
             status: status,
             logSizeBytes: size,
             errorsDetected: errors,
-            model: model
+            model: model,
+            lockWaitSecs: lockWaitSecs
         )
     }
 
-    /// Promote `.running` runs whose `startedAt` is older than the
-    /// per-type `orphanAfter` threshold to `.orphaned`. All other
+    /// Promote a `.running` run to `.orphaned` once it has gone longer than
+    /// the per-type `orphanAfter` threshold without progress. All other
     /// statuses pass through unchanged.
+    ///
+    /// `watcherStall` is the answer when there is one: the awake time without
+    /// progress that the run's progress watcher reports (`RunProgress`, the
+    /// same line and rule the engine's lock reaper and `scoutctl health` use).
+    /// The log is then ignored: on a vault linked to Agnes the lease keepalive
+    /// writes it every five minutes whether or not claude does anything, so a
+    /// hung claude behind a live shell stayed "running" (review of #701).
+    ///
+    /// Without one (a vault whose runners predate the watcher, or a watcher
+    /// that died), quiet time counts from the run's last sign of life: the
+    /// later of its start and `lastActivityAt` (the log's modification time),
+    /// as #701 had it. Counting from the start alone marked a healthy
+    /// 23-minute consolidation "Didn't finish" while it was still working.
+    ///
+    /// `lockWait` is set while the run is queued for the session lock
+    /// (`ParsedBody.lockWaitSecs`). Waiting is not a run going without
+    /// progress: the waiter writes nothing while it polls, and the watcher's
+    /// line is the holder's. So the wait, counted from the waiting line (the
+    /// log's last write), gets its full length first, and the kind's
+    /// threshold applies only after it: the waiter writes a line as soon as
+    /// the wait ends, either way, so silence past both means it is gone.
     nonisolated static func promoteOrphan(
         parsedStatus: RunStatus,
         startedAt: Date,
+        lastActivityAt: Date? = nil,
+        watcherStall: TimeInterval? = nil,
+        lockWait: TimeInterval? = nil,
         type: RunType,
         now: Date
     ) -> RunStatus {
         guard parsedStatus == .running else { return parsedStatus }
-        return now.timeIntervalSince(startedAt) > type.orphanAfter
+        if let watcherStall {
+            return watcherStall > type.orphanAfter ? .orphaned : .running
+        }
+        let lastSignOfLife = max(startedAt, lastActivityAt ?? startedAt)
+        let allowedQuiet = max(0, lockWait ?? 0) + type.orphanAfter
+        return now.timeIntervalSince(lastSignOfLife) > allowedQuiet
             ? .orphaned
             : .running
+    }
+
+    /// The log's modification time — the run's latest sign of life — or nil
+    /// when the file can't be read.
+    nonisolated static func logModifiedAt(_ url: URL) -> Date? {
+        try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
 
     /// Post-pass over an assembled run list that demotes `.running` entries
@@ -287,7 +417,12 @@ final class SessionLogService: ObservableObject {
     ///
     /// Logic:
     /// - Find, per `RunType`, the most-recent run whose status is **terminal**
-    ///   (anything except `.running`).
+    ///   (anything except `.running`), leaving out lock skips
+    ///   (`.skippedConcurrency`): the runner skips on the session lock before
+    ///   it holds it, so a lock skip is evidence that an earlier run is still
+    ///   alive, not that it died. Every other skip happens after the runner
+    ///   took the lock, so, like a finished run, it shows the earlier run no
+    ///   longer holds it.
     /// - For every still-`.running` run, if a terminal run of the same type
     ///   started strictly later than this one, this run is stale → `.orphaned`.
     ///
@@ -297,7 +432,7 @@ final class SessionLogService: ObservableObject {
     /// first, then this reconciles cross-run.
     nonisolated static func resolveStaleRunning(_ runs: [Run]) -> [Run] {
         var latestTerminal: [RunType: Date] = [:]
-        for r in runs where r.status != .running {
+        for r in runs where r.status != .running && r.status != .skippedConcurrency {
             let prev = latestTerminal[r.type] ?? .distantPast
             if r.startedAt > prev { latestTerminal[r.type] = r.startedAt }
         }
@@ -310,23 +445,83 @@ final class SessionLogService: ObservableObject {
         }
     }
 
-    nonisolated private static func scanErrors(in text: String) -> [DetectedError] {
-        let patterns: [String] = [
-            "429", "rate.?limit", "overloaded", "throttle", "too many requests",
-            "insufficient_quota", "context_length_exceeded", "internal server error"
-        ]
-        var out: [DetectedError] = []
-        let lines = text.components(separatedBy: "\n")
-        for (idx, line) in lines.enumerated() {
-            for pat in patterns {
-                if line.range(of: pat, options: [.regularExpression, .caseInsensitive]) != nil {
-                    let snippet = String(line.prefix(200))
-                    out.append(DetectedError(line: idx + 1, pattern: pat, snippet: snippet))
-                    break
-                }
+    /// Replace each run's status with its ledger row's, and give it the row's
+    /// slot key and name, matched by log file name. Each run has its own log (a later
+    /// run in the same minute logs to a seconds+PID name), so a row matches
+    /// exactly one run.
+    nonisolated static func overlayLedger(
+        _ runs: [Run], statuses: [String: RunStatus], slots: [String: String] = [:],
+        triggers: [String: String] = [:], failureClasses: [String: String] = [:],
+        protection: [String: Run.Protection] = [:], names: [String: String] = [:],
+        keys: [String: String] = [:], scheduleKeys: Set<String> = []
+    ) -> [Run] {
+        guard !statuses.isEmpty || !slots.isEmpty || !triggers.isEmpty || !failureClasses.isEmpty
+                || !protection.isEmpty || !names.isEmpty || !keys.isEmpty else { return runs }
+        return runs.map { run in
+            let name = run.logPath.lastPathComponent
+            var out = run
+            if let status = statuses[name], status != out.status { out = out.with(status: status) }
+            if let slot = slots[name], slot != out.slotKey { out.slotKey = slot }
+            if let trigger = triggers[name], trigger != out.trigger { out.trigger = trigger }
+            if let fc = failureClasses[name], fc != out.failureClass { out.failureClass = fc }
+            if let facts = protection[name], facts != out.protection { out.protection = facts }
+            if let runName = names[name], runName != out.ledgerName { out.ledgerName = runName }
+            if let key = keys[name] {
+                if key != out.ledgerKey { out.ledgerKey = key }
+                let isSchedule = scheduleKeys.contains(key)
+                if isSchedule != out.ledgerKeyIsSchedule { out.ledgerKeyIsSchedule = isSchedule }
             }
+            return out
         }
-        return out
+    }
+
+    /// Adopt the run ledger's statuses and slots (from `RunLedgerService`) and republish.
+    func applyLedger(_ entries: [String: RunLedgerEntry]) {
+        ledgerEntries = entries
+        rebuildLedgerMaps()
+        let updated = Self.resolveStaleRunning(overlaid(runs))
+        if updated != runs { runs = updated }
+    }
+
+    /// Adopt the schedule's slot keys (from `ScheduleService` and `ScheduleEditService`) and rename
+    /// runs whose ledger key is one: a schedule named `weekly-manual` reads "Weekly manual" in the
+    /// run list, as in the Upcoming strip, and a Run now of it still shows "Started by you".
+    func applyScheduleKeys(_ keys: Set<String>) {
+        guard keys != scheduleKeys else { return }
+        scheduleKeys = keys
+        guard !ledgerEntries.isEmpty else { return }
+        rebuildLedgerMaps()
+        let updated = Self.resolveStaleRunning(overlaid(runs))
+        if updated != runs { runs = updated }
+    }
+
+    private func rebuildLedgerMaps() {
+        let entries = ledgerEntries
+        ledgerStatuses = entries.mapValues(\.runStatus)
+        ledgerSlots = entries.mapValues(\.slot)
+        ledgerTriggers = entries.compactMapValues(\.trigger)
+        ledgerFailureClasses = entries.compactMapValues(\.failureClass)
+        let schedules = scheduleKeys
+        ledgerNames = entries.compactMapValues {
+            DisplayName.ledgerRun(slot: $0.slot, mode: $0.mode, runner: $0.runner, startedAt: $0.startedAt,
+                                  schedules: schedules)
+        }
+        ledgerKeys = entries.compactMapValues { DisplayName.ledgerRunKey(slot: $0.slot, mode: $0.mode) }
+        ledgerProtection = entries.compactMapValues { e in
+            guard e.sandbox != nil || e.integrity != nil else { return nil }
+            return Run.Protection(sandbox: e.sandbox, sandboxSource: e.sandboxSource, integrity: e.integrity,
+                                  mode: e.mode)
+        }
+    }
+
+    private func overlaid(_ runs: [Run]) -> [Run] {
+        Self.overlayLedger(runs, statuses: ledgerStatuses, slots: ledgerSlots, triggers: ledgerTriggers,
+                           failureClasses: ledgerFailureClasses, protection: ledgerProtection,
+                           names: ledgerNames, keys: ledgerKeys, scheduleKeys: scheduleKeys)
+    }
+
+    nonisolated private static func scanErrors(in text: String) -> [DetectedError] {
+        RunLogErrorScanner.scan(text)
     }
 
     /// Parse the `date`-style timestamp the runner script writes in finish
@@ -417,8 +612,10 @@ final class SessionLogService: ObservableObject {
             }
         let tracker = trackerService // capture for nonisolated use below
         let nowSnapshot = clock.now() // capture clock reading for orphan sweep
+        let progress = RunProgress.readFresh(logsDirectory: logsDirectory, now: nowSnapshot)
         let tz = timeZone
-        let cacheURL = parseCacheURLOverride ?? Self.defaultParseCacheURL()
+        let cacheURL = parseCacheURLOverride
+            ?? Self.defaultParseCacheURL(scoutDirectory: logsDirectory.deletingLastPathComponent())
         let assembled = await Task.detached { () -> [Run] in
             // Reuse cached parses for unchanged logs; parse only the rest.
             let cache = Self.loadParseCache(at: cacheURL)
@@ -433,7 +630,8 @@ final class SessionLogService: ObservableObject {
                 let url = meta.url
                 guard let filename = Self.parseFilename(url, timeZone: tz) else { continue }
                 guard let body = resolved.bodies[meta.name] else { continue }
-                let cost = await tracker.cost(
+                // A skipped run spent nothing; a nearby cost row is another run's.
+                let cost = body.status.isSkip ? nil : await tracker.cost(
                     matching: filename.type.costTrackerKey,
                     near: filename.startedAt,
                     tolerance: 120
@@ -441,11 +639,14 @@ final class SessionLogService: ObservableObject {
                 let status = Self.promoteOrphan(
                     parsedStatus: body.status,
                     startedAt: filename.startedAt,
+                    lastActivityAt: meta.modifiedAt,
+                    watcherStall: progress?.stall(for: url),
+                    lockWait: body.lockWaitSecs.map(TimeInterval.init),
                     type: filename.type,
                     now: nowSnapshot
                 )
                 let run = Run(
-                    id: Run.makeId(type: filename.type, startedAt: filename.startedAt),
+                    id: Run.makeId(type: filename.type, startedAt: filename.startedAt, pid: filename.pid),
                     type: filename.type,
                     runnerScript: filename.runnerScript,
                     source: .launchdScheduled,
@@ -462,7 +663,8 @@ final class SessionLogService: ObservableObject {
                     errorsDetected: body.errorsDetected,
                     commits: [],
                     retryOf: nil,
-                    model: body.model
+                    model: body.model,
+                    lockWait: body.lockWaitSecs.map(TimeInterval.init)
                 )
                 out.append(run)
             }
@@ -471,7 +673,7 @@ final class SessionLogService: ObservableObject {
         }.value
         // Cross-run reconciliation: a `.running` entry that has a newer
         // same-type terminal sibling is by definition stale → orphan.
-        runs = Self.resolveStaleRunning(assembled)
+        runs = Self.resolveStaleRunning(overlaid(assembled))
         startWatching()
         startStaleSweep()
         return runs
@@ -492,6 +694,26 @@ final class SessionLogService: ObservableObject {
             matchingPrefix: ""
         )) ?? []
         return all.filter(run.claims)
+    }
+
+    /// The commits in which the post-run integrity check put back the protected files this run
+    /// changed (`scout.sandbox.integrity`: "Scout: restore protected files a <mode> run changed in
+    /// git"). Only asked for a run whose ledger row says `restored`, so nothing is guessed from
+    /// the log. They don't name a run family, so `commits(for:)` never claims them. The subject
+    /// must name this run's own mode, so a run that started just after another run's restore
+    /// never shows that one's commit; without a mode there is nothing to match, and none is shown.
+    func restoreCommits(for run: Run) async -> [Commit] {
+        guard let git = gitService, run.protection?.integrity == "restored",
+              let prefix = Self.restoreCommitPrefix(mode: run.protection?.mode) else { return [] }
+        let window = run.commitWindow(now: clock.now())
+        return (try? await git.commits(between: window.lowerBound, and: window.upperBound,
+                                       matchingPrefix: prefix)) ?? []
+    }
+
+    /// `scout.sandbox.integrity`'s subject for a run of `mode`, up to the mode; nil without one.
+    nonisolated static func restoreCommitPrefix(mode: String?) -> String? {
+        guard let mode, !mode.isEmpty else { return nil }
+        return "Scout: restore protected files a \(mode) run changed in git"
     }
 
     private func startWatching() {
@@ -517,11 +739,15 @@ final class SessionLogService: ObservableObject {
         // parseBody does blocking file IO plus several regex scans; run it off
         // the main actor so even a coalesced reconcile burst can't stall the UI
         // thread (issue #22). The result hops back to the main actor on return.
-        let parseTask = Task.detached(priority: .utility) {
-            try? Self.parseBody(at: url, filename: filename)
+        let logsDirectory = logsDirectory
+        let now = clock.now()
+        let parseTask = Task.detached(priority: .utility) { () -> (ParsedBody, TimeInterval?)? in
+            guard let body = try? Self.parseBody(at: url, filename: filename) else { return nil }
+            return (body, RunProgress.readFresh(logsDirectory: logsDirectory, now: now)?.stall(for: url))
         }
-        guard let body = await parseTask.value else { return }
-        let cost = trackerService.cost(
+        guard let (body, watcherStall) = await parseTask.value else { return }
+        // A skipped run spent nothing; a nearby cost row is another run's.
+        let cost = body.status.isSkip ? nil : trackerService.cost(
             matching: filename.type.costTrackerKey,
             near: filename.startedAt,
             tolerance: 120
@@ -529,14 +755,17 @@ final class SessionLogService: ObservableObject {
         let status = Self.promoteOrphan(
             parsedStatus: body.status,
             startedAt: filename.startedAt,
+            lastActivityAt: Self.logModifiedAt(url),
+            watcherStall: watcherStall,
+            lockWait: body.lockWaitSecs.map(TimeInterval.init),
             type: filename.type,
-            now: clock.now()
+            now: now
         )
         // Commits left empty; resolved lazily via `commits(for:)` when the
         // detail pane opens. Keeps reconciliation cheap on every FS event.
         let commits: [Commit] = []
         let newRun = Run(
-            id: Run.makeId(type: filename.type, startedAt: filename.startedAt),
+            id: Run.makeId(type: filename.type, startedAt: filename.startedAt, pid: filename.pid),
             type: filename.type,
             runnerScript: filename.runnerScript,
             source: .launchdScheduled,
@@ -553,7 +782,8 @@ final class SessionLogService: ObservableObject {
             errorsDetected: body.errorsDetected,
             commits: commits,
             retryOf: nil,
-            model: body.model
+            model: body.model,
+            lockWait: body.lockWaitSecs.map(TimeInterval.init)
         )
         var updated = runs
         if let idx = updated.firstIndex(where: { $0.id == newRun.id }) {
@@ -564,28 +794,54 @@ final class SessionLogService: ObservableObject {
         }
         // Reconcile after every change — a newly-terminal run may now
         // invalidate an older same-type `.running` entry.
-        runs = Self.resolveStaleRunning(updated)
+        runs = Self.resolveStaleRunning(overlaid(updated))
     }
 
     /// Re-applies orphan/stale rules against the current snapshot. Used by
     /// the periodic sweep timer so a long-running app session still demotes
     /// `.running` → `.orphaned` as clock time crosses the per-type cutoff,
     /// even when no file event fires.
+    ///
+    /// It also brings back a `.orphaned` run that never wrote its last line
+    /// when the progress watcher's fresh line names it and shows it working
+    /// again: a run that stalled past its cutoff and then resumed writes
+    /// nothing to its log (`claude -p` doesn't), so no file event would.
+    /// The line is read without blocking and at most 4 KB (`RunProgress`).
     func sweepStaleStatuses() {
         let now = clock.now()
+        // Read once per sweep, and only when a run could change.
+        let progress = runs.contains(where: Self.mayChangeOnSweep)
+            ? RunProgress.readFresh(logsDirectory: logsDirectory, now: now) : nil
         let resweeped = runs.map { run -> Run in
+            // Only a running run, or an unfinished one the watcher still names, can change.
+            let parsedStatus: RunStatus
+            if run.status == .running {
+                parsedStatus = .running
+            } else if Self.mayChangeOnSweep(run), progress?.names(run.logPath) == true {
+                parsedStatus = .running
+            } else {
+                return run
+            }
             let promoted = Self.promoteOrphan(
-                parsedStatus: run.status,
+                parsedStatus: parsedStatus,
                 startedAt: run.startedAt,
+                lastActivityAt: Self.logModifiedAt(run.logPath),
+                watcherStall: progress?.stall(for: run.logPath),
+                lockWait: run.lockWait,
                 type: run.type,
                 now: now
             )
             return promoted == run.status ? run : run.with(status: promoted)
         }
-        let resolved = Self.resolveStaleRunning(resweeped)
+        let resolved = Self.resolveStaleRunning(overlaid(resweeped))
         // Only republish if anything actually changed — avoids needless
         // SwiftUI re-renders on every tick.
         if resolved != runs { runs = resolved }
+    }
+
+    /// A run the sweep may move: running, or orphaned without ever writing its last line.
+    nonisolated static func mayChangeOnSweep(_ run: Run) -> Bool {
+        run.status == .running || (run.status == .orphaned && run.endedAt == nil && run.exitCode == nil)
     }
 
     private func startStaleSweep() {
@@ -605,34 +861,45 @@ extension RunType {
         case .consolidation: return "consolidation"
         case .dreaming:      return "dreaming"
         case .research:      return "research"
+        case .respond:       return "respond"
         case .manual:        return "manual"
         }
     }
 }
 
 extension RunType {
-    /// How long after `startedAt` a run with no terminal marker should be
-    /// promoted from `.running` to `.orphaned`. Tuned per run type from
-    /// observed realistic upper bounds — the old thresholds (6h briefings,
-    /// 12h dreaming) were way too loose and produced multi-hour false
-    /// "running" badges in the Now strip and Sessions list. CC-1/CC-5.
+    /// How long a run with no terminal marker may go without progress before
+    /// it is promoted from `.running` to `.orphaned` (see `promoteOrphan`).
+    /// The old thresholds (6h briefings, 12h dreaming) were way too loose and
+    /// produced multi-hour false "running" badges in the Now strip and
+    /// Sessions list. CC-1/CC-5.
     ///
-    /// Observed P95s (May 2026 on Alex's box):
-    ///   briefing: ~6 min   · consolidation: ~3 min
-    ///   dreaming: ~25 min  · research: ~40 min
-    /// Cutoffs leave ~3× headroom so a legitimately long run still resolves
-    /// as running, but a missing finish-marker tips into orphan inside ~30
-    /// minutes of inactivity, not half a day.
+    /// With the run's progress watcher (`RunProgress`) this bounds awake time
+    /// with no CPU burned and no tool started or ended, so a hung claude is
+    /// "Didn't finish" after it, however often the lease keepalive writes the
+    /// log, and a slow run that keeps working never is. Without one it bounds
+    /// silence in the log since the later of the start and its last line.
+    ///
+    /// None of these counts a wait for the session lock: a run queued behind
+    /// another one gets that wait in full first (`promoteOrphan`'s `lockWait`).
     var orphanAfter: TimeInterval {
         switch self {
         case .morningBriefing, .weekendBriefing:
             return 30 * 60           // 30 min — briefing runs short
         case .consolidation:
-            return 20 * 60           // 20 min — consolidation runs even shorter
+            return 20 * 60           // 20 min without progress
         case .dreaming:
             return 2 * 3600          // 2 h — long-form synthesis
         case .research:
             return 2 * 3600          // 2 h — unchanged, research can legitimately churn
+        case .respond:
+            // 45 min, the default run timeout (DEFAULT_RUN_TIMEOUT_MINUTES:
+            // respond has no kind of its own). A reply usually lands in
+            // minutes. A run queued behind another one first waits for the
+            // session lock (SCOUT_LOCK_WAIT_SECS, 30 min), but that wait is
+            // not counted here: `promoteOrphan` gives it on top for every
+            // kind, from the log's "waiting up to …" line (`lockWait`).
+            return 45 * 60
         case .manual:
             return 45 * 60           // 45 min — catch-all, prefer to orphan fast
         }

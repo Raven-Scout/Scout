@@ -19,6 +19,7 @@ import pytest
 from scout.hooks import outbound_gate as gate
 from scout.kb import outbound
 from scout.kb.ontology import clear_frontmatter_cache
+from tests.unit._prefilter_root import with_prefilter
 from tests.unit.privacy_vault_helpers import build_privacy_vault
 
 PLUGIN = Path(__file__).parent.parent.parent.parent
@@ -44,7 +45,9 @@ def vault(shared_vault: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _payload(tool: str, tool_input: dict, cwd: Path) -> io.StringIO:
-    return io.StringIO(json.dumps({"tool_name": tool, "tool_input": tool_input, "cwd": str(cwd)}))
+    # cwd before the tool call, as Claude Code sends it: the shell stage reads only a top-level cwd it can
+    # prove is one, and starts Python for any other.
+    return io.StringIO(json.dumps({"cwd": str(cwd), "tool_name": tool, "tool_input": tool_input}))
 
 
 def _decide(vault: Path, tool: str, tool_input: dict, env=RUN):
@@ -240,7 +243,7 @@ def _entry() -> dict:
 
 def _sh(env: dict, payload: str, cwd: Path, root: Path = PLUGIN) -> subprocess.CompletedProcess[str]:
     clean = {k: v for k, v in os.environ.items() if k not in ("SCOUT_MODE", "SCOUT_READER", "SCOUT_DATA_DIR")}
-    full = {**clean, **env, "CLAUDE_PLUGIN_ROOT": str(root)}
+    full = {**clean, **env, "CLAUDE_PLUGIN_ROOT": str(with_prefilter(root))}
     cmd = _entry()["hooks"][0]["command"]
     return subprocess.run(
         ["sh", "-c", cmd], env=full, cwd=cwd, input=payload, capture_output=True, text=True, timeout=60
@@ -326,3 +329,32 @@ def test_the_deadline_sits_inside_the_hooks_timeout():
     hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]["PreToolUse"]
     (entry,) = [e for e in hooks if "hook outbound-gate" in e["hooks"][0]["command"]]
     assert gate.DEADLINE_S + 3 <= entry["hooks"][0]["timeout"]
+
+
+# --- cost: the private terms are built once per tool call, not once per field ------------
+
+
+def test_many_fields_build_the_private_terms_once(vault, monkeypatch):
+    """Each build walks the vault, so a call with eleven strings ran past DEADLINE_S on a real vault."""
+    calls = {"terms": 0, "shared": 0}
+    real_terms, real_shared = outbound.private_terms, outbound.with_shared
+
+    def counted_terms(*a, **k):
+        calls["terms"] += 1
+        return real_terms(*a, **k)
+
+    def counted_shared(*a, **k):
+        calls["shared"] += 1
+        return real_shared(*a, **k)
+
+    monkeypatch.setattr(outbound, "private_terms", counted_terms)
+    monkeypatch.setattr(outbound, "with_shared", counted_shared)
+    tool_input = {f"field_{i}": CLEAN for i in range(11)} | {"text": PRIVATE}
+
+    assert gate.flagged_fields(vault, tool_input, "slack") == {"text": [2]}
+    assert calls == {"terms": 1, "shared": 1}
+
+
+def test_an_owner_only_surface_flags_nothing_and_builds_no_terms(vault, monkeypatch):
+    monkeypatch.setattr(outbound, "private_terms", lambda *a, **k: pytest.fail("terms were built"))
+    assert gate.flagged_fields(vault, {"text": PRIVATE}, "vault") == {}

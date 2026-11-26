@@ -46,19 +46,28 @@ struct ViewModeEnumTests {
 @Suite("StaleScheduleError")
 struct StaleScheduleErrorTests {
 
-    @Test("the error names the external modification and tells the user to reload")
+    @Test("the error says the schedule changed elsewhere, when, and to reload — without the file name")
     func describesTheConflict() {
         let loaded = Date(timeIntervalSince1970: 1_781_600_000)
         let modified = loaded.addingTimeInterval(120)
         let error = StaleScheduleError(loadedAt: loaded, modifiedAt: modified)
 
         let text = try? #require(error.errorDescription)
-        #expect(text?.contains("schedule.yaml") == true)
+        #expect(text?.contains("changed outside the app") == true)
+        #expect(text?.contains("schedule.yaml") == false)
         #expect(text?.contains("Reload") == true)
-        #expect(text?.contains("\(modified)") == true)
+        #expect(text?.contains(modified.formatted(date: .omitted, time: .shortened)) == true)
         #expect(error.localizedDescription == error.errorDescription)
         #expect(error.loadedAt == loaded)
         #expect(error.modifiedAt == modified)
+    }
+
+    @Test("a schedule removed outside the app says so, without the file name")
+    func describesRemoval() throws {
+        let text = try #require(StaleScheduleError(loadedAt: Date(), modifiedAt: nil).errorDescription)
+        #expect(text.contains("removed outside the app"))
+        #expect(text.contains("Reload"))
+        #expect(!text.contains("schedule.yaml"))
     }
 }
 
@@ -160,7 +169,12 @@ struct ProposalDerivedTests {
         #expect(!proposal(status: .approved).isAwaitingDecision)
         #expect(!proposal(status: .rejected).isAwaitingDecision)
         #expect(!proposal(status: .applied(date: "2026-06-16")).isAwaitingDecision)
-        #expect(!proposal(status: .unknown("Weird")).isAwaitingDecision)
+        #expect(!proposal(status: .closed("Superseded")).isAwaitingDecision)
+        // Audit #64 (R9): a status Scout doesn't recognise stays with the
+        // undecided ones, visible and in the badge, instead of hiding under
+        // Resolved. Its card just doesn't lead with Approve.
+        #expect(proposal(status: .unknown("Weird")).isAwaitingDecision)
+        #expect(!proposal(status: .unknown("Weird")).status.hasPrimaryApprove)
     }
 
     @Test("body blocks are derived from the markdown body")

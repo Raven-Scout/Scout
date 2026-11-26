@@ -10,6 +10,13 @@ struct BoardView: View {
     let scoutDirectory: URL
     let density: ActionItemsDisplay.Density
     let fields: ActionItemsDisplay.Fields
+    /// Switches the page to the List view, offered by the read-only hint.
+    /// `nil` leaves the button out.
+    var openList: (() -> Void)?
+
+    /// The hint above the columns (audit #49): the board looked editable but
+    /// nothing on it acts on a task.
+    static let readOnlyHint = "The board is an overview. To mark tasks done, snooze them or add comments, use the List."
 
     /// Done starts collapsed; toggled per session.
     @State private var doneCollapsed = true
@@ -23,12 +30,14 @@ struct BoardView: View {
         columns: [ActionBoardColumn],
         scoutDirectory: URL,
         density: ActionItemsDisplay.Density = .comfortable,
-        fields: ActionItemsDisplay.Fields = .init()
+        fields: ActionItemsDisplay.Fields = .init(),
+        openList: (() -> Void)? = nil
     ) {
         self.columns = columns
         self.scoutDirectory = scoutDirectory
         self.density = density
         self.fields = fields
+        self.openList = openList
     }
 
     /// Columns built from the sections in file order.
@@ -43,16 +52,40 @@ struct BoardView: View {
     }
 
     var body: some View {
-        ScrollView([.horizontal, .vertical]) {
-            HStack(alignment: .top, spacing: 16) {
-                ForEach(columns) { column in
-                    columnView(column)
+        VStack(alignment: .leading, spacing: 0) {
+            readOnlyBar
+            ScrollView([.horizontal, .vertical]) {
+                HStack(alignment: .top, spacing: 16) {
+                    ForEach(columns) { column in
+                        columnView(column)
+                    }
                 }
+                .padding(.horizontal, 28)
+                .padding(.top, 14)
+                .padding(.bottom, 24)
             }
-            .padding(.horizontal, 28)
-            .padding(.vertical, 24)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var readOnlyBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "eye")
+                .foregroundStyle(DS.Ink.p4)
+                .accessibilityHidden(true)
+            Text(Self.readOnlyHint)
+                .foregroundStyle(DS.Ink.p3)
+                .fixedSize(horizontal: false, vertical: true)
+            if let openList {
+                Button("Open List", action: openList)
+                    .buttonStyle(.ds(.link, size: .small))
+            }
+            Spacer(minLength: 0)
+        }
+        .font(DS.font(.caption))
+        .padding(.horizontal, 28)
+        .padding(.top, 14)
+        .accessibilityElement(children: .contain)
     }
 
     @ViewBuilder
@@ -65,7 +98,7 @@ struct BoardView: View {
                 EmptyView()
             } else if column.tasks.isEmpty {
                 Text("Nothing here")
-                    .font(DS.sans(12))
+                    .font(DS.font(.label))
                     .foregroundStyle(DS.Ink.p4)
                     .padding(.vertical, 8)
             } else {
@@ -88,11 +121,11 @@ struct BoardView: View {
         let row = HStack(spacing: 8) {
             KindMarker(kind: column.kind, size: 14)
             Text(column.title)
-                .font(DS.sans(12, weight: .medium))
+                .font(DS.font(.label, weight: .medium))
                 .tracking(0.4)
                 .foregroundStyle(DS.Ink.p2)
             Text("\(column.count)")
-                .font(DS.mono(11, weight: .medium))
+                .font(DS.font(.caption, .mono, weight: .medium))
                 .foregroundStyle(DS.Ink.p4)
             Spacer(minLength: 0)
             if column.kind == .done {

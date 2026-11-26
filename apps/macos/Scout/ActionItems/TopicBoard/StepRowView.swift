@@ -84,14 +84,16 @@ struct StepRowView: View {
     private var summary: some View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(alignment: .top, spacing: 10) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    Text(task.plainSubject)
-                        .font(DS.sans(13.5, weight: .medium))
-                        .foregroundStyle(DS.Ink.p1)
-                        .lineLimit(1)
-                        .fixedSize()
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                // One line, cut at the end with the full title in the tooltip.
+                // It used to scroll sideways, which hid most of a long title
+                // with no sign there was more (UI audit C6).
+                Text(task.plainSubject)
+                    .font(DS.font(.body, weight: .medium))
+                    .foregroundStyle(DS.Ink.p1)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(task.plainSubject)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 StepTagsView(step: step)
             }
             HStack(spacing: 6) {
@@ -112,7 +114,7 @@ struct StepRowView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             }
-            .font(DS.sans(11.5))
+            .font(DS.font(.caption))
             .foregroundStyle(step.item.state == .blocked ? DS.Ink.p3 : step.item.state.color)
         }
     }

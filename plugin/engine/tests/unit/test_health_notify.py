@@ -113,7 +113,7 @@ def test_red_to_a_usage_limit_pause_says_paused_not_recovered():
         id=health.PAUSED_FINDING_ID,
         severity="yellow",
         since=None,
-        summary="Claude usage limit — runs paused until 2026-10-15T12:00:00Z. The last 3 scheduled run(s) failed.",
+        summary="Claude usage limit — runs paused until 2026-10-15T12:00:00Z. The last 3 scheduled runs failed.",
         fix="Nothing to fix: the first scheduled run after the reset picks up.",
         source="ledger",
     )
@@ -785,6 +785,11 @@ def test_the_vault_gitignore_ignores_the_notifier_state(tmp_path, monkeypatch):
         health_notify.LOCK_FILE,
         ".scout-state/telegram-sent.jsonl",
         ".scout-state/telegram-sent.jsonl.tmp",
+        # The inbound Telegram ledger: the owner's own messages and this host's poll offset, never committed.
+        ".scout-state/telegram-inbound/messages.json",
+        ".scout-state/telegram-inbound/replies.jsonl",
+        ".scout-state/telegram-inbound/offset.json",
+        ".scout-state/telegram-inbound/.lock",
     ]
     proc = subprocess.run(
         ["git", "-C", str(tmp_path), "check-ignore", "--no-index", *paths], capture_output=True, text=True

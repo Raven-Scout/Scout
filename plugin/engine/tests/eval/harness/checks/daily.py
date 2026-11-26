@@ -5,6 +5,11 @@
 - ``waiting_format``: a 🟢 waiting item says ``waiting on <who> since <date>``.
 - ``no_collapse``: no open row summarises several items.
 - ``body_budget``: the body after `` — `` is short (about 25 words; 40 fails).
+- ``title_budget``: a title new or changed today is at most 80 characters.
+- ``size_budget``: the file is within its hard limit, and no task new or changed
+  today carries more than one prose sub-bullet (*The Backlog and the Budget*).
+- ``backlog``: a backlog task with no news stays in the backlog, open, and is
+  not copied into the daily file: ``fit`` places tasks, not the run.
 """
 
 from __future__ import annotations
@@ -12,7 +17,10 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 
+from scout.action_items import stale
+from scout.action_items.budget import Budget, measure, sub_bullet_groups
 from scout.action_items.parser import ActionItem
+from scout.action_items.titles import TITLE_MAX, title_of
 
 from . import CheckResult, by_tag
 from .placement import _find_by_ref
@@ -100,3 +108,62 @@ def body_budget(today: Sequence[ActionItem] | None) -> CheckResult:
         elif words > BODY_AIM:
             details.append(f"{i.short_prefix}: body is {words} words (aim for {BODY_AIM})")
     return CheckResult("body_budget", not failed, tuple(details))
+
+
+def title_budget(today: Sequence[ActionItem] | None, yesterday: Sequence[ActionItem]) -> CheckResult:
+    """A title new or changed today is at most ``TITLE_MAX`` characters (``action-items check-titles``).
+
+    A title carried verbatim from yesterday is not the run's to answer for: the rule leaves those
+    until a run touches the item, so a fixture's long carried title doesn't fail every run.
+    """
+    if today is None:
+        return CheckResult("title_budget", None, ("missing_output",))
+    before = {i.short_prefix: title_of(i.raw_line) for i in yesterday if i.short_prefix}
+    problems = []
+    for i in today:
+        if not (_task_row(i) and _open(i)):
+            continue
+        title = title_of(i.raw_line)
+        if len(title) > TITLE_MAX and before.get(i.short_prefix or "") != title:
+            problems.append(f"{i.short_prefix}: title is {len(title)} characters (limit {TITLE_MAX})")
+    return CheckResult("title_budget", not problems, tuple(problems))
+
+
+def _blocks(text: str) -> dict[str, list[str]]:
+    lines = text.splitlines()
+    return {b.tag: lines[b.start : b.end] for b in stale.task_blocks(lines)}
+
+
+def size_budget(today_text: str | None, yesterday_text: str | None, budget: Budget | None = None) -> CheckResult:
+    """Past the hard limit fails, and so does a task this run wrote or changed with extra prose.
+
+    A block carried verbatim from yesterday is ``fit``'s to trim, not the run's."""
+    if today_text is None:
+        return CheckResult("size_budget", None, ("missing_output",))
+    budget = budget or Budget()
+    report = measure(today_text, budget)
+    problems: list[str] = []
+    if report.level(budget) == "hard":
+        problems += report.problems(budget)[:2]
+    before = _blocks(yesterday_text or "")
+    for tag, block in _blocks(today_text).items():
+        prose = sum(is_prose for is_prose, _ in sub_bullet_groups(block))
+        if prose > budget.prose_sub_bullets and before.get(tag) != block:
+            problems.append(
+                f"{tag}: {prose} prose sub-bullets (limit {budget.prose_sub_bullets}); context goes in its note"
+            )
+    return CheckResult("size_budget", not problems, tuple(problems))
+
+
+def backlog(expected: Sequence[str], today: Sequence[ActionItem] | None, backlog_text: str | None) -> CheckResult:
+    if today is None:
+        return CheckResult("backlog", None, ("missing_output",))
+    in_daily = {tag for tag, item in by_tag(today).items() if _open(item)}
+    in_backlog = set(_blocks(backlog_text or ""))
+    problems = []
+    for tag in expected:
+        if tag in in_daily:
+            problems.append(f"{tag}: copied into the daily file with no news")
+        if tag not in in_backlog:
+            problems.append(f"{tag}: no longer open in the backlog")
+    return CheckResult("backlog", not problems, tuple(problems))

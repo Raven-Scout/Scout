@@ -16,14 +16,128 @@ struct KnowledgeBaseView: View {
     var privacy: KBPrivacyLabelService? = nil
 
     @State private var selectedPath: String? = nil
+    /// The note the overview map should select ("Show on full map").
+    @State private var mapFocus: String? = nil
     @State private var expanded: Set<String> = []
-    @State private var searchQuery: String = ""
-    @State private var searchHits: [KBSearchHit] = []
-    @State private var searchTask: Task<Void, Never>? = nil
+    /// The sidebar search; its hits follow the tree as well as the query.
+    @StateObject private var search = KBNoteSearch()
+    @FocusState private var searchFocused: Bool
     @State private var showNewFile = false
     @State private var errorMessage: String? = nil
+    /// A rename that moved the note but couldn't commit it. Shown here, not in
+    /// the editor: the editor is replaced when the note reopens at its new path.
+    @State private var renameProblem: String? = nil
+    /// A rename that worked but left some linking notes on the old name.
+    @State private var renameNotice: (title: String, message: String)? = nil
     /// Width of the Links/Graph panel — drag its left edge to resize. Persisted.
     @AppStorage("kbRightPanelWidth") private var rightPanelWidth: Double = 300
+    /// The page's width, so the Links/Graph panel never squeezes the editor.
+    @State private var pageWidth: CGFloat?
+    /// Whether the Links/Graph panel shows beside a note: by page width
+    /// until the user picks, then their pick. Persisted.
+    @AppStorage("kbLinksPanel") private var linksPanelChoice: LinksPanelChoice = .auto
+
+    enum LinksPanelChoice: String { case auto, shown, hidden }
+
+    /// Below this page width (a window of about 1400 pt) the Links panel
+    /// starts hidden: beside the tree it left the reader about 410 pt at
+    /// 1280 pt, and the header collapsed (UI audit T1).
+    static let linksPanelAutoWidth: CGFloat = 1180
+
+    nonisolated static func linksPanelShown(choice: LinksPanelChoice, pageWidth: CGFloat?) -> Bool {
+        switch choice {
+        case .shown: return true
+        case .hidden: return false
+        case .auto: return (pageWidth ?? .infinity) >= linksPanelAutoWidth
+        }
+    }
+
+    /// The header button's choice: the opposite of what's on screen.
+    nonisolated static func toggledLinksPanel(shown: Bool) -> LinksPanelChoice { shown ? .hidden : .shown }
+
+    private var linksPanelShown: Bool {
+        Self.linksPanelShown(choice: linksPanelChoice, pageWidth: pageWidth)
+    }
+
+    /// The note the home button (or the path's root) was asked to leave while
+    /// it has an unsaved draft: the alert says the draft is kept.
+    @State private var leavingDraft: KBNode? = nil
+
+    /// What leaving a note for the overview does: go at once, or first say
+    /// that its unsaved draft stays behind (UI audit T1).
+    enum LeaveStep: Equatable { case leave, confirm }
+    nonisolated static func leaveStep(hasUnsavedDraft: Bool) -> LeaveStep { hasUnsavedDraft ? .confirm : .leave }
+
+    /// The leave alert's buttons. "Stay" has the cancel role, so Esc never
+    /// discards anything; keeping the draft is the default.
+    enum LeaveChoice: CaseIterable {
+        case keepDraft, discard, stay
+
+        var title: String {
+            switch self {
+            case .keepDraft: return "Keep Draft and Leave"
+            case .discard: return "Discard Edits"
+            case .stay: return "Stay"
+            }
+        }
+
+        var role: ButtonRole? {
+            switch self {
+            case .keepDraft: return nil
+            case .discard: return .destructive
+            case .stay: return .cancel
+            }
+        }
+    }
+
+    private func requestOverview() {
+        guard let node = selectedNode else { selectedPath = nil; return }
+        switch Self.leaveStep(hasUnsavedDraft: service.drafts.draft(for: node.url)?.isDirty == true) {
+        case .leave: selectedPath = nil
+        case .confirm: leavingDraft = node
+        }
+    }
+
+    private func finishLeaving(_ choice: LeaveChoice) {
+        guard let node = leavingDraft else { return }
+        leavingDraft = nil
+        switch choice {
+        case .keepDraft: selectedPath = nil
+        case .discard:
+            service.drafts.discard(for: node.url)
+            selectedPath = nil
+        case .stay: break
+        }
+    }
+
+    static let treeWidth: CGFloat = 268
+    static let minEditorWidth: CGFloat = 380
+    static let rightPanelMin: CGFloat = 220
+    static let rightPanelMax: CGFloat = 640
+
+    /// The Links/Graph panel's width: the stored one, narrowed when the page
+    /// can't fit it beside the tree and a `minEditorWidth` editor. At the
+    /// minimum window a wide stored panel left the editor ~310 pt (UI audit C6).
+    nonisolated static func rightPanelWidth(stored: Double, pageWidth: CGFloat?) -> CGFloat {
+        let wanted = min(max(CGFloat(stored), rightPanelMin), rightPanelMax)
+        guard let pageWidth else { return wanted }
+        // Tree, its divider, the resize handle (8) and the editor.
+        let room = pageWidth - treeWidth - 1 - 8 - minEditorWidth
+        return max(rightPanelMin, min(wanted, room))
+    }
+
+    /// The narrowest the tree gets when a note and its Links/Graph panel are open.
+    static let minTreeWidth: CGFloat = 200
+
+    /// The tree's width: `treeWidth`, narrowed (to `minTreeWidth` at most)
+    /// when a note's Links/Graph panel is open on a page too narrow for the
+    /// tree, a `minEditorWidth` editor and a `rightPanelMin` panel side by
+    /// side, which a window near the 1070 pt minimum is (UI audit #8).
+    nonisolated static func treeWidth(pageWidth: CGFloat?, panelShown: Bool) -> CGFloat {
+        guard panelShown, let pageWidth else { return treeWidth }
+        let room = pageWidth - 1 - 8 - minEditorWidth - rightPanelMin
+        return max(minTreeWidth, min(treeWidth, room))
+    }
 
     private var selectedNode: KBNode? {
         guard let selectedPath else { return nil }
@@ -31,16 +145,45 @@ struct KnowledgeBaseView: View {
     }
 
     var body: some View {
+        let panelShown = selectedNode?.isEditable == true && linksPanelShown
         HStack(spacing: 0) {
-            leftPane.frame(width: 268)
+            leftPane.frame(width: Self.treeWidth(pageWidth: pageWidth, panelShown: panelShown))
             divider
             centerPane.frame(maxWidth: .infinity, maxHeight: .infinity)
-            if let node = selectedNode, node.isEditable {
-                PaneResizeHandle(width: $rightPanelWidth, minWidth: 220, maxWidth: 640)
+            if panelShown, let node = selectedNode {
+                // The handle starts a drag from the width on screen, not the
+                // stored one: when the page clamps a wide stored panel, a drag
+                // from the stored width would do nothing until it caught up.
+                PaneResizeHandle(
+                    width: Binding(
+                        get: { Double(Self.rightPanelWidth(stored: rightPanelWidth, pageWidth: pageWidth)) },
+                        set: { rightPanelWidth = $0 }),
+                    minWidth: Self.rightPanelMin, maxWidth: Self.rightPanelMax)
                 KBRightPanel(relPath: node.relativePath, service: service,
-                             onNavigate: { navigate(toPath: $0) })
-                    .frame(width: CGFloat(rightPanelWidth))
+                             onNavigate: { navigate(toPath: $0) },
+                             onShowOnMap: { path in
+                                 mapFocus = path
+                                 selectedPath = nil
+                             })
+                    .frame(width: Self.rightPanelWidth(stored: rightPanelWidth, pageWidth: pageWidth))
             }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
+        // ⇧⌘F searches every note from anywhere on the page; ⌘F does too
+        // until a note is open, when it finds in that note instead (UI audit
+        // #77; `KBEditorView` binds it then).
+        .background {
+            Group {
+                Button("Search Notes") { searchFocused = true }
+                    .keyboardShortcut(AppShortcut.searchNotes)
+                if selectedNode?.isEditable != true {
+                    Button("Find") { searchFocused = true }
+                        .keyboardShortcut(AppShortcut.find)
+                }
+            }
+            .frame(width: 0, height: 0)
+            .opacity(0)
+            .accessibilityHidden(true)
         }
         // In-app wikilink navigation for every pane (editor, backlink excerpts,
         // search snippets): resolve against the index, fall back to the default
@@ -55,8 +198,9 @@ struct KnowledgeBaseView: View {
         // Clicking a [#TAG] chip searches the KB for that tag: drive the same
         // search field a typed query uses, so the query is visible, the results
         // list is the familiar one, and clearing it returns to the tree.
-        .environment(\.kbTagHandler, { tag in searchQuery = "#\(tag)" })
+        .environment(\.kbTagHandler, { tag in search.query = "#\(tag)" })
         .onAppear {
+            search.attach(service)
             service.load()
             openPendingNote()
         }
@@ -65,7 +209,6 @@ struct KnowledgeBaseView: View {
         // A request still waiting on the index when the user leaves is
         // dropped, so it can't fire on some later visit.
         .onDisappear { pendingNote.wrappedValue = nil }
-        .onChange(of: searchQuery) { _, q in scheduleSearch(q) }
         .sheet(isPresented: $showNewFile) {
             KBNewFileSheet(
                 directories: Self.directories(in: service.tree, kbRoot: service.kbDirectory),
@@ -78,6 +221,49 @@ struct KnowledgeBaseView: View {
         )) {
             Button("OK", role: .cancel) { errorMessage = nil }
         } message: { Text(errorMessage ?? "") }
+        .alert("Renamed, but not committed", isPresented: Binding(
+            get: { renameProblem != nil }, set: { if !$0 { renameProblem = nil } }
+        )) {
+            Button("OK", role: .cancel) { renameProblem = nil }
+        } message: { Text(renameProblem ?? "") }
+        .alert("Leave \(leavingDraft?.displayName ?? "this note") with unsaved edits?", isPresented: Binding(
+            get: { leavingDraft != nil }, set: { if !$0 { leavingDraft = nil } }
+        )) {
+            ForEach(LeaveChoice.allCases, id: \.self) { choice in
+                Button(choice.title, role: choice.role) { finishLeaving(choice) }
+            }
+        } message: {
+            Text("Your edits stay as a draft: the note is marked in the list, and opening it again shows them. Nothing is saved until you press Save.")
+        }
+        .alert(renameNotice?.title ?? "", isPresented: Binding(
+            get: { renameNotice != nil }, set: { if !$0 { renameNotice = nil } }
+        )) {
+            Button("OK", role: .cancel) { renameNotice = nil }
+        } message: { Text(renameNotice?.message ?? "") }
+    }
+
+    /// Whether the tree shows its loading state: the first scan hasn't
+    /// landed yet. A rescan of a tree already on screen (every return to the
+    /// page calls `load()`) keeps the tree, so it never blanks (UI audit #76).
+    nonisolated static func showsLoading(_ state: KnowledgeBaseService.State, treeIsEmpty: Bool) -> Bool {
+        switch state {
+        case .idle, .loading: return treeIsEmpty
+        default: return false
+        }
+    }
+
+    /// The loading state the tree and the overview show while the first
+    /// scan runs, instead of a blank pane or "0 notes".
+    struct LoadingState: View {
+        var body: some View {
+            VStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text("Loading notes…").font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Loading notes")
+        }
     }
 
     private var divider: some View { Rectangle().fill(DS.Rule.soft).frame(width: 0.5) }
@@ -88,20 +274,23 @@ struct KnowledgeBaseView: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Text("Knowledge Base")
-                    .font(DS.serif(15, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+                    .dsFont(.headline, .serif, weight: .semibold).foregroundStyle(DS.Ink.p1)
+                    .glossaryHelp(.knowledgeBase)
                 Spacer()
                 if selectedPath != nil {
-                    Button { selectedPath = nil } label: {
-                        Image(systemName: "house").font(.system(size: 11, weight: .semibold))
+                    Button { requestOverview() } label: {
+                        Image(systemName: "house").font(DS.font(.caption, weight: .semibold))
                             .foregroundStyle(DS.Ink.p3)
                     }
                     .buttonStyle(.plainHit).help("Back to overview")
+                    .accessibilityLabel("Back to overview")
                 }
                 Button { showNewFile = true } label: {
-                    Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
+                    Image(systemName: "plus").font(DS.font(.label, weight: .semibold))
                         .foregroundStyle(DS.Accent.ink)
                 }
-                .buttonStyle(.plainHit).help("New note")
+                .buttonStyle(.plainHit).help("New note") // ds-guard: hit area (an icon button)
+                .accessibilityLabel("New note")
             }
             .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 8)
 
@@ -110,7 +299,7 @@ struct KnowledgeBaseView: View {
 
             EditorialRule()
 
-            if searchQuery.isEmpty {
+            if search.query.isEmpty {
                 treeOrState
             } else {
                 searchResults
@@ -124,13 +313,16 @@ struct KnowledgeBaseView: View {
 
     private var searchField: some View {
         HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(DS.Ink.p4)
-            TextField("Search notes…", text: $searchQuery)
-                .textFieldStyle(.plain).font(DS.sans(12.5)).foregroundStyle(DS.Ink.p1)
-            if !searchQuery.isEmpty {
-                Button { searchQuery = "" } label: {
-                    Image(systemName: "xmark.circle.fill").font(.system(size: 11)).foregroundStyle(DS.Ink.p4)
+            Image(systemName: "magnifyingglass").font(DS.font(.caption)).foregroundStyle(DS.Ink.p4)
+            TextField("Search notes…", text: $search.query)
+                .textFieldStyle(.plain).font(DS.font(.label)).foregroundStyle(DS.Ink.p1)
+                .focused($searchFocused)
+                .help(ShortcutLabel.help("Search every note", AppShortcut.searchNotes))
+            if !search.query.isEmpty {
+                Button { search.query = "" } label: {
+                    Image(systemName: "xmark.circle.fill").font(DS.font(.caption)).foregroundStyle(DS.Ink.p4)
                 }.buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
@@ -141,13 +333,18 @@ struct KnowledgeBaseView: View {
     private var treeOrState: some View {
         switch service.state {
         case .idle, .loading:
-            // First scan runs off the main actor — show nothing rather than
-            // flashing "Empty knowledge base" before it lands.
-            Spacer()
+            // The first scan runs off the main actor: say so rather than
+            // flashing "Empty knowledge base" before it lands. A rescan keeps
+            // the tree already on screen.
+            if Self.showsLoading(service.state, treeIsEmpty: service.tree.isEmpty) {
+                LoadingState()
+            } else {
+                tree
+            }
         case .missing:
             emptyState(icon: "folder.badge.questionmark",
                        title: "No knowledge base",
-                       detail: "Expected \(service.kbDirectory.path). Setting up the vault creates it: see Settings ▸ Engine — or, for an engine managed in Claude Code, run /scout-setup there.")
+                       detail: "Expected \(service.kbDirectory.path). Setting up the Scout folder creates it: see Settings ▸ Engine — or, for an engine managed in Claude Code, run /scout-setup there.")
         case .failed(let msg):
             emptyState(icon: "exclamationmark.triangle", title: "Couldn't read the knowledge base", detail: msg)
         case .loaded:
@@ -155,12 +352,20 @@ struct KnowledgeBaseView: View {
                 emptyState(icon: "doc.text", title: "Empty knowledge base",
                            detail: "No notes yet. Use + to create the first one.")
             } else {
-                if let privacy {
-                    KBBadgedTreeView(service: service, privacy: privacy,
-                                     selectedPath: $selectedPath, expanded: $expanded)
-                } else {
-                    KBTreeView(nodes: service.tree, selectedPath: $selectedPath, expanded: $expanded)
-                }
+                tree
+            }
+        }
+    }
+
+    private var tree: some View {
+        KBDraftMarks(drafts: service.drafts, scoutDirectory: service.scoutDirectory,
+                     tree: service.tree) { draftPaths in
+            if let privacy {
+                KBBadgedTreeView(service: service, privacy: privacy, draftPaths: draftPaths,
+                                 selectedPath: $selectedPath, expanded: $expanded)
+            } else {
+                KBTreeView(nodes: service.tree, selectedPath: $selectedPath, expanded: $expanded,
+                           draftPaths: draftPaths)
             }
         }
     }
@@ -168,19 +373,20 @@ struct KnowledgeBaseView: View {
     private var searchResults: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 1) {
-                if searchHits.isEmpty {
-                    Text(searchQuery.count < 2 ? "Type to search…" : "No results")
-                        .font(DS.sans(12)).foregroundStyle(DS.Ink.p4)
+                if search.hits.isEmpty {
+                    Text(search.query.count < 2 ? "Type to search…" : "No results")
+                        .font(DS.font(.label)).foregroundStyle(DS.Ink.p4)
                         .padding(.horizontal, 12).padding(.vertical, 10)
                 }
-                ForEach(searchHits) { hit in
+                ForEach(search.hits) { hit in
                     Button { navigate(toPath: hit.path) } label: {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(hit.name).font(DS.sans(12.5, weight: .medium)).foregroundStyle(DS.Ink.p1)
-                            Text(hit.path).font(DS.mono(10)).foregroundStyle(DS.Ink.p4).lineLimit(1)
+                            Text(hit.name).font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p1)
+                            Text(hit.path).font(DS.font(.caption2, .mono)).foregroundStyle(DS.Ink.p4).lineLimit(1)
                             if !hit.snippet.isEmpty {
-                                InlineMarkdownText(hit.snippet)
-                                    .font(DS.sans(10.5)).foregroundStyle(DS.Ink.p3)
+                                // Plain text: a snippet is a cut of a note (table pipes, `**`), inside a button.
+                                Text(PlainText.strippingMarkdown(hit.snippet))
+                                    .font(DS.font(.caption2)).foregroundStyle(DS.Ink.p3)
                                     .lineLimit(2).multilineTextAlignment(.leading)
                             }
                         }
@@ -208,19 +414,31 @@ struct KnowledgeBaseView: View {
                 onRenamed: { url in
                     selectedPath = KnowledgeBaseService.relativePath(of: url, in: service.scoutDirectory)
                 },
-                onOverview: { selectedPath = nil }
+                onRenameProblem: { renameProblem = $0 },
+                onRenameNotice: { renameNotice = ($0, $1) },
+                onOverview: { requestOverview() },
+                onMoved: { from, to in
+                    // Follow an undone or redone rename only if the note is
+                    // still the one on screen.
+                    let fromPath = KnowledgeBaseService.relativePath(of: from, in: service.scoutDirectory)
+                    if selectedPath == fromPath {
+                        selectedPath = KnowledgeBaseService.relativePath(of: to, in: service.scoutDirectory)
+                    }
+                },
+                linksPanelShown: linksPanelShown,
+                onToggleLinksPanel: { linksPanelChoice = Self.toggledLinksPanel(shown: linksPanelShown) }
             )
             .id(node.id)
         } else {
-            KBOverviewView(service: service, onNavigate: { navigate(toPath: $0) })
+            KBOverviewView(service: service, onNavigate: { navigate(toPath: $0) }, mapFocus: mapFocus)
         }
     }
 
     private func emptyState(icon: String, title: String, detail: String) -> some View {
         VStack(spacing: 10) {
-            Image(systemName: icon).font(.system(size: 30)).foregroundStyle(DS.Ink.p4)
-            Text(title).font(DS.serif(16, weight: .semibold)).foregroundStyle(DS.Ink.p2)
-            Text(detail).font(DS.sans(12)).foregroundStyle(DS.Ink.p4)
+            Image(systemName: icon).font(DS.symbol(30)).foregroundStyle(DS.Ink.p4)
+            Text(title).dsFont(.headline, .serif, weight: .semibold).foregroundStyle(DS.Ink.p2)
+            Text(detail).font(DS.font(.label)).foregroundStyle(DS.Ink.p4)
                 .multilineTextAlignment(.center).frame(maxWidth: 320)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -251,17 +469,9 @@ struct KnowledgeBaseView: View {
             for i in 1..<parts.count { expanded.insert(parts[0..<i].joined(separator: "/")) }
         }
         selectedPath = path
-        searchQuery = ""
-    }
-
-    private func scheduleSearch(_ query: String) {
-        searchTask?.cancel()
-        guard query.count >= 2 else { searchHits = []; return }
-        searchTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            if Task.isCancelled { return }
-            searchHits = service.searchContent(query)
-        }
+        search.query = ""
+        // A "Show on full map" request is spent once you move on to a note.
+        mapFocus = nil
     }
 
     /// Directory the New-note sheet defaults to: the folder of the current
@@ -276,7 +486,8 @@ struct KnowledgeBaseView: View {
     private func createFile(name: String, directory: URL) {
         Task {
             do {
-                let slug = (name as NSString).deletingPathExtension
+                // "acme.com" titles "acme.com", not "acme".
+                let slug = name.lowercased().hasSuffix(".md") ? String(name.dropLast(3)) : name
                 let title = slug.replacingOccurrences(of: "-", with: " ")
                 let initial = "# \(title)\n\n"
                 let dest = try await writerBox.writer.createFile(
@@ -327,6 +538,7 @@ struct KnowledgeBaseView: View {
 private struct KBBadgedTreeView: View {
     @ObservedObject var service: KnowledgeBaseService
     @ObservedObject var privacy: KBPrivacyLabelService
+    var draftPaths: Set<String> = []
     @Binding var selectedPath: String?
     @Binding var expanded: Set<String>
     @State private var reparses = 0
@@ -339,11 +551,26 @@ private struct KBBadgedTreeView: View {
     var body: some View {
         let visible = KBPrivacyLabelService.visibleFiles(in: service.tree, expanded: expanded)
         KBTreeView(nodes: service.tree, selectedPath: $selectedPath, expanded: $expanded,
-                   privatePaths: privacy.privatePaths)
+                   privatePaths: privacy.privatePaths, draftPaths: draftPaths)
             .onReceive(service.$tree) { _ in reparses &+= 1 }
             .task(id: RefreshKey(paths: visible.map(\.relativePath), reparses: reparses)) {
                 await privacy.refresh(visible)
             }
+    }
+}
+
+/// Hands its content the notes with unsaved drafts (tree ids), redrawn when
+/// a note gains or loses one. Only notes the tree still has: a note renamed
+/// or deleted outside the app keeps its draft (the quit prompt still lists
+/// it), but no longer marks a folder it has left.
+private struct KBDraftMarks<Content: View>: View {
+    @ObservedObject var drafts: KBDraftStore
+    let scoutDirectory: URL
+    let tree: [KBNode]
+    @ViewBuilder let content: (Set<String>) -> Content
+
+    var body: some View {
+        content(KBDraftStore.shownDraftPaths(drafts.relativePaths(in: scoutDirectory), tree: tree))
     }
 }
 
@@ -363,11 +590,12 @@ struct KBNewFileSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("New note").font(DS.serif(16, weight: .semibold)).foregroundStyle(DS.Ink.p1)
+            Text("New note").dsFont(.headline, .serif, weight: .semibold).foregroundStyle(DS.Ink.p1)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("FOLDER").font(DS.sans(10, weight: .medium)).tracking(0.6).foregroundStyle(DS.Ink.p4)
-                Picker("", selection: $directoryPath) {
+                Text("FOLDER").font(DS.font(.caption2, weight: .medium)).tracking(0.6).foregroundStyle(DS.Ink.p4)
+                    .accessibilityHidden(true)
+                Picker("Folder", selection: $directoryPath) {
                     ForEach(directories, id: \.url.path) { dir in
                         Text(dir.label).tag(dir.url.path)
                     }
@@ -376,18 +604,26 @@ struct KBNewFileSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("NAME").font(DS.sans(10, weight: .medium)).tracking(0.6).foregroundStyle(DS.Ink.p4)
+                Text("NAME").font(DS.font(.caption2, weight: .medium)).tracking(0.6).foregroundStyle(DS.Ink.p4)
+                    .accessibilityHidden(true)
                 TextField("my-note", text: $name)
-                    .textFieldStyle(.roundedBorder).font(DS.sans(13))
+                    .accessibilityLabel("Name")
+                    .textFieldStyle(.roundedBorder).font(DS.font(.body))
                     .onSubmit(create)
-                Text(".md is added automatically").font(DS.sans(10.5)).foregroundStyle(DS.Ink.p4)
+                if let problem = KnowledgeBaseFileWriter.noteNameProblem(name) {
+                    Text(problem).font(DS.font(.caption2)).foregroundStyle(DS.Status.err)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(".md is added automatically").font(DS.font(.caption2)).foregroundStyle(DS.Ink.p4)
+                }
             }
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Create") { create() }.keyboardShortcut(.defaultAction)
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button("Cancel") { dismiss() }.buttonStyle(.dsSecondary).keyboardShortcut(.cancelAction)
+                Button("Create") { create() }.buttonStyle(.dsPrimary).keyboardShortcut(.defaultAction)
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty
+                              || KnowledgeBaseFileWriter.noteNameProblem(name) != nil)
             }
         }
         .padding(20).frame(width: 380)
@@ -396,7 +632,7 @@ struct KBNewFileSheet: View {
 
     private func create() {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty, KnowledgeBaseFileWriter.noteNameProblem(trimmed) == nil else { return }
         onCreate(trimmed, selectedURL)
     }
 }

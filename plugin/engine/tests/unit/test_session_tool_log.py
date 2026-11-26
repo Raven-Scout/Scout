@@ -18,7 +18,9 @@ from scout import custom_connectors as cc
 from scout.hooks.session_tool_log import (
     ToolCallRecord,
     extract_tool_calls,
+    logged_call_ids,
     run,
+    subagent_transcripts,
     write_records,
 )
 
@@ -263,3 +265,139 @@ def test_run_no_op_on_malformed_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SCOUT_MODE", "briefing")
     stdin = io.StringIO("not json at all")
     assert run(stdin=stdin) is None
+
+
+# ----- repeat Stops and subagent transcripts ------------------------------
+
+
+def _write_transcript(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+
+
+def _ledger_rows(log_dir: Path) -> list[dict]:
+    files = sorted(log_dir.glob("connector-calls-*.jsonl"))
+    return [json.loads(line) for f in files for line in f.read_text().splitlines()]
+
+
+def test_extract_keeps_the_tool_use_id() -> None:
+    rows = [
+        _assistant_tool_use("toolu_1", "Bash", command="ls"),
+        _user_tool_result("toolu_1", "ok"),
+        _assistant_tool_use("toolu_2", "Read", file_path="/x"),
+    ]
+    assert [r.tool_use_id for r in extract_tool_calls(rows)] == ["toolu_1", "toolu_2"]
+
+
+def test_write_records_writes_the_id_and_skips_calls_already_logged(tmp_path: Path) -> None:
+    log_dir = tmp_path / ".scout-logs"
+    first = [ToolCallRecord("Bash", {"command": "ls"}, {}, "toolu_1")]
+    assert write_records(first, mode="briefing", session_id="abc", log_dir=log_dir) == 1
+
+    again = [*first, ToolCallRecord("Read", {"file_path": "/x"}, {}, "toolu_2")]
+    assert write_records(again, mode="briefing", session_id="abc", log_dir=log_dir) == 1
+    assert [r["id"] for r in _ledger_rows(log_dir)] == ["toolu_1", "toolu_2"]
+
+
+def test_write_records_dedupes_per_session_and_always_writes_a_record_without_an_id(tmp_path: Path) -> None:
+    log_dir = tmp_path / ".scout-logs"
+    rec = ToolCallRecord("Bash", {"command": "ls"}, {}, "toolu_1")
+    assert write_records([rec], mode="briefing", session_id="abc", log_dir=log_dir) == 1
+    # Another session's call with the same id is still its own call.
+    assert write_records([rec], mode="briefing", session_id="other", log_dir=log_dir) == 1
+    # A record with no id (never the case from a transcript) is always written.
+    no_id = ToolCallRecord("Bash", {"command": "ls"}, {})
+    assert write_records([no_id, no_id], mode="briefing", session_id="abc", log_dir=log_dir) == 2
+
+
+def test_logged_call_ids_reads_yesterdays_file_too(tmp_path: Path) -> None:
+    log_dir = tmp_path / ".scout-logs"
+    log_dir.mkdir()
+    (log_dir / "connector-calls-2026-11-21.jsonl").write_text(
+        json.dumps({"session_id": "abc", "id": "toolu_old"})
+        + "\n"
+        + json.dumps({"session_id": "abc"})  # an older engine's row
+        + "\nnot json abc\n"
+        + json.dumps({"session_id": "other", "id": "toolu_theirs"})
+        + "\n"
+    )
+    (log_dir / "connector-calls-2026-11-22.jsonl").write_text(
+        json.dumps({"session_id": "abc", "id": "toolu_new"}) + "\n"
+    )
+    assert logged_call_ids(log_dir, "abc", "2026-11-22") == {"toolu_old", "toolu_new"}
+    assert logged_call_ids(log_dir, "abc", "not-a-date") == set()
+
+
+def test_a_second_stop_logs_only_the_new_calls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCOUT_MODE", "briefing")
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "vault"))
+    transcript = tmp_path / "session.jsonl"
+    payload = json.dumps({"transcript_path": str(transcript), "session_id": "abc"})
+    rows = [_assistant_tool_use("toolu_1", "Bash", command="ls"), _user_tool_result("toolu_1", "ok")]
+
+    _write_transcript(transcript, rows)
+    ev = run(stdin=io.StringIO(payload))
+    assert ev is not None and ev.payload["calls_written"] == 1
+
+    rows += [_assistant_tool_use("toolu_2", "Read", file_path="/x"), _user_tool_result("toolu_2", "text")]
+    _write_transcript(transcript, rows)
+    ev = run(stdin=io.StringIO(payload))
+    assert ev is not None and ev.payload["calls_written"] == 1
+
+    ev = run(stdin=io.StringIO(payload))  # a third Stop with nothing new
+    assert ev is not None and ev.payload["calls_written"] == 0
+    assert [r["id"] for r in _ledger_rows(tmp_path / "vault" / ".scout-logs")] == ["toolu_1", "toolu_2"]
+
+
+def test_run_replays_subagent_transcripts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCOUT_MODE", "research")
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "vault"))
+    transcript = tmp_path / "session.jsonl"
+    _write_transcript(transcript, [_assistant_tool_use("toolu_main", "Agent", prompt="look it up")])
+    _write_transcript(
+        tmp_path / "session" / "subagents" / "agent-a1.jsonl",
+        [
+            _assistant_tool_use("toolu_sub1", "Bash", command="gh pr list"),
+            _user_tool_result("toolu_sub1", "boom", is_error=True),
+        ],
+    )
+    _write_transcript(
+        tmp_path / "session" / "subagents" / "agent-b2.jsonl",
+        [_assistant_tool_use("toolu_sub2", "WebFetch", url="https://example.com")],
+    )
+    assert [p.name for p in subagent_transcripts(transcript)] == ["agent-a1.jsonl", "agent-b2.jsonl"]
+
+    ev = run(stdin=io.StringIO(json.dumps({"transcript_path": str(transcript), "session_id": "abc"})))
+    assert ev is not None and ev.payload["calls_written"] == 3
+    rows = _ledger_rows(tmp_path / "vault" / ".scout-logs")
+    assert [(r["connector"], r["error"]) for r in rows] == [("agent", False), ("github", True), ("webfetch", False)]
+    assert all(r["session_id"] == "abc" and r["mode"] == "research" for r in rows)
+
+
+def test_subagent_transcripts_is_empty_without_the_directory(tmp_path: Path) -> None:
+    assert subagent_transcripts(tmp_path / "session.jsonl") == []
+
+
+def test_the_stop_replay_skips_a_call_the_posttooluse_hook_logged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scout.hooks import connector_log
+
+    monkeypatch.setenv("SCOUT_MODE", "briefing")
+    monkeypatch.setenv("SCOUT_DATA_DIR", str(tmp_path / "vault"))
+    post = {"tool_name": "Bash", "tool_input": {"command": "ls"}, "session_id": "abc", "tool_use_id": "toolu_1"}
+    assert connector_log.run(stdin=io.StringIO(json.dumps(post))) is not None
+
+    transcript = tmp_path / "session.jsonl"
+    _write_transcript(
+        transcript,
+        [
+            _assistant_tool_use("toolu_1", "Bash", command="ls"),
+            _user_tool_result("toolu_1", "ok"),
+            _assistant_tool_use("toolu_2", "Bash", command="false"),
+            _user_tool_result("toolu_2", "exit 1", is_error=True),
+        ],
+    )
+    ev = run(stdin=io.StringIO(json.dumps({"transcript_path": str(transcript), "session_id": "abc"})))
+    assert ev is not None and ev.payload["calls_written"] == 1
+    assert [r["id"] for r in _ledger_rows(tmp_path / "vault" / ".scout-logs")] == ["toolu_1", "toolu_2"]

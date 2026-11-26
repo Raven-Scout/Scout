@@ -31,7 +31,7 @@ RULE = ("core/git-setup.md", "## Engine Changes: Never in the Live Engine Checko
 def test_the_rule_reaches_every_scheduled_mode() -> None:
     (sec,) = parse_phase_file(PHASES / RULE[0])
     assert sec.requires is None
-    assert set(sec.mode or []) == {"briefing", "consolidation", "dreaming", "research"}
+    assert set(sec.mode or []) == {"briefing", "consolidation", "dreaming", "research", "respond"}
     assert RULE[1] in sec.body
 
 
@@ -57,7 +57,7 @@ def test_it_prescribes_a_fresh_clone_of_origin_main_under_scout_worktrees() -> N
 
 def test_it_routes_the_phases_backport_tool_to_the_clone() -> None:
     assert "--plugin-root ~/.scout-worktrees/" in _section(*RULE)
-    reminder = (PHASES / "modes" / "feedback-processing.md").read_text(encoding="utf-8")
+    reminder = (PHASES / "modes" / "follow-change-decisions.md").read_text(encoding="utf-8")
     assert "--plugin-root" in reminder
 
 

@@ -11,7 +11,7 @@ struct CommitDiffView: View {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                     Text(line.isEmpty ? " " : String(line))
-                        .font(DS.mono(11))
+                        .font(DS.font(.caption, .mono))
                         .foregroundStyle(color(for: line))
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }

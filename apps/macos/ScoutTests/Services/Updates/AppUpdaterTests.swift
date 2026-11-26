@@ -31,6 +31,18 @@ struct AppUpdaterTests {
         cancellable.cancel()
         #expect(values == [false])
     }
+
+    /// Gentle reminders only work if Sparkle's user driver has our delegate:
+    /// passing nil for `userDriverDelegate` compiles, passes the selector
+    /// tests, and brings back Sparkle's own alert for scheduled finds.
+    @Test func sparklesUserDriverHasOurDelegate() {
+        let updater = AppUpdater(enabled: false) { _ in }
+        // SPUStandardUserDriver keeps it in the `_delegate` ivar, with no
+        // accessor; KVC reads the ivar. Sparkle builds the user driver in
+        // the controller's init, so it exists for a never-started updater.
+        let held = updater.controllerForTesting.value(forKeyPath: "userDriver._delegate") as AnyObject?
+        #expect(held === updater.delegateForTesting)
+    }
 }
 
 /// `AppUpdater.cycleEndEvent` is the Sparkle-free mapping from
@@ -106,6 +118,11 @@ struct AppUpdaterDelegateSelectorTests {
         "updater:didFindValidUpdate:",
         "updaterDidNotFindUpdate:error:",
         "feedURLStringForUpdater:",
+        // Gentle reminders (SPUStandardUserDriverDelegate): without these
+        // three, Sparkle pops its own alert for scheduled finds again.
+        "supportsGentleScheduledUpdateReminders",
+        "standardUserDriverShouldHandleShowingScheduledUpdate:andInImmediateFocus:",
+        "standardUserDriverWillHandleShowingUpdate:forUpdate:state:",
     ])
     func delegateRespondsTo(selector: String) {
         let delegate = AppUpdaterDelegate(onEvent: { _ in })

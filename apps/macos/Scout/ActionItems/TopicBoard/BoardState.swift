@@ -24,8 +24,9 @@ nonisolated enum BoardState: String, CaseIterable, Sendable {
         case .doing: "You or an agent are working on it"
         case .waiting: "Waiting on others"
         case .blocked: "Blocked by another step"
-        case .hold: "On hold"
-        case .done: "Done"
+        // Explained, not just repeated (audit #51): the glossary's words.
+        case .hold: GlossaryTerm.onHold.definition
+        case .done: GlossaryTerm.done.definition
         }
     }
 

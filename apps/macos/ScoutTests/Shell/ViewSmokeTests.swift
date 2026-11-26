@@ -231,6 +231,7 @@ struct ShellViewSmokeTests {
     @Test("every sidebar destination has a status label")
     func sidebarItemsHaveStatusLabels() {
         let labels = SidebarItem.allCases.map(\.statusLabel)
+        // Nine pages: Settings is the ⌘, window, not a page (UI audit #10).
         #expect(labels.count == 9)
         #expect(Set(labels).count == labels.count)
         #expect(labels.allSatisfy { !$0.isEmpty })
@@ -284,10 +285,10 @@ struct ShellViewSmokeTests {
         }
     }
 
-    @Test("gated tabs dim every sidebar row but Settings; ungated dims none")
+    @Test("gated tabs dim every page row; ungated dims none")
     func sidebarDimmingRule() {
         for item in SidebarItem.allCases {
-            #expect(SidebarView.isDimmed(item, tabsGated: true) == (item != .settings))
+            #expect(SidebarView.isDimmed(item, tabsGated: true))
             #expect(!SidebarView.isDimmed(item, tabsGated: false))
         }
     }
@@ -295,25 +296,34 @@ struct ShellViewSmokeTests {
     @Test("the status bar renders for each menu-bar status")
     func statusBarRendersEveryStatus() throws {
         let vault = try SmokeVault(); defer { vault.tearDown() }
-        for status in [AppState.MenuBarStatus.idle, .running, .lastFailed, .budgetSkipped] {
-            vault.state.menuBarStatus = status
+        for status in Self.sampleStatuses {
+            vault.state.status = status
             ViewHost.render(
                 StatusBarView(viewLabel: "Control Center").environmentObject(vault.state),
                 size: CGSize(width: 1000, height: 26))
         }
     }
 
-    @Test("the menu bar extra renders")
+    /// One status per kind, with and without a fix button.
+    static let sampleStatuses: [ScoutStatus] = ScoutStatus.Kind.allCases.map {
+        ScoutStatus(kind: $0, title: "Title \($0)", detail: "Detail", tone: .warn,
+                    fix: $0 == .needsSetup ? .setUp : $0 == .needsAttention ? .openSettings : $0 == .lastFailed ? .openHealth : nil)
+    }
+
+    @Test("the menu bar extra renders for each status")
     func menuBarExtraRenders() throws {
         let vault = try SmokeVault(); defer { vault.tearDown() }
-        ViewHost.render(
-            MenuBarExtraContent().environmentObject(vault.state).environmentObject(vault.updates),
-            size: CGSize(width: 320, height: 400))
+        for status in Self.sampleStatuses {
+            vault.state.status = status
+            ViewHost.render(
+                MenuBarExtraContent().environmentObject(vault.state).environmentObject(vault.updates),
+                size: CGSize(width: 320, height: 400))
+        }
     }
 
     @Test("the menu bar icon renders for every status")
     func menuBarIconRendersEveryStatus() {
-        for status in [AppState.MenuBarStatus.idle, .running, .lastFailed, .budgetSkipped] {
+        for status in Self.sampleStatuses {
             for updateAvailable in [false, true] {
                 ViewHost.render(MenuBarIcon(status: status, updateAvailable: updateAvailable),
                                 size: CGSize(width: 24, height: 24))

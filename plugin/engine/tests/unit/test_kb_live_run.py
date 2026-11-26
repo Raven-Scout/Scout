@@ -129,6 +129,55 @@ def test_the_runner_holding_the_lock_its_wrapper_and_its_claude_are_the_run() ->
     assert run_processes(V, table, holder=None) == {110, 120}
 
 
+@pytest.mark.parametrize("runner", ["run-dreaming.sh", "run-research.sh", "run-respond.sh"])
+def test_every_runner_holding_the_lock_is_the_run(runner: str) -> None:
+    """Before its claude starts and after it ends, the lock holder is all that marks the run."""
+    table, _ = _world((100, 1, f"/bin/bash {V}/{runner}", BASH, RUN_AGE))
+    assert run_processes(V, table, holder=100) == {100}
+
+
+# The runners launch through `scoutctl agent-runtime exec` (spec 2026-11-13 §8.2): until it execs claude, the
+# wrapper's child is scoutctl carrying the same words, and after it, claude exactly as before.
+EXEC: Row = (
+    120,
+    110,
+    "/Users/alex/scout-plugin/.venv/bin/python -P -m scout.cli agent-runtime exec --runtime claude-code "
+    "--bin /Users/alex/.local/bin/claude --model opus --max-budget-usd 25 "
+    f"--name scout-morning-briefing-20261107-0700 -p You are Scout. Your working directory is {V}.",
+    VENV_PY,
+    RUN_AGE - 2,
+)
+
+
+def test_the_exec_step_before_claude_is_still_the_run() -> None:
+    table, _ = _world(RUNNER, WRAPPER, EXEC)
+    assert run_processes(V, table, holder=None) == {110, 120}
+
+
+def test_claude_markers_unchanged() -> None:
+    from scout.agent_runtimes.claude_code import ClaudeCode
+    from scout.kb.live_run import marker_sets
+
+    assert marker_sets()[0] == ("--name", "-p", "--max-budget-usd")
+    assert ClaudeCode().process_markers().argv_words == marker_sets()[0]
+    # kb/hook.py's awk twin looks for the same three words.
+    from scout.kb import hook
+
+    src = Path(hook.__file__).read_text(encoding="utf-8")
+    assert 'index(cmd, "--max-budget" "-usd") && index(cmd, "--name")' in src
+
+
+def test_markers_come_from_registry() -> None:
+    from tests._agent_runtimes import DummyRuntime, registered
+
+    other: Row = (130, 1, f"dummy-cli run --model dm-x --title scout-dream -p in {V}", "/usr/bin/dummy-cli", RUN_AGE)
+    table, _ = _world(other)
+    assert run_processes(V, table, holder=None) == set()
+    with registered(DummyRuntime("dummy")):
+        assert run_processes(V, table, holder=None) == {130}
+    assert run_processes(V, table, holder=None) == set()
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -852,6 +901,305 @@ def test_commands_that_change_the_run_env_are_flagged(command: str) -> None:
 @pytest.mark.parametrize(
     "command",
     [
+        "HOME=/a ls",
+        "FOO=1 HOME=/a git commit -m x",
+        "HOME=/a; echo x > ~/f",
+        "export HOME=/a",
+        "declare -x HOME=/a",
+        "local HOME=/a",
+        "readonly HOME=/a",
+        "export -n HOME",
+        "declare -n ref=HOME; ref=/a",
+        "env HOME=/a ls",
+        "env -u HOME ls",
+        "env --unset=HOME ls",
+        "env -uHOME ls",
+        "unset HOME",
+        "unset -v HOME && ls",
+        "for HOME in /a /b; do ls; done",
+        "read HOME < f",
+        "mapfile HOME < f",
+        "printf -v HOME %s /a",
+        "bash -c 'HOME=/a ls'",
+        "eval 'export HOME=/a'",
+        "sudo HOME=/a ls",
+        "HOME=$OTHER ls",
+        "HOME=~other ls",
+        "HOME=~/.claude; echo x >> ~/settings.json",
+        "HOME=$HOME/.claude ls",
+        # review of #800: forms that change `~` without a plain `HOME=` at the start of a command
+        "HOME+=/.claude; echo x >> ~/settings.json",
+        "HOME[1,-1]=/x; echo x >> ~/settings.json",
+        "HOME[1]=x",
+        "(( HOME=0 ))",
+        "let HOME=0",
+        'let "HOME+=1"',
+        "integer HOME=0",
+        "IFS= read -r HOME <<< /x; echo x >> ~/settings.json",
+        "read -A HOME",
+        "readarray HOME < f",
+        "vared HOME",
+        "getopts x HOME",
+        "select HOME in /x; do break; done <<< 1",
+        "local HOME",
+        "typeset -T HOME home",
+        "typeset -l HOME",
+        "nocorrect export HOME=/x",
+        "noglob HOME=/x true",
+        "noglob export HOME=/x",
+        "- export HOME=/x",
+        "builtin export HOME=/x",
+        "command export HOME=/x",
+        "exec env HOME=/x ls",
+        # a quoted or escaped name is the same name to the shell
+        "export HO''ME=/x",
+        "typeset H\\OME=/x",
+        "HO\\ME=/x git commit -m m",
+        "printf -v HO''ME /x",
+        "read HO''ME <<< /x",
+        "unset HO''ME",
+        "for HO''ME in /x; do :; done",
+        'eval "HO""ME=x"',
+        # a name built at run time may be HOME
+        "v=HOME; export $v=/x",
+        'v=HOME; typeset "$v=/x"',
+        'v=HO; v+=ME; eval "$v=/x"; git commit -m m',
+        "v=HOME; read $v <<< /x",
+        'read "$v" <<< /x',
+        'printf -v "$v" /x',
+        "unset $v",
+        "export ${v}=/x",
+        "let $v=1",
+        # review 2 of #800: a name built only in part, or by a glob (`HOM?` with a file named HOME), and the
+        # targets behind read's option values
+        'v=OME; eval "H${v}=/x"',
+        "v=OME; export H$v=/x",
+        "v=OME; read H$v <<< /x",
+        "v=OME; printf -v H$v /x",
+        'v=OME; typeset "H${v}=/x"',
+        "read HOM? <<< /x",
+        "export HOM?=.claude",
+        "export HOM[E]=.claude",
+        "for H$v in /x; do :; done",
+        "let H$v=1",
+        "(( HOME = 0 ))",
+        "(( H$v = 1 ))",
+        "read -d '' HOME <<< /x",
+        "read -t 5 HOME",
+        "read -rp prompt HOME",
+        "read -k HOME",
+        "mapfile -t HOME < f",
+        'unset "$var"',
+        'export "$@"',
+        "eval ${v}=x",
+        "getopts -- ab HOM?",
+        '"read" HOM? <<< /x',
+        "\\export HOM?=x",
+        # review 3 of #800: zsh's own setters, `repeat`, and typeset's number options
+        "print -v HOM? /x",
+        "print -v HOME /x",
+        "print -rv HOME /x",
+        "print -vHOME /x",
+        "zstyle -s :x y HOM?",
+        "zstyle -s :x y HOME",
+        "zstyle -a :x y HOME",
+        "zstyle -g HOME",
+        "zformat -f HOM? /x",
+        "zformat -f HOME /x",
+        "strftime -s HOM? %s",
+        "strftime -s HOME %s",
+        "getln HOME",
+        "zparseopts -A HOM? a",
+        "zparseopts -D h=HOME",
+        "zstat -A HOME file",
+        "sysread HOME",
+        "sysopen -u HOME -w f",
+        "repeat 1 read HOM? <<< /x",
+        "repeat 3 export HOME=/x",
+        "typeset -i 10 HOM?",
+        "typeset -Z 3 HOM?",
+        "typeset -L 5 HOME",
+        "typeset -A HOME",
+        "vared -c HOME",
+        "read -q HOM?",
+        "HOME=x; export HOME",
+        # a $'…' string's escapes, decoded as zsh does (round 4 of #800's review)
+        "eval $'\\x72ead HOM? <<< h'; git commit -qm m",
+        "eval $'\\162ead HOM? <<< h'; git commit -qm m",
+        "eval $'\\u0072ead HOME <<< /x'",
+        "eval $'read HOM? <<< h'",
+        "eval $'export HO\\x4dE=/x'",
+        "eval x$'\\x3b read HOME'",
+        "$'\\x72ead' HOM? <<< h",
+        "export $'HO\\x4dE'=/x",
+        # print's option built at run time: it may be -v, or -vHOME
+        "x=v; print -$x HOM? /p/h; git commit -qm m",
+        "x=vHOME; print -$x /p/h",
+        "print -r$x HOME h",
+        "printf -`echo v` HOME x",
+        "print -${o} HOM? x",
+    ],
+)
+def test_commands_that_point_home_elsewhere_are_named(command: str) -> None:
+    assert run_escape(command) == live_run.HOME_FORM
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "HOME=$HOME ls",
+        "HOME=${HOME} ls",
+        'HOME="$HOME" ls',
+        "HOME=~ ls",
+        "HOME=$HOME/ ls",
+        "FOO=bar HOME=$HOME ls",
+        "echo $HOME ~",
+        "export HOME",
+        "printenv HOME",
+        "cd ~",
+        'echo "HOME is $HOME"',
+        "read -r HOME_DIR <<< x",
+        "export PATH=$HOME/bin:$PATH",
+        "unset HOMEBREW_PREFIX",
+        "for d in $HOME/a $HOME/b; do ls $d; done",
+        'while IFS= read -r line; do echo "$line"; done < notes.txt',
+        "v=x; read -r v <<< y",
+        "printf '%s\\n' \"$HOME\"",
+        "HOME=${HOME}/ ls",
+        "HOME=~/ ls",
+        "HOME+= ls",
+        "read -t $T ans",
+        'read -p "$prompt" ans',
+        "read -r -d '' body <<< x",
+        "local x=$1",
+        "printf -v out '%s' \"$x\"",
+        "mapfile -t lines < notes.txt",
+        'declare -a arr=("$@")',
+        'getopts "ab:" opt',
+        "let i=$i+1",
+        "export -p",
+        "(( i++ ))",
+        "(( n = n + 1 ))",
+        "for i in 1 2 3; do echo $i; done",
+        "typeset -i 10 count",
+        "typeset -Z 3 n=7",
+        'print -r -- "$HOME"',
+        "print hello",
+        "zstyle ':completion:*' menu select",
+        "strftime %Y-%m-%d",
+        "zformat -f out '%a' a:1",
+        "coproc read HOM?",
+        "printf -- -v HOM? x",
+        "typeset -a arr; arr=(a b)",
+        "printf $'%s\\n' a b",
+        "echo $'a\\tb'",
+        "eval $'echo hi'",
+        "git commit -m $'line1\\nline2'",
+        "echo '$'\"'\"'\\x72ead'",  # no $'…' here: a quoted `$`, then a quoted quote
+        "echo \"$'\\x72ead'\"",  # inside double quotes, $'…' is plain text
+        "print -n $msg",
+        "print -r -- $x",
+    ],
+)
+def test_keeping_or_reading_home_is_not_flagged(command: str) -> None:
+    assert run_escape(command) is None
+
+
+@pytest.mark.parametrize(
+    ("command", "form"),
+    [
+        ("eval $'git commit --no-veri\\x66y -m x'", "--no-verify"),
+        ("eval $'unset SCOUT_\\x4dODE'", "env"),
+        ("$'\\x6eohup' sleep 9", "detach"),
+    ],
+)
+def test_a_dollar_quote_is_read_as_the_text_it_spells(command: str, form: str) -> None:
+    assert run_escape(command) == form
+
+
+@pytest.mark.parametrize(
+    ("command", "form"),
+    [
+        (": ${HOME:=/x}", "HOME"),
+        (": ${HOME=/x}", "HOME"),
+        (": ${HOME::=/x}; echo x >> ~/f", "HOME"),
+        ("echo ${HOME::=/x}", "HOME"),
+        ("v=HOME; : ${(P)v::=/x}", "HOME"),
+        ("v=HOME; : ${(P)${v}::=/x}", "HOME"),
+        (": ${(P)$(echo HOME)::=/x}", "HOME"),
+        (": ${!v:=/x}", "HOME"),
+        (": ${XDG_CONFIG_HOME:=/x}; git commit -m m", "XDG_CONFIG_HOME"),
+        (": ${SCOUT_MODE::=}", "env"),
+        ("exec {HOME}>/dev/null", "HOME"),
+        ("exec {XDG_CONFIG_HOME}< f", "XDG_CONFIG_HOME"),
+    ],
+)
+def test_an_expansion_that_assigns_a_name_that_matters_or_a_built_one_is_named(command: str, form: str) -> None:
+    assert live_run.expansion_escape(command) == form
+
+
+@pytest.mark.parametrize(
+    ("command", "form"),
+    [
+        ("eval $$'; \\x72ead HOME <<< /x'", "HOME"),  # zsh reads a `$`, then $'…'; bash a pid and a plain quote
+        ("echo $$'a\\tb'", "HOME"),  # either reading: not worth telling apart
+        ("echo \\$$'a\\tb'", None),  # `\$`: a character, then one `$` and $'…', read the same by both shells
+        ("echo $$ 'a\\tb'", None),
+        ("echo $'a\\tb'", None),
+    ],
+)
+def test_an_even_dollar_run_before_an_escaped_quote_is_denied(command: str, form: str | None) -> None:
+    assert live_run.even_dollar_escape(command) == form
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo ${HOME}",
+        "echo ${HOME:-/x}",
+        "ls ${HOME}/notes",
+        "echo ${(P)v}",
+        'echo "${HOME=}"',
+        "echo ${(j:,:)arr}",
+        "echo ${(s:=:)line}",
+        "echo ${(Pj:,:)name}",
+        ": ${OTHER:=x}",
+    ],
+)
+def test_an_expansion_that_only_reads_or_sets_another_name_is_not(command: str) -> None:
+    assert live_run.expansion_escape(command) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "XDG_CONFIG_HOME=./x git commit -m m",
+        "export XDG_CONFIG_HOME=./x; git commit -m m",
+        "env XDG_CONFIG_HOME=./x git commit -m m",
+        "declare -x XDG_CONFIG_HOME=./x",
+        "XDG_CONFIG_HOME+=/x; git commit -m m",
+        "IFS= read -r XDG_CONFIG_HOME <<< /x; git commit -m m",
+        "export XDG_CONFIG_HO''ME=/x",
+        "local XDG_CONFIG_HOME",
+    ],
+)
+def test_pointing_git_at_another_global_config_dir_is_named(command: str) -> None:
+    """git reads ``$XDG_CONFIG_HOME/git/config`` as its global config, which can set core.hooksPath."""
+    assert run_escape(command) == live_run.XDG_CONFIG_FORM
+
+
+@pytest.mark.parametrize("command", ["read SCOUT_MODE <<< x", "local SCOUT_READER", "SCOUT_MODE+=x git commit -m m"])
+def test_the_run_env_goes_through_the_same_name_checks(command: str) -> None:
+    assert run_escape(command) == "env"
+
+
+def test_a_run_env_change_still_wins_over_home() -> None:
+    assert run_escape("SCOUT_MODE= HOME=/a git commit -m x") == "env"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         "env SCOUT_MODE=x git commit -m y",
         "env -u OTHER -u SCOUT_MODE git commit",
         "env -C notes -u SCOUT_MODE git commit",
@@ -902,6 +1250,19 @@ def test_other_options_prefixes_and_broken_quotes_are_not_flagged(command: str) 
         "git commit -m x &",
         "(git commit -m x &)",
         "sleep 1 & git commit -m x",
+        # A backslash outside quotes escapes the quote after it, so no quoted span opens and the "&" is real.
+        "git commit -m x \\' & echo '' y",
+        'git commit -m x \\" & echo "" y',
+        "git commit -m x $'\\'' & echo ''",  # in $'…' a backslash escapes the quote
+        "git commit -m x \\\\\\' & echo ''",  # an escaped backslash, then an escaped quote
+        "git commit -m 'it'\\''s' & echo ''",
+        # bash reads `$$'` as the process id and a plain quote, which the `\\'` then closes; zsh reads `$'…'`.
+        "bash <<'EOF'\ngit commit -m x$$'\\' & echo 'y'\nEOF",
+        "echo x$$'\\' & sleep 5 & echo 'y'",
+        "echo x$$'a\\'b' & echo 'y' c'",  # the other way round: only the `$'…'` reading leaves the "&" bare
+        "echo hi # it's\nsleep 5 & echo 'y'",  # a quote in a comment opens nothing
+        'echo hi # say "\nsleep 5 & echo "y"',
+        "git commit -m \\$'x\\' & echo ''",  # an escaped "$": plain single quotes, closed by the second quote
         "launchctl submit -l x -- git commit",
         'osascript -e \'tell app "Terminal" to do script "git commit"\'',
         "open -a Terminal notes/commit.command",
@@ -914,6 +1275,30 @@ def test_other_options_prefixes_and_broken_quotes_are_not_flagged(command: str) 
         "bash -c 'git commit -m x &'",
         "cat <<'EOF' > /tmp/x\nbody\nEOF\nnohup git commit -m x",
         "cat <<'EOF' > /tmp/x\nbody\nEOF\ngit commit -m x &",
+        "cat <&3 &",  # the descriptor duplicate isn't a background, the trailing "&" is
+        "git commit -m x <&3 & disown",
+        "cat < notes/a.md & git commit -m x",
+        "git commit -m x\\<&",  # an escaped "<" is a word's last letter: the "&" after it backgrounds
+        "git commit -m x\\>&",
+        "git commit -m x\\|&",
+        "git commit -m x\\&&",
+        "git commit -m x\\\\&",  # two backslashes are one literal backslash: the "&" is real
+        "git commit -m x <&- &",
+        "a<&b&",
+        # A backtick substitution ends at the next backtick, whatever quotes sit inside it.
+        "git commit -m `echo '` & echo `'`",
+        'git commit -m "`echo \'`" & echo "`\'`"',
+        # "<<EOF" in a comment or inside a string that runs over lines opens no here-document.
+        "true # <<EOF\nsleep 5 &\nEOF",
+        'echo "a\n<<EOF b"\nsleep 5 &\nEOF',
+        "echo 'a\n<<EOF b'\nsleep 5 &\nEOF",
+        # A substitution that closes on the operator's own line leaves its here-document without a body.
+        "echo $(cat <<EOF) x\nsleep 5 &\nEOF",
+        "echo `cat <<EOF` x\nsleep 5 &\nEOF",
+        'echo "$(cat <<EOF)" x\nsleep 5 &\nEOF',
+        # zsh reads `$$'\'<<EOF'` as one string, so it runs the lines bash would take as a body.
+        "echo x$$'\\'<<EOF'\n{ echo BG; } &\nwait\nEOF",
+        "echo x$$'\\' <<'EOF''\nsleep 5 &\nEOF",
     ],
 )
 def test_commands_that_detach_are_flagged(command: str) -> None:
@@ -958,6 +1343,29 @@ SCOUT_WRAP"""
         "git commit -F - <<'EOF'\nQ3 P&L review; (at 10:00)\nnohup notes\nEOF",
         "git commit -F - <<EOF\nP&L\nEOF",
         "cat <<-'EOF' > notes/a.md\n\tR&D (open items)\n\tEOF",
+        "git commit -m 'R&D \\' -q",  # single quotes take no escapes: the string ends at the second quote
+        'git commit -m "say \\"R&D\\""',
+        "git commit -m $'R&D \\' still quoted'",
+        "git commit -m x\\'s -m 'R&D'",
+        'git commit -m \\"x -m "R&D"',
+        "git commit -m \\\\ -m 'R&D'",  # an escaped backslash escapes nothing after it
+        "git add -A # don't forget\ngit commit -m 'R&D' -q",
+        "git commit -m x$$'R&D'",
+        "git commit -m 'a#b' -m 'R&D'",
+        "echo a#b 'R&D'",  # "#" inside a word starts no comment
+        "cat <&3",  # #618: "<&" duplicates a descriptor, it backgrounds nothing
+        "exec 3<&0; cat <&3; exec 3<&-",
+        'read -r line <&3 && echo "$line"',
+        "cat \\\\<&3",  # an escaped backslash, then a real "<&"
+        "echo a\\&b",  # an escaped "&" is a letter
+        "echo a \\&\\& true",
+        "git commit -m \"$(cat <<'EOF'\nR&D, and it's done\nEOF\n)\"",  # a here-document inside "$(…)"
+        "git commit -m \"`cat <<'EOF'\nR&D\nEOF\n`\"",
+        "cat <<EOF # the notes\nR&D\nEOF",
+        'cat <<EOF "a\nb"\nR&D\nEOF',  # the body starts after the line's own end, past the string
+        "echo `echo it's` 'R&D'",
+        "(cat <<EOF) | cat\nR&D\nEOF",  # a subshell's here-document does take the lines below
+        "cat <<A `cat <<B`\nR&D\nA",
     ],
 )
 def test_ordinary_commands_and_reads_are_not_flagged(command: str) -> None:
@@ -1061,7 +1469,6 @@ def test_short_n_is_named_where_it_means_no_verify(command: str) -> None:
         ("git -c $(cat /tmp/key) commit -m x", "-c <unknown>"),
         ("git --config-env=$K=D commit -m x", "--config-env <unknown>"),
         ("git config core.hooksPath /dev/null", "git config core.hooksPath"),
-        ("git config core.hooksPath", "git config core.hooksPath"),
         ("git config --local core.hooksPath /dev/null", "git config core.hooksPath"),
         ("git config --global core.hookspath /dev/null", "git config core.hooksPath"),
         ("git config --file .git/config core.hooksPath /dev/null", "git config core.hooksPath"),
@@ -1125,6 +1532,20 @@ def test_setting_git_config_env_vars_is_named(command: str) -> None:
     ],
 )
 def test_commits_made_without_git_commit_are_named(command: str, form: str) -> None:
+    assert run_escape(command) == form
+
+
+@pytest.mark.parametrize(
+    ("command", "form"),
+    [
+        ('c=$(git commit-tree "$(git write-tree)" -p HEAD -m x) && git update-ref HEAD "$c"', "commit-tree"),
+        ('git update-ref HEAD "$(git commit-tree abc)"', "update-ref"),
+        ("echo `git commit-tree abc` && git commit --no-verify", "commit-tree"),
+        ('git commit --no-verify -m "$(git commit-tree abc)"', "--no-verify"),
+    ],
+)
+def test_the_first_form_in_the_text_names_the_deny(command: str, form: str) -> None:
+    """A substitution is judged where it sits: before what follows it, after the command it's an argument of."""
     assert run_escape(command) == form
 
 
@@ -1227,6 +1648,9 @@ def test_writes_into_the_git_dir_that_change_the_hooks_are_named(command: str, f
         "git config user.email alex@example.com",
         'git config user.name "Scout Bot"',
         "git config --get core.hooksPath",
+        "git config core.hooksPath",  # a key with no value reads it (review of #637)
+        "git config --global user.name",
+        "git config --file .gitmodules submodule.x.path",
         "git config --get-all core.hooksPath",
         "git config --get-regexp 'core.*'",
         "git config --list",
@@ -1316,3 +1740,35 @@ def test_a_hook_skip_wins_over_detach_but_a_run_env_change_wins_over_both() -> N
 def test_git_config_env_vars_are_named_before_what_they_prefix() -> None:
     assert run_escape("GIT_CONFIG_COUNT=1 git commit --no-verify") == "GIT_CONFIG_*"
     assert run_escape("GIT_CONFIG_COUNT=1 nohup git commit") == "GIT_CONFIG_*"
+
+
+@pytest.mark.parametrize(
+    ("command", "flagged"),
+    [
+        ("scoutctl delegate link duet --remote x", True),
+        ("scoutctl --json delegate trust-state", True),
+        ("/abs/plugin/engine/bin/scoutctl delegate key duet --revoke", True),
+        ("python -m scout delegate unlink duet", True),
+        ("python3 -Pm scout delegate unlink duet", True),  # -m closing a short-option cluster
+        ("python3 -IPm scout delegate key duet --revoke", True),
+        ("python3 -mscout delegate link duet --remote x", True),
+        ("python3 -W ignore -m scout delegate trust-state", True),
+        ("scoutctl inbox pull --all", True),  # #550 V4b: the inbox is the owner's, or the tick's own step
+        ("scoutctl inbox apply grok-personal", True),
+        ("python3 -Pm scout inbox revert 01JD5Z0000000000000000ABCD", True),
+        ("scoutctl inbox sync", True),
+        ("scoutctl inbox review", True),  # V4b2: it prints agents' text, which never reaches a run
+        ("scoutctl inbox review accept 01JD5Z0000000000000000ABCD --confirm 01JD5Z0000000000000000ABCD", True),
+        ("scoutctl inbox propose observation --text x", False),  # the agent's side: not on the owner's runs
+        ("python3 -Im scout delegate sync", False),
+        ("python3 scripts/x.py -m scout delegate link", False),  # a script's own argv
+        ("scoutctl delegate sync duet", False),
+        ("scoutctl delegate preview duet", False),
+        ("echo scoutctl delegate link", False),
+        ("python -c 'print(1)'", False),
+    ],
+)
+def test_the_owners_delegate_commands_are_a_named_form(command, flagged):
+    from scout.kb.live_run import DELEGATE_FORM
+
+    assert (run_escape(command) == DELEGATE_FORM) is flagged

@@ -19,6 +19,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from scout.scripts import changelog
+
 # engine/scout/scripts/versioning.py -> parents[3] == the plugin subtree root
 PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 
@@ -160,9 +162,9 @@ def promote_changelog(root: Path = PLUGIN_ROOT, *, version: str, date: str) -> N
 
 
 def promote_changelogs(repo_root: Path, *, version: str, date: str) -> None:
-    """Promote `## [Unreleased]` in both the plugin and the app changelog."""
-    for rel in _CHANGELOGS:
-        _promote(repo_root / rel, version=version, date=date)
+    """Write `## [version] - date` into both the plugin and the app changelog: each one's `[Unreleased]`
+    entries plus its changelog.d/ fragments, which are deleted (scout.scripts.changelog)."""
+    changelog.assemble_changelogs(repo_root, version=version, date=date)
 
 
 def _git(repo_root: Path, *args: str) -> str:
@@ -272,7 +274,11 @@ def main(argv: list[str] | None = None) -> int:
         if len(rest) != 2:
             print("promote requires <X.Y.Z> <YYYY-MM-DD>", file=sys.stderr)
             return 2
-        promote_changelogs(repo, version=rest[0], date=rest[1])
+        try:
+            promote_changelogs(repo, version=rest[0], date=rest[1])
+        except ValueError as e:  # FragmentError lists every bad fragment
+            print(e, file=sys.stderr)
+            return 1
         return 0
     if cmd == "previous-release":
         artifact = opt("--for")
