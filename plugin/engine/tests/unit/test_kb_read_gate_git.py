@@ -925,6 +925,32 @@ def test_the_allowlist_refuses_every_other_subcommand_and_option() -> None:
         assert judge(sub, "--zzz") is not None
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git config user.name -x",  # a value git would read as an option
+        "N=-n; git log $N 5",  # a value option the shell makes: its value is the next word, unseen
+        "git config get",
+        "git config --get",
+        "git config --list user.name",
+        "git config user.name --get",
+        "git remote get-url",
+        "git remote show --verbose",
+        "git tag -n2 v1 -a",
+    ],
+)
+def test_more_forms_off_the_allowlist(home: Path, command: str) -> None:
+    _denied(_run(home, command))
+
+
+def test_read_config_is_none_for_a_file_git_cant_read(tmp_path: Path) -> None:
+    assert git_read.read_config(tmp_path / "missing") is None
+    (tmp_path / "bad").write_text("[core\n\tx = 1\n")
+    assert git_read.read_config(tmp_path / "bad") is None
+    (tmp_path / "ok").write_text("[Core]\n\tWorkTree = /x ; note\n")
+    assert git_read.read_config(tmp_path / "ok") == [("core.worktree", "/x")]
+
+
 def test_a_foreign_repository_holding_the_vaults_history_is_judged_by_the_paths_it_names(home: Path) -> None:
     r = home / "fetched"
     r.mkdir()

@@ -27,13 +27,12 @@ NEXT = "next"  # an optional value that takes the next word when it is no option
 
 @dataclass(frozen=True)
 class Spec:
-    """What one subcommand may take: its long and short options, whether it takes positional words (revs,
-    pathspecs, keys) and ``-<N>`` counts, and a last check on what was given (``check(positionals, options)``
-    returns the reason a form is refused, else None)."""
+    """What one subcommand may take: its long and short options (any other word is a rev, pathspec or key),
+    whether it takes ``-<N>`` counts, and a last check on what was given (``check(positionals, options)`` returns
+    the reason a form is refused, else None)."""
 
     longs: dict[str, str]
     shorts: dict[str, str] = field(default_factory=dict)
-    positionals: bool = True
     numbers: bool = False
     check: Callable[[list[str], set[str]], str | None] | None = None
 
@@ -209,8 +208,6 @@ def _option(
                     return None, None  # glued: `-n5`
                 return (f"-{letter}", None) if expanded else (None, VALUE)
         return None, None
-    if not spec.positionals:
-        return "a positional word", None
     positionals.append(word)
     return None, None
 
