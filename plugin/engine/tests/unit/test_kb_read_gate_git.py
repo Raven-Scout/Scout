@@ -301,6 +301,23 @@ MUST_DENY = [
     "git rebase -q -sx -x 'cat act*/cont*/x.md' HEAD",
     "git rebase -q --strategy-option -x 'cat act*/cont*/x.md' HEAD",
     "git clone -q -bx -u 'sh -c \"cat act*/cont*/x.md >&2\"; false' . ~/c",
+    # review round 5: git hands `--` to an option that takes a value and goes on
+    "git rebase -q -s -- -x 'cat act*/cont*/x.md' HEAD",
+    "git rebase -q -X -- -x 'cat act*/cont*/x.md' HEAD",
+    "git rebase -q --strategy -- -x 'cat act*/cont*/x.md' HEAD",
+    "git rebase -q -x 'cat act*/cont*/x.md' -- HEAD",
+    "git difftool -y -t -- -x 'sh -c \"cat act*/cont*/x.md >&2\"' HEAD -- docs/a.md",
+    "git ls-remote -o -- --upload-pack='sh -c \"cat act*/cont*/x.md >&2\"; false' .",
+    "git ls-remote --sort -- --upload-pack='sh -c \"cat act*/cont*/x.md >&2\"; false' .",
+    "git ls-remote --upload-pack -- --upload-pack='sh -c \"cat act*/cont*/x.md >&2\"; false' .",
+    "git clone -q -b -- -u 'sh -c \"cat act*/cont*/x.md >&2\"; false' . ~/c",
+    "git fetch -q -o -- --upload-pack='sh -c \"cat act*/cont*/x.md >&2\"; false' .",
+    "git pull -q -o -- --upload-pack='sh -c \"cat act*/cont*/x.md >&2\"; false' .",
+    "git push -q -o -- --receive-pack='sh -c \"cat act*/cont*/x.md >&2\"; false' ~/b.git HEAD",
+    # review round 5: grep's pager option runs a command
+    "git grep -O'sh -c \"cat act*/cont*/x.md >&2\"' DOCS -- docs",
+    "git grep --open-files-in-pager='sh -c \"cat act*/cont*/x.md >&2\"' DOCS -- docs",
+    "git grep -qO'sh -c \"cat act*/cont*/x.md >&2\"' DOCS -- docs",
     # review round 2: merge-file prints the files it names
     "git merge-file -p action-items/context/x.md docs/a.md docs/a.md",
     "git -C action-items merge-file -p context/x.md ../docs/a.md ../docs/a.md",
@@ -341,6 +358,7 @@ AFTER_FOLDER_CHANGES = [
 # folder made earlier, and these name action-items/; a folder from a substitution in a command that names it.
 STRICT_DENIES = [
     "git filter-branch -f --tree-filter 'cat act*/cont*/x.md' HEAD",
+    "git filter-branch -f -d -- --tree-filter 'cat act*/cont*/x.md' HEAD",
     # review round 3: programs git runs that the gate can't read, and the switches that let a URL run one
     "git clone -q --template=$HOME/t . ~/c",
     "git clone -q --templ=$HOME/t . ~/c",
@@ -364,6 +382,38 @@ STRICT_DENIES = [
     "GIT_SSH=$HOME/s git fetch -q origin",
     "export GIT_SSH=$HOME/s; git fetch -q origin",
     "GIT_ASKPASS=$HOME/s git fetch -q https://example.com/x",
+    # review round 5: config keys off the allowlist, a section renamed into another, an unknown subcommand
+    "git config submodule.s.update '!sh -c \"cat act*/cont*/x.md >&2\"'",
+    "git config imap.tunnel 'sh -c \"cat act*/cont*/x.md >&2\"'",
+    "git config instaweb.httpd 'sh -c x'",
+    "git config sendemail.smtpServer /bin/sh",
+    "git config remote.x.vcs foo",
+    "git config help.autocorrect immediate",
+    "git config core.worktree /tmp",
+    "git config safe.directory '*'",
+    "git config url.ext::sh.insteadOf zz:",
+    "git config Remote.X.UploadPack 'cat act*/cont*/x.md'",
+    "git config remote.a.b.uploadpack 'cat act*/cont*/x.md'",
+    "git config --type=path remote.x.uploadpack 'cat act*/cont*/x.md'",
+    "git config --comment hi remote.x.uploadpack 'cat act*/cont*/x.md'",
+    "git config set --append remote.x.uploadpack 'cat act*/cont*/x.md'",
+    "git config --global remote.x.uploadpack 'cat act*/cont*/x.md'",
+    "git config -f .git/config user.name A",
+    "git config --rename-section foo diff",
+    "git config rename-section foo core",
+    "git config --rename-section foo.x remote.x",
+    "git config --remove-section core",
+    "git -c help.autocorrect=immediate grpe x",
+    "git -c submodule.s.update='!cat x' submodule update",
+    "git -c imap.tunnel='cat x' imap-send",
+    "git --config-env=core.sshCommand=V ls-remote ssh://x/y",
+    "git grpe x",
+    "git shwo HEAD:action-items/context/x.md",
+    "git ci -m x",
+    "git send-email --to=a@example.com ~/p",
+    "git instaweb --start",
+    "git imap-send",
+    "git daemon --base-path=.",
     "git --git-dir=.git -C action-items show HEAD:./context/x.md",
     "GIT_DIR=.git GIT_WORK_TREE=. git -C action-items show HEAD:./context/x.md",
     "git -C $(echo action-items) show HEAD:./context/x.md",
@@ -413,6 +463,40 @@ def test_a_command_git_runs_is_judged_as_the_same_command_run_directly(home: Pat
 @pytest.mark.parametrize("command", STRICT_DENIES)
 def test_strict_denies(home: Path, command: str) -> None:
     _denied(_run(home, command))
+
+
+def test_a_repository_whose_work_tree_is_the_vault_holds_the_kb(home: Path) -> None:
+    """Review of #817, round 5: another repository with `core.worktree` pointing at the vault (set up by an earlier
+    call) indexes the vault's files at the vault's own places."""
+    r = home / "r"
+    r.mkdir()
+    _git(r, "init", "-q")
+    _git(r, "config", "core.worktree", str(home / "Vault"))
+    _git(r, "add", "-A")
+    for command in (
+        "git -C ~/r grep --cached x",
+        "git -C ~/r show :action-items/context/x.md",
+        "git -C ~/r grep --untracked x",
+        "git -C ~/r log -p -- action-items",
+    ):
+        _denied(_run(home, command))
+    assert _run(home, "git -C ~/r show :docs/a.md") is None
+    # And one whose work tree is a folder inside the vault: its tree paths are below that folder.
+    s = home / "s"
+    s.mkdir()
+    _git(s, "init", "-q")
+    _git(s, "config", "core.worktree", str(home / "Vault" / "action-items"))
+    _denied(_run(home, "git -C ~/s show :context/x.md"))
+    _denied(_run(home, "git -C ~/s grep x"))
+
+
+def test_a_repository_whose_config_includes_another_file_is_unresolved(home: Path) -> None:
+    r = home / "r2"
+    r.mkdir()
+    _git(r, "init", "-q")
+    (r / ".git" / "config").write_text((r / ".git" / "config").read_text() + "[include]\n\tpath = ~/elsewhere\n")
+    assert _run(home, "git -C ~/r2 show HEAD:./context/x.md") is None
+    assert "git_unresolved" in _events(home)[0]["payload"]["categories"]
 
 
 @pytest.mark.parametrize("command", AFTER_FOLDER_CHANGES)
@@ -494,6 +578,36 @@ ALLOWED = [
     "git add docs/a.md && git commit -m 'update docs'",
     'git commit -m "update docs" -- docs/a.md',
     "git add -A docs scripts && git commit -q -m x",
+    # review round 5: config writes on the allowlist, in the repository or the user's own config
+    "git config user.name A",
+    "git config user.email a@example.com",
+    "git config set user.name A",
+    "git config --global user.name A",
+    "git config --unset user.name",
+    "git config pull.rebase true",
+    "git config branch.main.remote origin",
+    "git config push.default simple",
+    "git config fetch.prune true",
+    "git config rebase.autoStash true",
+    "git config merge.ff only",
+    "git config init.defaultBranch main",
+    "git config commit.gpgsign false",
+    "git config core.autocrlf false",
+    "git config status.showUntrackedFiles no",
+    "git config color.diff.meta 'yellow bold'",
+    "git config credential.username x",
+    "git config log.date iso",
+    "git config remote.origin.prune true",
+    "git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'",
+    "git config branch.autoSetupRebase always",
+    "git config --rename-section color.x color.y",
+    "git config --get remote.origin.url",
+    "git config --list",
+    "git config --get-regexp '^remote\\.'",
+    "git -c color.ui=always log --oneline -1 -- docs",
+    "git -c core.quotepath=off status --short",
+    "git -c advice.detachedHead=false log -1 --oneline -- docs",
+    "git push -q origin main",
     # reads of other files
     "git diff HEAD -- docs/a.md",
     "git log -p -- docs/a.md",
@@ -787,12 +901,8 @@ COMMAND_LIKE = (
 )  # fmt: skip
 
 
-def test_every_git_config_key_that_runs_a_command_is_a_hook_form() -> None:
-    """Each key `git help --config` lists whose name ends like a command's is one the run gates refuse to set
-    (live_run._config_form), or a reviewed harmless one: a new git key that runs something fails here."""
+def _git_help_config_keys() -> set[str]:
     import re
-
-    from scout.kb.live_run import _config_form
 
     out = subprocess.run(["git", "help", "--config"], capture_output=True, text=True, check=False)
     if out.returncode != 0 or not out.stdout.strip():
@@ -803,8 +913,26 @@ def test_every_git_config_key_that_runs_a_command_is_a_hook_form() -> None:
         if re.match(r"^[A-Za-z][\w.<>-]*$", line.strip())
     }
     assert len(keys) > 300
-    command_like = {k for k in keys if k.endswith(COMMAND_LIKE) or k.startswith("pager.")}
-    missing = sorted(k for k in command_like if _config_form(k) is None and k not in BENIGN_CONFIG_KEYS)
-    assert not missing, missing
-    for key in ("remote.x.uploadpack", "remote.x.receivepack", "core.alternaterefscommand", "sendemail.tocmd"):
+    return keys
+
+
+def test_a_run_may_set_only_the_allowlisted_config_keys() -> None:
+    """Every key `git help --config` lists is on live_run.CONFIG_ALLOWED or refused in a run (review of #817, round
+    5: an allowlist, since a list of what runs commands never converged), and none on the allowlist has a name that
+    ends like a command's but for the reviewed harmless ones."""
+    from scout.kb.live_run import _config_form, config_allowed
+
+    keys = _git_help_config_keys()
+    assert all((_config_form(k) is None) is config_allowed(k) for k in keys)
+    risky = sorted(
+        k
+        for k in keys
+        if config_allowed(k) and (k.endswith(COMMAND_LIKE) or k.startswith("pager.")) and k not in BENIGN_CONFIG_KEYS
+    )
+    assert not risky, risky
+    for key in (
+        "remote.x.uploadpack", "remote.x.receivepack", "core.alternaterefscommand", "sendemail.tocmd",
+        "submodule.x.update", "imap.tunnel", "instaweb.httpd", "sendemail.smtpserver", "remote.x.vcs",
+        "help.autocorrect", "core.worktree", "safe.directory", "url.x.insteadof",
+    ):  # fmt: skip
         assert _config_form(key) is not None, key

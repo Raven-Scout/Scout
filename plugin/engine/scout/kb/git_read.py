@@ -174,14 +174,14 @@ def option_values(
     a cluster of flags (``-x cmd``, ``-qx cmd``, ``-ixcmd``), its value the rest of the word or the next word. In
     a cluster, another option that takes a value (``stops``: rebase's ``-X``) takes the rest of the word, so the
     scan of that word ends there. A next word taken as a value is still read for options of its own (``-Xx -x
-    'cmd'``): judging a word too many is safe, one too few is not. Stops at ``--``."""
+    'cmd'``): judging a word too many is safe, one too few is not. Every word is read, ``--`` and what follows it
+    too: git hands a ``--`` to an option that takes a value and goes on (``-s -- -x 'cmd'``), and a pathspec
+    spelled like an option is only over-judged."""
     out: list[str] = []
     i = 0
     while i < len(args):
         a = args[i]
         nxt = args[i + 1] if i + 1 < len(args) else None
-        if a == "--":
-            break
         if a.startswith("--") and len(a) > 2:
             name, eq, value = a[2:].partition("=")
             if any(long.startswith(name) for long in longs):
@@ -347,25 +347,55 @@ def _line_range(value: str, read: GitRead) -> None:
 # ----- judging tree paths (the gate's side: it has the disk) -----------------------------------------------
 
 
-def find_repo(start: Path, git_dir: Path | None, work_tree: Path | None) -> tuple[Path, Path] | None:
-    """``(top, common git folder)`` of the repository git uses from ``start``, as git finds it: ``--git-dir`` with
-    ``--work-tree`` (or ``start`` itself as the top, git's rule for a git dir given alone), else the nearest
-    folder at or above ``start`` holding ``.git`` (a folder, or a file naming one: a linked worktree, whose
-    ``commondir`` is the main repository's). None when there is none."""
+def find_repo(start: Path, git_dir: Path | None, work_tree: Path | None) -> tuple[Path, Path, bool] | None:
+    """``(top, common git folder, unsure)`` of the repository git uses from ``start``, as git finds it:
+    ``--git-dir`` (else the nearest folder at or above ``start`` holding ``.git``: a folder, or a file naming one, a
+    linked worktree whose ``commondir`` is the main repository's); its top is ``--work-tree``, else the repository's
+    own ``core.worktree`` (relative to its git folder), else the folder holding ``.git`` (``start`` for a git dir
+    given alone). ``unsure`` when its config includes another file the gate doesn't read. None when there is no
+    repository."""
+    found_at: Path | None = None
     if git_dir is None:
         for folder in (start, *start.parents):
             dot = folder / ".git"
             if dot.is_dir() or dot.is_file():
-                git_dir = _gitdir_of(dot)
-                top = work_tree or folder
+                git_dir, found_at = _gitdir_of(dot), folder
                 break
         else:
             return None
         if git_dir is None:
             return None
-    else:
-        top = work_tree or start
-    return top, _common(git_dir)
+    common = _common(git_dir)
+    configured, unsure = _core_worktree(git_dir, common)
+    top = work_tree or configured or found_at or start
+    return top, common, unsure
+
+
+def _core_worktree(git_dir: Path, common: Path) -> tuple[Path | None, bool]:
+    """A repository's ``core.worktree`` (its folder, from the git folder) and whether its config includes others."""
+    worktree: Path | None = None
+    unsure = False
+    for config in (common / "config", git_dir / "config.worktree"):
+        try:
+            text = config.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        section = ""
+        for line in text.splitlines():
+            line = line.strip()
+            m = re.match(r'^\[\s*([A-Za-z0-9.-]+)(?:\s+"[^"]*")?\s*\](.*)$', line)
+            if m:
+                section, line = m[1].lower(), m[2].strip()
+                if section in ("include", "includeif"):
+                    unsure = True
+                if not line:
+                    continue
+            kv = re.match(r"^([A-Za-z][A-Za-z0-9-]*)\s*=\s*(.*)$", line)
+            if section == "core" and kv and kv[1].lower() == "worktree":
+                value = kv[2].strip().strip('"')
+                target = Path(os.path.expanduser(value))
+                worktree = (target if target.is_absolute() else common / target).resolve()
+    return worktree, unsure
 
 
 def _gitdir_of(dot: Path) -> Path | None:

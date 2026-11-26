@@ -743,26 +743,59 @@ def _git_tree_reads_kb(
     if isinstance(git_dir, str) or isinstance(work_tree, str):
         return "unresolved"
     repo = git_read.find_repo(here, git_dir, work_tree)
-    ours = git_read.find_repo(paths.resolve_path(vault), None, None)
-    if repo is None or ours is None or not git_read.same_folder(repo[1], ours[1]):
-        return None  # not a repository, or another one: no KB note in its trees
-    vault_at = (git_read.rel_to(ours[0], paths.resolve_path(vault)) or "").casefold()
-    kb_dirs = [posixpath.join(vault_at, d) if vault_at else d for d in KB_DIRS]
+    if repo is None:
+        return None  # not a repository: git reads nothing of a tree
+    home = paths.resolve_path(vault)
+    ours = git_read.find_repo(home, None, None)
+    vault_at: str | None  # the vault's place below the repository's top, "" when it is the top
+    top_in: str | None = None  # or the top's place in the vault, when the top is inside it
+    if ours is not None and git_read.same_folder(repo[1], ours[1]):
+        vault_at = git_read.rel_to(ours[0], home) or ""
+    else:
+        # Another repository whose work tree is the vault, or in or above it (`core.worktree`, `--work-tree`):
+        # its index and history hold the vault's files at the same places (review of #817, round 5).
+        vault_at = git_read.rel_to(repo[0], home)
+        top_in = None if vault_at is not None else git_read.rel_to(home, repo[0])
+        if vault_at is None and top_in is None:
+            return "unresolved" if repo[2] else None  # its config includes a file that may move its work tree
+    vault_at = (vault_at or "").casefold()
+    top_in = None if top_in is None else top_in.casefold()
+
+    def to_vault(tree: str) -> str | None:
+        """A tree path's place in the vault ("" for the vault itself), or None outside it."""
+        tree = tree.casefold()
+        if top_in is not None:
+            joined = posixpath.normpath(posixpath.join(top_in or ".", tree or "."))
+            return "" if joined == "." else joined
+        if not vault_at or tree == vault_at:
+            return tree if not vault_at else ""
+        return tree[len(vault_at) + 1 :] if tree.startswith(vault_at + "/") else None
+
+    def tree_of(rel: str) -> str | None:
+        """A vault path's tree path, or None when the repository's tree doesn't hold it."""
+        if top_in is not None:
+            if not top_in:
+                return rel
+            return "" if rel == top_in else (rel[len(top_in) + 1 :] if rel.startswith(top_in + "/") else None)
+        return posixpath.join(vault_at, rel) if vault_at else rel
+
+    kb_dirs = [t for t in (tree_of(d) for d in KB_DIRS) if t is not None]
+    kb_index = tree_of("knowledge-base.md")
     prefix = git_read.rel_to(repo[0], here) or ""
     in_git_dir = git_read.rel_to(repo[1], here) is not None or ".git" in prefix.casefold().split("/")
     if in_git_dir:
         prefix = ""  # inside the git folder git works from the top (`git -C .git grep x HEAD` reads it all)
 
     def in_kb(tree: str) -> bool:
-        tree = tree.casefold()
-        if vault_at and not (tree == vault_at or tree.startswith(vault_at + "/")):
-            return False
-        rest = tree[len(vault_at) + 1 :] if vault_at else tree
-        return bool(rest) and is_kb_path(rest)
+        rest = to_vault(tree)
+        return rest is not None and rest != "" and is_kb_path(rest)
 
     def covers(tree: str) -> bool:  # a pathspec matches every path below it
         tree = tree.casefold()
-        return in_kb(tree) or tree == "" or any(d.startswith(tree + "/") for d in kb_dirs)
+        if top_in is None and vault_at and (tree == "" or vault_at.startswith(tree + "/")):
+            return True  # a folder above the vault
+        rest = to_vault(tree)
+        return rest is not None and (rest == "" or is_kb_path(rest) or any(d.startswith(rest + "/") for d in KB_DIRS))
 
     def reaches(spec: str) -> bool:
         """A pathspec matches a KB path: it is one, or a folder above one, or a wildcard (whose ``*`` crosses
@@ -777,7 +810,7 @@ def _git_tree_reads_kb(
         pattern = spec.casefold()
         if any(fnmatch.fnmatchcase(d, pattern) for d in kb_dirs):
             return True
-        return _kb_file_matches(vault, vault_at, pattern)
+        return _kb_file_matches(vault, tree_of, pattern)
 
     def left_in(root: str, excluded: list[str]) -> bool:
         """Whether everything below ``root`` but the ``excluded`` paths still holds a KB path (a wildcard
@@ -789,7 +822,9 @@ def _git_tree_reads_kb(
 
         if in_kb(root):
             return not out(root)
-        targets = [*kb_dirs, posixpath.join(vault_at, "knowledge-base.md") if vault_at else "knowledge-base.md"]
+        targets = [*kb_dirs, *([kb_index] if kb_index is not None else [])]
+        if root == "" and to_vault("") and is_kb_path(to_vault("") or ""):
+            return not out("")  # the whole tree is inside the KB
         return any((root == "" or t.startswith(root + "/")) and not out(t) for t in targets)
 
     bounded, unresolved = False, False
@@ -845,8 +880,9 @@ def _is_exclusion(word: str) -> bool:
 GIT_GLOB_CAP = 20000  # KB files a git pathspec's wildcard is matched against; more counts as a match
 
 
-def _kb_file_matches(vault: Path, vault_at: str, pattern: str) -> bool:
-    """Whether a git wildcard pathspec (casefolded, from the repository's top) matches a KB note on disk."""
+def _kb_file_matches(vault: Path, tree_of: Callable[[str], str | None], pattern: str) -> bool:
+    """Whether a git wildcard pathspec (casefolded, from the repository's top) matches a KB note on disk; ``tree_of``
+    gives a vault path's tree path."""
     seen = 0
     for kb_dir in KB_DIRS:
         root = vault / kb_dir
@@ -855,12 +891,12 @@ def _kb_file_matches(vault: Path, vault_at: str, pattern: str) -> bool:
                 seen += 1
                 if seen > GIT_GLOB_CAP:
                     return True  # fail closed: too many to look through in time
-                rel = (Path(folder) / name).relative_to(vault).as_posix()
-                tree = f"{vault_at}/{rel}" if vault_at else rel
-                if fnmatch.fnmatchcase(tree.casefold(), pattern):
+                rel = (Path(folder) / name).relative_to(vault).as_posix().casefold()
+                tree = tree_of(rel)
+                if tree is not None and fnmatch.fnmatchcase(tree, pattern):
                     return True
-    index = f"{vault_at}/knowledge-base.md" if vault_at else "knowledge-base.md"
-    return fnmatch.fnmatchcase(index, pattern)
+    index = tree_of("knowledge-base.md")
+    return index is not None and fnmatch.fnmatchcase(index, pattern)
 
 
 def _literal_globs(target: str) -> list[str] | None:

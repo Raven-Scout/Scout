@@ -223,6 +223,9 @@ bash_pattern() {
     git_reads="$git_reads"'|git[^;&|]* (add|checkout|reset|restore|commit|status|stash)[^;&|]* (-p|--patch|-v|-vv|--verbose)([^A-Za-z0-9_-]|$)'
     git_reads="$git_reads"'|git[^;&|]*:[!^]'
     alt "$git_reads"
+    # The git subcommands that stay in the shell when nothing else here sends the call to Python: they print
+    # no file's contents and run no command of the caller's (prefilter's last stage sends any other).
+    git_plain='status add commit rev-parse branch ls-files ls-tree checkout switch restore reset rm mv tag merge stash init version help describe shortlog rev-list count-objects gc fsck symbolic-ref for-each-ref show-ref name-rev merge-base cherry var check-ignore check-attr worktree remote notes maintenance'
     # -- HOME. The gates expand `~` and `$HOME` with the run's own HOME, so a command that points HOME
     #    elsewhere first (`HOME=x cmd`, `unset HOME`, `export HOME=…`) names files they never check.
     #    Every mention goes to Python, which denies a change and lets `HOME=$HOME` or a read through.
@@ -350,6 +353,16 @@ bash_needs_python() {
     # `g\it grep x`, `git<TAB>grep x`, `git \<newline>log -p`): Python judges what git reads.
     matches_i "$git_reads"
     [ "$?" -ne 1 ] && return 0
+    # And any git call whose subcommand isn't a plain one: an alias, a typo help.autocorrect may run as
+    # another subcommand, or one that runs a command (rebase -x, fetch --upload-pack, submodule).
+    git_calls=$(printf '%s' "$v" | "$tr" 'A-Z' 'a-z' |
+        "$GREP" -oE '(^|[^a-z0-9_.-])git( +-[c] +[^ ;&|]+| +-[^ ;&|]*)* +[a-z0-9][a-z0-9-]*') || git_calls=
+    while IFS= read -r git_call; do
+        [ -n "$git_call" ] || continue
+        case " $git_plain " in *" ${git_call##* } "*) ;; *) return 0 ;; esac
+    done <<EOF
+$git_calls
+EOF
     # A builtin that sets or unsets the variables it names, anywhere in the command, its own name perhaps
     # quoted or escaped (`"read" HOM?`, `\export`, `r''ead`): its target need not spell HOME (`export
     # $v=…`, `read H$v`, `read HOM?` with a file named HOME), so Python reads every one, and denies a

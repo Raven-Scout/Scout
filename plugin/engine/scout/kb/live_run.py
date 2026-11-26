@@ -1177,9 +1177,49 @@ _COMMAND_KEY_SUFFIXES = (
 )  # fmt: skip
 
 
-def _config_form(key: str) -> str | None:
-    """The name of a config key that changes which hooks or commands run (keys don't depend on case)."""
+# The config keys a run may set (`git config`, `-c`, `--config-env`): plain settings that run nothing and point git
+# at nothing that does (review of #817, round 5: a list of what runs commands never converged). `*` is a name or
+# subsection (`branch.*.remote`). Anything else is refused in a run, as a key that may change which commands run.
+CONFIG_ALLOWED = (
+    "user.*", "color.*", "advice.*", "i18n.*", "column.*",
+    "core.autocrlf", "core.quotepath", "core.safecrlf", "core.filemode", "core.ignorecase",
+    "core.precomposeunicode", "core.excludesfile", "core.eol", "core.whitespace", "core.abbrev",
+    "init.defaultbranch",
+    "pull.rebase", "pull.ff",
+    "push.default", "push.autosetupremote", "push.followtags",
+    "fetch.prune", "fetch.prunetags",
+    "rebase.autostash", "rebase.autosquash", "rebase.updaterefs",
+    "merge.ff", "merge.conflictstyle", "merge.log",
+    "commit.gpgsign", "commit.cleanup", "commit.status", "gpg.format", "tag.sort", "tag.gpgsign",
+    "status.showuntrackedfiles", "status.short", "status.branch", "status.relativepaths",
+    "diff.colormoved", "diff.noprefix", "diff.renames", "diff.algorithm", "diff.mnemonicprefix",
+    "diff.indentheuristic", "log.date", "log.decorate", "format.pretty",
+    "branch.autosetuprebase", "branch.autosetupmerge", "branch.sort",
+    "branch.*.remote", "branch.*.merge", "branch.*.rebase", "branch.*.pushremote",
+    "remote.*.url", "remote.*.pushurl", "remote.*.fetch", "remote.*.push", "remote.*.prune", "remote.*.tagopt",
+    "remote.pushdefault",
+    "credential.username", "credential.*.username",
+    "mergetool.keepbackup", "mergetool.prompt", "difftool.prompt",
+    "gc.auto", "maintenance.auto", "rerere.enabled",
+)  # fmt: skip
+# Sections every key of which is on the list: the only ones a run may rename or remove whole.
+CONFIG_PLAIN_SECTIONS = ("user", "color", "advice", "i18n", "column")
+
+
+def config_allowed(key: str) -> bool:
+    """Whether a run may set ``key`` (:data:`CONFIG_ALLOWED`; keys don't depend on case)."""
+    import fnmatch
+
     key = key.lower()
+    return any(fnmatch.fnmatchcase(key, pattern) for pattern in CONFIG_ALLOWED)
+
+
+def _config_form(key: str) -> str | None:
+    """The name of a config key a run may not set, else None: any key off :data:`CONFIG_ALLOWED`. The ones known to
+    change which hooks or commands run keep their own names (keys don't depend on case)."""
+    key = key.lower()
+    if config_allowed(key):
+        return None
     if key == "core.hookspath":
         return "core.hooksPath"
     if key.startswith("alias."):
@@ -1193,15 +1233,15 @@ def _config_form(key: str) -> str | None:
     # A proxy command, and the protocol switches that let `ext::` URLs run one (review of #817, round 3).
     if key == "core.gitproxy" or key == "protocol.allow" or (key.startswith("protocol.") and key.endswith(".allow")):
         return key
-    return None
+    return key  # off the list: may run something (`submodule.x.update = !cmd`, `imap.tunnel`, `help.autocorrect`)
 
 
 def _config_flag_form(flag: str, setting: str) -> str | None:
     key = setting.split("=", 1)[0]
+    if _dynamic(key):
+        return f"{flag} <unknown>"
     form = _config_form(key)
-    if form is not None:
-        return f"{flag} {form}"
-    return f"{flag} <unknown>" if _dynamic(key) else None
+    return f"{flag} {form}" if form is not None else None
 
 
 def _short_no_verify(subcommand: str, flag: str) -> tuple[bool, bool]:
@@ -1283,16 +1323,49 @@ def _config_writes(args: list[str]) -> bool:
     return bool(positional) and (positional[0] in _CONFIG_WRITE_SUBCOMMANDS or len(positional) >= 2)
 
 
+def _config_positionals(args: list[str]) -> list[str]:
+    """A `git config` call's words that aren't options or their values (subcommand, key, value…)."""
+    out: list[str] = []
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in _CONFIG_VALUE_FLAGS:
+            skip = True
+        elif a.startswith("-") and a != "-":
+            continue
+        else:
+            out.append(a)
+    return out
+
+
 def _git_config_form(args: list[str]) -> str | None:
     if any(a in _CONFIG_READS for a in args) or not _config_writes(args):
         return None
-    for a in args:
-        form = _config_form(a)
-        if form is not None:
-            return f"git config {form}"
+    words = _config_positionals(args)
+    renames = any(a in ("--rename-section", "--remove-section") for a in args) or words[:1] in (
+        ["rename-section"],
+        ["remove-section"],
+    )
+    if words[:1] and words[0] in _CONFIG_WRITE_SUBCOMMANDS:
+        words = words[1:]
+    if renames:
+        # A section renamed into another (`foo` → `diff`) brings its keys along: only plain sections move.
+        for section in words[:2]:
+            if _dynamic(section) or section.lower().split(".", 1)[0] not in CONFIG_PLAIN_SECTIONS:
+                return f"git config --rename-section {section.lower() if not _dynamic(section) else '<unknown>'}"
+        return None
+    if not words:
+        return None
+    key = words[0]
+    if _dynamic(key):
+        return "git config <unknown>"
+    form = _config_form(key)
+    if form is not None:
+        return f"git config {form}"
     scope = next((a for a in args if a in _CONFIG_SCOPES or a.startswith("--file=")), None)
-    if scope is not None and scope != "--blob" and any(not a.startswith("-") for a in args):
-        return f"git config {scope.split('=', 1)[0]}"  # any key: the user's or another config file
+    if scope is not None and scope not in ("--blob", "--global", "--worktree"):
+        return f"git config {scope.split('=', 1)[0]}"  # another config file: what it holds is unknown
     return None
 
 
@@ -1942,6 +2015,7 @@ _GIT_RUN_OPTIONS: dict[str, tuple[set[str], set[str]]] = {
     "push": ({"receive-pack", "exec"}, set()),
     "send-pack": ({"receive-pack", "exec"}, set()),
     "archive": ({"exec"}, set()),
+    "grep": ({"open-files-in-pager"}, {"O"}),
 }  # fmt: skip
 # Each subcommand's other short options that take a value: in a cluster, the first one takes the rest of the word
 # (`-Xours`, `-Xx -x 'cmd'`), so the scan stops there.
@@ -2002,6 +2076,29 @@ def _git_programs(words: list[str], cwd: str) -> list[str]:
     return [f"cd {shlex.quote(where)} && {p}" if where else p for p in programs]
 
 
+# git's own subcommands (git 2.52's builtins and scripts) and the common external one (lfs). Any other in a run is an
+# alias or a typo that help.autocorrect may run as a subcommand the gate didn't judge (review of #817, round 5).
+_GIT_KNOWN_SUBCOMMANDS = frozenset(
+    """
+    add am annotate apply archive backfill bisect blame branch bugreport bundle cat-file check-attr check-ignore
+    check-mailmap check-ref-format checkout checkout-index cherry cherry-pick citool clean clone column commit
+    commit-graph commit-tree config count-objects credential credential-cache credential-store describe diagnose
+    diff diff-files diff-index diff-tree difftool fast-export fast-import fetch fetch-pack filter-branch
+    fmt-merge-msg for-each-ref for-each-repo format-patch fsck fsck-objects gc get-tar-commit-id grep gui
+    hash-object help hook index-pack init init-db interpret-trailers log ls-files ls-remote ls-tree mailinfo
+    mailsplit maintenance merge merge-base merge-file merge-index merge-one-file merge-tree mergetool mktag mktree
+    multi-pack-index mv name-rev notes pack-objects pack-redundant pack-refs patch-id prune prune-packed pull push
+    range-diff read-tree rebase receive-pack reflog refs remote repack replace replay request-pull rerere reset
+    restore rev-list rev-parse revert rm send-pack shortlog show show-branch show-index show-ref sparse-checkout
+    stage stash status stripspace submodule switch symbolic-ref tag unpack-file unpack-objects update-index
+    update-ref update-server-info upload-archive upload-pack var verify-commit verify-pack verify-tag version
+    whatchanged worktree write-tree lfs
+""".split()
+)
+# Subcommands that run commands from options and config too many to judge: denied in a run outright.
+_GIT_DENIED_SUBCOMMANDS = frozenset({"send-email", "instaweb", "imap-send", "daemon"})
+
+
 def _git_run_form(words: list[str]) -> str | None:
     """The form of a git call that runs a program the gate can't read, else None: hooks from a template folder
     (``clone``/``init --template``), an ``ext::`` URL (it runs a command), or a ``GIT_SSH``/``GIT_ASKPASS``/
@@ -2014,6 +2111,13 @@ def _git_run_form(words: list[str]) -> str | None:
         return None
     at = git_read.split_global(git)[3]
     sub, args = (raw_read.fold(git[at]), git[at + 1 :]) if at < len(git) else ("", [])
+    if not sub:
+        return None
+    if sub in _GIT_DENIED_SUBCOMMANDS:
+        return f"git {sub}"  # runs commands from options and config too many to judge
+    plain_git = raw_read.fold(raw_read._command_name(stripped.words[0])) == "git"  # not a git-* script
+    if plain_git and sub not in _GIT_KNOWN_SUBCOMMANDS and not _dynamic(sub):
+        return "git <unknown subcommand>"  # an alias, or a typo help.autocorrect may run as another
     if sub in ("clone", "init") and git_read.option_values(args, {"template"}, set()):
         return f"git {sub} --template"
     if any(raw_read.fold(a).lstrip("'\"").startswith("ext::") or "=ext::" in raw_read.fold(a) for a in git):

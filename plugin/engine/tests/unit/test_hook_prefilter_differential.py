@@ -95,6 +95,15 @@ GIT_READS = (
     "|git[^;&|]*:[!^]"
 )
 
+# The git subcommands prefilter.sh keeps in the shell ($git_plain); its last stage sends any other git call to Python
+# (review of #817, round 5: an alias or a typo help.autocorrect runs may be any subcommand).
+GIT_PLAIN = frozenset(
+    "status add commit rev-parse branch ls-files ls-tree checkout switch restore reset rm mv tag merge stash init"
+    " version help describe shortlog rev-list count-objects gc fsck symbolic-ref for-each-ref show-ref name-rev"
+    " merge-base cherry var check-ignore check-attr worktree remote notes maintenance".split()
+)
+GIT_CALL = re.compile(r"(?:^|[^a-z0-9_.-])git(?: +-[c] +[^ ;&|]+| +-[^ ;&|]*)* +([a-z0-9][a-z0-9-]*)")
+
 EXPANSION_ALTERNATIVES = (
     r"\*",
     r"(^|[^$])\?",
@@ -458,7 +467,7 @@ KNOWN_MISSED_FORMS: tuple[tuple[str, bool], ...] = (
     ("exec -a x bash -c ls", True),
     ("unset $v", True),  # expansion: `$`
     ("$'SCOUT\\x5fMODE'= git commit -m x", True),  # expansion: `$`
-    ("git ci -m x", False),
+    ("git ci -m x", True),  # an alias, or a typo: Python judges any subcommand off the plain list (#817)
     ("make commit", False),
     ("./commit.sh", False),
     ("coproc sleep 9", False),
@@ -701,7 +710,7 @@ NOT_EXPANSIONS = (
     "git rev-parse --show-toplevel",
     "git branch -a",
     "git ls-files docs",
-    "git push -q origin main",
+    "git status --short && git rev-parse HEAD",
 )
 
 # Readers the KB read gate judges since the #790 follow-up (scout.kb.other_reads, and raw_read's plain readers):
@@ -924,6 +933,7 @@ def _expansion_matches(commands: list[str]) -> set[str]:
             or re.search(STRIPPED_NAMES, home_stripped)
             or STRIPPED_NAMERS.search(home_stripped)
             or re.search(GIT_READS, home_stripped, re.I)  # the git reads, any case, through quotes, \ or a tab
+            or any(m[1] not in GIT_PLAIN for m in GIT_CALL.finditer(home_stripped.lower()))
         ):
             matched.add(command)
     return matched

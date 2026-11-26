@@ -47,4 +47,12 @@
   (`remote.x.uploadpack`, `remote.x.receivepack`, `*.cmd`, `*command`, `*.program`, `*.path`, `*.browser`, …),
   plus `gc.recentObjectsHook`, `core.alternateRefsCommand` and `interactive.diffFilter`; a test checks the
   list against `git help --config`. A link to a glob, or to a target the gate can't work out, counts as one
-  that may be the vault.
+  that may be the vault. In a run, `git config` writes, `-c` and `--config-env` may set only a reviewed list of
+  plain keys (`user.*`, `color.*`, `advice.*`, `pull.rebase`, `push.default`, `branch.*.remote`, `remote.*.url`,
+  …; `live_run.CONFIG_ALLOWED`); any other key, and a section renamed or removed unless it is a plain one, is
+  refused, and a test checks every key `git help --config` lists against the list. An option's value may be
+  `--`, as git allows (`git rebase -s -- -x 'cmd'`). A git subcommand that isn't git's own (an alias, or a typo
+  `help.autocorrect` may run) is refused in a run, as are `send-email`, `instaweb`, `imap-send` and `daemon`;
+  `git grep -O` counts as a command git runs; and a repository whose `core.worktree` is the vault, or a folder in
+  or above it, holds the KB. The shell pre-filter sends any git call to the gate but those whose subcommand is a
+  plain one (`status`, `add`, `commit`, `rev-parse`, `branch`, `checkout`, …).

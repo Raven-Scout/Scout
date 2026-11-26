@@ -739,7 +739,6 @@ def test_a_hook_skip_reaches_python_from_the_shell(vault, tmp_path, command):
         "git commit --amend --no-edit",
         "git commit -F notes/msg.txt",
         "git merge -n feature",
-        "git push origin main",
         "scripts/git-safe-commit.sh 'kb: note' notes/a.md",
         "scripts/scoutctl kb search commit",
         "ls notes -n",
@@ -751,7 +750,7 @@ def test_ordinary_git_stays_in_the_shell(vault, tmp_path, command):
     assert res.returncode == 0 and res.stdout == "" and res.stderr == "", command
 
 
-@pytest.mark.parametrize("command", ["git log -n 5", "git diff HEAD", "git show --stat HEAD"])
+@pytest.mark.parametrize("command", ["git log -n 5", "git diff HEAD", "git show --stat HEAD", "git push origin main"])
 def test_git_content_subcommands_go_to_python_which_allows_the_ordinary_ones(vault, tmp_path, command):
     """A git subcommand that can print file contents may cover the KB without naming it, so Python decides."""
     payload = _payload("Bash", {"command": command}, vault).getvalue()
