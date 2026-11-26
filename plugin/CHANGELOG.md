@@ -10,6 +10,231 @@ entries from PRs opened before fragments existed; prepare moves them too.
 
 ## [Unreleased]
 
+## [0.18.24] - 2026-11-25
+
+### Added
+- **A delegate can see past `privacy.sync_only`** (`engine/scout/kb/privacy.py`, `engine/scout/delegate_mirror.py`).
+  `sync_only` is the allowlist for what reaches Agnes, and every delegate mirror kept to it too, so an agent
+  of your own got only the Agnes folders. Set `privacy.delegates.<id>.ignore_sync_only: true` to let that one
+  delegate's mirror see the rest of the vault. Like `include_private`, it counts only when written exactly
+  `true`, and only when both `scout-config.yaml` and its committed version say so. Local-only paths and the
+  phone inbox still never go, a private note still needs `include_private: true`, and other delegates and
+  Agnes keep the allowlist.
+- **The groundwork for Antigravity CLI runs** (runtime-agnostic Phase 2A; `engine/scout/agent_runtimes/antigravity.py`,
+  `scripts/spikes/agy-launchd-login.sh`). An `antigravity` adapter skeleton gives where agy lives, its version and
+  its run-sandbox paths. Its data folder is the only thing a run may write under `~/.gemini`, never its hook config,
+  and inside that folder never `builtin/`: agy loads the skills and plugins there into every later session
+  (`engine/scout/sandbox/profile.py`, `AGENT_DATA_REDENY`). The adapter isn't registered yet, so no slot can choose
+  it. Kernel tests pin, under the run profile, agy's data folder as writable and its gate config, `builtin/` and
+  binary as not. A spike script prints a one-shot launchd job, for the owner
+  to load by hand, that checks agy's sign-in from launchd.
+- **`scoutctl lab` reads and writes research threads, and `kb lint` checks them** (`engine/scout/lab/`). A thread is a markdown folder in the vault: a front page, questions, experiments and a timeline. `lab list` and `lab show --json` (schema_version 1) report them; the owner and run verbs comment, answer questions, record evidence, plan experiments and file proposals. Writes take a vault-wide lock and replace files atomically, and never commit. The new `lab-format` lint check reports malformed lab files. Limits sit under `lab:` in `scout-config.yaml`.
+- **The run broker runs experiments in a sandbox with a metered model budget** (`engine/scout/lab/runner.py`, `engine/scout/sandbox/broker.py`). The `experiment` verb is off until the owner sets `"experiments_enabled": true` under `"lab"` in the broker's `config.json`. It runs only a plan committed at least `notice_hours` ago that was started, isn't vetoed and isn't held by an unanswered owner comment, within the run's count and cost cap. The script runs as committed under a macOS sandbox: it writes only its own folder, reaches the network only through the meter, can't read private notes, other experiments or the broker's queue, and is held to process, open-file and byte limits. `lab veto` works on a planned or running experiment and records the veto first in the owner's `lab-vetoes.jsonl`, which a run can't write.
+- **Lab privacy.** A private thread's files each say `visibility: private`, and `lab.md` never names one. Everything under `knowledge-base/lab/*/experiments/*/` is private by path (a new `visibility_forced_private` list an overlay can't change); `lab show` and `lab list` leave out experiments the reader can't see, and count them.
+- **Run health says when a slot ran on Claude Code instead of the runtime set for it** (#652 S7;
+  `engine/scout/health.py`, `templates/run-*.sh.tmpl`, `templates/scripts/run-outcome.sh.tmpl`). When the runner
+  can't resolve a slot's agent runtime, it still falls back to claude-code, and the run's ledger row now records
+  `agent_runtime_fallback: resolve_failed`. Until a later run of that slot resolves its runtime, run health shows the
+  yellow finding `agent_runtime.fallback`, naming the slots and how to see the error. Before, only the run log said so.
+
+### Changed
+- **The shell stage of the tool hooks moved out of `hooks/hooks.json` into `hooks/prefilter.sh`**, with no
+  change in which calls reach Python. Each hook's pre-filter (the part that decides, in the shell, whether
+  `scoutctl hook <name>` starts at all) was a one-line command inside the JSON; the `kb-read-gate` one for
+  `Grep|Glob|Bash` was 4,105 characters. They are now named filters in one POSIX script. Each
+  `hooks.json` entry is a small wrapper: it runs `/bin/sh "${CLAUDE_PLUGIN_ROOT}/hooks/prefilter.sh"
+  <filter> "${CLAUDE_PLUGIN_ROOT}/engine/bin/scoutctl" hook <name>`, hands on the script's verdict
+  (below), and otherwise starts `scoutctl hook <name>` itself, or, for a gate in a run whose script
+  was killed, blocks the call.
+  - The Bash pattern is built from one commented alternation group per concern (run identity, KB globs,
+    recursive reads, detaching, hook-skip forms, writers, protected paths, secrets, the delegate inbox).
+    The old pattern held one 1,117-character block twice; the copies were identical runs of whole
+    alternatives, so one was dropped.
+  - The PATH filter and the vault walk, repeated in every entry before, are written once.
+  - The script's own exit code is never trusted: a syntax error exits 2 (a hook's "block", for an
+    owner too) and an empty, comment-only, NUL-filled or no-op copy exits 0 (a hook's "allow", in a
+    run too). Every filter ends with exit 200 + the hook's code, and each entry hands on only such a
+    verdict. If `prefilter.sh` is missing, empty, cut off, broken or does nothing, the entry starts the
+    Python hook directly, exactly as with no script; so a broken copy costs time and never a check, and
+    never blocks an owner. If it is killed mid-way, a gate entry (`kb-read-gate`, `kb-write-gate`,
+    `outbound-gate`, `mcp-tool-gate`) blocks a run's call (exit 2) rather than hand Python a payload
+    that may already have been read; an owner's call goes to Python.
+  - **Fixed: a run whose PATH lacked `cat`, `grep` or `tr` let every Bash call through unjudged**, and a
+    `grep` error counted as "no match". The filters now take their tools from `/usr/bin` or `/bin` first,
+    and any tool status other than 0 or 1 sends the call to Python (or, when the payload itself can't be
+    read, blocks a run's call).
+  - A hook started with its stdin closed is blocked at once in a run, instead of `cat` waiting forever
+    on the pipe that took fd 0.
+  - CI's `plugin-lint` now runs shellcheck on `hooks/prefilter.sh`.
+  - The run-only entries test for a run before anything else, so an owner session's call now leaves
+    without starting any program (before, it filtered PATH first).
+  - The filters now always run under `/bin/sh`, whatever shell Claude Code starts hooks with.
+  - `engine/tests/unit/test_hook_prefilter_differential.py` runs the old commands (kept as
+    `engine/tests/fixtures/hooks/hooks-inline-f3d30663.json`) and the new ones over every string the gate
+    tests use plus the forms the `description` names, under each reader, in and out of a vault, with
+    Python succeeding and failing, and requires the same exit code, output and Python start for each.
+- **The agent-runtime interface is ready for a second runtime** (#652; `engine/scout/agent_runtimes/`). A Claude Code
+  run starts the same way: its argv, working directory, gate probe call and sandbox profile are what they were. Its
+  environment gains only an empty `SCOUT_AGENT_RUNTIME_FALLBACK`, and the rows of runs skipped at the gate probe or
+  the sandbox now name their runtime.
+  - **The launch environment.** A runtime that isn't Anthropic's (by its registered id, not by what its adapter
+    says) gets only an allowlist of the runner's environment: `PATH`, `HOME`, the account and locale, `XDG_*`,
+    git's per-run `GIT_CONFIG_*` and `SCOUT_*` (`base.NON_ANTHROPIC_ENV_ALLOW`). So no `CLAUDE_CODE_OAUTH_TOKEN` or
+    other `CLAUDE_*`/`ANTHROPIC_*` variable, no cloud or GitHub credentials, and no `SSH_AUTH_SOCK`. An adapter can
+    remove more and add its own (`Launch.env_unset`, `Launch.env`), never an Anthropic one, and can name a
+    working directory (`Launch.cwd`).
+  - **The run timeout travels in the request** (`RunRequest.timeout_s`), so `exec` no longer asks the limits itself.
+  - **Each runtime brings its own gate probe and sandbox paths.** The runners now resolve the runtime before the
+    gate probe, and pass any runtime other than claude-code to `scoutctl gates probe --runtime` and
+    `scoutctl sandbox profile --runtime`. The probe passes only when that runtime's adapter has proven every hook
+    capability a run on the vault needs. The sandbox adds the adapter's protected trees and the folders under them
+    that its CLI must write (`sandbox_paths`). A folder it asks to write can't be a file, must lie inside one of
+    its own protected trees, and may not hold, or sit inside, any of Scout's protected paths. Inside another agent
+    CLI's home folder (`~/.codex`, `~/.gemini`, …) the only writable folders are the exact data folders the profile
+    lists for that runtime id (`profile.AGENT_DATA_DIRS`, so far agy's `~/.gemini/antigravity-cli`), whatever the
+    adapter says, and every CLI's hook and config files (`settings*.json`, `config.toml`, `hooks.json`, `hooks/`,
+    `mcp*.json`) stay denied under them. Otherwise the profile isn't built and the run is skipped.
+  - **An adapter can't declare a hook capability**: only a probe proves those, so registering one that does fails.
+    The `claude-code` id can't be taken by another adapter.
+  - **Claude-specific code left the shared modules.** `check`'s interactive shortcut is the adapter's
+    `interactive_host`, `limits` names `registry.BUILTIN_DEFAULT`, and `caps_own_spend` is now worked out from the
+    adapter's `declared_capabilities` (`budget_cap`) instead of being a second flag.
+  - **The owner's stores have their own protection label.** A write to provider consent, run limits or the other
+    stores in `~/.local/state/scout/` is refused as "the owner's Scout settings", not "Scout's engine".
+
+### Fixed
+- The changes map no longer takes a run's word for who made a commit. A scheduled run could commit a brain or driver edit with any subject (`fix: …`, `Revert "…"`, `scout-update: …`), and the map filed it as the owner's own work: untested, and never offered for undo. A run's commits are now recorded outside the run, in the owner-only store (`run-commits.jsonl`, which a sandboxed run can't write), and the map puts them in the run's lane whatever their subject. A run whose mode names no lane (manual, respond, a custom slot) gets the new tested `run` lane. Commits from before this release are still classified by their subject prefix.
+- With the run's brokers on (Phase 1d), the commit broker records each commit it makes, exactly: the run has no other way to commit, and the owner's own commits, in a worktree or the vault's own checkout, stay the owner's. `scripts/git-safe-commit.sh` (a managed script) now names the commit it made, found by a reflog tag of its own, as its last line of output, and says when a failed commit left HEAD where it was; a broker commit that may have landed but can't be named (the helper stopped, or failed after committing) makes the run's commits be worked out from git as below, as does a run whose wrapper kept the earlier sandbox profile after all; `/scout-update` re-renders it, and until then the broker can't name its commits, so those runs are attributed from git as below.
+- A run without its broker (Phase 1c, or the sandbox off) can rewrite the vault's git dir, so for it `scoutctl sandbox verify` works out the run's commits from git as a best effort that isn't sound against a run doing so: it fails closed where it can tell, and run health says when a run was attributed this way. Automatic rollback acts only on commits the broker recorded. A run whose commits couldn't be recorded at all shows in run health as an integrity check that didn't run, and `scoutctl changes scan` reads back the last 14 days of recorded run commits, so moving the scan's watermark or emptying `changes.jsonl` can't hide them.
+- Run health now says when a vault is a shallow git clone (`changes.shallow_vault`): the changes map can't walk a shallow vault's history, so it can't tell Scout's commits from yours there. `git fetch --unshallow` fixes it.
+- **The post-run integrity check no longer blames a run for another session's commit, and never writes onto another session's branch** (`engine/scout/sandbox/integrity.py`). An owner session that fast-forwarded the vault's `main` mid-run with an approved `.claude/settings.json` change got a "restore" commit on `main` and on every `claude/*` branch other sessions had just made from it, and run health turned red (`run.integrity_restored`).
+  - Under Phase 1d (the enforced sandbox with the broker's tightened profile, which leaves the commit broker as the run's only way into git), a protected file is the run's only if a commit the run-commit ledger names touched it (any row, however sure it is). Anything else that changed during the run is one "left alone" log line, not a restore and not a finding. That covers branches and worktrees made during the run, and the index after an owner merge in the vault's checkout. A protected file the run's own commit touched is still put back, even under a later owner commit or a forged author, and health turns red as before.
+  - Without that record (Phase 1c, sandbox off, or a commit the broker started without recording it), the check stays conservative, as before.
+  - In both cases a restore commit is never written onto a branch another work tree has checked out now, including one it is rebasing or bisecting on a detached HEAD. Such a branch is reported as still holding the change (`unrestored`, health red), and the log names the worktree and the paths to check. The vault's own branch is always put back.
+  - The health finding and the "Resolve with Claude" prompt for a change still held now say which case it is: a branch another session has checked out (find the commit there and `git revert` it; `git reset --hard` or `git stash` keeps the bad file), a tag or the stash. Before, they only mentioned a tag or the stash.
+- **`ag`, `ack`, `fd` and `ugrep` from the vault root are KB reads** (`engine/scout/kb/raw_read.py`, `hooks/hooks.json`; follow-up to #541). The `kb-read-gate` hook and the eval's `privacy_hygiene` check already flagged these tools when given a KB path, but a search with no path from the vault root or above (`ag x`, `ack x`, `fd . -X cat`, `ugrep -r x . --include='*.yaml'`) was allowed, and the hook's shell pre-filter didn't send them to Python. They are now judged like `rg` and `grep -r`: `ag` and `ack` search recursively by default, `fd` lists names (and reads contents when given `-x`/`-X`), and `ugrep` with `-r` reads like `grep -r`. A search given a folder outside the KB (`ag x scripts`, `fd x --search-path scripts`) or filtered to code (`fd -e py`, `ugrep -r x . --include='*.py'`) is still allowed. `ag`'s `-G` and type flags (`--python`) aren't read as filters yet, so `ag -G '\.py$' x` from the vault root is denied.
+- **A value flag before the pattern no longer hides a vault-root search from the `kb-read-gate`** (`engine/scout/kb/raw_read.py`, `hooks/prefilter.sh`; follow-up to #541). `ack -t markdown TODO`, `ugrep -rO md TODO`, `fd --newer 1d people` and `ag -W 80 TODO` read the flag's value as the pattern and the pattern as a folder outside the KB, so they were allowed from the vault root. The gate now reads short-flag clusters the way the tools do (`-rO md`, `-epy`) and knows more value flags for each tool. Other fixes in the same change:
+  - ugrep's `-3` and `--depth=N` count as recursive, and its `-g`, `-O` and `-t` filters are read as comma-separated lists.
+  - fd's `-C` is a base directory, and an exec command ends at `;`.
+  - `ug`, `ug+`, `ugrep+`, `fdfind` and `ack-grep` are judged as the tools they run, and the shell pre-filter sends them to Python.
+  - fd always counts as a lister when it feeds `xargs`. So do ag, ack and ugrep when they print file paths (`ag -g`, `ack -f`, `ugrep -l`). For example, `fd . | xargs cat` run from `action-items/` reads `context/`.
+  - The file a flag opens counts as read: `grep -f`/`--file`, `sed -f`, `awk -f`, `jq --from-file` and `ack --files-from`, so `grep -f k*/note.md docs/a.md` is denied. A value attached to `-e` (`grep -eTODO k*/…`, `sed -n -e'1,20p' k*/…`) is read as the pattern, so the KB file after it is judged.
+  - The gate's operand reader (`read_operands`) and its recursive-read check now share this one parser, so they agree on what a value flag takes.
+  - ugrep's filters read the way ugrep reads them. An entry starting with `!` or `^` excludes (`-O '^py'`, `-g '^*.py'`), so it never narrows the search. A `-t` type matches by its first letters (`-t mark` is markdown). `-J`, `-K`, `--range` and `--depth N` take a value.
+  - ack's `--type=noTYPE` excludes a type, so it doesn't narrow the search.
+  - fd's exec flag counts inside a cluster or attached: `fd -Hx cat`, `fd -xcat`, `fd -x=cat`.
+  - grep's `-r` counts inside a cluster with a count, as in `grep -rnA3 TODO` and `grep -r3 TODO .`.
+  - A filter to code is still allowed: `ack -t python`, `ugrep -rO py`.
+  - These no longer count as KB reads: `ag -V`, `fd -V`, `fd -h`, `ag --list-file-types`, `ack --help-types`, `fd -epy x` and `ag --context 3 x`.
+- **`kb lint` now checks a file replaced by a symlink, and reports a symlink that points outside its own share** (`engine/scout/kb/git_io.py`, `engine/scout/kb/lint_privacy.py`; #606). A type change (git status `T`, a regular file replaced by a symlink or the reverse) was left out of the staged-file list, so no check looked at it. It is now listed and checked like any modified file. A staged symlink is also checked against its target: a shared link that points at a private note, a file no share covers or one shared with fewer people, and any link that uploads but points at a local-only path or outside the vault, is reported. A scheduled run's commit is blocked (`privacy-widening`); the owner gets a warning (the new `link-leaves-scope` check). A link inside a local-only path stays home, so it may point anywhere. The target is matched against the files in the commit without regard to case or Unicode form, a chain of links (or a link through a linked folder) is followed to its end, and "local-only" means everything repo sync keeps home, secret files and this computer's own files included. A link in a run's commit that points at nothing in the commit, or loops, is refused. So is a target that backs out of a name with `..` (`a/../b`), and one at a name two files share but for its case. A scheduled run may no longer turn `scout-config.yaml` or any other settings file (a file at the top of the vault or in a dot-folder, or any `.yaml`, `.yml`, `.json` or `.toml`) into a symlink, or a linked one back into a file: git stores the link as its target's name while Scout reads the file behind it, so the run could change the privacy policy unseen. The owner is warned when `scout-config.yaml` is a symlink. A run is also refused when it adds or renames a settings file under a name that differs only in case from the usual one or from one already in the vault (`Scout-Config.yaml`), when it takes `scout-config.yaml` out of the commit while the file is still on this computer, and when it adds or changes a gitlink (a submodule's entry). The owner gets a warning for the first and last (the new `settings-file-replaced` check), and a gitlink no longer stops the lint with an error.
+- **The size and line lint now treats `x.MD` as a note** (`engine/scout/kb/lint_config.py`; #605). The privacy checks, the classifier, repo sync and the Agnes mirror already ignored the case of `.md`; the size, long-line and diary checks still skipped a note whose suffix was upper case.
+- **`cat <&3` is no longer refused as a detached command in a scheduled run** (`engine/scout/kb/live_run.py`; #618). The run gate read the `&` of a descriptor duplicate (`<&3`) as a background `&`. `cmd &` and `cmd & disown` are still refused, and so is a `&` that follows an escaped `\<`, `\>`, `\|` or `\&`. An escaped `\&` itself is a letter and is allowed.
+- **A scheduled run's shell read of a KB note is judged by the path the shell hands the reading command**
+  (`engine/scout/hooks/kb_read_gate.py`, `engine/scout/kb/live_run.py`, `engine/scout/kb/raw_read.py`). The KB
+  read gate used to deny only a KB path it could see in the command's text, so `cat k*/x.md`, `cat */a.md`,
+  `ls k*`, `K=knowledge; cat ${K}-base/x.md`, `cat $'knowledge\x2dbase/x.md'`, `cat kn{o,}wledge-base/x.md`,
+  `printf 'knowledge%sbase/x.md' - | xargs cat` and `cd action-items && cat context/x.md` got through, and so did
+  a KB path spelled out after a quoted `\|` or `;` (`grep -n "a\|b" knowledge-base/x.md`,
+  `sed -n '/x/{=;p;}' knowledge-base/x.md`). Now each file a reading command (`cat`, `ls`, `grep`, `head`,
+  `sed`, …) reads, and each input redirect, has its brace lists expanded, the command's own variables put in
+  (inside `$(…)` too), `$'…'` decoded and its globs matched from the folder it runs in, under the existing
+  glob budget (over the match cap or the time limit, the call is refused). `xargs` reads what `echo` or
+  `printf` prints, or the files under what `git ls-files`, `find`, `grep -l` or `rg -l|--files` lists, so
+  `git ls-files scripts | xargs rg x` stays allowed and `find . | xargs cat` doesn't. A match in
+  `knowledge-base/` or `action-items/context/` is denied. Words are read the way zsh, the shell runs use,
+  reads them: a comment is dropped (`cat x # it's` no longer hides the rest), `**/` recurses, `(a|b)`
+  alternation counts as a brace list, `~+`, `${X:-y}` and `${X%y}` are worked out, and a `$` inside a glob
+  bracket is a character. A command the gate would have to guess at (an unclosed quote, a nested or
+  substituted `(…|…)` group, a variable with more than 256 values) is refused. A KB *folder* counts only for a
+  reader that reads folders (`ls` without `-d`, `tree`, `find`, `rg`, `diff`, `grep -r` …), so
+  `cat action-items/*` and `ls -d */` pass. A quoted character is literal (`cat "k*/a.md"` reads a file named
+  `k*`) and `~-` follows the command's own `cd`; the secret-path check reads quoted characters literally too,
+  so a quoted regex (`grep -o "projects/(a|b)[^/]*/[^/]*\.md" file`) is no longer refused as too many paths. A
+  read whose path the gate can't work out (a command
+  substitution, a backtick, a variable the command doesn't set, `xargs` input from any other command) is
+  allowed for now and recorded as a `kb_read_gate.unresolved_read` event naming only its kind
+  (`command_output`, `unset_variable`, `xargs_input`) and the run's mode, never the command or the path;
+  `DENY_UNRESOLVED_READS` in `kb_read_gate.py` denies them instead, as an unresolved write already is. A
+  `$(date +FORMAT)` that prints no `/`, with or without a `TZ=` for the call, counts as any one name, so
+  `action-items/action-items-$(date +%F).md` is allowed with nothing recorded and
+  `knowledge-base/$(date +%F).md` is denied.
+- **Research Lab experiments: the account's home is protected even when HOME points elsewhere.** An experiment script started with a HOME of its own still can't read the account's home folder or its credential stores, and a veto recorded under either home now stops the experiment.
+- **The `restrict_tools` gate no longer lifts every restriction when the engine can't start**
+  (`hooks/prefilter.sh`, `hooks/hooks.json`). Claude Code lets a PreToolUse call through when its hook
+  exits with anything but 0 or 2, so a `scoutctl` that couldn't start (no venv, a shim naming a missing
+  interpreter, a Python crash before the gate, an engine half-replaced mid-upgrade: exit 1, 126, 127 or a
+  signal) let every MCP call through silently, including the ones `restrict_tools` exists to stop. The gate
+  itself always exits 0, so any other exit now means it did not run, and the call is blocked (exit 2,
+  saying to run `/scout-update` or `scoutctl bootstrap doctor`) in a session that may be in a vault:
+  `SCOUT_DATA_DIR` set, or a `scout-config.yaml` at or above the payload's `cwd`, by the same rule the
+  Python entry uses. A `cwd` the shell can't read for certain (none, empty, relative, or holding a JSON
+  escape) counts as in a vault. Outside any vault, and for a payload that isn't an MCP call, the hook still
+  exits 1 and the call goes through, since `hooks.json` applies to every session on the machine. If
+  `prefilter.sh` is missing or broken too, the `hooks.json` entry does the same on `SCOUT_DATA_DIR` and its
+  own working directory. Sessions that never start the engine (outside a vault, or in one without
+  `restrict_tools`) run exactly as before; where the engine does start, the shell adds one read of the
+  payload ahead of it.
+- **The `restrict_tools` gate now applies when the hook runs outside the session's vault**
+  (`hooks/prefilter.sh`). The shell stage decided whether to start the gate by walking up from the hook
+  process's own working directory, while the gate itself goes by the session's `cwd` in the payload. A
+  session whose `cwd` was in a vault that uses `restrict_tools`, with the hook started from a folder
+  outside every vault (or in another vault without the key), left the shell without the gate ever
+  running, so its restrictions weren't enforced. The shell now finds the vault from the payload's `cwd`
+  too, checked as written and with its symlinks resolved, with `SCOUT_DATA_DIR` still first, and starts
+  the gate whenever it can't read that `cwd` for certain (none at the top level, not a string, empty,
+  relative, holding a JSON escape, or a folder it can't enter). The reverse case no longer starts the gate
+  for nothing. Outside every vault it still decides without starting Python, at the cost of one read of
+  the payload and one `grep`.
+- **The outbound check, the KB privacy label and the shared-read record find an owner session's vault
+  the same way** (`hooks/prefilter.sh`). Each of these used the hook process's working directory too, so
+  an owner session in a vault, with the hook started outside it, skipped the outbound warning, the
+  `[private]` label on a KB note it read, or the record `check-outbound` uses to recognise shared notes.
+  Scheduled runs were not affected: they always reach Python.
+- **A run's Bash call that only names a KB path after the shell expands it now reaches the KB read gate**
+  (`hooks/prefilter.sh`). The shell pre-filter let `cat k*/projects/a/a.md`, `K=knowledge; cat ${K}-base/x.md`,
+  `cat "$(printf …)"` and `less $HOME/…/kn*` through without starting the Python gate, because their text
+  spells no KB path. In a scheduled run, a command now goes to Python when it has a glob character, a `$`
+  (other than `$?`, `$#`, `$!`, `$$`), a backtick, a brace list (`kn{o,}wledge-base`), a leading `~`, an
+  absolute path, a `(` (zsh reads `kn(o|)wledge-base` as alternation), `xargs` or `parallel`, or a `cd`
+  into `action-items/` (in any letter case, quoted or escaped: `cd 'action'-items`, `XARGS`); when its cwd is in or under `action-items/`; or when it names a KB folder in another
+  letter case (`KNOWLEDGE-BASE`, the same folder on macOS's default disk). Owner sessions are unaffected: they
+  leave before the filter runs. A launcher called by its full path (`/usr/bin/nohup`, `/usr/bin/env -i`) and
+  `git -C $R $SUB` now reach Python too, which denies them. The Python gate does not yet deny the glob and
+  expansion forms themselves: it judges a read by the path its words spell, so this change is the first of two.
+- **A run's Grep, Glob or Bash call over 32 KB is blocked in the shell** (`hooks/prefilter.sh`). The
+  pre-filter's patterns backtrack: a harmless 200 KB command kept it busy about 40 s, past the hook's 15 s
+  timeout, and Claude Code allows a call whose hook it kills. The filter now reads at most 32 KB + 1 byte and
+  blocks a longer call, counting bytes in any locale.
+- **A scheduled run can no longer hide a background `&` behind an escaped quote** (`engine/scout/kb/live_run.py`). The run gate found quoted strings with a pattern that took no notice of a backslash outside quotes, so in `git commit -m x \' & echo ''` it read `' & echo '` as one quoted string and missed the `&` that sends the commit to the background. The same held for `\"` and for `$'\''`. Quoted strings are now found the way the shell reads them: a backslash outside quotes escapes the next character, single quotes take no escapes, and double quotes and `$'…'` do. A quote inside a `#` comment opens nothing. After an even run of `$` (`x$$'…'`), where bash and zsh disagree on whether the quote takes escapes, the command is read both ways and refused if either reading leaves a `&` outside quotes. Commands with an escaped quote and no `&` outside quotes, such as `git commit -m x\'s -m 'R&D'`, are no longer refused.
+- **A scheduled run can no longer hide commands as a here-document body, or a background `&` behind a quote in backticks** (`engine/scout/kb/live_run.py`). The run gate looked for here-documents one line at a time, so a `<<EOF` in a comment (`true # <<EOF`) or inside a quoted string that ran over several lines made it treat the commands below as a body and skip them. It did the same when `$(cat <<EOF)` or `` `cat <<EOF` `` closed on the operator's own line, where the shell gives the here-document no body and runs the lines below. The command is now read once from the start, the way the shell reads it. Where bash and zsh disagree on a quote (`x$$'…'`), it is read both ways and a body is skipped only when both readings find the same one. Separately, a quote inside a backtick substitution no longer hides the backtick that ends it: in `` git commit -m `echo '` & echo `'` `` the `&` is a real background and is now refused, and `` echo `echo it's` 'R&D' `` is no longer refused.
+- **A scheduled run's shell command can no longer point HOME elsewhere to write a protected file unseen** (`engine/scout/kb/live_run.py`, `engine/scout/hooks/kb_read_gate.py`, `hooks/prefilter.sh`). The write gate expands `~` and `$HOME` with the run's own HOME, so a command that changed HOME first wrote paths the gate never checked: `HOME=~/.local/state/scout ; echo x >> ~/run-limits.json`, `export HOME=… ; cp /dev/null ~/…`, `HOME=… sh -c 'echo x > $HOME/…'`. On macOS the OS sandbox still refused the write; on Linux, which has no kernel layer, nothing did. A run's Bash call is now denied, with its own reason, when it sets, appends to, unsets or reads into HOME, in any form the gate reads: `HOME=… cmd`, `HOME+=…`, `HOME[…]=…`, `export`/`declare`/`typeset`/`local`/`readonly`/`integer HOME=…`, `local HOME`, `env HOME=…`, `env -u HOME`, `unset HOME`, `for`/`select HOME in …`, `read HOME` (also after `IFS=`, and past read's option values; typeset's number options too), `mapfile`, `printf -v HOME`, `getopts`, `vared`, `let HOME=…`, `(( HOME = … ))`, a `declare -n` alias of HOME, `${HOME:=…}` and zsh's `${HOME::=…}`, behind `sudo`, `noglob`, `nocorrect` or `-`, inside `sh -c` and `eval`, and with the name quoted or escaped (`HO''ME=…`, `H\OME=…`). So is any such builtin or assignment whose target is not a plain name, since the shell may turn it into HOME: built at run time in whole or in part (`export $v=…`, `export H$v=…`, `read $v`, `printf -v "$v"`, `eval "H${v}=…"`, `${(P)v::=…}`) or by a glob (`read HOM?` with a file named HOME). `HOME=$HOME` and `HOME=~`, which leave HOME as it is, are still allowed, as are reading `$HOME` and `~` and read's own option values (`read -t $T ans`, `read -p "$prompt" ans`). `XDG_CONFIG_HOME` goes through the same checks and is denied as a hook redirect, like `GIT_CONFIG_*`: git reads `$XDG_CONFIG_HOME/git/config`, which can set `core.hooksPath`. So do `SCOUT_MODE` and `SCOUT_READER` (`read SCOUT_MODE`, `local SCOUT_READER`). The shell pre-filter sends to Python every run command that mentions HOME, or arithmetic, and reads the command a second time with quotes and backslashes removed: there it finds HOME, `SCOUT_MODE` and `SCOUT_READER` (so `export SCOUT_MO''DE=x` no longer exits in the shell either) and, anywhere in the command, one of those builtins, its own name perhaps quoted or escaped (`"read" HOM?`, `\typeset`), which zsh runs as the builtin. zsh's own setters go through the same checks: `print -v`, `zstyle -s/-a/-b/-g`, `zformat -f/-a`, `strftime -s`, `getln`, `repeat N`, a named descriptor (`exec {HOME}>…`), and the module builtins (`zparseopts`, `zstat`, `sysread`, `sysopen`, `zselect`, `zpty`), which are denied any argument that names or builds a name. A builtin spelled by a `$'…'` string's escapes (`eval $'\x72ead HOM?'`, `$'\162ead' HOM?`) is judged as the word it spells, the shell pre-filter sends any command holding `$'` and a backslash on to be read, and an even run of `$` before such a string (`eval $$'; \x72ead HOME'`, which bash and zsh read differently) is denied; so is `print` or `printf` with an option built at run time (`print -$x HOM?`, which may be `-v` or `-vHOME`). Replayed against the last 280 scheduled sessions, no run command is newly denied. Owner sessions are never gated.
+- **A run started with a HOME of its own can no longer write the owner's stores under the account's home** (`engine/scout/kb/hook_paths.py`, `engine/scout/sandbox/profile.py`). The changes map's owner store (its engagement rows, and the run-commit ledger that decides whether a run's commits are trusted) is found under the home the account database names, whatever `HOME` says, but both layers of the run sandbox (the write hooks and the OS profile) built their protected paths from `HOME` alone. A run launched with `HOME` set elsewhere (a custom launch, a test harness, `sudo -E`, a wrapper that sets it) found that store writable and could vouch for its own commits. Every per-user protected path (the owner stores in `~/.local/state/scout/`, including the run brokers' folder, the engine pointer, `~/.claude`, git and shell startup files, `~/Library/LaunchAgents`, `~/.scout-secrets` and `~/.ssh`) is now protected under `HOME` and, when that is another folder, under the account's home too. The new `hook_paths.homes()` returns both, and the account-home lookup now lives in `hook_paths.account_home()`, which `scout.changes.store` uses.
+
+### Security
+- **A scheduled run can no longer turn on a delegate's `include_private` by respelling it** (`engine/scout/kb/lint_privacy.py`).
+  The commit check compared the loaded `privacy:` block, but the flag counts only when written exactly `true`, so a
+  run that rewrote an owner's `yes` (or `on`, `True`) to `true` changed nothing the check saw while the flag went
+  from off to on. The check now also compares which delegates each flag is on for. It covers the new
+  `ignore_sync_only` the same way.
+- **A scheduled run can no longer slip a privacy block in by renaming a committed file into `scout-config.yaml`**
+  (`engine/scout/kb/lint_privacy.py`). With no config at HEAD, the commit check compared the new config against the
+  rename's source instead of HEAD, so the change went unseen. It now always compares against HEAD's config.
+- **A scheduled run's shell command that names an `ANTIGRAVITY_*` variable is denied** (runtime-agnostic
+  Phase 2A; `engine/scout/hooks/kb_read_gate.py`, `engine/scout/kb/hook_paths.py`). Antigravity CLI gives every
+  shell child the address and a token of its local server, plus helper variables. Until a reviewed change shows
+  that server can't act around Scout's hooks, the read gate denies a run's command that names any of them, in
+  any case and on any runtime. No Claude Code run has these variables. None of the last 50 scheduled runs'
+  1,735 shell calls named one.
+  - This is a speed bump, not a boundary. It matches the command's text, so a command that builds the name at
+    run time, or prints the environment once and then uses the value it saw, gets past it. No Antigravity run
+    that calls a real model may start until a separate isolation design is approved (plan decision 11).
+
+### Performance
+- **A delegate mirror's privacy scan is about 10× faster on large notes** (`engine/scout/kb/outbound.py`). Each
+  private note's pattern was searched over the whole text, so a 2.4 MB note took about a minute. Every match starts
+  with the first word of one of the note's names, as written, so the pattern is now tried only where such a word
+  starts. It finds exactly the same lines: a differential test checks that hit for hit over adversarial and fuzzed text.
+
 ## [0.18.23] - 2026-11-23
 
 ### Changed
