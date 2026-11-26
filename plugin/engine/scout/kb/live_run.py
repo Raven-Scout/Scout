@@ -1434,7 +1434,7 @@ MAX_DEPTH = 6
 _STATE: dict[str, Any] = {
     "checked": 0, "secrets": 0, "reads": 0, "literal": 0, "vars": {}, "bodies": [], "unparsed": False, "capped": False,
     "parsing": False, "fs_changed": "", "links": [], "expanded": set(), "lists": [], "git_env": False,
-    "command": "", "home": None, "engine_clones": [],
+    "command": "", "home": None, "engine_clones": [], "texts": [],
 }  # fmt: skip
 _VAR = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 # An interpreter given its program inline or on stdin.
@@ -1948,10 +1948,12 @@ def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | No
         rest = [_unshield(w) for w in git[at + 1 :]]
         engine = _engine_kind(sub, git[at + 1 :])
         engine = engine if engine in (git_allow.WORKTREE, git_allow.PUSH) else ""
+        commit = sub == "commit" and _vault_commit(git[at + 1 :])  # allowed in the vault's repository
         read = git_read.GitRead(
             sub=sub, chdirs=chdirs, git_dir=git_dir_, work_tree=work_tree_, reads=False,
-            vault_only=sub == "config" and git_allow.config_write(rest), engine=engine,
-            files=git_allow.commit_files(rest) if engine else [], cloned=list(_STATE["engine_clones"]),
+            vault_only=(sub == "config" and git_allow.config_write(rest)) or (commit and not engine),
+            vault_ok=commit and bool(engine), engine=engine,
+            files=git_allow.commit_files(rest) if engine or commit else [], cloned=list(_STATE["engine_clones"]),
         )  # fmt: skip
     elif stripped.fed:  # `… | xargs git cat-file -p`: its objects or paths come from stdin, which the gate can't see
         read.trees, read.pathspecs, read.maybe_paths, read.files, read.no_index = [SUBST], [], [], [], False
@@ -2023,7 +2025,7 @@ def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | No
                     sub=read.sub, git_dir=gd, work_tree=wt, trees=lists[0], pathspecs=lists[1],
                     maybe_paths=lists[2], unbounded=read.unbounded, fs_changed=_STATE["fs_changed"],
                     links=list(_STATE["links"]), reads=read.reads, vault_only=read.vault_only,
-                    engine=read.engine, cloned=read.cloned,
+                    engine=read.engine, cloned=read.cloned, vault_ok=read.vault_ok,
                 )  # fmt: skip
                 found = _GIT_READ(one, where)
                 if found is not None:
@@ -2176,11 +2178,108 @@ GIT_FORM = "git form not allowed in a run"
 # from the whole command's text, set by any means (`read -r GIT_SSH_COMMAND`, `print -v`, an export): a git call in
 # it is refused (review of #817, round 6).
 _GIT_ENV_TEXT = re.compile(
-    r"(?<![A-Za-z0-9_])(?:GIT_[A-Za-z0-9_]+|PATH|EDITOR|VISUAL|PAGER|MANPAGER|LESSOPEN|LESSCLOSE)(?![A-Za-z0-9_])"
-    r"|(?<![\w/.-])(?:path|commands|aliases|galiases|saliases|functions|alias|unalias|hash|unhash|enable|disable)"
+    r"(?<![A-Za-z0-9_])(?:GIT_[A-Za-z0-9_]+|EDITOR|VISUAL|PAGER|MANPAGER|LESSOPEN|LESSCLOSE)(?![A-Za-z0-9_])"
+    r"|(?<![\w/.-])(?:commands|aliases|galiases|saliases|functions|alias|unalias|hash|unhash|enable|disable)"
     r"(?![\w/.-])"
     r"|(?<![\w/.-])git\s*\(\s*\)|\bfunction\s+\S*git"
 )
+
+
+# PATH, or zsh's `path` tied to it: a change is judged by where `git` then resolves (_path_keeps_git).
+_PATH_WORD = re.compile(r"(?<![A-Za-z0-9_])PATH(?![A-Za-z0-9_])|(?<![\w/.-])path(?![\w/.-])")
+_SYSTEM_GITS = (
+    "/usr/bin/git",
+    "/opt/homebrew/bin/git",
+    "/usr/local/bin/git",
+    "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+    "/Library/Developer/CommandLineTools/usr/bin/git",
+)
+
+
+def _system_git(path: str) -> bool:
+    real = os.path.realpath(path)
+    return (
+        os.path.normpath(path) in _SYSTEM_GITS
+        or real in _SYSTEM_GITS
+        or real.startswith(("/opt/homebrew/Cellar/git/", "/usr/local/Cellar/git/"))
+    )
+
+
+# A quoted word that starts with a name the git checks watch stays visible to them (`export "GIT_DIR=x"`,
+# `read -r "PATH"`); any other quoted text (a commit message, a --grep pattern) is data to them.
+_WATCHED_START = re.compile(
+    r"\$?[\"']?(?:GIT_|PATH\b|path\b|EDITOR|VISUAL|PAGER|MANPAGER|LESSOPEN|LESSCLOSE|commands\b|aliases\b|galiases\b"
+    r"|saliases\b|functions\b|alias\b|unalias\b|hash\b|unhash\b|enable\b|disable\b|git\s*\()"
+)
+
+
+def _scanned_texts() -> list[tuple[str, str]]:
+    """Each command the walk has read so far (the outer one, and each ``sh -c``, ``eval``, substitution and
+    here-document fed to a shell, as its own), without here-document bodies, and the same with quoted text
+    blanked but for words that start with a watched name: ``(text, masked)``, at the same positions."""
+    out = []
+    for text in _STATE["texts"]:
+        text = _split_heredocs(text)[0]
+        masked, at = [], 0
+        for a, b in _quoted_spans(text):
+            masked.append(text[at:a])
+            masked.append(text[a:b] if _WATCHED_START.match(text, a) else "\0" * (b - a))
+            at = b
+        masked.append(text[at:])
+        out.append((text, "".join(masked)))
+    return out
+
+
+def _path_keeps_git(command: str, masked: str | None = None) -> bool:
+    """Whether every change the command makes to PATH (or zsh's ``path``) leaves a bare ``git`` running the system's
+    git (review of #817, round 7: a run's prelude prepends ``~/.local/bin``). Each folder put before the old value
+    must be one the gate can read; a ``git`` in it must be a system one; and a folder with none must not be named
+    elsewhere in the command (which could make one there first). Appending is fine. PATH set any other way
+    (``read``, ``typeset``, ``export PATH`` alone) is refused."""
+    home = (_STATE["home"] or "").rstrip("/")
+    for m in _PATH_WORD.finditer(command if masked is None else masked):
+        word, start = m[0], m.start()
+        if command[max(0, start - 1) : start] == "$" or command[max(0, start - 2) : start] == "${":
+            continue  # a read of it
+        op = re.match(r"\+?=", command[m.end() :])
+        if op is None:
+            return False
+        rest = command[m.end() + len(op[0]) :]
+        if op[0] == "+=":
+            continue  # appended: after every folder git is found in now
+        if word == "path":
+            group = re.match(r"\(([^()]*)\)", rest)
+            if group is None:
+                return False
+            entries: list[str] = group[1].split()
+            old: tuple[str, ...] = ("$path", "${path}", "$path[@]", "${path[@]}")
+        else:
+            value = re.match(r'"([^"]*)"|\'([^\']*)\'|([^\s;&|()]*)', rest)
+            text = (
+                (value[1] if value[1] is not None else value[2] if value[2] is not None else value[3]) if value else ""
+            )
+            entries, old = text.split(":"), ("$PATH", "${PATH}")
+        for raw in entries:
+            if raw in old:
+                break  # the old value: git resolves as it did
+            folder = raw
+            for start_ in ("~/", "$HOME/", "${HOME}/"):
+                if folder.startswith(start_) and home:
+                    folder = home + "/" + folder[len(start_) :]
+            if folder in ("~", "$HOME", "${HOME}") and home:
+                folder = home
+            if _dynamic(folder) or not folder.startswith("/"):
+                return False
+            git = os.path.join(folder, "git")
+            if os.path.lexists(git):
+                if not _system_git(git):
+                    return False
+                break  # the system's git, first
+            if command.count(raw) > 1 or (folder != raw and command.count(folder) > 0):
+                return False  # a folder the command also names: it may put a git there first
+        else:
+            return False  # PATH replaced, and no system git found in it
+    return True
 
 
 def _array_set(name: str) -> bool:
@@ -2238,8 +2337,11 @@ def _git_allowlist_form(words: list[str]) -> str | None:
         return None
     if stripped.fed:
         return f"{GIT_FORM} (words from xargs)"  # its input becomes git's options
-    if _STATE["git_env"]:
-        return f"{GIT_FORM} (GIT_*, PATH or the command table set)"
+    scanned = _scanned_texts()
+    if any(_GIT_ENV_TEXT.search(masked) for _text, masked in scanned):
+        return f"{GIT_FORM} (GIT_*, an editor or pager, or the command table set)"
+    if any(_PATH_WORD.search(masked) and not _path_keeps_git(text, masked) for text, masked in scanned):
+        return f"{GIT_FORM} (PATH set to where another git may run)"
     i = 0
     if [_unshield(a) for a in args] == ["--version"]:
         return None
@@ -2273,9 +2375,30 @@ def _git_allowlist_form(words: list[str]) -> str | None:
     reason = git_allow.judge(sub, args[i + 1 :], dynamic=dynamic, expand=expand, plain=_unshield)
     if reason is not None and _engine_kind(sub, args[i + 1 :], record=True) is not None:
         return None  # the engine-change flow: the gate checks the repository it runs in (git_read.GitRead.engine)
+    if reason is not None and sub == "commit" and _vault_commit(args[i + 1 :]):
+        return None  # a commit in the vault's repository: the gate checks where (git_read.GitRead.vault_only)
     if reason is not None and sub not in git_allow.ALLOWED:
         return f"{GIT_FORM} (git {sub})"
     return None if reason is None else f"{GIT_FORM} ({sub} {reason})"
+
+
+def _plain_args(args: list[str]) -> list[str] | None:
+    """A call's words (shielded) as git gets them, with the command's variables put in; None when one has more than
+    one value."""
+    words: list[str] = []
+    for word in args:
+        alts = _substitute(word)
+        if len(alts) != 1:
+            return None
+        words.append(_unshield(alts[0]))
+    return words
+
+
+def _vault_commit(args: list[str]) -> bool:
+    from scout.kb import git_allow
+
+    words = _plain_args(args)
+    return words is not None and git_allow.vault_commit(words)
 
 
 def _engine_kind(sub: str, args: list[str], *, record: bool = False) -> str | None:
@@ -2283,12 +2406,9 @@ def _engine_kind(sub: str, args: list[str], *, record: bool = False) -> str | No
     clone's folder must be in ~/.scout-worktrees (``record``: kept for the calls after it in the command)."""
     from scout.kb import git_allow
 
-    words: list[str] = []
-    for word in args:
-        alts = _substitute(word)
-        if len(alts) != 1:
-            return None
-        words.append(_unshield(alts[0]))
+    words = _plain_args(args)
+    if words is None:
+        return None
     kind = git_allow.engine_form(sub, words)
     if kind != git_allow.CLONE:
         return kind
@@ -3002,7 +3122,8 @@ def run_escape(
             links=[],
             expanded=set(),
             lists=[],
-            git_env=bool(_GIT_ENV_TEXT.search(command)),
+            git_env=False,
+            texts=[],
             command=command,
             home=home,
             engine_clones=[],
@@ -3156,6 +3277,7 @@ def _merge(results: list[str | None], detach: bool = False) -> str | None:
 
 
 def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
+    _STATE["texts"].append(command)  # each command the walk reads, nested ones too (_scanned_texts)
     if depth > MAX_DEPTH:
         from scout.kb.hook_paths import TOO_MANY
 

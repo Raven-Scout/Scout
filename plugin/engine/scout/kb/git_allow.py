@@ -73,9 +73,9 @@ SPECS: dict[str, Spec] = {
         _longs(
             "--since= --until= --date= --format= --pretty=? --oneline --no-merges --grep= --name-only "
             "--name-status --stat=? --shortstat --all --diff-filter= --max-count= --author= --reverse "
-            "--first-parent --decorate=? --graph"
+            "--first-parent --decorate=? --graph --pickaxe-all --regexp-ignore-case --fixed-strings --all-match"
         ),
-        _shorts("E", "n"),
+        _shorts("EiF", "nSG"),
         numbers=True,
     ),
     "show": Spec(
@@ -268,16 +268,60 @@ def _commit_args(args: list[str]) -> bool:
 
 
 def commit_files(args: list[str]) -> list[str]:
-    """The files a ``commit -F <file>`` reads its message from (``-`` is stdin), for the read checks."""
+    """The files a ``commit -F <file>`` reads its message from (``-`` is stdin), for the read checks: ``-F f``,
+    ``-Ff``, ``--file f``, ``--file=f`` and a cluster ending so (``-qF f``, ``-aFf``)."""
     out = []
     for i, a in enumerate(args):
-        if a in ("-F", "--file") and i + 1 < len(args):
+        if a == "--":
+            break
+        if a == "--file" and i + 1 < len(args):
             out.append(args[i + 1])
         elif a.startswith("--file="):
             out.append(a.split("=", 1)[1])
-        elif a.startswith("-F") and len(a) > 2:
-            out.append(a[2:])
-    return [f for f in out if f != "-"]
+        elif a.startswith("-") and not a.startswith("--") and "F" in a:
+            j = a.index("F")
+            if a[1:j].strip("qa") == "":
+                out.append(a[j + 1 :] if a[j + 1 :] else (args[i + 1] if i + 1 < len(args) else ""))
+    return [f for f in out if f and f != "-"]
+
+
+def vault_commit(args: list[str]) -> bool:
+    """``git commit`` as a run makes it in the vault's repository: ``-q``, ``-a``/``--all``, ``--allow-empty``,
+    a message (``-m``/``--message``, repeatable, or ``-F``/``--file``; clustered as ``-qam``) and paths. Anything
+    else (``--no-verify``/``-n``, ``--amend``, ``-c``/``-C``, ``--template``, ``--cleanup``, ``--fixup``,
+    ``--squash``, ``-S``, ``--author``, ``--date``, …) is refused. The commit hook judges what is committed."""
+    i, message = 0, False
+    while i < len(args):
+        a = args[i]
+        i += 1
+        if a == "--":
+            return message
+        if a in ("-q", "--quiet", "-a", "--all", "--allow-empty"):
+            continue
+        if a in ("-m", "--message", "-F", "--file"):
+            if i >= len(args):
+                return False
+            message, i = True, i + 1
+            continue
+        if a.startswith(("--message=", "--file=")):
+            message = True
+            continue
+        if a.startswith("-") and not a.startswith("--") and len(a) > 1:
+            for j, c in enumerate(a[1:], 1):
+                if c in "qa":
+                    continue
+                if c in "mF":
+                    message = True
+                    if j + 1 == len(a):
+                        if i >= len(args):
+                            return False
+                        i += 1  # the value is the next word
+                    break
+                return False
+            continue
+        if a.startswith("-"):
+            return False
+    return message
 
 
 def config_write(args: list[str]) -> bool:

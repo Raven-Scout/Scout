@@ -119,6 +119,8 @@ class GitRead:
     # repository whose top is under ~/.scout-worktrees and isn't the vault's; and the clones the command made first.
     engine: str = ""
     cloned: list[str] = field(default_factory=list)
+    # An engine form that is also one the vault's repository allows (a plain `git commit -m`): either place will do.
+    vault_ok: bool = False
 
 
 def split_global(args: list[str]) -> tuple[list[str], str | None, str | None, int]:

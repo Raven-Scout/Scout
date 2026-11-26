@@ -54,6 +54,7 @@ what the gate denies and what the eval counts are one definition.
 
 from __future__ import annotations
 
+import dataclasses
 import fnmatch
 import glob
 import json
@@ -552,7 +553,7 @@ def _decide_bash(
         """A git call's reads (:func:`_git_reads_kb`), from the folder ``where`` it runs in."""
         found = _git_reads_kb(read, where, vault, env, resolve, text_of, names_vault)
         if found == "outside":
-            return f"{GIT_FORM} (a config write outside the vault's repository)"
+            return f"{GIT_FORM} (git {read.sub} outside the vault's repository)"
         if found is not None and found.startswith("engine:"):
             return f"{GIT_FORM} (git {read.sub}: {found[7:]})"
         if found is not None and found.startswith("config:"):
@@ -696,6 +697,10 @@ def _git_reads_kb(
     Then the read is "unresolved", or "kb" when the command names the vault or a KB folder (``names_vault``), or
     copied the repository it runs in, the vault's (``git worktree add``, ``git clone .``)."""
     if read.engine:
+        if read.vault_ok:
+            in_vault = dataclasses.replace(read, engine="", vault_only=True, vault_ok=False)
+            if _git_tree_reads_kb(in_vault, where, vault, env, resolve, text_of) is None:
+                return None  # the vault's repository allows it too
         return _engine_repo(read, resolve(where or "."), vault, env)
     found = _git_tree_reads_kb(read, where, vault, env, resolve, text_of)
     if read.vault_only:

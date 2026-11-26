@@ -613,9 +613,6 @@ ALLOWED = [
 REFUSED_IN_A_RUN = [
     "git -C action-items cat-file -t HEAD:./context/x.md",
     "git -C action-items cat-file -s HEAD:./context/x.md",
-    "git add docs/a.md && git commit -m 'update docs'",
-    'git commit -m "update docs" -- docs/a.md',
-    "git add -A docs scripts && git commit -q -m x",
     "git config set user.name A",
     "git config --local user.name A",
     "git config --unset user.name",
@@ -778,6 +775,26 @@ RUN_USAGE = [
     "git --no-pager log --oneline -3",
     "git --version",
     "git -C ~/Vault/docs config user.name 'Scout Bot'",  # still the vault's repository
+    # round 7: commits in the vault's repository, pickaxe searches, a prelude that prepends to PATH
+    "git add docs/a.md && git commit -m 'update docs'",
+    'git commit -m "update docs" -- docs/a.md',
+    "git add -A docs scripts && git commit -q -m x",
+    "git commit -qam 'kb: update'",
+    "git commit -m 'kb: a' -m 'the body'",
+    "git commit -q --allow-empty -m 'kb: checkpoint'",
+    "git commit -q -F - <<'EOF'\nkb: fix PATH and GIT_DIR handling\nEOF",
+    "git commit -m 'fix the path check for GIT_DIR' -- docs/a.md",
+    "git -C docs commit -q -m x",
+    "git log -S widget --oneline",
+    "git log -Gwidget -i --oneline -- docs",
+    "git log --pickaxe-all -S x --stat",
+    "git log -i --grep=fix -F --all-match --oneline",
+    "git log --regexp-ignore-case --fixed-strings --grep=x --oneline",
+    'export PATH="$HOME/.local/bin:$PATH"; git log --oneline',
+    "PATH=/usr/bin:$PATH git status",
+    "path=(~/.local/bin $path); git status",
+    "PATH+=:/tmp/x; git status",
+    "echo $PATH; git status",
 ]
 
 
@@ -875,8 +892,9 @@ ROUND_6 = [
     "git --exec-path=~/out/bin ls-remote .",
     "GIT_EXEC_PATH=~/out/bin git ls-remote .",
     "export GIT_EXEC_PATH=~/out/bin; git ls-remote .",
-    "PATH=~/out/bin:$PATH git log --oneline",
-    "path=(~/out/bin $path); git status",
+    "export PATH=$UNSET_X:$PATH; git log --oneline",
+    "read -r PATH <<< /tmp; git log --oneline",
+    "PATH=/tmp/no-git-here git log --oneline",
     "functions[git]='cat x'; git status",
     "git() { cat x; }; git status",
     # words the shell fills in or splits before git sees them
@@ -1060,7 +1078,6 @@ ENGINE_REFUSED = [
     "git -C ~/.scout-worktrees/new switch -c scout/new",  # no clone made it
     "git -C ~/.scout-worktrees/done switch -c main",
     "git -C ~/.scout-worktrees/done switch -c scout/x HEAD~1",
-    "git commit -q -m x",
     "git -C ~/other commit -q -m x",
     "git -C ~/.scout-worktrees/done commit --template=/tmp/t -m x",
     "git -C ~/.scout-worktrees/done -c user.name=x commit -m x",
@@ -1108,6 +1125,53 @@ def test_a_clone_whose_config_runs_commands_is_refused(engine_home: Path) -> Non
 def test_other_refusals_dont_mention_the_wrap(home: Path) -> None:
     assert "wrap notification" not in _denied(_run(home, "git log -p"))
     assert "wrap notification" not in _denied(_run(home, "git --no-pager --exec-path=/tmp log"))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit --no-verify -m x",
+        "git commit -n -m x",
+        "git commit -qnm x",
+        "git commit --amend -m x",
+        "git commit -c HEAD",
+        "git commit -C HEAD",
+        "git commit --reuse-message=HEAD",
+        "git commit --template=/tmp/t -m x",
+        "git commit --cleanup=verbatim -m x",
+        "git commit --fixup=HEAD",
+        "git commit --squash=HEAD -m x",
+        "git commit -S -m x",
+        "git commit --gpg-sign -m x",
+        "git commit --author='A <a@example.com>' -m x",
+        "git commit --date=now -m x",
+        "git -c user.name=x commit -m x",
+        "GIT_AUTHOR_NAME=x git commit -m x",
+        "git commit",  # no message: an editor
+        "git commit -a",
+        "git commit -F action-items/context/x.md",  # the KB as a message
+        "git -C ~/other commit -q -m x",
+        "git -C ~/plain commit -q -m x",
+    ],
+)
+def test_a_vault_commit_refuses_every_other_option(home: Path, command: str) -> None:
+    _denied(_run(home, command))
+
+
+def test_a_path_change_that_puts_another_git_first_is_refused(home: Path) -> None:
+    bin_ = home / "out" / "bin"
+    bin_.mkdir(parents=True)
+    (bin_ / "git").write_text("#!/bin/sh\ncat ~/Vault/action-items/context/x.md\n")
+    (bin_ / "git").chmod(0o755)
+    for command in (
+        "PATH=~/out/bin:$PATH git log --oneline",
+        'export PATH="$HOME/out/bin:$PATH"; git log --oneline',
+        "path=(~/out/bin $path); git status",
+        "mkdir -p ~/nb && cp ~/out/bin/git ~/nb/git && PATH=~/nb:$PATH git log --oneline",  # made there first
+        "sh -c 'PATH=$HOME/out/bin:$PATH git log --oneline'",
+    ):
+        assert "another git" in _denied(_run(home, command)) or GIT_FORMS_MESSAGE in _denied(_run(home, command))
+    assert _run(home, "PATH=$PATH:~/out/bin git log --oneline") is None  # after the system git
 
 
 def test_a_foreign_repository_holding_the_vaults_history_is_judged_by_the_paths_it_names(home: Path) -> None:

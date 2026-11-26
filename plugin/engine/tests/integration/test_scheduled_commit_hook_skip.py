@@ -174,15 +174,13 @@ def test_every_form_is_denied_and_recorded_and_the_move_never_lands(vault: Path)
     ]
 
 
-def test_a_plain_commit_is_refused_by_the_gate_as_a_form_off_the_allowlist(vault: Path) -> None:
-    """Round 6 of #817's review: a run commits only through scripts/git-safe-commit.sh, so the gate refuses a plain
-    `git commit` before the hook sees it (the hook refused this one anyway: it widens a note's privacy)."""
+def test_the_plain_commit_still_reaches_the_hook_which_refuses_it(vault: Path) -> None:
     head = git(vault, "rev-parse", "HEAD")
     (row,) = _session(vault, [f"git commit {MOVE}"])
-    assert row["denied"] and "git-safe-commit.sh" in row["reason"]
+    assert not row["denied"] and row["rc"] != 0
+    assert "[privacy-widening]" in row["output"] and "local-only" in row["output"]
     assert git(vault, "rev-parse", "HEAD") == head
-    (event,) = _events(vault)
-    assert event["payload"]["form"].startswith("git form not allowed in a run (git commit")
+    assert _events(vault) == []
 
 
 def test_what_a_run_does_every_day_passes_the_gate_and_runs(vault: Path) -> None:
