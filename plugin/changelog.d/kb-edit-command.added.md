@@ -8,12 +8,17 @@
   (the block must read back with only that field changed); and a one-file unified-diff `patch`.
   - One call edits up to 10 notes (`--ops` maps each path to its list, with no `<path>`): about a third of the
     runs' scripts changed 2 or 3 notes.
-  - All operations, on every note, apply or nothing is written (exit 1, naming the op and why), and a note
-    that changes while it runs is not overwritten. `--check` reports without writing.
-  - It prints counts and status only: never the note's text, a pattern or a heading.
-  - Only `owner` and `autonomous` edit, only notes under `knowledge-base/` and `action-items/context/`, never a
-    file the write gate protects (a hard-linked note included), and never in a way that changes the note's
-    privacy label, except making it private (exit 3). The commit's privacy check judges the edit as it judges
+  - All operations, on every note, apply or nothing is written (exit 1, naming the op and why): every new text
+    goes to a synced temp file beside its note first, and the renames happen only once all are ready and no
+    note has changed meanwhile. Folders are opened from the vault down without following a symlink. A regex
+    op stops after 2 s. `--check` reports without writing.
+  - It prints counts and status only: never the note's text, a pattern, a heading or an `--ops` key. The
+    operations come only on stdin (`--ops -`), at most 1 MiB, and a key named twice is refused.
+  - A scheduled run edits only the vault in `SCOUT_DATA_DIR`, which must hold `scout-config.yaml`; a `--repo`
+    naming another folder is refused (exit 3), so the run can't pick the frame the rules are judged in.
+  - Only `owner` and `autonomous` edit, only notes whose vault path starts with `knowledge-base/` or
+    `action-items/context/`, never a file the write gate protects (a hard-linked note included), and never in
+    a way that changes the note's privacy label, except making it private (exit 3). The commit's privacy check judges the edit as it judges
     one made with the Edit tool.
   - `phases/core/privacy.md` and the read gate's deny message point runs at it.
 - **Run health counts the KB edits runs still make with interpreter scripts** (`kb.interpreter_edits`, a note):

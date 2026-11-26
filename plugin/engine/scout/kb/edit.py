@@ -20,23 +20,26 @@ such edit per run. This command does those edits itself, so the gate can later r
 
 The operations apply in order, to the text the one before left. One call may edit up to :data:`MAX_FILES` notes
 (``--ops`` maps each path to its list). All of them apply, on every note, or nothing is written (exit 1), and no
-note may change while they run. A note's privacy label may only narrow (a note
+note may change while they run (:func:`_write_all`). A note's privacy label may only narrow (a note
 made private); anything else that would change it is refused (exit 3), as is a reader other than ``owner`` or
-``autonomous``, a path outside ``knowledge-base/`` and ``action-items/context/``, and a file the write gate
-protects (:func:`scout.kb.hook_paths.protected_write`). Every other rule is the commit's: the pre-commit
-privacy check (``kb lint --staged``, #733's names scan of each added line of a shared note) judges this edit
-as it judges one made with the Edit tool.
+``autonomous``, a path that doesn't start with ``knowledge-base/`` or ``action-items/context/`` (:data:`SCOPE`),
+and a file the write gate protects (:func:`scout.kb.hook_paths.protected_write`). A scheduled run's vault is
+always its ``SCOUT_DATA_DIR`` (``scout.cli._scheduled_vault``), so it can't choose the frame these are judged
+in. Every other rule is the commit's: the pre-commit privacy check (``kb lint --staged``, #733's names scan of
+each added line of a shared note) judges this edit as it judges one made with the Edit tool.
 
 The output is counts and status only, never the note's text, a pattern or a heading.
 """
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import difflib
 import json
 import os
 import re
+import stat
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -77,6 +80,8 @@ _FENCE_OPEN = re.compile(r" {0,3}(`{3,}|~{3,})")
 _FIELD = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _HUNK = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+SCOPE = ("knowledge-base/", "action-items/context/")  # the vault-relative folders kb edit changes notes in
+REGEX_SECONDS = 2.0  # how long one regex op may run before it fails (a pattern that backtracks without end)
 
 
 class OpFailed(Exception):
@@ -120,7 +125,7 @@ def load_ops(raw: str, path: str | None = None) -> list[tuple[str, list[dict[str
     if len(raw.encode("utf-8", errors="replace")) > MAX_OPS_BYTES:
         raise UsageError(f"--ops is over {MAX_OPS_BYTES} bytes")
     try:
-        data = json.loads(raw)
+        data = json.loads(raw, object_pairs_hook=_no_duplicate_keys)
     except json.JSONDecodeError as e:
         raise UsageError(f"--ops is not JSON (line {e.lineno}, column {e.colno})") from None
     if path is not None:
@@ -137,6 +142,17 @@ def load_ops(raw: str, path: str | None = None) -> list[tuple[str, list[dict[str
     return files
 
 
+def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """A JSON object, refused when it names a key twice: json keeps the last silently, which would drop a note's
+    ops (or an op's key) without a word."""
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            raise UsageError("--ops names the same key twice in one object")
+        out[key] = value
+    return out
+
+
 def check_ops(data: Any) -> list[dict[str, Any]]:
     """Each op's keys and value types, checked before the note is touched."""
     if not isinstance(data, list) or not data:
@@ -151,8 +167,8 @@ def check_ops(data: Any) -> list[dict[str, Any]]:
         keys = set(op) - {"op"}
         if missing := sorted(required - keys):
             raise UsageError(f"op {i} ({name}): missing {', '.join(missing)}")
-        if extra := sorted(keys - required - optional):
-            raise UsageError(f"op {i} ({name}): unknown key {', '.join(extra)}")
+        if extra := keys - required - optional:  # counted, not named: the output never echoes --ops
+            raise UsageError(f"op {i} ({name}): {count(len(extra), 'unknown key')}")
         _check_types(i, name, op)
     return data
 
@@ -225,6 +241,35 @@ def _regex_flags(flags: str) -> int:
     return out
 
 
+class _TimedOut(Exception):
+    pass
+
+
+def _limited(i: int, run: Callable[[], Any]) -> Any:
+    """``run()``, stopped after :data:`REGEX_SECONDS` (SIGALRM, which the regex engine checks). Off the main
+    thread, where no alarm can be set, it runs unlimited."""
+    import signal
+    import threading
+
+    if threading.current_thread() is not threading.main_thread() or not hasattr(signal, "setitimer"):
+        return run()  # pragma: no cover - the CLI runs on the main thread, on macOS and Linux
+
+    def alarm(_sig: int, _frame: Any) -> None:
+        raise _TimedOut
+
+    old = signal.signal(signal.SIGALRM, alarm)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, REGEX_SECONDS)
+        try:
+            return run()
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+    except _TimedOut:
+        raise OpFailed(i, "regex", f"the pattern ran over {REGEX_SECONDS:g} s on this note; simplify it") from None
+    finally:
+        signal.signal(signal.SIGALRM, old)
+
+
 # ----- applying them ---------------------------------------------------------------------
 
 
@@ -263,10 +308,10 @@ def _replace(i: int, text: str, op: Mapping[str, Any]) -> tuple[str, str, int | 
 
 def _regex(i: int, text: str, op: Mapping[str, Any]) -> tuple[str, str, int | None]:
     rx = re.compile(op["pattern"], _regex_flags(op.get("flags", "")))
-    found = sum(1 for _ in rx.finditer(text))
+    found: int = _limited(i, lambda: sum(1 for _ in rx.finditer(text)))
     _expect(i, "regex", op, found)
     try:
-        new = rx.sub(op["new"], text, count=1 if op.get("first") else 0)
+        new: str = _limited(i, lambda: rx.sub(op["new"], text, count=1 if op.get("first") else 0))
     except (re.error, IndexError) as e:
         raise OpFailed(i, "regex", f"the replacement template doesn't fit the pattern ({e})") from None
     return new, _done(found, op), found
@@ -585,6 +630,7 @@ class _Plan:
     denied: str | None = None  # why it is refused (exit 3)
     failed: OpFailed | None = None  # the op that didn't fit (exit 1)
     raced: bool = False  # the note changed meanwhile (exit 1)
+    wrote: bool = False  # its new text is in place
 
     @property
     def changed(self) -> bool:
@@ -604,7 +650,7 @@ def _plan(vault: Path, reader: str, path: str, ops: Sequence[Mapping[str, Any]],
         plan.denied = f"not visible to {reader}"
         return plan
     plan.rel, plan.label, plan.data = label.path, label, data
-    if not is_kb_note_path(plan.rel) or not plan.rel.endswith(".md"):
+    if not plan.rel.startswith(SCOPE) or not is_kb_note_path(plan.rel) or not plan.rel.endswith(".md"):
         raise UsageError(f"kb edit changes notes under knowledge-base/ or action-items/context/: {plan.rel}")
     plan.target = vault.resolve() / plan.rel
     form = protected_write(plan.target, vault.resolve(), env, file_tool=True)
@@ -626,8 +672,8 @@ def _plan(vault: Path, reader: str, path: str, ops: Sequence[Mapping[str, Any]],
     return plan
 
 
-def _file_out(plan: _Plan, *, written: bool, blocked: bool) -> tuple[dict[str, Any], list[str]]:
-    row: dict[str, Any] = {"path": plan.rel, "written": written}
+def _file_out(plan: _Plan, *, check: bool, blocked: str | None) -> tuple[dict[str, Any], list[str]]:
+    row: dict[str, Any] = {"path": plan.rel, "written": plan.wrote}
     if plan.label is not None:
         row["label"] = plan.label.to_json()
     if plan.denied is not None:
@@ -642,10 +688,14 @@ def _file_out(plan: _Plan, *, written: bool, blocked: bool) -> tuple[dict[str, A
     assert plan.edit is not None
     old = plan.data.decode("utf-8")
     added, removed = line_counts(old, plan.edit.text)
-    if blocked:
-        state = "not written: another note's edit didn't apply"
+    if plan.wrote:
+        state = "written"
+    elif check:
+        state = "would write" if plan.changed else "unchanged"
+    elif blocked is not None and plan.changed:
+        state = f"not written: {blocked}"
     else:
-        state = "written" if written else ("would write" if plan.changed else "unchanged")
+        state = "unchanged"
     head = f"{plan.rel}: {count(len(plan.edit.results), 'op')} applied, +{added} -{removed} lines, {state}"
     lines = [head, *(f"  {r.index} {r.op}: {r.status}" for r in plan.edit.results)]
     row |= {
@@ -655,6 +705,102 @@ def _file_out(plan: _Plan, *, written: bool, blocked: bool) -> tuple[dict[str, A
         "ops": [r.to_json() for r in plan.edit.results],
     }
     return row, lines
+
+
+# ----- writing them ----------------------------------------------------------------------
+
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+
+
+@dataclass
+class _Staged:
+    plan: _Plan
+    dir_fd: int
+    name: str
+    tmp: str | None = None
+
+
+def _open_parent(root: Path, rel: str) -> int:
+    """A handle on ``rel``'s folder, opened one name at a time from the vault with ``O_NOFOLLOW``: a folder
+    swapped for a symlink since the plan was made fails here instead of being followed."""
+    fd = os.open(root, os.O_RDONLY | _DIRECTORY | _CLOEXEC)
+    try:
+        for part in Path(rel).parts[:-1]:
+            nxt = os.open(part, os.O_RDONLY | _DIRECTORY | _NOFOLLOW | _CLOEXEC, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _current(dir_fd: int, name: str) -> tuple[bytes, int]:
+    """The note's bytes and permission bits now, read through the folder handle; never a symlink, a hard link
+    or anything but a regular file."""
+    fd = os.open(name, os.O_RDONLY | _NOFOLLOW | _NONBLOCK | _CLOEXEC, dir_fd=dir_fd)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            raise safe_write.UnsafeFileError(name, "a hard link or a file that isn't a regular one")
+        chunks = []
+        while chunk := os.read(fd, 1 << 16):
+            chunks.append(chunk)
+        return b"".join(chunks), stat.S_IMODE(st.st_mode)
+    finally:
+        os.close(fd)
+
+
+def _write_all(root: Path, plans: Sequence[_Plan]) -> str | None:
+    """Every changed note's new text, or none of it: each is written to a temp file beside it and synced, every
+    note is checked unchanged since it was read, and only then are the temp files renamed over them. Marks a
+    note ``raced`` (nothing is written) or ``wrote``. Returns the error a write failed on, else None; a temp file
+    left over is removed either way. Only a rename failing part-way, which a full disk or a lost permission
+    can't cause once the temp files exist, leaves some notes written: ``wrote`` says which."""
+    staged: list[_Staged] = []
+    try:
+        for plan in plans:
+            if not plan.changed or plan.edit is None:
+                continue
+            s = _Staged(plan, _open_parent(root, plan.rel), Path(plan.rel).name)
+            staged.append(s)
+            data, mode = _current(s.dir_fd, s.name)
+            if data != plan.data:
+                plan.raced = True
+                continue
+            s.tmp, fd = safe_write._new_temp(s.name, s.dir_fd, 0o600)
+            try:
+                os.fchmod(fd, mode)
+                view = memoryview(plan.edit.text.encode("utf-8"))
+                while view:
+                    view = view[os.write(fd, view) :]
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        if not any(s.plan.raced for s in staged):
+            for s in staged:  # once more, right before the renames
+                s.plan.raced = _current(s.dir_fd, s.name)[0] != s.plan.data
+        if any(s.plan.raced for s in staged):
+            return None
+        for s in staged:
+            assert s.tmp is not None
+            os.replace(s.tmp, s.name, src_dir_fd=s.dir_fd, dst_dir_fd=s.dir_fd)
+            s.tmp, s.plan.wrote = None, True
+        return None
+    except OSError as e:
+        return e.strerror or type(e).__name__
+    finally:
+        for s in staged:
+            if s.tmp is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(s.tmp, dir_fd=s.dir_fd)
+            if s.plan.wrote:
+                with contextlib.suppress(OSError):  # not every filesystem syncs a folder
+                    os.fsync(s.dir_fd)
+            os.close(s.dir_fd)
 
 
 def cmd_edit(
@@ -676,23 +822,27 @@ def cmd_edit(
         if plan.label is not None and plan.rel in seen:
             raise UsageError(f"a note is named twice: {plan.rel}")
         seen.add(plan.rel)
+    error: str | None = None
     if not any(p.denied or p.failed for p in plans) and not check:
-        for plan in plans:
-            plan.raced = plan.changed and plan.target is not None and plan.target.read_bytes() != plan.data
-    blocked = any(p.denied or p.failed or p.raced for p in plans)
-    written = not blocked and not check
-    if written:
-        for plan in plans:
-            if plan.changed and plan.target is not None and plan.edit is not None:
-                safe_write.atomic_write_bytes(plan.target, plan.edit.text.encode("utf-8"))
+        error = _write_all(vault.resolve(), plans)
+    blocked: str | None = None
+    if error is not None:
+        blocked = f"the write failed ({error})"
+    elif any(p.denied or p.failed or p.raced for p in plans):
+        blocked = "another note's edit didn't apply"
     rows: list[dict[str, Any]] = []
     lines: list[str] = []
     for plan in plans:
-        row, out = _file_out(plan, written=written and plan.changed, blocked=blocked)
+        row, out = _file_out(plan, check=check, blocked=blocked)
         rows.append(row)
         lines += out
+    wrote = sum(1 for p in plans if p.wrote)
+    if error is not None:
+        lines.append(f"the write failed ({error}): {count(wrote, 'note')} written, the rest left as they were")
     denied = sum(1 for p in plans if p.denied)
     code = 3 if denied else (1 if blocked else 0)
-    data = {"written": any(r["written"] for r in rows), "check": check, "files": rows}
+    data: dict[str, Any] = {"written": wrote > 0, "check": check, "files": rows}
+    if error is not None:
+        data["error"] = error
     labels: list[Mapping[str, Any]] = [p.label.to_json() for p in plans if p.label is not None]
     return Output(data=data, lines=lines, labels=labels, denied=denied, code=code)

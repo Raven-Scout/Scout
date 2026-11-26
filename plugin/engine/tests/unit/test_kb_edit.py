@@ -46,7 +46,10 @@ BODY = (
 
 
 def kb(vault, *args: str, stdin: str | None = None, reader: str | None = None):
-    env = {"SCOUT_READER": reader} if reader else {}
+    env = {}
+    if reader:  # a scheduled reader's vault is SCOUT_DATA_DIR, which must be a Scout vault
+        (vault / "scout-config.yaml").write_text("user: {}\n", encoding="utf-8")
+        env = {"SCOUT_READER": reader, "SCOUT_DATA_DIR": str(vault)}
     return runner.invoke(app, ["kb", "edit", *args, "--repo", str(vault)], input=stdin, env=env)
 
 
@@ -535,17 +538,24 @@ def test_a_note_that_changes_meanwhile_is_not_overwritten(vault, monkeypatch) ->
     assert text(vault).endswith("another run's line\n") and "budget is TBD" in text(vault)
 
 
-def test_a_file_of_ops_and_one_op_object(vault, tmp_path) -> None:
-    ops_file = tmp_path / "ops.json"
-    ops_file.write_text(json.dumps({"op": "replace", "old": "budget is TBD", "new": "x"}), encoding="utf-8")
-    assert kb(vault, NOTE, "--ops", str(ops_file)).exit_code == 0 and "budget is TBD" not in text(vault)
-    assert kb(vault, NOTE, "--ops", str(tmp_path / "missing.json")).exit_code == 2
+def test_one_op_object(vault) -> None:
+    result = kb(vault, NOTE, "--ops", "-", stdin=json.dumps({"op": "replace", "old": "budget is TBD", "new": "x"}))
+    assert result.exit_code == 0 and "budget is TBD" not in text(vault)
 
 
-def test_an_ops_file_in_the_kb_is_refused(vault) -> None:
-    (vault / "knowledge-base/ops.json").write_text('[{"op": "append", "text": "x"}]', encoding="utf-8")
-    result = kb(vault, NOTE, "--ops", str(vault / "knowledge-base/ops.json"))
-    assert result.exit_code == 2 and text(vault) == BODY
+def test_ops_come_only_from_stdin(vault, tmp_path) -> None:
+    """A file would be read whole and its JSON errors echoed: a way to probe any file's text (#826's review)."""
+    secret = tmp_path / "secret.txt"
+    secret.write_text("the private plan\n", encoding="utf-8")
+    result = kb(vault, NOTE, "--ops", str(secret))
+    assert result.exit_code == 2 and "stdin" in result.output and "private plan" not in result.output
+    assert text(vault) == BODY
+
+
+def test_stdin_is_read_only_up_to_the_limit(vault, monkeypatch) -> None:
+    monkeypatch.setattr(kb_edit, "MAX_OPS_BYTES", 64)
+    result = kb(vault, NOTE, "--ops", "-", stdin=json.dumps([{"op": "append", "text": "x" * 200}]))
+    assert result.exit_code == 2 and "bytes" in result.output and text(vault) == BODY
 
 
 def test_an_action_item_context_note(vault) -> None:
@@ -567,7 +577,17 @@ def test_a_scheduled_run_edits_a_private_note_without_printing_it(vault) -> None
     assert result.exit_code == 0 and "licence" in text(vault, SECRET) and "permit" not in result.stdout
 
 
-@pytest.mark.parametrize("path", ["README.md", "action-items/2026-11-25.md", "knowledge-base/ontology/schema.yaml"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "README.md",
+        "action-items/2026-11-25.md",
+        "knowledge-base/ontology/schema.yaml",
+        "drafts/knowledge-base/d.md",  # under some other folder's knowledge-base/: not the KB (#826's review)
+        "notes/knowledge-base-old.md",
+        ".claude/agents/knowledge-base.md",
+    ],
+)
 def test_only_kb_notes(vault, path: str) -> None:
     (vault / path).parent.mkdir(parents=True, exist_ok=True)
     (vault / path).write_text("x\n", encoding="utf-8")
@@ -622,7 +642,8 @@ def test_an_edit_that_would_widen_or_relabel_a_note_is_refused(vault, path: str,
         ('"x"', "JSON list"),
         ('[{"op": "delete"}]', "one of"),
         ('[{"op": "replace", "old": "a"}]', "missing new"),
-        ('[{"op": "replace", "old": "a", "new": "b", "x": 1}]', "unknown key x"),
+        ('[{"op": "replace", "old": "a", "new": "b", "x": 1}]', "1 unknown key$"),
+        ('[{"op": "replace", "old": "a", "new": "b", "old": "c"}]', "same key twice"),
         ('[{"op": "replace", "old": 1, "new": "b"}]', "must be a string"),
         ('[{"op": "replace", "old": "", "new": "b"}]', "must not be empty"),
         ('[{"op": "replace", "old": "a", "new": "b", "count": 0}]', "count"),
@@ -651,6 +672,35 @@ def test_an_edit_that_would_widen_or_relabel_a_note_is_refused(vault, path: str,
 def test_a_bad_ops_document_is_a_usage_error(raw: str, why: str) -> None:
     with pytest.raises(UsageError, match=why):
         load_ops(raw, NOTE)
+
+
+def test_an_unknown_key_isnt_named() -> None:
+    with pytest.raises(UsageError) as e:
+        load_ops('[{"op": "append", "text": "a", "the_private_plan": 1, "b": 2}]', NOTE)
+    assert "private" not in str(e.value) and "2 unknown keys" in str(e.value)
+
+
+def test_a_note_named_twice_in_the_map_is_refused_not_dropped() -> None:
+    one = '[{"op": "append", "text": "a"}]'
+    raw = f'{{"{NOTE}": {one}, "{NOTE}": {one}}}'
+    with pytest.raises(UsageError, match="same key twice"):
+        load_ops(raw)
+
+
+def test_a_regex_that_backtracks_without_end_fails_in_time(kb_repo, monkeypatch) -> None:
+    monkeypatch.setattr(kb_edit, "REGEX_SECONDS", 0.2)
+    kb_repo.write(NOTE, "a" * 40 + "b\n")
+    result = run_ops(kb_repo.root, NOTE, [{"op": "regex", "pattern": "(a+)+$", "new": "x"}])
+    assert result.exit_code == 1 and "ran over 0.2 s" in result.stdout
+    assert text(kb_repo.root) == "a" * 40 + "b\n"
+
+
+def test_the_regex_time_limit_leaves_no_alarm_behind() -> None:
+    import signal
+
+    before = signal.getsignal(signal.SIGALRM)
+    apply_ops("abc\n", [{"op": "regex", "pattern": "b", "new": "x"}])
+    assert signal.getsignal(signal.SIGALRM) is before and signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
 
 
 def test_ops_limits() -> None:
@@ -692,3 +742,162 @@ def test_the_read_gate_allows_kb_edit_in_a_run(command: str, tmp_path, monkeypat
     (v / "knowledge-base" / "people.md").write_text("# People\n")
     monkeypatch.setenv("SCOUT_DATA_DIR", str(v))
     assert _decision(v.resolve(), "Bash", {"command": command}) is None
+
+
+# ----- #826's security review ------------------------------------------------------------
+
+
+def test_only_full_readers_edit() -> None:
+    """Every other reader is refused before a note is read, so kb edit's counts are no oracle for them."""
+    assert kb_edit.FULL_READERS == {"owner", "autonomous"}
+
+
+def _scheduled(data_dir, *args: str, ops):
+    env = {"SCOUT_MODE": "dreaming", "SCOUT_READER": "autonomous", "SCOUT_DATA_DIR": str(data_dir)}
+    return runner.invoke(app, ["kb", "edit", *args], input=json.dumps(ops), env=env)
+
+
+def _audit_rows(root) -> list[dict]:
+    log = root / ".scout-logs" / "kb-reads.jsonl"
+    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+
+def _temps(folder) -> list[str]:
+    return [p.name for p in folder.iterdir() if p.name.endswith(".tmp")]
+
+
+@pytest.fixture
+def run_vault(vault):
+    (vault / "scout-config.yaml").write_text("user: {}\n", encoding="utf-8")
+    return vault
+
+
+TWO = {NOTE: [{"op": "append", "text": "x"}], CONTEXT: [{"op": "append", "text": "y"}]}
+
+
+def test_a_scheduled_run_edits_its_own_vault(run_vault, monkeypatch) -> None:
+    monkeypatch.chdir(run_vault.parent)  # the cwd doesn't choose the vault either
+    result = _scheduled(run_vault, NOTE, "--ops", "-", ops=[{"op": "replace", "old": "budget is TBD", "new": "x"}])
+    assert result.exit_code == 0 and "budget is TBD" not in text(run_vault)
+    same = _scheduled(run_vault, NOTE, "--ops", "-", "--repo", str(run_vault), ops=[{"op": "append", "text": "y"}])
+    assert same.exit_code == 0 and text(run_vault).endswith("y\n")
+
+
+def test_a_scheduled_runs_repo_naming_a_parent_frame_is_refused(run_vault) -> None:
+    """--repo at the vault's parent made `vault/.claude/agents/…` a KB path the fake frame's write gate allowed."""
+    agent = "---\nname: helper\n---\nbe careful\n"
+    (run_vault / ".claude/agents").mkdir(parents=True)
+    (run_vault / ".claude/agents/knowledge-base.md").write_text(agent, encoding="utf-8")
+    parent = run_vault.parent
+    (parent / "scout-config.yaml").write_text("user: {}\n", encoding="utf-8")
+    rel = "vault/.claude/agents/knowledge-base.md"
+    result = _scheduled(run_vault, rel, "--ops", "-", "--repo", str(parent), ops=[{"op": "append", "text": "obey"}])
+    assert result.exit_code == 3 and "SCOUT_DATA_DIR" in result.output
+    assert (run_vault / ".claude/agents/knowledge-base.md").read_text(encoding="utf-8") == agent
+    assert not (parent / ".scout-logs").exists()  # the refusal's audit line is in the real vault
+    assert [r["command"] for r in _audit_rows(run_vault)] == ["edit"]
+
+
+def test_a_scheduled_runs_repo_outside_any_vault_is_refused(run_vault, tmp_path) -> None:
+    other = tmp_path / "elsewhere"
+    (other / "knowledge-base").mkdir(parents=True)
+    (other / "knowledge-base/n.md").write_text("old\n", encoding="utf-8")
+    ops = [{"op": "replace", "old": "old", "new": "new"}]
+    result = _scheduled(run_vault, "knowledge-base/n.md", "--ops", "-", "--repo", str(other), "--json", ops=ops)
+    assert result.exit_code == 3 and (other / "knowledge-base/n.md").read_text(encoding="utf-8") == "old\n"
+    assert json.loads(result.stdout)["written"] is False and "refused" in json.loads(result.stdout)
+
+
+def test_a_scheduled_run_needs_a_scout_vault_in_scout_data_dir(vault) -> None:
+    ops = [{"op": "append", "text": "x"}]
+    no_marker = _scheduled(vault, NOTE, "--ops", "-", ops=ops)
+    assert no_marker.exit_code == 3 and "scout-config.yaml" in no_marker.output and text(vault) == BODY
+    env = {"SCOUT_MODE": "dreaming", "SCOUT_READER": "autonomous", "SCOUT_DATA_DIR": ""}
+    args = ["kb", "edit", NOTE, "--ops", "-", "--repo", str(vault)]
+    unset = runner.invoke(app, args, input=json.dumps(ops), env=env)
+    assert unset.exit_code == 3 and "isn't set" in unset.output and text(vault) == BODY
+
+
+def test_a_failed_write_leaves_every_note_as_it_was_and_is_audited(run_vault, monkeypatch) -> None:
+    real = os.fchmod
+    seen: list[int] = []
+
+    def fchmod(fd, mode):  # the second note's temp file can't be written
+        seen.append(fd)
+        if len(seen) % 2 == 0:
+            raise PermissionError(13, "Permission denied")
+        return real(fd, mode)
+
+    monkeypatch.setattr(kb_edit.os, "fchmod", fchmod)
+    data = json.loads(_scheduled(run_vault, "--ops", "-", "--json", ops=TWO).stdout)
+    assert data["written"] is False and data["error"] == "Permission denied"
+    assert text(run_vault) == BODY and text(run_vault, CONTEXT).endswith("Status: waiting\n")
+    assert not _temps(run_vault / "knowledge-base/projects/alpha") and not _temps(run_vault / "action-items/context")
+    plain = _scheduled(run_vault, "--ops", "-", ops=TWO)
+    assert plain.exit_code == 1 and "the write failed (Permission denied): 0 notes written" in plain.stdout
+    assert [r["command"] for r in _audit_rows(run_vault)] == ["edit", "edit"]
+
+
+def test_a_rename_failing_part_way_says_which_notes_were_written(run_vault, monkeypatch) -> None:
+    real = os.replace
+    calls: list[int] = []
+
+    def second_fails(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            raise OSError(28, "No space left on device")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(kb_edit.os, "replace", second_fails)
+    data = json.loads(_scheduled(run_vault, "--ops", "-", "--json", ops=TWO).stdout)
+    assert [f["written"] for f in data["files"]] == [True, False] and data["written"] is True
+    assert text(run_vault).endswith("x\n") and text(run_vault, CONTEXT).endswith("Status: waiting\n")
+    assert not _temps(run_vault / "action-items/context")
+
+
+def test_a_folder_swapped_for_a_symlink_after_the_plan_is_not_followed(run_vault, tmp_path, monkeypatch) -> None:
+    real = kb_edit.apply_ops
+    decoy = tmp_path / "decoy"
+
+    def swap(src, ops):
+        folder = run_vault / "knowledge-base/projects/alpha"
+        decoy.mkdir()
+        (decoy / "alpha.md").write_text(src, encoding="utf-8")
+        folder.rename(tmp_path / "moved")
+        folder.symlink_to(decoy)
+        return real(src, ops)
+
+    monkeypatch.setattr(kb_edit, "apply_ops", swap)
+    result = _scheduled(run_vault, NOTE, "--ops", "-", ops=[{"op": "append", "text": "x"}])
+    assert result.exit_code == 1 and "the write failed" in result.stdout
+    assert (decoy / "alpha.md").read_text(encoding="utf-8") == BODY
+
+
+def test_a_hard_link_made_after_the_plan_is_not_written_through(run_vault, tmp_path, monkeypatch) -> None:
+    real = kb_edit.apply_ops
+
+    def link(src, ops):
+        os.link(run_vault / NOTE, tmp_path / "outside.md")
+        return real(src, ops)
+
+    monkeypatch.setattr(kb_edit, "apply_ops", link)
+    result = _scheduled(run_vault, NOTE, "--ops", "-", ops=[{"op": "append", "text": "x"}])
+    assert result.exit_code == 1 and "the write failed" in result.stdout
+    assert text(run_vault) == BODY and (tmp_path / "outside.md").read_text(encoding="utf-8") == BODY
+
+
+def test_a_note_changed_between_staging_and_the_renames_is_not_overwritten(run_vault, monkeypatch) -> None:
+    real = kb_edit._current
+    calls: list[int] = []
+
+    def late(dir_fd, name):
+        calls.append(1)
+        if len(calls) == 3:  # the second look at the first note: another run wrote it meanwhile
+            (run_vault / NOTE).write_text(BODY + "another run\n", encoding="utf-8")
+        return real(dir_fd, name)
+
+    monkeypatch.setattr(kb_edit, "_current", late)
+    result = _scheduled(run_vault, "--ops", "-", ops=TWO)
+    assert result.exit_code == 1 and "changed meanwhile" in result.stdout
+    assert text(run_vault) == BODY + "another run\n" and text(run_vault, CONTEXT).endswith("Status: waiting\n")
+    assert not _temps(run_vault / "knowledge-base/projects/alpha") and not _temps(run_vault / "action-items/context")

@@ -1689,6 +1689,37 @@ def _kb_args(command: str, params: dict[str, object]) -> list[str]:
     return [command, *(f"{k}={params[k]}" for k in sorted(params))]
 
 
+def _scheduled_vault(repo: Path | None) -> tuple[Path | None, str | None]:
+    """A scheduled run's vault and, when it may not go on, why: ``(vault, refusal)``.
+
+    The vault is ``SCOUT_DATA_DIR``, which every scheduled runner exports, and must hold ``scout-config.yaml``.
+    Never the cwd's repo or a ``--repo`` of the run's choosing: a vault frame built at another folder would
+    judge the write gate, the privacy policy and the audit log there (#826's review). A ``--repo`` that resolves
+    to the same folder is fine. ``vault`` is None when there is no vault to write the refusal's audit line to.
+    """
+    import os
+
+    from scout import paths
+
+    explicit = os.environ.get("SCOUT_DATA_DIR")
+    if not explicit:
+        return None, "a scheduled run edits only the vault in SCOUT_DATA_DIR, and it isn't set"
+    try:
+        vault = paths.resolve_path(explicit)
+    except (OSError, RuntimeError):
+        return None, "SCOUT_DATA_DIR can't be resolved"
+    if not (vault / paths.VAULT_MARKER).is_file():
+        return None, f"SCOUT_DATA_DIR has no {paths.VAULT_MARKER}: not a Scout vault"
+    if repo is not None:
+        try:
+            same = _kb_repo(repo).resolve() == vault
+        except (OSError, RuntimeError):
+            same = False
+        if not same:
+            return vault, "a scheduled run edits only its own vault (SCOUT_DATA_DIR), not --repo's"
+    return vault, None
+
+
 def _kb_run(
     args: list[str],
     reader: str | None,
@@ -1696,23 +1727,36 @@ def _kb_run(
     as_json: bool,
     body: Callable[[str, Path], object],
     kb_root: str | None = None,
+    pinned: bool = False,
 ) -> None:
     """Resolve the reader and vault, run ``body(reader, vault)`` (a ``scout.kb.read.Output``), print.
 
     Every call writes its audit line (non-owner readers, spec §7.4), failures
     too: a refused ``--reader``, a missing argument, a bad pattern or path
-    (exit 2), a KB error, each with ``paths_returned`` 0.
+    (exit 2), a KB error, each with ``paths_returned`` 0. ``pinned``: a
+    scheduled run never chooses the vault (:func:`_scheduled_vault`).
     """
     import json
     import os
 
     from scout.errors import KBError
     from scout.kb.read import Output, UsageError, audit, graph_vault
-    from scout.kb.reader import delegate_id, resolve_reader
+    from scout.kb.reader import delegate_id, is_scheduled, resolve_reader
 
     # A delegate never gets --kb-root's vault lookup: it would stat a path of its choosing.
     delegate = delegate_id(resolve_reader(None, os.environ)) is not None
-    vault = graph_vault(_kb_repo(repo), None if repo or delegate else kb_root)
+    if pinned and is_scheduled(os.environ):
+        vault, refusal = _scheduled_vault(repo)
+        if refusal is not None:
+            if vault is not None:
+                audit(vault, resolve_reader(None, os.environ), args[0], args, Output(data=None))
+            if as_json:
+                print(json.dumps({"refused": refusal, "written": False}, indent=2))
+            print(f"refused: {refusal}", file=sys.stderr)
+            raise typer.Exit(3)
+        assert vault is not None
+    else:
+        vault = graph_vault(_kb_repo(repo), None if repo or delegate else kb_root)
     try:
         who = resolve_reader(reader, os.environ)
     except typer.BadParameter:
@@ -1917,8 +1961,8 @@ def kb_edit(
     ops: str = typer.Option(
         ...,
         "--ops",
-        help="A JSON list of operations, from a file or - for stdin (a quoted heredoc): replace, regex, insert, "
-        "append, frontmatter, patch. See `scout/kb/edit.py`.",
+        help="- : a JSON list of operations on stdin (a quoted heredoc): replace, regex, insert, append, "
+        "frontmatter, patch. See `scout/kb/edit.py`.",
     ),
     check: bool = typer.Option(False, "--check", help="Apply the operations and report, but write nothing."),
     reader: str | None = _R,
@@ -1938,33 +1982,20 @@ def kb_edit(
 
     All operations, on every note, apply or nothing is written. Exit 1 = an operation didn't fit (a count, a
     heading, an anchor, a hunk) or a note changed meanwhile; 2 = bad --ops or not a note; 3 = refused (the reader,
-    the write gate, or a privacy label it would change).
+    the write gate, a privacy label it would change, or a scheduled run's --repo naming another vault).
     """
     args = _kb_args("edit", dict(locals()))
 
     def body(who: str, vault: Path) -> object:
-        from scout.kb.edit import cmd_edit, load_ops
+        from scout.kb.edit import MAX_OPS_BYTES, cmd_edit, load_ops
         from scout.kb.read import UsageError
 
-        if ops == "-":
-            raw = sys.stdin.read()
-        else:
-            from scout.kb.privacy import normalize_rel
-            from scout.kb.raw_read import is_kb_path
-
-            try:
-                in_kb = is_kb_path(normalize_rel(vault, Path(ops).absolute()))
-            except ValueError:
-                in_kb = False  # outside the vault
-            if in_kb:
-                raise UsageError("--ops is a file outside the KB, or - for stdin")
-            try:
-                raw = Path(ops).read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError) as e:
-                raise UsageError(f"can't read --ops {ops}: {e}") from e
+        if ops != "-":  # never a file: its content would come back in the errors
+            raise UsageError("--ops takes - and the operations on stdin")
+        raw = sys.stdin.read(MAX_OPS_BYTES + 1)
         return cmd_edit(vault, who, load_ops(raw, path), check=check)
 
-    _kb_run(args, reader, repo, as_json, body)
+    _kb_run(args, reader, repo, as_json, body, pinned=True)
 
 
 @kb_app.command("delta")
