@@ -13,7 +13,7 @@ parked are closed.
     own committed files;
   - `experiment run` ends with an unambiguous status line and takes a lowering `--timeout`;
   - the lab summary lists held experiments, and Scout gets a `propose-close` verb.
-- **ML experiments (spec §6.4, Jordan 2026-11-23).** Five engine tasks let experiments train and
+- **ML experiments (spec §6.4, decided 2026-11-23).** Five engine tasks let experiments train and
   probe small models: owner limits and note fields, a per-plan disk budget with a free-disk floor
   and a memory limit, detached runs that outlive the run, an owner-side weights cache, and the
   GPU. Each is off until the owner's config turns it on.
@@ -73,8 +73,8 @@ everything this plan calls. Its ledger's rulings R22–R34 explain the broker's 
 - **Owner limits for ML experiments** (spec §6.4), in the run broker's `config.json` `lab` block.
   The engine defaults: `detached_max_hours` 0, `max_detached` 0, `gpu` false,
   `max_memory_bytes` 0 (half the Mac's memory), `disk_free_floor_bytes` 15 000 000 000,
-  `weights_max_bytes` 0, `python` unset, `max_total_bytes` 512 MiB. Jordan's own config sets 12,
-  1, true, 0, 15 GB, 40 GiB, his venv and 10 GiB; that edit is his, outside this plan.
+  `weights_max_bytes` 0, `python` unset, `max_total_bytes` 512 MiB. An example owner config sets
+  12, 1, true, 0, 15 GB, 40 GiB, its own venv and 10 GiB; that edit is the owner's, outside this plan.
 - **Kernel tests.** Every new kernel test skips under `SCOUT_TEST_NO_KERNEL=1`. The MPS tests also
   skip unless `SCOUT_TEST_TORCH_PYTHON` names an interpreter with torch. Never run them against
   `~/Scout`; fixture vaults only.
@@ -338,7 +338,7 @@ everything this plan calls. Its ledger's rulings R22–R34 explain the broker's 
 **Interfaces:**
 - Produces, on `LabLimits` (all read from the owner's `config.json` `lab` block like the existing keys; a
   missing or bad value means the default):
-  - `detached_max_hours: float = 0` (0 = detached runs off; at most 168)
+  - `detached_max_hours: float = 0` (0 = detached runs off; at most 72)
   - `max_detached: int = 0` (0 = off; at most 8)
   - `gpu: bool = False` (on only for JSON `true`)
   - `max_memory_bytes: int = 0` (0 = half of `hw.memsize`; at most 1 TiB)

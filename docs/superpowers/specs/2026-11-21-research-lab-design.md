@@ -339,9 +339,9 @@ proposed ──approve──▶ active ◀──resume── paused
 
 ### 6.4 ML experiments: long runs, model weights, the GPU and disk
 
-Added 2026-11-25. The owner's interpretability work trains and probes small models with PyTorch
-on the Mac's GPU. Four limits in §6.3 and §14a stopped that: a 540 s run, no way to get weights,
-no GPU, and 512 MiB of disk. Jordan decided each one (2026-11-23):
+Added 2026-11-25. Experiments that train and probe small models with PyTorch on the Mac's GPU
+hit four limits in §6.3 and §14a: a 540 s run, no way to get weights, no GPU, and 512 MiB of
+disk. The owner decided each one (2026-11-23):
 
 | Limit | Decision |
 |---|---|
@@ -356,8 +356,8 @@ the instructions, holding the script to it.
 
 All new limits are the owner's, in the run broker's `config.json` `lab` block, beside
 `experiments_enabled` (§14a). A run can't write them. The engine defaults keep a fresh install
-where it is today: GPU off, no weights fetched, no detached runs, 512 MiB. The defaults below
-marked "Jordan's" are the values for the maintainer's own config.
+where it is today: GPU off, no weights fetched, no detached runs, 512 MiB. Values below marked
+"the maintainer's config" are an example owner config.
 
 **Detached runs.**
 - `scoutctl lab experiment run <slug> <EID> --detach -- <cmd>` makes the same broker checks as an
@@ -371,7 +371,9 @@ marked "Jordan's" are the values for the maintainer's own config.
 - The supervisor does what the attached runner does today: the profile, the gate and its kernel
   checks, the meter, the process, byte and file limits, the kill sweep and the run log. Its
   deadline is the plan's `timeout_hours`, clamped to the owner's `lab.detached_max_hours`
-  (engine default 0, meaning off; Jordan's 12).
+  (engine default 0, meaning off; the maintainer's config 12). The owner's value is at most 72:
+  only the sweep's probe file is refreshed during a run, and macOS deletes /tmp files untouched
+  for 3 days, which would take the meter socket, the profile and the output files with them.
 - It writes a state record in the owner folder (`lab-runs/<vault hash>-<slug>-<EID>.json`):
   started, deadline and its pid; the sweep's probe path once the script's gate opens; then the
   outcome. A run can't write it.
@@ -382,7 +384,7 @@ marked "Jordan's" are the values for the maintainer's own config.
   - `experiment not run: <reason>` → the supervisor is gone without an outcome (a restart, a
     kill). The collect first sweeps that run's sandbox, using the probe path in the record, so
     nothing the script started outlives it. The run then abandons the experiment with the reason.
-- **One at a time.** At most `lab.max_detached` (engine default 0; Jordan's 1) run at once per
+- **One at a time.** At most `lab.max_detached` (engine default 0; the maintainer's config 1) run at once per
   vault. A detached start counts toward the run's `experiments_per_run`.
 - **The owner can stop one.** A veto of a `running` experiment stops it: the supervisor checks
   the owner's veto store at each poll and kills the run. `scoutctl lab experiment stop` does the
@@ -407,7 +409,7 @@ marked "Jordan's" are the values for the maintainer's own config.
     experiment `not run`, with the reason;
   - checks the free disk first (below) and refuses when the files would cross the floor.
 - **The cache** is a folder in the owner's cache (`~/Library/Caches/Scout/lab-weights/<repo>/<revision>/`),
-  capped at `lab.weights_max_bytes` (engine default 0, meaning no fetching; Jordan's 40 GiB).
+  capped at `lab.weights_max_bytes` (engine default 0, meaning no fetching; the maintainer's config 40 GiB).
   When full it drops the least recently used revision that no `planned` or `running` experiment
   names; if that isn't enough, the fetch is refused.
 - **Scripts read it, never write it.** The profile allows the cache folder back to read, and the
@@ -428,7 +430,7 @@ marked "Jordan's" are the values for the maintainer's own config.
   - With `lab.gpu` false (the engine default), the profile ends with one deny:
     `(deny iokit-open-user-client (iokit-user-client-class "AGXDeviceUserClient"))`. That is the
     GPU's IOKit user client, and torch then reports MPS unavailable.
-  - With `lab.gpu: true` (Jordan's), nothing is added: the profile is the one built before the
+  - With `lab.gpu: true` (the maintainer's config), nothing is added: the profile is the one built before the
     switch existed, byte for byte.
 - **Metal tries three things the sandbox refuses**, with the switch on or off:
   - a write to its shared shader cache;
@@ -449,7 +451,7 @@ marked "Jordan's" are the values for the maintainer's own config.
 
 **Disk.**
 - **A per-plan budget.** An experiment note may set `disk_budget_bytes`. The broker clamps it to
-  the owner's `lab.max_total_bytes` (engine default 512 MiB; Jordan's 10 GiB). With none set, the
+  the owner's `lab.max_total_bytes` (engine default 512 MiB; the maintainer's config 10 GiB). With none set, the
   budget is 512 MiB. Bytes count as they do today: the folder, the scratch dir and unlinked open
   files.
 - **A free-disk floor.** An experiment doesn't start, and a fetch doesn't begin, unless the
@@ -689,7 +691,7 @@ By Jordan (2026-11-21):
 - That limit is **enforced for experiment scripts by an OS sandbox**, not only by instructions.
 - **Approach A**: markdown thread folders in the KB.
 
-By Jordan (2026-11-23), for ML experiments (§6.4):
+Decided 2026-11-23, for ML experiments (§6.4):
 
 - **Detached runs** for experiments longer than one run allows.
 - **An owner-side weights cache**, fetched outside the sandbox and read-only to scripts.
