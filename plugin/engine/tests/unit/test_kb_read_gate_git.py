@@ -774,6 +774,7 @@ RUN_USAGE = [
     "G=git; $G log --oneline",
     "git --no-pager log --oneline -3",
     "git --version",
+    "git -C docs",
     "git -C ~/Vault/docs config user.name 'Scout Bot'",  # still the vault's repository
     # round 7: commits in the vault's repository, pickaxe searches, a prelude that prepends to PATH
     "git add docs/a.md && git commit -m 'update docs'",
@@ -919,6 +920,10 @@ ROUND_6 = [
     "git log {-p,docs}",
     "echo -p | xargs git log",
     "$UNSET_G log --oneline",
+    "G=git; $G log -p",
+    "git-push origin x",
+    "find . -name x -exec git log -p {} \\;",
+    "git",
 ]
 
 
@@ -1114,6 +1119,8 @@ ENGINE_REFUSED = [
     "git -C ~/.scout-worktrees/done push -u origin scout/done scout/other",
     "git -C ~/.scout-worktrees/done push -u origin HEAD:main",
     "git push -u origin scout/x",  # the vault
+    "for b in scout/a scout/b; do git -C ~/.scout-worktrees/done switch -c $b; done",  # more than one value
+    "git -C ~/.scout-worktrees/done/.. commit -q -m x",  # the folder of clones, no clone
 ]
 
 
