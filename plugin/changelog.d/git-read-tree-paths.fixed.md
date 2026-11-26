@@ -49,8 +49,9 @@
   list against `git help --config`. A link to a glob, or to a target the gate can't work out, counts as one
   that may be the vault. In a run, `git config` writes, `-c` and `--config-env` may set only a reviewed list of
   plain keys (`user.*`, `color.*`, `advice.*`, `pull.rebase`, `push.default`, `branch.*.remote`, `remote.*.url`,
-  …; `live_run.CONFIG_ALLOWED`); any other key, and a section renamed or removed unless it is a plain one, is
-  refused, and a test checks every key `git help --config` lists against the list. An option's value may be
+  …; `live_run.CONFIG_ALLOWED`), and only in the repository's own config: `--global`, `--system`,
+  `--worktree` and `--file` writes are refused for every key, so a run never changes the user's `~/.gitconfig`.
+  Any other key, and a section renamed or removed unless it is a plain one, is refused, and a test checks every key `git help --config` lists against the list. An option's value may be
   `--`, as git allows (`git rebase -s -- -x 'cmd'`). A git subcommand that isn't git's own (an alias, or a typo
   `help.autocorrect` may run) is refused in a run, as are `send-email`, `instaweb`, `imap-send` and `daemon`;
   `git grep -O` counts as a command git runs; and a repository whose `core.worktree` is the vault, or a folder in

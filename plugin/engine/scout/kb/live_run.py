@@ -1364,8 +1364,10 @@ def _git_config_form(args: list[str]) -> str | None:
     if form is not None:
         return f"git config {form}"
     scope = next((a for a in args if a in _CONFIG_SCOPES or a.startswith("--file=")), None)
-    if scope is not None and scope not in ("--blob", "--global", "--worktree"):
-        return f"git config {scope.split('=', 1)[0]}"  # another config file: what it holds is unknown
+    if scope is not None and scope != "--blob":
+        # Any key, even a plain one: a run never writes the user's own config (`--global` is their ~/.gitconfig,
+        # where `user.name` rewrites the authorship of their commits) or another file. Only the repository's.
+        return f"git config {scope.split('=', 1)[0]}"
     return None
 
 
