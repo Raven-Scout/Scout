@@ -58,6 +58,16 @@ DEADLINE_PASSED = "the deadline passed"
 # Stops that end the experiment "not run": the run abandons it rather than finishing it.
 NOT_RUN_STOPS = (STOPPED_BY_OWNER, TERMINATED, VETO_UNREADABLE)
 START_WAIT_S = 30.0
+
+
+class SupervisorNotStarted(LabError):
+    """The supervisor didn't start: its launch failed, it exited before writing its record, or it wrote none within
+    :data:`START_WAIT_S`. Nothing ran and it is no fault of the experiment's, so the broker answers ``not run`` (exit
+    4) and the run retries it rather than abandoning it."""
+
+    exit_code = 4
+
+
 # What reaches the supervisor of the run's env: what the runner and the owner's folders read.
 ENV_KEYS = ("PATH", "HOME", "LANG", "USER", "LOGNAME", "TMPDIR")
 # The owner's limits the runner holds the script to (scout.sandbox.broker.LabLimits fields).
@@ -381,9 +391,9 @@ def start(
     ``limits`` are the owner's, with ``max_total_bytes`` already the plan's disk budget; its ``weights_max_bytes``,
     ``python`` and ``gpu`` go to the supervisor with ``models`` (the plan's, read at the validated commit).
     ``command`` is what runs before the inputs file (default: this interpreter, ``-m scout.lab.supervise``). Raises
-    :class:`LabError` when an earlier detached run of the experiment is alive or was never collected, when the
-    supervisor exits before writing its record (its reason, from its log), or when no record appears within 30 s
-    (the supervisor is killed).
+    :class:`LabError` when an earlier detached run of the experiment is alive or was never collected, and
+    :class:`SupervisorNotStarted` when the launch fails, the supervisor exits before writing its record (its reason,
+    from its log), or no record appears within 30 s (the supervisor is killed).
     """
     path = runs.record_path(vault, slug, eid, env)
     runs.ensure_dir(env)
@@ -430,7 +440,7 @@ def start(
     except (OSError, subprocess.SubprocessError, ValueError):
         with contextlib.suppress(OSError):
             inputs_file.unlink()
-        raise LabError("cannot start the experiment's supervisor; not run") from None
+        raise SupervisorNotStarted("cannot start the experiment's supervisor; not run") from None
     deadline = time.monotonic() + START_WAIT_S
     while True:
         if runs.read(path) is not None:
@@ -441,13 +451,15 @@ def start(
             with contextlib.suppress(OSError):
                 inputs_file.unlink()
             why = _last_line(log) or "no reason given"
-            raise LabError(f"the experiment's supervisor stopped before it started: {why}")
+            raise SupervisorNotStarted(f"the experiment's supervisor stopped before it started: {why}")
         if time.monotonic() >= deadline:
             with contextlib.suppress(OSError):
                 os.kill(pid, signal.SIGKILL)
             with contextlib.suppress(OSError):
                 inputs_file.unlink()
-            raise LabError(f"the experiment's supervisor wrote no record within {START_WAIT_S:.0f} s; not run")
+            raise SupervisorNotStarted(
+                f"the experiment's supervisor wrote no record within {START_WAIT_S:.0f} s; not run"
+            )
         time.sleep(0.05)
 
 

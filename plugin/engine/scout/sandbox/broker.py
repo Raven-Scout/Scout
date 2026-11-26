@@ -88,12 +88,19 @@ EXPERIMENTS_OFF = "experiments are off in the owner's config"  # LabLimits.exper
 # Detached runs (spec §6.4): the owner's switches, the one-at-a-time rule, and what a collect says about a supervisor
 # that is gone without recording an outcome.
 MODELS_DETACHED = "an experiment that names models runs detached"  # its weights are fetched at start (P2-h)
+# The longest a detached run may be: only its probe file is refreshed, and macOS deletes /tmp files untouched for
+# 3 days, which would take the meter socket, the profile and the stdout/stderr files with them.
+DETACHED_MAX_HOURS = 72
 DETACHED_OFF = "detached runs are off in the owner's config"  # detached_max_hours or max_detached is 0
 DETACHED_BUSY = "a detached experiment is already running"
 SUPERVISOR_GONE = "the supervisor stopped without a result"
 NO_DETACHED_RUN = "no detached run of this experiment was started"
 SURVIVED_SWEEP = "a process the experiment started survived the sweep; check ps"
 OVERRAN = "the supervisor ran past its deadline"
+PYTHON_MISSING = "the owner's lab.python is missing"  # set in the owner's config, but not an executable file
+# What a run's client says when there is no broker to ask: nothing about the experiment, so a collect retries.
+NO_BROKER_ANSWER = "this run's broker didn't answer"
+COLLECT_NEEDS_BROKER = "collecting a detached experiment needs the run broker"
 # How long past its deadline a live supervisor may still be before a collect stops it (a fetch ignoring should_stop).
 OVERRUN_GRACE = timedelta(minutes=10)
 SUPERVISOR_KILL_WAIT_S = 10.0
@@ -255,6 +262,8 @@ class LabLimits:
     disk_free_floor_bytes: int = 15_000_000_000  # free space below which a run is stopped; may be 0
     weights_max_bytes: int = 0  # the most model weights one run may fetch; 0 = no fetching
     python: str | None = None  # the interpreter experiments run under: an absolute path to an executable file
+    # The owner's lab.python as configured (an absolute path), usable or not: set but missing never means unset.
+    python_set: str | None = None
 
 
 # What an experiment's note asks for besides its command (spec §6.4), when it names no disk budget.
@@ -284,9 +293,10 @@ def load_lab_limits(env: Mapping[str, str]) -> LabLimits:
     missing or malformed file, or a value out of bounds, means the default. ``experiments_per_run`` is a positive
     integer; the others are finite positive numbers, except ``notice_hours``, which may be 0. ``max_processes``,
     ``max_total_bytes`` and ``max_open_files`` are positive integers too, the bytes up to 1 TiB and the files up to
-    65536. The ML keys (spec §6.4) are numbers from 0: ``detached_max_hours`` up to 168, ``max_detached`` an
+    65536. The ML keys (spec §6.4) are numbers from 0: ``detached_max_hours`` up to 72, ``max_detached`` an
     integer up to 8, and ``max_memory_bytes``, ``disk_free_floor_bytes`` and ``weights_max_bytes`` integers up to
-    1 TiB; ``python`` is an absolute path to an existing executable file, else None.
+    1 TiB; ``python`` is an absolute path to an existing executable file, else None (``python_set`` keeps an absolute
+    path either way, so a moved or deleted interpreter isn't read as unset).
     ``experiments_enabled`` and ``gpu`` are on only when exactly ``true``."""
     defaults = LabLimits()
     try:
@@ -314,14 +324,20 @@ def load_lab_limits(env: Mapping[str, str]) -> LabLimits:
         max_processes=number("max_processes", integer=True),
         max_total_bytes=number("max_total_bytes", integer=True, most=1 << 40),
         max_open_files=number("max_open_files", integer=True, most=65536),
-        detached_max_hours=float(number("detached_max_hours", zero=True, most=168)),
+        detached_max_hours=float(number("detached_max_hours", zero=True, most=DETACHED_MAX_HOURS)),
         max_detached=number("max_detached", integer=True, zero=True, most=8),
         gpu=block.get("gpu") is True,
         max_memory_bytes=number("max_memory_bytes", integer=True, zero=True, most=1 << 40),
         disk_free_floor_bytes=number("disk_free_floor_bytes", integer=True, zero=True, most=1 << 40),
         weights_max_bytes=number("weights_max_bytes", integer=True, zero=True, most=1 << 40),
         python=_executable(block.get("python")),
+        python_set=_absolute(block.get("python")),
     )
+
+
+def _absolute(value: object) -> str | None:
+    """``value`` when it is an absolute path, whether or not anything is there, else None."""
+    return value if isinstance(value, str) and os.path.isabs(value) else None
 
 
 def _executable(value: object) -> str | None:
@@ -1247,6 +1263,8 @@ class Broker:
             return Reply(r.exit_code, f"experiment refused: {_one_line(r.reason)}\n", kind=REFUSED)
         if plan.models and not detach:
             return Reply(EXIT_REFUSED, f"experiment refused: {MODELS_DETACHED}\n", kind=REFUSED)
+        if (missing := _python_missing(self.lab_limits, argv)) is not None:
+            return missing
         timeout_s = min(requested, self.lab_limits.timeout_s) if requested is not None else self.lab_limits.timeout_s
         # A launch that would leave the volume under the owner's floor is not a run: it keeps the run's allowance.
         floor = self.lab_limits.disk_free_floor_bytes
@@ -1639,9 +1657,25 @@ def client_telegram(fields: Mapping[str, Any], env: Mapping[str, str] | None = N
 EXPERIMENT_CLIENT_SLACK_S = 60.0
 
 
+# What killed a run, in the order a ``killed:`` line names them (the outcome's and the run log's flags).
+KILL_FLAGS = ("timed_out", "over_memory", "over_disk_floor", "over_bytes", "over_processes", "stopped")
+
+
+def _killed(flag: Callable[[str], object], err: str) -> str:
+    """``err`` (a stderr tail), then one ``killed: <flag>, …`` line when a limit, the timeout or a stop killed the run,
+    so the run reads it just before the status line; ``err`` alone when nothing did."""
+    flags = [name for name in KILL_FLAGS if flag(name)]
+    if not flags:
+        return err
+    lead = err if not err or err.endswith("\n") else err + "\n"
+    return f"{lead}killed: {', '.join(flags)}\n"
+
+
 def _outcome_reply(outcome: Any) -> Reply:
-    """A :class:`scout.lab.runner.RunOutcome` as the run reads it: the script's exit and its output's tails."""
-    return Reply(outcome.exit, outcome.stderr_tail, outcome.stdout_tail, ran=True)
+    """A :class:`scout.lab.runner.RunOutcome` as the run reads it: the script's exit and its output's tails, and what
+    killed it (:func:`_killed`)."""
+    err = _killed(lambda name: getattr(outcome, name, None), outcome.stderr_tail)
+    return Reply(outcome.exit, err, outcome.stdout_tail, ran=True)
 
 
 def _requested_timeout(req: Mapping[str, Any]) -> int | None:
@@ -1660,6 +1694,17 @@ def _requested_detach(req: Mapping[str, Any]) -> bool:
     if not isinstance(value, bool):
         raise Refused(EXIT_REFUSED, "detach must be true or false")
     return value
+
+
+def _python_missing(limits: LabLimits, argv: Sequence[str]) -> Reply | None:
+    """``not run`` when ``argv`` starts with ``python3`` (which means the owner's ``lab.python`` once it is set) and the
+    owner set one that is no longer an executable file: running PATH's ``python3`` instead would be another
+    interpreter, without the owner's packages. Nothing ran and the allowance is kept; the run retries it."""
+    from scout.lab.runner import OWNER_PYTHON_NAME
+
+    if limits.python is None and limits.python_set and argv and argv[0] == OWNER_PYTHON_NAME:
+        return Reply(EXIT_NOT_RUN, f"experiment not run: {PYTHON_MISSING}\n", kind=REFUSED)
+    return None
 
 
 def _experiment_named(slug: object, eid: object) -> bool:
@@ -1706,6 +1751,8 @@ def start_detached(
             vault, slug, eid, argv, commit=commit, cap_usd=cap, deadline_s=detached_deadline_s(plan, limits, requested),
             limits=run_limits, env=env, models=plan.models,
         )  # fmt: skip
+    except supervise.SupervisorNotStarted as e:  # transient: nothing ran, the run retries it (as P2-R8)
+        return Reply(EXIT_NOT_RUN, f"experiment not run: {_one_line(e)}\n", kind=REFUSED)
     except LabError as e:
         return Reply(e.exit_code, f"experiment refused: {_one_line(e)}\n", kind=REFUSED)
     return Reply(0, "experiment started: detached\n")
@@ -1713,9 +1760,10 @@ def start_detached(
 
 def _recorded_reply(outcome: Mapping[str, Any]) -> Reply:
     """A recorded outcome as the run reads it: the script's exit and its output's tails when it ran; else
-    ``experiment not run: <reason>`` (after the tails of a script that was stopped)."""
+    ``experiment not run: <reason>`` (after the tails of a script that was stopped). Either way, what killed it
+    (:func:`_killed`) comes just before the status line."""
     out = str(outcome.get("stdout_tail") or "")
-    err = str(outcome.get("stderr_tail") or "")
+    err = _killed(outcome.get, str(outcome.get("stderr_tail") or ""))
     code = outcome.get("exit")
     if outcome.get("status") == "ran" and isinstance(code, int) and not isinstance(code, bool):
         return Reply(code, err, out, ran=True)
@@ -1901,7 +1949,7 @@ def client_experiment(
         try:
             return _emit_experiment(call(sock, req, timeout=effective + EXPERIMENT_CLIENT_SLACK_S))
         except Unreachable:
-            print("experiment not run: this run's broker didn't answer", file=sys.stderr)
+            print(f"experiment not run: {NO_BROKER_ANSWER}", file=sys.stderr)
             return EXIT_NOT_RUN
     if env.get("SCOUT_MODE"):
         print("experiment not run: experiments need the run broker", file=sys.stderr)
@@ -1920,6 +1968,8 @@ def client_experiment(
     if plan.models and not detach:
         print(f"experiment refused: {MODELS_DETACHED}", file=sys.stderr)
         return EXIT_REFUSED
+    if (missing := _python_missing(limits, args)) is not None:
+        return _emit_experiment(missing)
     if (uncollected := _uncollected(vault, slug, eid, env)) is not None:
         return _emit_experiment(uncollected)
     if detach:
@@ -1966,10 +2016,10 @@ def client_collect(slug: str, eid: str, env: Mapping[str, str] | None = None) ->
         try:
             return _emit_experiment(call(sock, req, timeout=EXPERIMENT_STATUS_TIMEOUT_S))
         except Unreachable:
-            print("experiment not run: this run's broker didn't answer", file=sys.stderr)
+            print(f"experiment not run: {NO_BROKER_ANSWER}", file=sys.stderr)
             return EXIT_NOT_RUN
     if env.get("SCOUT_MODE"):
-        print("experiment not run: collecting a detached experiment needs the run broker", file=sys.stderr)
+        print(f"experiment not run: {COLLECT_NEEDS_BROKER}", file=sys.stderr)
         return EXIT_NOT_RUN
     if not _experiment_named(slug, eid):
         print("experiment refused: bad thread slug or experiment ID", file=sys.stderr)

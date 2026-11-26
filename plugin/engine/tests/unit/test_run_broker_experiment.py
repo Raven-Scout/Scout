@@ -661,7 +661,8 @@ def test_the_runners_exit_and_output_come_back(vault: Path, monkeypatch: pytest.
     fake = FakeRun(runner.RunOutcome(3, "partial\n", "gave up\n", 0.75, True))
     monkeypatch.setattr(runner, "run_experiment", fake)
     reply = _broker(vault).handle(dict(REQ))
-    assert (reply.exit, reply.stdout, reply.stderr) == (3, "partial\n", "gave up\n")
+    # The outcome timed out, so the reply names that just before the status line (final review, item 10).
+    assert (reply.exit, reply.stdout, reply.stderr) == (3, "partial\n", "gave up\nkilled: timed_out\n")
 
 
 def test_lab_limits_come_from_the_owner_file_and_bad_values_mean_the_default(tmp_path: Path) -> None:
@@ -1559,6 +1560,14 @@ def test_lab_limits_read_the_ml_keys(tmp_path: Path) -> None:
     assert broker.load_lab_limits(env).python is None
 
 
+@pytest.mark.parametrize(("hours", "expected"), [(72, 72.0), (71.5, 71.5), (72.5, 0.0), (168, 0.0)])
+def test_detached_runs_are_capped_at_72_hours(hours: float, expected: float) -> None:
+    """Only the probe file is refreshed while a detached run goes on, and macOS deletes /tmp files untouched for 3
+    days: past 72 h the meter socket, the profile and the output files could go. More than 72 means the default."""
+    _owner_config({"lab": {"detached_max_hours": hours}})
+    assert broker.load_lab_limits(os.environ).detached_max_hours == expected
+
+
 def _commit_fields(vault: Path, extra: str) -> None:
     """Commit E2's note with ``extra`` frontmatter lines added, then leave it ``running`` in the worktree."""
     note = _note(vault)
@@ -1770,15 +1779,157 @@ def test_the_owners_python_reaches_the_runner(vault: Path, fake_run: FakeRun, tm
     assert fake_run.calls[1]["python"] == str(py)
 
 
-def test_a_supervisor_that_doesnt_start_keeps_the_allowance(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _last_two(capsys: pytest.CaptureFixture[str]) -> list[str]:
+    return capsys.readouterr().err.rstrip("\n").splitlines()[-2:]
+
+
+@pytest.mark.parametrize(
+    ("flags", "line"),
+    [
+        ({"over_memory": True}, "killed: over_memory"),
+        ({"over_disk_floor": True}, "killed: over_disk_floor"),
+        ({"over_bytes": True}, "killed: over_bytes"),
+        ({"over_processes": True}, "killed: over_processes"),
+        ({"timed_out": True}, "killed: timed_out"),
+        ({"stopped": "stopped by the owner"}, "killed: stopped"),
+        ({"timed_out": True, "over_memory": True}, "killed: timed_out, over_memory"),
+    ],
+)
+def test_an_attached_run_says_what_killed_it(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], flags: dict[str, Any], line: str
+) -> None:
+    """A limit or a stop that killed the run is one `killed: <flag>` line just before the status line, so the run
+    can put it in the Result; it isn't left in the run log alone."""
+    out = runner.RunOutcome(**{"exit": -9, "stdout_tail": "", "stderr_tail": "progress", "spent_usd": 0.0,
+                               "timed_out": False, **flags})  # fmt: skip
+    monkeypatch.setattr(runner, "run_experiment", FakeRun(out))
+    reply = _broker(vault).handle(dict(REQ))
+    assert broker._emit_experiment(reply) == -9
+    assert _last_two(capsys) == [line, "experiment ran: exit -9"]
+
+
+def test_a_clean_run_has_no_killed_line(vault: Path, fake_run: FakeRun, capsys: pytest.CaptureFixture[str]) -> None:
+    broker._emit_experiment(_broker(vault).handle(dict(REQ)))
+    assert _last_two(capsys) == ["progress line", "experiment ran: exit 0"]
+
+
+@pytest.mark.parametrize(
+    ("outcome", "lines"),
+    [
+        (
+            {"status": "ran", "exit": -9, "stderr_tail": "progress\n", "over_memory": True, "stopped": None},
+            ["killed: over_memory", "experiment ran: exit -9"],
+        ),
+        (
+            {"status": "ran", "exit": -9, "stderr_tail": "progress", "timed_out": True, "over_disk_floor": True},
+            ["killed: timed_out, over_disk_floor", "experiment ran: exit -9"],
+        ),
+        (
+            {"status": "not run", "reason": "stopped by the owner", "stopped": "stopped by the owner"},
+            ["killed: stopped", "experiment not run: stopped by the owner"],
+        ),
+        (
+            {"status": "ran", "exit": 0, "stderr_tail": "progress\n", "timed_out": False, "over_bytes": False},
+            ["progress", "experiment ran: exit 0"],
+        ),
+    ],
+)
+def test_a_collect_says_what_killed_it(
+    vault: Path, capsys: pytest.CaptureFixture[str], outcome: dict[str, Any], lines: list[str]
+) -> None:
+    _record(vault, outcome=outcome)
+    broker._emit_experiment(_broker(vault).handle(dict(STATUS)))
+    assert _last_two(capsys) == lines
+
+
+PYTHON_MISSING = "experiment not run: the owner's lab.python is missing"
+
+
+def _missing_python(tmp_path: Path, how: str) -> str:
+    """An owner's lab.python that was moved or deleted (``gone``), or is no longer executable (``not-executable``)."""
+    py = tmp_path / "venv" / "bin" / "python3"
+    py.parent.mkdir(parents=True)
+    if how == "not-executable":
+        py.write_text("#!/bin/sh\n")
+        py.chmod(0o644)
+    return str(py)
+
+
+@pytest.mark.parametrize("how", ["gone", "not-executable"])
+def test_lab_limits_keep_a_set_python_that_is_missing(tmp_path: Path, how: str) -> None:
+    py = _missing_python(tmp_path, how)
+    _owner_config({"lab": {"python": py}})
+    got = broker.load_lab_limits(os.environ)
+    assert got.python is None and got.python_set == py  # set, but not usable: never the same as unset
+    _owner_config({})
+    assert broker.load_lab_limits(os.environ).python_set is None
+
+
+@pytest.mark.parametrize("how", ["gone", "not-executable"])
+@pytest.mark.parametrize("detach", [False, True])
+def test_a_missing_owner_python_is_not_run_rather_than_another_interpreter(
+    vault: Path, fake_run: FakeRun, no_start: None, tmp_path: Path, how: str, detach: bool
+) -> None:
+    """`python3` in the argv means the owner's lab.python once it is set; a moved or deleted one must not fall back to
+    PATH's python3 (another interpreter, without the owner's packages). Not run, exit 4, the allowance kept."""
+    _detached_on()
+    _owner_config({"lab": {"python": _missing_python(tmp_path, how), "detached_max_hours": 12, "max_detached": 1}})
+    b = _broker(vault)
+    reply = b.handle(dict(DETACH if detach else REQ))
+    assert reply.exit == broker.EXIT_NOT_RUN and reply.stderr == f"{PYTHON_MISSING}\n"
+    assert b.experiments_run == 0 and fake_run.calls == []
+
+
+def test_a_missing_owner_python_in_the_owners_own_session(
+    vault: Path, fake_run: FakeRun, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _owner_config({"lab": {"python": _missing_python(tmp_path, "gone")}})
+    assert broker.client_experiment(SLUG, EID, ARGV, env=_owner_session_env(vault)) == broker.EXIT_NOT_RUN
+    assert capsys.readouterr().err.splitlines()[-1] == PYTHON_MISSING
+    assert fake_run.calls == []
+
+
+def test_a_missing_owner_python_doesnt_stop_a_script_that_doesnt_use_it(
+    vault: Path, fake_run: FakeRun, tmp_path: Path
+) -> None:
+    _owner_config({"lab": {"python": _missing_python(tmp_path, "gone")}})
+    assert _broker(vault).handle({**REQ, "argv": ["./run.sh"]}).exit == 0
+    assert fake_run.calls[0]["argv"] == ["./run.sh"] and fake_run.calls[0]["python"] is None
+
+
+@pytest.mark.parametrize(
+    "why",
+    [
+        "cannot start the experiment's supervisor; not run",
+        "the experiment's supervisor stopped before it started: no reason given",
+        "the experiment's supervisor wrote no record within 30 s; not run",
+    ],
+)
+def test_a_supervisor_that_doesnt_start_is_not_run_and_keeps_the_allowance(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], why: str
+) -> None:
+    """A transient start failure ran nothing and is no fault of the experiment's (as ruling P2-R8): `not run`, exit
+    4, so the run retries it later instead of abandoning and re-planning it (P2-g)."""
     from scout.lab import supervise
 
     _detached_on()
-    failed = FakeStart(LabError("the experiment's supervisor stopped before it started"))
-    monkeypatch.setattr(supervise, "start", failed)
+    monkeypatch.setattr(supervise, "start", FakeStart(supervise.SupervisorNotStarted(why)))
     b = _broker(vault)
     reply = b.handle(dict(DETACH))
-    assert reply.exit == broker.EXIT_REFUSED and reply.stderr.startswith("experiment refused: the experiment's")
+    assert reply.exit == broker.EXIT_NOT_RUN and reply.stderr == f"experiment not run: {why}\n"
+    assert b.experiments_run == 0
+    assert broker._emit_experiment(reply) == broker.EXIT_NOT_RUN
+    assert capsys.readouterr().err.rstrip("\n").splitlines()[-1] == f"experiment not run: {why}"
+
+
+def test_any_other_start_refusal_is_still_refused(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.lab import supervise
+
+    _detached_on()
+    monkeypatch.setattr(supervise, "start", FakeStart(LabError("experiment summary-drift E2 is already running")))
+    b = _broker(vault)
+    reply = b.handle(dict(DETACH))
+    assert reply.exit == broker.EXIT_REFUSED and reply.stderr.startswith("experiment refused: experiment")
     assert b.experiments_run == 0
 
 

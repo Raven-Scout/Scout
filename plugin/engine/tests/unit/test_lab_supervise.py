@@ -76,14 +76,19 @@ def _gone(pid: int) -> bool:
     return False
 
 
+Started = list[tuple[Path, runs.RunRecord]]  # (vault, record) of each supervisor a test started
+
+
 @pytest.fixture
-def started_pids() -> Iterator[list[int]]:
-    """Supervisors a test started: SIGKILLed at the end if still there (only these, never anything else)."""
-    pids: list[int] = []
-    yield pids
-    for pid in pids:
-        if not _gone(pid):
-            os.kill(pid, signal.SIGKILL)
+def started_supervisors() -> Iterator[Started]:
+    """Supervisors a test started, as (vault, record): SIGKILLed at the end only while the pid can still be proven
+    the record's supervisor (:func:`scout.lab.runs.is_supervisor`). A pid that is merely "not gone" may have been
+    reused by another process once the supervisor finished, so it is never signalled."""
+    started: Started = []
+    yield started
+    for vault_path, rec in started:
+        if runs.is_supervisor(vault_path, SLUG, EID, rec, _env()):
+            os.kill(rec.pid, signal.SIGKILL)
 
 
 # -- the record --------------------------------------------------------------------------------------------------
@@ -323,7 +328,7 @@ def _start(vault: Path, command: list[str] | None = None, **kw: Any) -> None:
     )  # fmt: skip
 
 
-def test_detached_start_does_not_wait_for_the_gate(vault: Path, tmp_path: Path, started_pids: list[int]) -> None:
+def test_detached_start_does_not_wait_for_the_gate(vault: Path, tmp_path: Path, started_supervisors: Started) -> None:
     wrapper = tmp_path / "blocked.py"
     wrapper.write_text(BLOCKED_FETCH, encoding="utf-8")
     begun = time.monotonic()
@@ -332,7 +337,7 @@ def test_detached_start_does_not_wait_for_the_gate(vault: Path, tmp_path: Path, 
     path = runs.record_path(vault, SLUG, EID, _env())
     rec = runs.read(path)
     assert rec is not None
-    started_pids.append(rec.pid)
+    started_supervisors.append((vault, rec))
     assert rec.pid != os.getpid() and rec.marker is None and rec.outcome is None
     assert runs.alive(vault, SLUG, EID, rec, _env())
     assert not runs.inputs_path(path).exists()  # the supervisor removed its inputs once read
@@ -403,14 +408,14 @@ def test_the_owners_gpu_switch_reaches_the_runner_detached(
 
 def test_start_reports_a_supervisor_that_exits_first(vault: Path) -> None:
     command = [sys.executable, "-c", "import sys; print('supervise: no luck here', file=sys.stderr); sys.exit(1)"]
-    with pytest.raises(LabError, match="stopped before it started: no luck here"):
+    with pytest.raises(supervise.SupervisorNotStarted, match="stopped before it started: no luck here"):
         _start(vault, command)
 
 
 def test_start_gives_up_after_its_wait(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(supervise, "START_WAIT_S", 1.0)
     begun = time.monotonic()
-    with pytest.raises(LabError, match="wrote no record within"):
+    with pytest.raises(supervise.SupervisorNotStarted, match="wrote no record within"):
         _start(vault, [sys.executable, "-c", "import time; time.sleep(30)"])
     assert time.monotonic() - begun < 10
 
@@ -418,8 +423,9 @@ def test_start_gives_up_after_its_wait(vault: Path, monkeypatch: pytest.MonkeyPa
 def test_start_refuses_over_an_uncollected_run(vault: Path) -> None:
     path = runs.record_path(vault, SLUG, EID, _env())
     runs.write(path, runs.RunRecord(T.isoformat(), T.isoformat(), 1))  # no outcome, nothing holds the lock
-    with pytest.raises(LabError, match="stopped without a result.*collect"):
+    with pytest.raises(LabError, match="stopped without a result.*collect") as raised:
         _start(vault, [sys.executable, "-c", "raise SystemExit(1)"])
+    assert not isinstance(raised.value, supervise.SupervisorNotStarted)  # the experiment's state, not a start fault
 
 
 # -- against the kernel -------------------------------------------------------------------------------------------
@@ -449,7 +455,7 @@ def test_kernel_hooks_report_the_marker_and_stop_the_run(vault: Path) -> None:
 
 @kernel
 def test_kernel_detached_run_outlives_its_broker(
-    vault: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], started_pids: list[int]
+    vault: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], started_supervisors: Started
 ) -> None:
     _detached_vault(vault, "detached.sh", "#!/bin/sh\nsleep 3; echo done > out.txt\n")
     import shutil
@@ -473,7 +479,7 @@ def test_kernel_detached_run_outlives_its_broker(
         path = runs.record_path(vault, SLUG, EID, _env())
         rec = runs.read(path)
         assert rec is not None
-        started_pids.append(rec.pid)
+        started_supervisors.append((vault, rec))
     finally:
         alive_then = server.poll() is None
         server.kill()  # the broker, this test's child, stops (the supervisor has a session of its own)
@@ -492,7 +498,7 @@ def test_kernel_detached_run_outlives_its_broker(
 
 @kernel
 def test_kernel_killed_supervisor_leaves_nothing(
-    vault: Path, capsys: pytest.CaptureFixture[str], started_pids: list[int]
+    vault: Path, capsys: pytest.CaptureFixture[str], started_supervisors: Started
 ) -> None:
     _detached_vault(vault, "long.sh", "#!/bin/sh\nsleep 60\n")
     b = broker.Broker.for_vault(vault, dict(os.environ), clock=lambda: NOW)
@@ -501,7 +507,7 @@ def test_kernel_killed_supervisor_leaves_nothing(
     path = runs.record_path(vault, SLUG, EID, _env())
     first = runs.read(path)
     assert first is not None
-    started_pids.append(first.pid)
+    started_supervisors.append((vault, first))
     _wait(lambda: (r := runs.read(path)) is not None and r.marker is not None, 60, "the gate's checks")
     rec = runs.read(path)
     assert rec is not None and rec.marker is not None and rec.outside is not None
