@@ -12,18 +12,13 @@ The **Lab** is a set of research *threads*, each a folder `knowledge-base/lab/<s
 
 ## Step 1a: Read the lab block
 
-Start from `.scout-cache/session-context.json` → `lab`. It lists each thread you may see:
-
-- `status`, `visibility` and question counts;
-- `unanswered_comments`: owner comments with no Scout reply yet;
-- `experiments`: `due` (planned and past its notice), `held` (due, but an owner comment on it is unanswered) and `running`;
-- `last_run`: when a run last worked it.
+Start from `.scout-cache/session-context.json` → `lab`: each thread you may see, with `status`, `visibility`, question counts, `unanswered_comments` (no Scout reply yet), `experiments` (`due`: past its notice; `held`: due, with an unanswered owner comment; `running`) and `last_run`.
 
 Fall back to `scripts/scoutctl lab list --json` when the file's `generated_at` isn't today, or `lab` is missing or marked `truncated`.
 
 Read only threads you will work, with `scripts/scoutctl lab show <slug> --json`. Never list or open `knowledge-base/lab/` files one by one.
 
-Every lab write goes through `scripts/scoutctl lab` (below, `lab <verb>` means that command). It locks the thread for that one write, so an owner comment or pause made mid-run is kept; a hand edit could overwrite it.
+Every lab write goes through `scripts/scoutctl lab` (below, `lab <verb>` means that command).
 
 ## Step 1b: Owner comments come first
 
@@ -77,14 +72,7 @@ A proposal holds one Question and 2–5 starting questions (`--open`, repeated),
 - a question in an active thread big enough to stand alone;
 - a coverage mandate with no thread;
 - an `inbox.md` line marked `[for research]`, removed from `inbox.md` once its proposal is made. One now matching an active thread becomes a comment instead (`scripts/scoutctl lab comment <slug> --text 'Q: <entry>' --author {{USER_HANDLE}}`, prefix dropped, `'` as `'\''`); one not worth a thread is removed and named in the wrap;
-- an empty lab (`lab list --json` gives no threads, as on a vault with no lab folder yet): use entity scoring, in this priority order:
-  1. entities {{USER_NAME}} interacted with this week (from dreaming session logs);
-  2. 🔴 HIGH priority project entities;
-  3. people entities with thin external context;
-  4. organizations with no industry or competitive context;
-  5. technology topics related to active projects.
-
-  Score from `scripts/scoutctl kb query --visibility normal` (add `--type <type>` as needed): only normal entities are candidates. Skip entities researched in the last 7 days (`scripts/scoutctl kb delta --since 7d` lists the `research:` commits).
+- an empty lab (`lab list --json` gives no threads, as on a vault with no lab folder yet): use entity scoring, in order: entities {{USER_NAME}} interacted with this week (dreaming session logs), 🔴 HIGH priority projects, people with thin external context, organizations with no industry context, technology topics of active projects. Score from `scripts/scoutctl kb query --visibility normal` (add `--type <type>` as needed): only normal entities are candidates. Skip entities researched in the last 7 days (`scripts/scoutctl kb delta --since 7d` lists the `research:` commits).
 
 **Privacy:** a proposal built from private material uses `--visibility private`.
 

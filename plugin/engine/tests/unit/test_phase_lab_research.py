@@ -206,17 +206,65 @@ def test_a_held_experiment_runs_only_if_its_comment_doesnt_object() -> None:
     assert "refused `held:`" not in retry  # nothing records an earlier refusal
 
 
-def test_collect_keeps_broker_side_answers_running() -> None:
-    """Ruling P2-R12: a collect `not run` is final only when it is the experiment's own outcome."""
+def _collect_not_run() -> tuple[str, set[str]]:
+    """A collect's `not run` rule: the text before its exception list, and the reasons that list names exactly."""
     collect = _flat(EXPERIMENTS).split("Collect detached experiments first", 1)[1].split("**Before running", 1)[0]
-    keep = collect.split("Some reasons are not final", 1)[1]
-    for reason in (
-        "this run's broker didn't answer",
-        "collecting a detached experiment needs the run broker",
-        "survived the sweep",
-    ):
-        assert reason in keep, reason
-    assert "leave it `running`" in keep and "wrap" in keep
+    rule = collect.split("`experiment not run: <reason>` →", 1)[1]
+    default, rest = rule.split("unless the reason is exactly one of", 1)
+    listed = rest.split(": then", 1)[0]
+    return default, set(re.findall(r"`([^`]+)`", listed))
+
+
+def test_collect_keeps_broker_side_answers_running() -> None:
+    """Ruling P2-R12, inverted in the final review: a collect `not run` is final, except the three answers that say
+    nothing about the experiment (no broker to ask, a sweep that left a survivor), which the next collect retries."""
+    default, listed = _collect_not_run()
+    assert "lab experiment abandon <slug> <EID> --reason" in default
+    collect = _flat(EXPERIMENTS).split("Collect detached experiments first", 1)[1].split("**Before running", 1)[0]
+    after = collect.split("unless the reason is exactly one of", 1)[1]
+    assert "leave it `running`" in after and "wrap" in after and "the next collect retries" in after
+    assert listed  # the list exists and is backticked
+
+
+def test_collect_classifies_every_recorded_reason() -> None:
+    """Every reason the engine can record or answer on a collect is either final (abandon) or one of the exact
+    retry answers. A reason the text doesn't list is final, so nothing stays `running` forever."""
+    from scout.lab import supervise, weights
+    from scout.sandbox import broker
+
+    default, listed = _collect_not_run()
+    retry = {broker.NO_BROKER_ANSWER, broker.COLLECT_NEEDS_BROKER, broker.SURVIVED_SWEEP}
+    final = {
+        broker.SUPERVISOR_GONE,
+        broker.OVERRAN,
+        broker.NO_DETACHED_RUN,
+        supervise.STOPPED_BY_OWNER,
+        supervise.TERMINATED,
+        supervise.VETO_UNREADABLE,
+        weights.FLOOR_REASON,
+        weights.OFF_REASON,
+        weights.FULL_REASON,
+    }
+    assert listed == retry, listed  # exact: no paraphrase, no "or other wording"
+
+    def classify(reason: str) -> str:
+        return "retry" if reason in listed else "abandon"
+
+    for reason in retry:
+        assert classify(reason) == "retry", reason
+    for reason in final:
+        assert classify(reason) == "abandon", reason
+    # A veto that can't be ruled out is final here, and never re-planned.
+    veto = _flat(EXPERIMENTS).split("Collect detached experiments first", 1)[1].split("**Before running", 1)[0]
+    veto = veto.split("unless the reason is exactly one of", 1)[1]
+    assert "`a veto can't be ruled out`" in veto and "never re-plan" in veto.lower() and "**Vetoes**" in veto
+
+
+def test_the_result_names_kills_and_cites_model_files() -> None:
+    """A limit or a stop that killed the run is in the Result; so is each model's repo, revision and sha256s."""
+    finish = _flat(EXPERIMENTS).split("**Finish:**", 1)[1].split("**Timeline:**", 1)[0]
+    assert "`killed: <flag>`" in finish and "goes in the Result" in finish
+    assert "each model's repo, revision and file sha256s from the run log" in finish
 
 
 def test_detached_experiments_are_collected_in_paused_threads_too() -> None:

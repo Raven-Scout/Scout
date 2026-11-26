@@ -80,7 +80,13 @@ PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent
 # net of two trimmed lines). Spec §7 and §11 require all of it. The review fixes after it (the rendered
 # `{{USER_HANDLE}}`, the `[for research]` exits) were trimmed to fit: RESEARCH measures 10,406. SKILL (+~60,
 # inbox-processing.md's route into the lab) stays inside its headroom.
-PINS = {"SKILL": 48_138, "DREAMING": 23_954, "RESEARCH": 10_406, "RESPOND": 6_147}
+# 2026-11-25 (Lab plan 2, final review): RESEARCH lowered to its measure (10,406 → 10,253). Trims that keep every
+# rule: lab-experiments.md's folder and lifecycle restatement, one-line In/Out of bounds, the shorter not-run lines
+# and the inverted collect rule; research-targets.md's Step 1a field list, Step 1f's entity scoring on one line and
+# the lab-lock rationale. Net of the review's additions: a collected `not run` is final except three exact retry
+# answers, a `killed: <flag>` line and each model's repo, revision and sha256s go in the Result, and a missing
+# `lab.python` is not run. SKILL (48,201) stays over its literal pin, inside its headroom.
+PINS = {"SKILL": 48_138, "DREAMING": 23_954, "RESEARCH": 10_253, "RESPOND": 6_147}
 GROWTH = 0.05
 SHRINK = 0.10
 
