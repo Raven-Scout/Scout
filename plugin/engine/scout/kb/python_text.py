@@ -17,9 +17,9 @@ variable or subscript whose every use is one of those; a value nothing uses. Not
 call (``sorted(xs, key=open)`` included), a value a function returns or a lambda holds, an attribute it's stored
 in, and anything else.
 
-Something is text when it is a string, an f-string or a concatenation with one, what a text method gives
-(``.read()``, ``.read_text()``, ``.split()``, ``.replace()``…), a list, set or dict of text, an item of text, or a
-variable only ever set to text (or a loop's item over text). Never a name an ``import`` binds.
+Something is text when it is a string (or another constant), an f-string or a concatenation with one, what a text
+method gives (``.read()``, ``.read_text()``, ``.split()``, ``.replace()``…), a list, set or dict of text, an item of
+text, or a variable only ever set to text (or a loop's item over text). Never a name an ``import`` binds.
 """
 
 from __future__ import annotations
@@ -220,7 +220,7 @@ class PythonText:
         if depth > _MAX_DEPTH:
             return False
         if isinstance(expr, ast.Constant):
-            return isinstance(expr.value, str | bytes)
+            return True  # text, a number, None: a plain value
         if isinstance(expr, ast.JoinedStr):
             return True
         if isinstance(expr, ast.BinOp):
