@@ -622,6 +622,62 @@ def test_a_body_its_calls_dont_explain_is_recorded(vault: Path, command: str) ->
     assert kinds and live_run.WRAPPER_WORD in (kinds[0] or [])
 
 
+# ----- the security review of #823, round 4 ----------------------------------------------------------------------
+
+ROUND4_DENIED = [
+    # a `local` that may not run leaves the name the global
+    f"x=echo; f(){{ if false; then local x; fi; x=cat; }}; f; $x {KB}",
+    f"x=echo; f(){{ false && local x; x=cat; }}; f; $x {KB}",
+    f"x=echo; f(){{ ( local x ); x=cat; }}; f; $x {KB}",
+    f"x=echo; f(){{ : $(local x); x=cat; }}; f; $x {KB}",
+    f"x=echo; f(){{ for i in; do local x; done; x=cat; }}; f; $x {KB}",
+    f"x=echo; f(){{ local x | true; x=cat; }}; f; $x {KB}",
+    # zsh's -O takes no value: the next word is the script
+    f"zsh -cO 'cat {KB}' x",
+    f'x=cat; zsh -fcO "$x {KB}" y',
+    # a mention of a function's name is no call of it
+    f'f(){{ "$@"; }}; echo f; trap "f cat {KB}" EXIT',
+    # zsh's name patterns, and a pattern with a value
+    "c=$(echo unset); $c -m 'H(O)ME'",
+    "c=$(echo unset); $c -m '(HOME|X)'",
+    "c=$(echo unset); $c -m 'H[[:upper:]]ME'",
+    "c=$(echo unset); $c -m '[^A]OME'",
+    "c=$(echo typeset); $c -m 'H?ME=/tmp'",
+    "c=$(echo unset); $c -m '^X'",
+]
+
+
+@pytest.mark.parametrize("command", ROUND4_DENIED)
+def test_round_fours_leaks_are_denied(vault: Path, command: str) -> None:  # noqa: F811
+    assert _decide(vault, command) is not None
+    gate._PENDING_AUDIT.clear()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "x=echo; f(){ local x; x=cat; }; f; $x notes.md",
+        "bash -cO extglob 'git status'",
+        "zsh -fc 'git status'",
+        "c=$(echo unset); $c -m 'TMP_*'",
+    ],
+)
+def test_round_fours_neighbours_are_allowed(vault: Path, command: str) -> None:  # noqa: F811
+    assert _decide(vault, command) is None
+    gate._PENDING_AUDIT.clear()
+
+
+@pytest.mark.parametrize(
+    ("pattern", "matches"),
+    [("H?ME", True), ("H(O)ME", True), ("(HOME|X)", True), ("H[[:upper:]]ME", True), ("[^A]OME", True),
+     ("GIT_CONFIG_*", True), ("TMP_*", False), ("[!H]OME", False)],
+)  # fmt: skip
+def test_zsh_patterns_of_names(pattern: str, matches: bool) -> None:
+    rx = live_run._zsh_pattern(pattern)
+    assert rx is not None
+    assert any(rx.fullmatch(name) for name in live_run._PROTECTED_LIST) is matches
+
+
 def test_a_wrapper_whose_calls_resolve_is_allowed_with_the_switch_on(
     vault: Path,  # noqa: F811
     monkeypatch: pytest.MonkeyPatch,

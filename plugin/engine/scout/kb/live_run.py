@@ -41,6 +41,7 @@ a live PID with a marker naming the same PID counts as the run's (fail closed).
 
 from __future__ import annotations
 
+import itertools
 import os
 import re
 import shlex
@@ -1354,7 +1355,7 @@ MAX_DEPTH = 6
 _STATE: dict[str, Any] = {
     "checked": 0, "secrets": 0, "reads": 0, "literal": 0, "vars": {}, "bodies": [], "unparsed": False, "capped": False,
     "parsing": False, "expanded": set(), "lists": [], "words": {}, "functions": {}, "calls": 0, "literals": 0,
-    "defining": False, "aliased": set(), "sourced": False, "locals": [], "escaped": [],
+    "defining": False, "aliased": set(), "sourced": False, "locals": [], "escaped": [], "body_depths": [],
 }  # fmt: skip
 _VAR = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 # An interpreter given its program inline or on stdin.
@@ -2421,6 +2422,10 @@ _RUNNER_LONG_VALUES = {
     "--toolchain",
 }
 _FIND_EXEC = {"-exec", "-execdir", "-ok", "-okdir"}
+# The words that open and close a compound command, whose inner commands may not run.
+_OPENERS = {"if", "case", "for", "while", "until", "select", "repeat"}
+_CLOSERS = {"fi", "esac", "done"}
+_COMPOUND_WORDS = _OPENERS | _CLOSERS | {"{", "}", "!", "then", "elif", "else", "do"}
 # Words a command can follow that aren't programs: zsh's `} always {`, `coproc`, a closing brace.
 _HEAD_WORDS = {"}", "always", "coproc"}
 # Function definitions the gate can't take a body from (`f() cmd`, `f g () {…}`, `function f g {…}`): each name
@@ -2611,10 +2616,11 @@ def _value_kind(value: str) -> tuple[str, list[str]]:
 _Words = dict[str, tuple[str, list[str]]]
 
 
-def _enter_body() -> _Words:
-    """A function body starts: what the command has set so far, to go back to (see _leave_body)."""
+def _enter_body(depth: int) -> _Words:
+    """A function body starts, walked at ``depth``: what the command has set so far, to go back to (_leave_body)."""
     _STATE["locals"].append(set())
     _STATE["escaped"].append({})
+    _STATE["body_depths"].append(depth)
     return dict(_STATE["words"])
 
 
@@ -2624,6 +2630,7 @@ def _leave_body(saved: _Words, marks: dict[str, list[tuple[str, list[str]] | Non
     globals) is kept with what the body left in it, for :func:`_mark_caller`; a definition's walk leaves the
     caller as it was, since only a call runs the body."""
     _STATE["locals"].pop()
+    _STATE["body_depths"].pop()
     escaped: dict[str, tuple[str, list[str]] | None] = _STATE["escaped"].pop()
     if marks is not None:
         for name, left in escaped.items():
@@ -2665,7 +2672,7 @@ def _note_word(name: str, kind: str, values: list[str]) -> None:
         _STATE["escaped"][-1][name] = known[name]  # a function's global: its caller sees it (_leave_body)
 
 
-def _record_command_words(words: list[str], array: bool) -> None:
+def _record_command_words(words: list[str], array: bool, certain: bool = True) -> None:
     """What this segment assigns, for :func:`_word_verdict`: a plain assignment's value, a declarer's (any option,
     `typeset -l` included, makes it "computed"), a ``for`` loop's words, and every other builtin's target
     (``read``, ``mapfile``, ``printf -v``, ``unset``…) as "computed". ``array``: the segment ends ``NAME=`` before a
@@ -2699,9 +2706,15 @@ def _record_command_words(words: list[str], array: bool) -> None:
         # In a function, `local x` (with -x too) and typeset/declare/integer/float without -g or -x (zsh's
         # GLOBAL_EXPORT makes -x global) make x the body's own from here on: a fresh name, shadowing the caller's,
         # that the caller never sees. An assignment before it was to the global (_note_word).
+        # Only a declaration that surely runs (``certain``: see _run_escape) does; `if c; then local x; fi`,
+        # `false && local x`, `( local x )` may leave x the global.
         flags = "".join(a[1:] for a in args if a.startswith(("-", "+")) and a not in ("-", "--"))
-        if _STATE["locals"] and (
-            head == "local" or (head in ("typeset", "declare", "integer", "float") and not (set(flags) & set("gx")))
+        if (
+            certain
+            and _STATE["locals"]
+            and (
+                head == "local" or (head in ("typeset", "declare", "integer", "float") and not (set(flags) & set("gx")))
+            )
         ):
             for a in args:
                 name = a.split("=", 1)[0].split("[", 1)[0]
@@ -2965,8 +2978,12 @@ def _function_spans(command: str) -> list[tuple[int, int, str | None]]:
         if name is None or _HOOK_FUNCTIONS.fullmatch(name):
             out.append((m.end(), end, None))
             continue
-        word = re.compile(rf"(?<![\w$.:@+-]){re.escape(name)}(?![\w.:@+-])")
-        called = any(not (m.start() <= c.start() < end) for c in word.finditer(masked))
+        # A call: the name where a command starts (`f x`, `x && f`, `then f`, `time f`), not a mention (`echo f`).
+        word = re.compile(
+            rf"(?:^|[;&|\n(){{}}`]|(?<![\w-])(?:then|do|else|elif|time|noglob|nocorrect|!))\s*"
+            rf"{re.escape(name)}(?![\w.:@+-])"
+        )
+        called = any(not (m.start() <= c.end() - len(name) < end) for c in word.finditer(masked))
         out.append((m.end(), end, "judged" if called and _substitutable(command[m.end() : end]) else "recorded"))
     return out
 
@@ -3033,7 +3050,7 @@ def _call_escape(name: str, args: list[str], depth: int) -> str | None:
             if _STATE["calls"] > MAX_CALLS:
                 return denied_word("too_many")
             # Each call starts from the command's variables as they are, and what its body assigns stays its own.
-            saved, defining = _enter_body(), _STATE["defining"]
+            saved, defining = _enter_body(depth + 1), _STATE["defining"]
             # A body that sets its own arguments is walked strictly; one whose positional words _put_args can't
             # fill (`"$@[1]"`) as written, as a definition whose unresolved words are recorded.
             filled = own or _substitutable(body)
@@ -3075,7 +3092,7 @@ def _command_escape(words: list[str], depth: int) -> str | None:
     return _git_escape(git) if git is not None else None
 
 
-def _shell_script(args: list[str]) -> str | None:
+def _shell_script(args: list[str], shell: str = "sh") -> str | None:
     """The program a shell is given with ``-c``, alone or in a cluster (``-c``, ``-fc``, ``-lc``, ``-ec``): the first
     word after its options (``-o``/``-O`` take a value), or None."""
     given, i, values = False, 0, 0
@@ -3096,7 +3113,7 @@ def _shell_script(args: list[str]) -> str | None:
             continue
         if a.startswith(("-", "+")) and len(a) > 1:
             given = given or "c" in a[1:]
-            values = sum(ch in "oO" for ch in a[1:])
+            values = sum(ch in ("o" if shell == "zsh" else "oO") for ch in a[1:])  # zsh's -O takes none
             i += 1
             continue
         break
@@ -3134,7 +3151,7 @@ def _plain_escape(words: list[str], depth: int) -> str | None:
         return "detach"
     if _delegate_write(name, args):
         return DELEGATE_FORM
-    script = _shell_script(args) if name in _SHELLS else None
+    script = _shell_script(args, name) if name in _SHELLS else None
     if script is not None:
         return _run_escape(_dq_unescape(script), depth + 1)
     if name == "eval":
@@ -3202,6 +3219,7 @@ def run_escape(
             sourced=False,
             locals=[],
             escaped=[],
+            body_depths=[],
         )
         RESOLVED.clear()
     try:
@@ -3344,6 +3362,9 @@ def _run_escape(command: str, depth: int, *, split: bool = True, arith: bool = F
     position = 0
     segments = _segments_with_ops(command)
     in_case, patterns, arith_depth, in_test = 0, False, 0, False
+    # Where a segment surely runs when its body does: not in a subshell, an if/case branch or a loop, nor after
+    # `&&`/`||`, nor in a pipeline but its last element (_record_command_words' `certain`).
+    paren_depth, compound = 0, 0
     # The bodies of the functions this command defines (see _function_spans): walked as definitions, where `$1` is
     # the arguments of calls judged on their own, and whose assignments are the body's, not the command's.
     function_bodies = _function_spans(command)
@@ -3359,7 +3380,7 @@ def _run_escape(command: str, depth: int, *, split: bool = True, arith: bool = F
         if inside != in_body:
             if saved_words is not None:
                 _leave_body(saved_words, None)
-            saved_words = _enter_body() if inside is not None and inside[2] else None
+            saved_words = _enter_body(depth) if inside is not None and inside[2] else None
             in_body = inside
         _STATE["defining"] = outer_defining or (inside[2] if inside is not None else False)
         judge_bodies(position)
@@ -3415,7 +3436,18 @@ def _run_escape(command: str, depth: int, *, split: bool = True, arith: bool = F
         if not isinstance(variants, str):  # the read checks keep the words as before where none was filled in
             variants = [(w, literal_words if lit is word_literals else lit) for w, lit in variants]
         array = bool(words) and next_op == "(" and words[-1].endswith("=")  # `c=(read HOME)`
-        _record_command_words(words, array)
+        paren_depth += (op == "(") - (op == ")")
+        leading = list(itertools.takewhile(lambda w: w in _COMPOUND_WORDS, segment.split()))
+        compound = max(0, compound + sum(w in _OPENERS for w in leading) - sum(w in _CLOSERS for w in leading))
+        certain = (
+            op in ("", ";", "\n", ")")
+            and next_op not in ("|", "|&")
+            and paren_depth <= 0
+            and compound == 0
+            and bool(_STATE["body_depths"])
+            and _STATE["body_depths"][-1] == depth
+        )
+        _record_command_words(words, array, certain)
         found = variants if isinstance(variants, str) else None
         resolved = words
         for words_, literal_ in [] if isinstance(variants, str) else variants:
@@ -3478,19 +3510,81 @@ _PROTECTED_LIST = (
     "HOME", "XDG_CONFIG_HOME", "SCOUT_MODE", "SCOUT_READER", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
     "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_PARAMETERS",
 )  # fmt: skip
-_QUOTED_GLOB = re.compile("[\ue000\ue001\ue002]")
+
+
+_POSIX_CLASSES = {
+    "upper": "A-Z", "lower": "a-z", "alpha": "A-Za-z", "digit": "0-9", "alnum": "A-Za-z0-9", "word": "A-Za-z0-9_",
+    "xdigit": "0-9A-Fa-f",
+}  # fmt: skip
+# What a pattern of names may be made of: name characters and zsh's pattern syntax (no `.`, `/` or space).
+_NAME_PATTERN = re.compile(r"[A-Za-z0-9_*?\[\]()|^!:#~<>\\-]+")
+_PATTERN_SYNTAX = re.compile(r"[*?\[(|^#~<]")
+
+
+def _zsh_pattern(pattern: str) -> re.Pattern[str] | None:
+    """A zsh pattern of names as a regular expression: `*`, `?`, brackets (`^`/`!`, POSIX classes), `(a|b)`; None
+    for syntax the gate doesn't model (extendedglob's `^`, `~`, `#`, `<1-5>`)."""
+    out: list[str] = []
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "\\" and i + 1 < len(pattern):
+            out.append(re.escape(pattern[i + 1]))
+            i += 2
+            continue
+        if c == "*":
+            out.append(".*")
+        elif c == "?":
+            out.append(".")
+        elif c == "[":
+            j, chars = i + 1, []
+            negate = j < len(pattern) and pattern[j] in "^!"
+            j += negate
+            if j < len(pattern) and pattern[j] == "]":
+                chars.append("\\]")
+                j += 1
+            while j < len(pattern) and pattern[j] != "]":
+                if pattern.startswith("[:", j):
+                    k = pattern.find(":]", j + 2)
+                    if k < 0 or pattern[j + 2 : k] not in _POSIX_CLASSES:
+                        return None
+                    chars.append(_POSIX_CLASSES[pattern[j + 2 : k]])
+                    j = k + 2
+                    continue
+                chars.append("-" if pattern[j] == "-" else re.escape(pattern[j]))
+                j += 1
+            if j >= len(pattern):
+                return None
+            out.append("[" + ("^" if negate else "") + "".join(chars) + "]")
+            i = j
+        elif c == "(":
+            out.append("(?:")
+        elif c in ")|":
+            out.append(c)
+        elif c in "^~#<>":
+            return None
+        else:
+            out.append(re.escape(c))
+        i += 1
+    try:
+        return re.compile("".join(out))
+    except re.error:
+        return None
 
 
 def _named_pattern(literal_operands: list[str]) -> str | None:
-    """The form of a quoted pattern (its glob characters shielded, see _SHIELD) that matches a name that matters."""
-    import fnmatch
-
+    """The form of a pattern of names an unknown program is given (`unset -m 'H?ME'`, `typeset -m 'H(O)ME=/x'`)
+    that matches one that matters, or that the gate can't read (a name built at run time, extendedglob)."""
     for word in literal_operands:
-        if _QUOTED_GLOB.search(word):
-            pattern = _unshield(word)
-            for name in _PROTECTED_LIST:
-                if fnmatch.fnmatchcase(name, pattern):
-                    return _name_form(name) or HOME_FORM
+        part = _unshield(word).split("=", 1)[0]
+        if not _PATTERN_SYNTAX.search(part) or not _NAME_PATTERN.fullmatch(part):
+            continue
+        rx = _zsh_pattern(part)
+        if rx is None:
+            return HOME_FORM
+        for name in _PROTECTED_LIST:
+            if rx.fullmatch(name):
+                return _name_form(name) or HOME_FORM
     return None
 
 
