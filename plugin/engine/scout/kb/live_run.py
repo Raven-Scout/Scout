@@ -2196,6 +2196,13 @@ _SYSTEM_GITS = (
 )
 
 
+# Builtins that set the variables they name (a PATH they name is a change the gate can't follow).
+_PATH_SETTER = re.compile(
+    r"(?:^|\s)(?:export|declare|typeset|local|readonly|integer|float|read|vared|getopts|zparseopts|unset|print|printf"
+    r"|set|mapfile|readarray|select|for|zstyle|zformat|strftime|getln|sysread)(?:\s|$)"
+)
+
+
 def _system_git(path: str) -> bool:
     real = os.path.realpath(path)
     return (
@@ -2243,7 +2250,12 @@ def _path_keeps_git(command: str, masked: str | None = None) -> bool:
             continue  # a read of it
         op = re.match(r"\+?=", command[m.end() :])
         if op is None:
-            return False
+            # Not an assignment: it counts only as a setter's argument (`export PATH`, `read -r PATH`, `typeset
+            # path`, `for path in …`); anywhere else it is a word of data (`grep path`, `git log -- path`).
+            segment = re.split(r"[;&|\n(){}`]", (command if masked is None else masked)[:start])[-1]
+            if _PATH_SETTER.search(segment):
+                return False
+            continue
         rest = command[m.end() + len(op[0]) :]
         if op[0] == "+=":
             continue  # appended: after every folder git is found in now

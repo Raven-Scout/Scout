@@ -64,13 +64,15 @@
   `-C <dir>` and `--no-pager` before the subcommand. Any other subcommand, option or global option (`-c`,
   `--exec-path`, `-p`), and any git call in a command that sets a `GIT_*` variable, an editor or pager, or zsh's
   command table (`commands`, `functions`, `alias`, `hash`), is refused with a message naming the forms a run may
-  use. A plain `git commit` is allowed in the vault's own repository with `-q`, `-a`, `--allow-empty`, a message
+  use. A plain `git commit` is allowed in the vault's own repository with `-q`, `-a`, `--allow-empty`, `-o`/`--only`,
+  `-i`/`--include`, a message
   (`-m`, repeatable, or `-F`, whose file is judged as a read) and paths, and nothing else (`--no-verify`, `--amend`,
   `-c`/`-C`, `--template`, `--fixup`, `-S`, `--author`, … are refused); the commit hook judges what it commits. `log`
   also takes the pickaxe and match options (`-S`, `-G`, `--pickaxe-all`, `-i`, `-F`, `--all-match`). A change to
   `PATH` (or zsh's `path`) is judged by where `git` then resolves: a folder put first that holds a git other than
   the system's, one the gate can't read, or one the command names elsewhere (it could put a git there) is
-  refused, so a prelude's `export PATH="$HOME/.local/bin:$PATH"` passes. Quoted text (a commit message) is no
+  refused, so a prelude's `export PATH="$HOME/.local/bin:$PATH"` passes; a `PATH` or `path` word counts only when
+  assigned or named to a builtin that sets it (`grep path` is data). Quoted text (a commit message) is no
   setting to these checks, unless a quoted word starts with a watched name (`export "GIT_DIR=x"`). The
   engine-change flow stays, narrowly: `git clone` of Scout's own remote (spelled out, or as `git-setup.md`'s
   substitutions print it, which the gate works out from `engine.json` and the engine checkout's origin) into

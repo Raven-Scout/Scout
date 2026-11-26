@@ -287,6 +287,7 @@ def commit_files(args: list[str]) -> list[str]:
 
 def vault_commit(args: list[str]) -> bool:
     """``git commit`` as a run makes it in the vault's repository: ``-q``, ``-a``/``--all``, ``--allow-empty``,
+    ``-o``/``--only``, ``-i``/``--include``,
     a message (``-m``/``--message``, repeatable, or ``-F``/``--file``; clustered as ``-qam``) and paths. Anything
     else (``--no-verify``/``-n``, ``--amend``, ``-c``/``-C``, ``--template``, ``--cleanup``, ``--fixup``,
     ``--squash``, ``-S``, ``--author``, ``--date``, …) is refused. The commit hook judges what is committed."""
@@ -296,7 +297,7 @@ def vault_commit(args: list[str]) -> bool:
         i += 1
         if a == "--":
             return message
-        if a in ("-q", "--quiet", "-a", "--all", "--allow-empty"):
+        if a in ("-q", "--quiet", "-a", "--all", "--allow-empty", "-o", "--only", "-i", "--include"):
             continue
         if a in ("-m", "--message", "-F", "--file"):
             if i >= len(args):
@@ -308,7 +309,7 @@ def vault_commit(args: list[str]) -> bool:
             continue
         if a.startswith("-") and not a.startswith("--") and len(a) > 1:
             for j, c in enumerate(a[1:], 1):
-                if c in "qa":
+                if c in "qaoi":
                     continue
                 if c in "mF":
                     message = True

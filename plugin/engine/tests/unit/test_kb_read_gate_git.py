@@ -795,6 +795,17 @@ RUN_USAGE = [
     "path=(~/.local/bin $path); git status",
     "PATH+=:/tmp/x; git status",
     "echo $PATH; git status",
+    # replay at 66b7b9a8: commit --only/--include, and words that only look like PATH's
+    "cd ~/Vault; git commit -q --only -m 'kb: one\n\nand the body' -- docs/a.md; git log --oneline -1;"
+    " git status --short",
+    "git commit -q -o -m x docs/a.md",
+    "git commit --include -m x -- docs/a.md",
+    "git commit -qom x -- docs/a.md",
+    "git status --short | grep -v '^??' | grep -E 'action-items/.*\\.md'",
+    "git status --short | grep -E '^ M .*knowledge-base'",
+    "git status --short | grep path | grep -E 'action-items/.*\\.md' | head -5",
+    "git status --short | grep 'path' | grep -c 'PATH'",
+    "git log --oneline -- path",
 ]
 
 
@@ -894,6 +905,9 @@ ROUND_6 = [
     "export GIT_EXEC_PATH=~/out/bin; git ls-remote .",
     "export PATH=$UNSET_X:$PATH; git log --oneline",
     "read -r PATH <<< /tmp; git log --oneline",
+    "export PATH; git log --oneline",
+    "for path in /tmp; do git status; done",
+    "typeset -U path; git status",
     "PATH=/tmp/no-git-here git log --oneline",
     "functions[git]='cat x'; git status",
     "git() { cat x; }; git status",
