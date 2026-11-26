@@ -1354,7 +1354,7 @@ MAX_DEPTH = 6
 _STATE: dict[str, Any] = {
     "checked": 0, "secrets": 0, "reads": 0, "literal": 0, "vars": {}, "bodies": [], "unparsed": False, "capped": False,
     "parsing": False, "expanded": set(), "lists": [], "words": {}, "functions": {}, "calls": 0, "literals": 0,
-    "defining": False, "aliased": set(), "sourced": False, "locals": [],
+    "defining": False, "aliased": set(), "sourced": False, "locals": [], "escaped": [],
 }  # fmt: skip
 _VAR = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 # An interpreter given its program inline or on stdin.
@@ -2433,8 +2433,10 @@ _NAMES_DEFINED = re.compile(
 # A function definition, its name in group 1 (`function f`) or 2 (`f()`), or 3 for zsh's anonymous `() { … }`.
 _FUNCTION_DEF = re.compile(
     r"(?:^|(?<=[;&|\n(){}]))\s*(?:(?:then|do|else)\s+)*"
-    r"(?:function\s+([^\s(){};&|<>]+)(?:\s*\(\s*\))?|([^\s(){};&|<>$`=]+)\s*\(\s*\)|(\(\s*\)))\s*\{"
+    r"(?:function\s+([^(){};&|<>]*?)(?:\s*\(\s*\))?|([^\s(){};&|<>$`=]+)\s*\(\s*\)|(\(\s*\)))\s*\{"
 )
+# A function's name as the shell reads it, once quotes and backslashes are gone (`"f"`, `\f`, `f""` are f).
+_FUNCTION_NAME = re.compile(r"[\w.:@+-]+")
 # A positional parameter, quoted or not: `"$@"`, `$1`, `${2}`, `$*`, `$#`.
 _POSITIONAL_REF = re.compile(r'"\$(?:\{([0-9@*#])\}|([0-9@*#]))"|\$(?:\{([0-9@*#])\}|([0-9@*#]))')
 _SHIFTS = re.compile(r"(?<![\w$])(?:shift|set|argv)(?!\w)")
@@ -2445,7 +2447,7 @@ _HOOK_FUNCTIONS = re.compile(
     r"(?:command_not_found_handler|precmd|preexec|chpwd|periodic|zshexit|zshaddhistory|TRAP\w+)"
 )
 # A body that sets its own arguments (`set -- a b`, `set a b`, zsh's `argv=…`): a call's arguments aren't its `$1`.
-_SETS_ARGS = re.compile(r"(?<![\w$])(?:set\s+(?:--|[^-+\s;&|)])|argv(?!\w))")
+_SETS_ARGS = re.compile(r"(?<![\w$])(?:set\s+(?:--|[^-+\s;&|)])|argv(?!\w)|\d+\+?=)")
 # A parameter expansion that assigns its name (`${x:=cat}`, zsh's `${x::=cat}`, `${(A)x::=…}`), wherever it is.
 _ASSIGNING_EXPANSION = re.compile(r"\$\{(?:\([^)]*\))?([A-Za-z_]\w*)(?:::=|:?=)")
 # zsh's tables of names (`commands[c]=/bin/cat`, `functions[g]=…`, `aliases[x]=…`): the name becomes a program.
@@ -2575,9 +2577,9 @@ def _reference(m: re.Match[str], word: str) -> tuple[str, list[str]]:
 
 
 def _positional() -> tuple[str, list[str]]:
-    """`$1`, `$@`: a function's argument (WRAPPER_WORD) in the body of a function the command defines and calls are
-    judged for, with their arguments put in; anywhere else (`set -- cat x; "$@"`, a hook's body, one whose name
-    the gate couldn't read) nothing the command set."""
+    """`$1`, `$@`: a function's argument (WRAPPER_WORD) in the body of a function the command defines (recorded
+    unless its calls are judged, see _function_spans); anywhere else (`set -- cat x; "$@"`, a hook's body, one
+    whose name the gate couldn't read) nothing the command set."""
     return (WRAPPER_WORD, []) if _STATE["defining"] else ("unassigned", [])
 
 
@@ -2606,21 +2608,48 @@ def _value_kind(value: str) -> tuple[str, list[str]]:
     return "literal", [t + value[at:] for t in texts]
 
 
-def _enter_body() -> dict[str, tuple[str, list[str]]]:
+_Words = dict[str, tuple[str, list[str]]]
+
+
+def _enter_body() -> _Words:
     """A function body starts: what the command has set so far, to go back to (see _leave_body)."""
     _STATE["locals"].append(set())
+    _STATE["escaped"].append({})
     return dict(_STATE["words"])
 
 
-def _leave_body(saved: dict[str, tuple[str, list[str]]]) -> None:
-    """A function body ends: the caller's variables come back, and each one the body set and didn't make its own
-    (`local`, a declarer without `-g`) is "computed" to the caller, since a function shares the shell's globals
-    (`f(){ x=cat; }; f; $x …`)."""
-    own: set[str] = _STATE["locals"].pop() if _STATE["locals"] else set()
-    for name, entry in _STATE["words"].items():
-        if name not in own and saved.get(name) != entry:
-            saved[name] = ("computed", [])
+def _leave_body(saved: _Words, marks: dict[str, list[tuple[str, list[str]] | None]] | None) -> None:
+    """A function body ends, and the caller's variables come back. For a call (``marks``), each name the body set
+    while it wasn't the body's own (before a ``local``, or with ``typeset -g``/``-x``: zsh shares the shell's
+    globals) is kept with what the body left in it, for :func:`_mark_caller`; a definition's walk leaves the
+    caller as it was, since only a call runs the body."""
+    _STATE["locals"].pop()
+    escaped: dict[str, tuple[str, list[str]] | None] = _STATE["escaped"].pop()
+    if marks is not None:
+        for name, left in escaped.items():
+            marks.setdefault(name, []).append(left)
     _STATE["words"] = saved
+
+
+def _mark_caller(marks: dict[str, list[tuple[str, list[str]] | None]]) -> None:
+    """What judged calls left in the caller's names: each value is the caller's own and every one a call may have
+    left (``f(){ x=git; }; f; $x status`` is git), or "computed" where one of them isn't a plain word."""
+    words: _Words = _STATE["words"]
+    for name, left in marks.items():
+        entry = words.get(name)
+        for one in left:
+            if one is None or one[0] not in ("literal", "sourced"):
+                entry = ("computed", [])
+            elif entry is None:
+                entry = ("literal", list(one[1]))
+            elif entry[0] in ("literal", "sourced"):
+                entry = ("literal", list(dict.fromkeys([*entry[1], *one[1]])))
+            else:
+                entry = ("computed", [])
+        if entry is not None:
+            words[name] = entry
+        if _STATE["locals"] and name not in _STATE["locals"][-1]:
+            _STATE["escaped"][-1][name] = words.get(name)  # a call inside a call: it reaches the outer caller too
 
 
 def _note_word(name: str, kind: str, values: list[str]) -> None:
@@ -2632,6 +2661,8 @@ def _note_word(name: str, kind: str, values: list[str]) -> None:
     if old is not None and not (old[0] == kind == "literal" and old[1] == values):
         kind, values = "computed", []
     known[name] = (kind, values)
+    if _STATE["locals"] and name not in _STATE["locals"][-1]:
+        _STATE["escaped"][-1][name] = known[name]  # a function's global: its caller sees it (_leave_body)
 
 
 def _record_command_words(words: list[str], array: bool) -> None:
@@ -2665,13 +2696,12 @@ def _record_command_words(words: list[str], array: bool) -> None:
         options = any(
             a.startswith(("-", "+")) and a not in ("-", "--") and not set(a[1:]) <= set("aAxrgt") for a in args
         )
-        # In a function, `local x` and a declarer without -g make x the body's own: a fresh name, shadowing the
-        # caller's, that the caller never sees.
-        if (
-            _STATE["locals"]
-            and head != "export"
-            and head != "readonly"
-            and not any(a.startswith("-") and "g" in a[1:] for a in args)
+        # In a function, `local x` (with -x too) and typeset/declare/integer/float without -g or -x (zsh's
+        # GLOBAL_EXPORT makes -x global) make x the body's own from here on: a fresh name, shadowing the caller's,
+        # that the caller never sees. An assignment before it was to the global (_note_word).
+        flags = "".join(a[1:] for a in args if a.startswith(("-", "+")) and a not in ("-", "--"))
+        if _STATE["locals"] and (
+            head == "local" or (head in ("typeset", "declare", "integer", "float") and not (set(flags) & set("gx")))
         ):
             for a in args:
                 name = a.split("=", 1)[0].split("[", 1)[0]
@@ -2766,9 +2796,9 @@ def _maybe_a_function(word: str) -> bool:
 
 
 def _consult(kind: str) -> str | None:
-    """What the run's gate makes of a COMMAND_WORD_KINDS word: a form to deny it, or None (it is recorded). In a
-    function's definition, nothing: each call is judged with its arguments, and records what stays unresolved."""
-    if _COMMAND_WORD is None or _STATE["defining"]:
+    """What the run's gate makes of a COMMAND_WORD_KINDS word: a form to deny it, or None (it is recorded). In the
+    definition of a function whose calls are judged, nothing: each records what stays unresolved."""
+    if _COMMAND_WORD is None or _STATE["defining"] == "judged":
         return None
     return _COMMAND_WORD(kind)
 
@@ -2848,8 +2878,10 @@ def _command_word_variants(
             return denied_word("too_many")
         out: list[tuple[list[str], list[str]]] = []
         for replaced in verdict:
-            for filled in _filled([*words[:i], *replaced, *words[i + 1 :]], i + len(replaced)):
-                found = _command_word_variants(filled, filled, depth + 1)
+            plain = [*words[:i], *replaced, *words[i + 1 :]]
+            for filled in _filled(plain, i + len(replaced)):
+                twin = [*literal[:i], *replaced, *literal[i + 1 :]] if filled == plain else filled
+                found = _command_word_variants(filled, twin, depth + 1)
                 if isinstance(found, str):
                     return found
                 out += found
@@ -2886,18 +2918,56 @@ def _brace_end(masked: str, opening: int) -> int | None:
     return None
 
 
-def _function_spans(command: str) -> list[tuple[int, int, bool]]:
-    """Each function body ``command`` defines, as (start, end, judged by its calls): True for a named function
-    whose calls are judged with their arguments (:func:`_call_escape`), False for one zsh calls itself (a hook),
-    an anonymous one, or one whose name is quoted. A body the gate can't find (``f() cmd``, ``f g () {…}``) is
-    walked as the command's own text."""
+def _defined_name(command: str, m: re.Match[str]) -> tuple[str | None, bool]:
+    """The name a _FUNCTION_DEF match defines, read from ``command`` as the tokenizer reads it: (name, True), or
+    (None, True) for zsh's anonymous `() {…}`, or (None, False) when it isn't one name the gate can read."""
+    head = re.sub(r"\s*(?:\(\s*\))?\s*\{$", "", command[m.start() : m.end()]).strip()
+    head = re.sub(r"^(?:(?:then|do|else)\s+)*", "", head)
+    if re.match(r"function(?:\s|$)", head):
+        head = head[len("function") :]
+    try:
+        words = shlex.split(head, posix=True)
+    except ValueError:
+        return None, False
+    if not words:
+        return None, m[3] is not None
+    if len(words) == 1 and _FUNCTION_NAME.fullmatch(words[0]):
+        return words[0], True
+    return None, False
+
+
+def _substitutable(body: str) -> bool:
+    """Whether _put_args gives a call's arguments to every positional parameter ``body`` uses: none that sets its
+    own (``set -- …``, ``1=cat``, ``argv``), and none it can't put in (``"$@[1]"``, ``${1:-x}``, ``$1:l``)."""
+    if _SETS_ARGS.search(body):
+        return False
+    for m in re.finditer(r"\$\{?[0-9@*#]", body):
+        ref = _POSITIONAL_REF.match(body, m.start())
+        if ref is None or body[ref.end() : ref.end() + 1] in ("[", ":"):
+            return False
+    return True
+
+
+def _function_spans(command: str) -> list[tuple[int, int, str | None]]:
+    """Each function body ``command`` defines, as (start, end, how it is walked): "judged" for a named function
+    called in the command whose positional parameters _put_args can fill (its calls say what it does, so its
+    definition records nothing), "recorded" for one never called where the gate can see, or whose arguments it
+    can't put in (a call in a trap, a sourced file: its unresolved words are recorded), and None, walked as the
+    command's own text, for one zsh calls itself (a hook), an anonymous one, or one whose name the gate can't read
+    (``f g () {…}``). A body it can't find (``f() cmd``) is walked as the command's own text too."""
     masked = _mask_quoted(command)
-    out: list[tuple[int, int, bool]] = []
+    out: list[tuple[int, int, str | None]] = []
     for m in _FUNCTION_DEF.finditer(masked):
         end = _brace_end(masked, m.end() - 1)
-        if end is not None:
-            name = m[1] or m[2]
-            out.append((m.end(), end, name is not None and not _HOOK_FUNCTIONS.fullmatch(name)))
+        if end is None:
+            continue
+        name, _readable = _defined_name(command, m)
+        if name is None or _HOOK_FUNCTIONS.fullmatch(name):
+            out.append((m.end(), end, None))
+            continue
+        word = re.compile(rf"(?<![\w$.:@+-]){re.escape(name)}(?![\w.:@+-])")
+        called = any(not (m.start() <= c.start() < end) for c in word.finditer(masked))
+        out.append((m.end(), end, "judged" if called and _substitutable(command[m.end() : end]) else "recorded"))
     return out
 
 
@@ -2906,7 +2976,7 @@ def _scan_functions(command: str) -> None:
     masked = _mask_quoted(command)
     for m in _FUNCTION_DEF.finditer(masked):
         end = _brace_end(masked, m.end() - 1)
-        name = m[1] or m[2]
+        name, _readable = _defined_name(command, m)
         if name is None or end is None:
             continue
         bodies: list[str] = _STATE["functions"].setdefault(name, [])
@@ -2953,6 +3023,8 @@ def _call_escape(name: str, args: list[str], depth: int) -> str | None:
     """A call of a function the command defines: each of its bodies with ``args`` put in, and, where the body may
     shift them (``shift``, ``set``, zsh's ``argv``), with the first few dropped too."""
     results: list[str | None] = []
+    # Every call and shift starts from the caller's variables as they are; what they leave is merged after.
+    marks: dict[str, list[tuple[str, list[str]] | None]] = {}
     for body in _STATE["functions"][name]:
         own = bool(_SETS_ARGS.search(body))  # `set -- a b; "$@"`: its arguments are its own, not the call's
         shifts = range(len(args) + 1) if _SHIFTS.search(body) and not own else range(1)
@@ -2962,12 +3034,17 @@ def _call_escape(name: str, args: list[str], depth: int) -> str | None:
                 return denied_word("too_many")
             # Each call starts from the command's variables as they are, and what its body assigns stays its own.
             saved, defining = _enter_body(), _STATE["defining"]
-            _STATE["defining"] = defining and not own
+            # A body that sets its own arguments is walked strictly; one whose positional words _put_args can't
+            # fill (`"$@[1]"`) as written, as a definition whose unresolved words are recorded.
+            filled = own or _substitutable(body)
+            _STATE["defining"] = (defining and not own) or (None if filled else "recorded")
             try:
-                results.append(_run_escape(body if own else _put_args(body, name, args[k:]), depth + 1, split=False))
+                text = _put_args(body, name, args[k:]) if filled and not own else body
+                results.append(_run_escape(text, depth + 1, split=False))
             finally:
-                _leave_body(saved)
+                _leave_body(saved, marks)
                 _STATE["defining"] = defining
+    _mark_caller(marks)
     return _merge(results)
 
 
@@ -3001,17 +3078,25 @@ def _command_escape(words: list[str], depth: int) -> str | None:
 def _shell_script(args: list[str]) -> str | None:
     """The program a shell is given with ``-c``, alone or in a cluster (``-c``, ``-fc``, ``-lc``, ``-ec``): the first
     word after its options (``-o``/``-O`` take a value), or None."""
-    given, i = False, 0
+    given, i, values = False, 0, 0
     while i < len(args):
         a = args[i]
+        if values:  # `-eo pipefail`, `-co errexit`, `-cO extglob`: each o/O in a cluster takes the next word
+            values -= 1
+            i += 1
+            continue
         if a == "--":
             i += 1
             break
-        if a in ("-o", "+o", "-O", "+O", "--rcfile", "--init-file"):
+        if a in ("--rcfile", "--init-file", "--emulate"):
             i += 2
             continue
+        if a.startswith("--"):
+            i += 1  # `--norc`, `--login`, `--emulate=sh`
+            continue
         if a.startswith(("-", "+")) and len(a) > 1:
-            given = given or (not a.startswith("--") and "c" in a[1:])
+            given = given or "c" in a[1:]
+            values = sum(ch in "oO" for ch in a[1:])
             i += 1
             continue
         break
@@ -3054,6 +3139,10 @@ def _plain_escape(words: list[str], depth: int) -> str | None:
         return _run_escape(_dq_unescape(script), depth + 1)
     if name == "eval":
         return _run_escape(_dq_unescape(" ".join(args)), depth + 1)
+    if name == "trap":
+        rest = args[1:] if args[:1] == ["--"] else args
+        if len(rest) >= 2 and rest[0] and not rest[0].startswith("-"):
+            return _run_escape(_dq_unescape(rest[0]), depth + 1)  # `trap 'cmd' EXIT` runs cmd later
     return None
 
 
@@ -3104,7 +3193,15 @@ def run_escape(
             lists=[],
         )
         _STATE.update(
-            words={}, functions={}, calls=0, literals=0, defining=False, aliased=set(), sourced=False, locals=[]
+            words={},
+            functions={},
+            calls=0,
+            literals=0,
+            defining=False,
+            aliased=set(),
+            sourced=False,
+            locals=[],
+            escaped=[],
         )
         RESOLVED.clear()
     try:
@@ -3251,7 +3348,7 @@ def _run_escape(command: str, depth: int, *, split: bool = True, arith: bool = F
     # the arguments of calls judged on their own, and whose assignments are the body's, not the command's.
     function_bodies = _function_spans(command)
     outer_defining = _STATE["defining"]
-    in_body: tuple[int, int, bool] | None = None
+    in_body: tuple[int, int, str | None] | None = None
     saved_words: dict[str, tuple[str, list[str]]] | None = None
     for k, (segment, op) in enumerate(segments):
         position += len(op)
@@ -3261,10 +3358,10 @@ def _run_escape(command: str, depth: int, *, split: bool = True, arith: bool = F
         inside = next((span for span in function_bodies if here < span[1] and position > span[0]), None)
         if inside != in_body:
             if saved_words is not None:
-                _leave_body(saved_words)
+                _leave_body(saved_words, None)
             saved_words = _enter_body() if inside is not None and inside[2] else None
             in_body = inside
-        _STATE["defining"] = outer_defining or (inside is not None and inside[2])
+        _STATE["defining"] = outer_defining or (inside[2] if inside is not None else False)
         judge_bodies(position)
         # The here-documents this command takes run their substitutions now, with the variables set so far.
         results += [(here, found) for found in _expanding_bodies(segment, depth)]
@@ -3360,7 +3457,7 @@ def _run_escape(command: str, depth: int, *, split: bool = True, arith: bool = F
         elif words[:1] == ["popd"]:
             cwd = ""  # back where the pushd started, as far as a run's `pushd x && …; popd` goes
     if saved_words is not None:
-        _leave_body(saved_words)
+        _leave_body(saved_words, None)
     _STATE["defining"] = outer_defining
     judge_bodies(len(command) + 1)
     for number in own:  # a body no segment named (the walk misread its command): judged as before, at the end
@@ -3376,12 +3473,34 @@ _NAME_LEFT = re.compile(r"[A-Za-z0-9_]*")
 _GUARDED = ("git", "cp", "mv", "ln", "rm", "tee", "install", "rsync", "chmod", "sed")
 
 
+# The names that matter, for a pattern an unknown program is given (`unset -m 'G*'`, `typeset -m 'H?ME'`).
+_PROTECTED_LIST = (
+    "HOME", "XDG_CONFIG_HOME", "SCOUT_MODE", "SCOUT_READER", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_PARAMETERS",
+)  # fmt: skip
+_QUOTED_GLOB = re.compile("[\ue000\ue001\ue002]")
+
+
+def _named_pattern(literal_operands: list[str]) -> str | None:
+    """The form of a quoted pattern (its glob characters shielded, see _SHIELD) that matches a name that matters."""
+    import fnmatch
+
+    for word in literal_operands:
+        if _QUOTED_GLOB.search(word):
+            pattern = _unshield(word)
+            for name in _PROTECTED_LIST:
+                if fnmatch.fnmatchcase(name, pattern):
+                    return _name_form(name) or HOME_FORM
+    return None
+
+
 def _named_setting(operands: list[str]) -> str | None:
     """The form of an operand that names a variable an unknown program may set (``read HOME``, ``export HOME=x``,
     ``printf -v HOME``): a protected name spelled whole, or a name built at run time (``${:-HO}ME``, ``$n``) that
     may be one. A path (``$HOME/x``) or text with a space (``'fix HOME path'``) names none."""
     for word in operands:
         name = word[2:] if word.startswith("-v") and len(word) > 2 else word.split("=", 1)[0]
+        name = re.split(r"[\[?]", name, maxsplit=1)[0]  # `HOME[1,-1]`, zsh's `read 'HOME?prompt'`
         if _PROTECTED_WHOLE.fullmatch(name):
             return _name_form(name) or HOME_FORM
         if _STATE["defining"]:
@@ -3407,6 +3526,8 @@ def _unknown_reader_escape(
     at = words.index(_UNKNOWN_READER)
     operands = [w for w in words[at + 1 :] if w != "--"]
     found = _named_setting(operands)
+    if found is None and _UNKNOWN_READER in literal_words:
+        found = _named_pattern(literal_words[literal_words.index(_UNKNOWN_READER) + 1 :])
     if found is not None:
         return found
     for program in _GUARDED:

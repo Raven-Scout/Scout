@@ -542,6 +542,86 @@ def test_round_twos_false_denies_are_allowed(vault: Path, command: str) -> None:
     gate._PENDING_AUDIT.clear()
 
 
+# ----- the security review of #823, round 3 ----------------------------------------------------------------------
+
+ROUND3_DENIED = [
+    # a name is the body's own only from its `local` on, and zsh's -x on typeset/declare is global
+    f"x=echo; f(){{ x=cat; local x; }}; f; $x {KB}",
+    f"x=echo; f(){{ x=cat; local x=1; }}; f; $x {KB}",
+    f"x=echo; f(){{ x=cat; local -h x; }}; f; $x {KB}",
+    f"x=echo; f(){{ x=cat; typeset x; }}; f; $x {KB}",
+    f"x=echo; f(){{ typeset -x x=cat; }}; f; $x {KB}",
+    f"x=echo; f(){{ typeset -xr x=cat; }}; f; $x {KB}",
+    f"x=echo; f(){{ declare -x x=cat; }}; f; $x {KB}",
+    f"x=echo; f(){{ typeset -x x; x=cat; }}; f; $x {KB}",
+    # a function's name as the shell reads it
+    f'"f"(){{ cat $1; }}; f {KB}',
+    f"'f'(){{ cat $1; }}; f {KB}",
+    f"\\f(){{ cat $1; }}; f {KB}",
+    f'f""(){{ cat $1; }}; f {KB}',
+    f"function 'f' {{ cat $1; }}; f {KB}",
+    # a body that sets its own arguments
+    f'f(){{ 1=cat; "$@"; }}; f x {KB}',
+    f'f(){{ 2=cat; "$@"; }}; f x {KB}',
+    f"f(){{ \"$@\"; }}; trap 'f cat {KB}' EXIT",
+    # a shell's option values come before its script
+    f'x=cat; bash -eo pipefail -c "$x {KB}"',
+    f'x=cat; zsh -co errexit "$x {KB}"',
+    f'x=cat; bash -cO extglob "$x {KB}"',
+    f'x=cat; zsh --emulate sh -c "$x {KB}"',
+    # a trap's command
+    f"trap 'cat {KB}' EXIT",
+    f'x=cat; trap "$x {KB}" EXIT',
+    f"trap '$(echo cat) {KB}' EXIT",
+    # a name with a subscript or a prompt, and a pattern of names
+    "c=$(echo read); $c 'HOME[1,-1]' <<< /tmp",
+    "c=$(echo read); $c 'HOME?prompt' <<< /tmp",
+    "c=$(echo unset); $c -m 'G*'",
+    "c=$(echo unset); $c -m 'GIT_CONFIG_*'",
+    "c=$(echo unset); $c -m 'H?ME'",
+]
+
+
+@pytest.mark.parametrize("command", ROUND3_DENIED)
+def test_round_threes_leaks_are_denied(vault: Path, command: str) -> None:  # noqa: F811
+    assert _decide(vault, command) is not None
+    gate._PENDING_AUDIT.clear()
+
+
+ROUND3_ALLOWED = [
+    'fn(){ t=$1; "$t" --version; }; fn git',
+    'f(){ cmd=$1; shift; $cmd "$@"; }; f git status',
+    'run(){ c=$1; shift; $c "$@"; }; run git status',
+    "f(){ x=git; }; f; $x status",
+    "x=git; f(){ x=$1; }; $x status",
+    "trap - EXIT",
+    "trap 'rm -f /tmp/scout-x.$$' EXIT",
+    "bash -eo pipefail -c 'git status'",
+    "c=$(echo unset); $c -m 'TMP_*'",
+]
+
+
+@pytest.mark.parametrize("command", ROUND3_ALLOWED)
+def test_round_threes_false_denies_are_allowed(vault: Path, command: str) -> None:  # noqa: F811
+    assert _decide(vault, command) is None
+    gate._PENDING_AUDIT.clear()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f'f(){{ "$@[1]" "$@[2]"; }}; f cat {KB}',  # a subscript _put_args can't fill: walked as written
+        'f(){ "$@"; }',  # never called where the gate can see
+    ],
+)
+def test_a_body_its_calls_dont_explain_is_recorded(vault: Path, command: str) -> None:  # noqa: F811
+    gate._PENDING_AUDIT.clear()
+    assert _decide(vault, command) is None
+    kinds = [payload.get("kinds") for _v, kind, payload in gate._PENDING_AUDIT if kind.endswith("command_word")]
+    gate._PENDING_AUDIT.clear()
+    assert kinds and live_run.WRAPPER_WORD in (kinds[0] or [])
+
+
 def test_a_wrapper_whose_calls_resolve_is_allowed_with_the_switch_on(
     vault: Path,  # noqa: F811
     monkeypatch: pytest.MonkeyPatch,

@@ -20,8 +20,10 @@
   never the command, until `DENY_UNRESOLVED_COMMAND_WORDS` is turned on. A name `hash`, `alias`,
   `commands[…]`, `functions -c` or a definition without a readable body made a program is judged that way
   too. After `.`, `source` or `autoload` a command word is judged as it reads and recorded (`sourced_function`),
-  since the file may have defined it. A function shares the caller's variables unless it makes one `local`, so
-  what it sets is "computed" afterwards. Over 281 scheduled runs, one call is newly denied: a program picked by
+  since the file may have defined it. A function shares the caller's variables unless it makes one `local` (from
+  that line on; zsh's `typeset -x` is global), so what a call sets reaches the caller: a plain value joins the
+  ones the variable may hold, anything else makes it "computed". `trap 'cmd' EXIT` is judged as the command it
+  runs, and `bash -eo pipefail -c …` as its script. Over 281 scheduled runs, one call is newly denied: a program picked by
   `$( … )`.
 - **A scheduled run can't unset, unexport or override git's config variables** (`engine/scout/kb/live_run.py`,
   `hooks/prefilter.sh`). `unset GIT_CONFIG_GLOBAL`, `env -u`, `export -n`, `typeset +x`, `read`, `+=`,
