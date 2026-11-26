@@ -24,6 +24,10 @@ from typing import Any
 
 SEARCH_TOOLS = {"Grep", "Glob"}
 _SEARCH_BASH = re.compile(r"^\s*(?:rg|grep|egrep|fgrep|find|ag|fd)\b")
+GRAPH_VERB_RE = re.compile(
+    r"\bscoutctl\s+kb\s+(?:neighbors|paths|path|traverse|related|backlinks|link-gaps)\b"
+    r"|\bscoutctl\s+kb\s+search\b[^\n;|&]*--ranked\b"
+)
 FILE_TOOLS = {"Read", "Edit", "Write", "NotebookEdit"}
 # The static instructions a run loads: the brain files, and any slice or deferred
 # block cut from them (spec 2026-10-13-static-instruction-trim §8.1).
@@ -271,3 +275,23 @@ def position_buckets(calls: Sequence[ToolCall], name: str) -> dict[str, int]:
         else:
             buckets["late"] += 1
     return buckets
+
+
+def is_graph_verb_call(call: ToolCall) -> bool:
+    """Whether ``call`` invokes a ``scoutctl kb`` graph traversal or ranked-search verb."""
+    if call.name != "Bash" or call.gate is not None:
+        return False
+    return bool(GRAPH_VERB_RE.search(str(call.input.get("command", ""))))
+
+
+def graph_verb_calls(calls: Sequence[ToolCall]) -> int:
+    """Number of ``scoutctl kb`` graph verb invocations in one sample's transcript."""
+    return sum(1 for c in calls if is_graph_verb_call(c))
+
+
+def verb_uptake_rate(samples_calls: Sequence[Sequence[ToolCall]]) -> float:
+    """Share of samples in ``[0.0, 1.0]`` that invoked at least one ``scoutctl kb`` graph verb."""
+    if not samples_calls:
+        return 0.0
+    used = sum(1 for calls in samples_calls if graph_verb_calls(calls) > 0)
+    return used / len(samples_calls)

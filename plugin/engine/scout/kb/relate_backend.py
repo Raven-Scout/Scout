@@ -633,9 +633,9 @@ class RelateBackend:
             return []
         if project:
             rows = self._query_ro(
-                "MATCH (proj:Project {name: $project})<-[:LINKS_TO|ABOUT]-(n:Note) "
+                "MATCH (proj:Project {name: $project})-[:LINKS_TO|ABOUT]-(n:Note) "
                 "SEARCH n IN (FULLTEXT INDEX note_text FOR $q LIMIT $k) SCORE AS score "
-                "RETURN n.path AS path, n.layer AS layer, score, n._label_json AS lj "
+                "RETURN DISTINCT n.path AS path, n.layer AS layer, score, n._label_json AS lj "
                 "ORDER BY score DESC, path ASC",
                 {"project": project, "q": query_text, "k": int(limit)},
             )

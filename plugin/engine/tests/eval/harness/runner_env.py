@@ -48,6 +48,7 @@ def build_env(
     today: str,
     timeout_s: int,
     pythonpath: Path | None = None,
+    extra_pythonpath: str | None = None,
     linear_api_url: str | None = None,
 ) -> dict[str, str]:
     """``pythonpath`` is a comparison base arm's engine: the runner's hooks and the session's
@@ -55,11 +56,14 @@ def build_env(
     ``linear_api_url`` is where the Linear pre-fetch reads (a recorded ``file://`` response)."""
     env = {k: v for k, v in base.items() if not k.startswith(_DROPPED_PREFIXES) and k not in SECRETS}
     env.pop("PYTHONPATH", None)
-    if pythonpath is not None:
-        env["PYTHONPATH"] = str(pythonpath)
+    py_entries = [str(p) for p in (pythonpath, extra_pythonpath) if p]
+    if py_entries:
+        env["PYTHONPATH"] = os.pathsep.join(py_entries)
     path = [str(STUB_BIN), str(ENGINE / ".venv" / "bin"), str(Path(real_claude).parent), *SYSTEM_PATH]
     env.update(
         PATH=":".join(dict.fromkeys(path)),
+        RELATE_TELEMETRY="0",
+        DO_NOT_TRACK="1",
         SCOUT_FORCE_MODE=mode,
         SCOUT_RETRY_DISABLE="1",
         # The session runs under Claude Code's own Bash sandbox (claude_shim), and a sandbox can't start inside
@@ -82,7 +86,7 @@ def build_env(
         SCOUT_EVAL_SCRIPT=str(script),
         SCOUT_EVAL_CALLS=str(result_dir / "calls.jsonl"),
         SCOUT_EVAL_TODAY=today,
-        SCOUT_EVAL_SESSION_PYTHONPATH=str(pythonpath or ""),
+        SCOUT_EVAL_SESSION_PYTHONPATH=os.pathsep.join(py_entries),
         SCOUT_SECRETS_DIR=str(result_dir / "secrets"),
     )
     if linear_api_url:

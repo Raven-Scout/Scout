@@ -96,6 +96,9 @@ class SessionContext:
     # The lab's threads (session_context_kb.lab_block): status, question counts, unanswered owner
     # comments, planned/due experiments. {"schema_version", "threads": [...], "needs_you": {...}}.
     lab: dict[str, Any] = field(default_factory=dict)
+    # Optional engine-precomputed graph context per active project (Arm C / kb.precompute_graph_context):
+    # typed + co-mentioned people, ranked knowledge/ notes, and open link gaps; {} when disabled.
+    graph_context: dict[str, Any] = field(default_factory=dict)
     # The vault's commits since DEFAULT_GIT_LOG_LOOKBACK, newest first, labelled (see get_git_recent).
     git_recent: list[dict[str, Any]] = field(default_factory=list)
     # {path: {"last_updated": ..., "visibility": "normal" | "private"}}
@@ -530,6 +533,7 @@ def gather(
         people_context=people,
         research_queue=queue,
         lab=get_lab_section(target, reader, labels),
+        graph_context=get_graph_context_section(target, reader, labels, graph, now_dt.date()),
         fact_check_targets=fact_check,
         delegate_changes=delegate_changes,
     )
@@ -581,6 +585,22 @@ def get_lab_section(scout_dir: Path, reader: str, labels: dict[str, str]) -> dic
         return {}
     try:
         return kbs.lab_block(scout_dir, labels, full=reader in FULL_READERS)
+    except Exception:
+        return {}
+
+
+def get_graph_context_section(
+    scout_dir: Path, reader: str, labels: dict[str, str], graph: Any | None, day: date
+) -> dict[str, Any]:
+    """Optional Arm C graph context precompute; ``{}`` unless opted in or when the reader sees nothing."""
+    from scout.scripts import session_context_kb as kbs
+
+    if not reads_any(reader) or not kbs.should_precompute_graph_context(scout_dir):
+        return {}
+    full = reader in FULL_READERS
+    try:
+        hint = kbs.items_text_for(scout_dir, day) if full else ""
+        return kbs.graph_context(scout_dir, labels, full=full, reader=reader, query_hint=hint, graph=graph)
     except Exception:
         return {}
 

@@ -83,7 +83,11 @@ def tool_hooks(plugin_root: Path) -> dict[str, list[dict[str, Any]]]:
 
 def session_plugin_root(env: dict[str, str]) -> Path:
     """The plugin/ of the checkout whose engine the session runs: a base arm's, else this checkout's."""
-    return Path(env.get("SCOUT_EVAL_SESSION_PYTHONPATH") or env["SCOUT_EVAL_ENGINE"]).parent
+    raw = env.get("SCOUT_EVAL_SESSION_PYTHONPATH") or ""
+    first = raw.split(os.pathsep, 1)[0] if raw else ""
+    if first and (Path(first).parent / "hooks").is_dir():
+        return Path(first).parent
+    return Path(env["SCOUT_EVAL_ENGINE"]).parent
 
 
 def settings(result_dir: str, hooks: dict[str, list[dict[str, Any]]] | None = None) -> dict[str, Any]:

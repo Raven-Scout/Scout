@@ -101,7 +101,7 @@ _READ_VALUE_FLAGS = {
 # (`kb read` prints a note's labelled text: reading that through a pipe or a variable is fine.)
 _KB_SOURCE = re.compile(
     r"(?:knowledge-base|knowledge_base|action-items/context)"
-    r"|\b(?i:scoutctl)\s+kb\s+(?:files|search|resolve|name-lookup|delta|structure|query|related|traverse|path|stat)\b"
+    r"|\b(?i:scoutctl)\s+kb\s+(?:files|search|resolve|name-lookup|delta|structure|query|related|traverse|path|paths|neighbors|backlinks|link-gaps|stat)\b"
 )
 # knowledge-base/ontology/schema.yaml and parser.py are tooling, not notes: reading them is fine.
 ONTOLOGY_TOOLING = re.compile(r"(?:^|/)(?:knowledge-base|knowledge_base)/ontology/(?:schema\.ya?ml|parser\.py)$")
