@@ -12,6 +12,10 @@
 #                                                    idle sleep surfaces as the
 #                                                    line above instead)
 #   - "529 Overloaded"                              (Anthropic upstream temp)
+#   - "couldn't verify your sign-in with Anthropic yet" / "sign-in token was still
+#     being refreshed"                              (sign-in race: another Claude
+#                                                    Code process was refreshing
+#                                                    the shared login)
 #
 # Does NOT retry on:
 #   - 401 / 403 auth failures   (need user intervention)
@@ -32,6 +36,12 @@
 # Usage:
 #   claude-with-retry.sh <log-file> <claude-bin> <claude-args...>
 #
+# The runners pass `scoutctl agent-runtime exec …` as <claude-bin> and its args
+# (spec 2026-11-13 §8.2): it execs the run's CLI in its own place, inside the
+# same sandbox, so each attempt's process is still that CLI. SCOUT_AGENT_BIN
+# names the CLI itself, for the messages below; it is dropped from the
+# environment before any attempt.
+#
 # Env knobs:
 #   SCOUT_RETRY_MAX=2          total attempts (default: 2 → 1 retry)
 #   SCOUT_RETRY_BACKOFF_S=60   base backoff seconds (default 60; scales linearly: 60s, 120s, ...)
@@ -40,9 +50,13 @@
 #                              minimum seconds between auth-failure desktop
 #                              notifications (default: one a day)
 #   SCOUT_NO_CAFFEINATE=1      hold no idle-sleep assertion (see POWER below)
+#   SCOUT_SANDBOX_PROFILE, SCOUT_SANDBOX_STATUS
+#                              set by the runners: run each attempt inside this
+#                              sandbox-exec profile (see WRITE SANDBOX below)
 #   SCOUTCTL_BIN, SCOUT_RUN_TYPE, SCOUT_RUN_STARTED
 #                              set by the runners: record each failed attempt's
-#                              spend and budget the retry by it (see ATTEMPT COST below)
+#                              spend and budget the retry by it (see ATTEMPT COST below);
+#                              SCOUTCTL_BIN also runs the run brokers (see RUN BROKERS below)
 #
 # Exit code: the exit code of the final attempt.
 
@@ -55,6 +69,7 @@ fi
 
 LOG_FILE="$1"; shift
 CLAUDE_BIN="$1"; shift
+AGENT_BIN="${SCOUT_AGENT_BIN:-$CLAUDE_BIN}"; unset SCOUT_AGENT_BIN
 
 MAX_ATTEMPTS="${SCOUT_RETRY_MAX:-2}"
 BACKOFF_S="${SCOUT_RETRY_BACKOFF_S:-60}"
@@ -75,7 +90,32 @@ fi
 # while the retry gate called it permanent. The apostrophe is `.` on purpose: this
 # string is single-quoted. Known remaining gap, unevidenced here so deliberately not
 # added: `EAI_AGAIN` (DNS timeout) would be the same class.
-TRANSIENT_PATTERNS='socket connection was closed unexpectedly|Unable to connect to API \(ECONNRESET\)|Unable to connect to API \(ConnectionRefused\)|Unable to connect to API \(ENOTFOUND\)|Can.t reach the API server|Stream idle timeout|Connection closed mid-response|went to sleep mid-response|529 Overloaded'
+#
+# `(FailedToOpenSocket)` and `API Error: 500 ` are added on the same evidence rule.
+# One vault's logs hold a run that died on each: `API Error: Unable to connect to API
+# (FailedToOpenSocket)` (2026-07-08) and `API Error: 500 Internal server error. This
+# is a server-side issue, usually temporary — try again in a moment.` (2026-06-05).
+# The CLI's own text calls the 500 temporary. The trailing space keeps `5000…` out.
+#
+# `^(Error: )?(Claude Code )?couldn.{1,3}t verify your sign-in with Anthropic yet` and
+# `^(Error: )?Claude Code .{0,80}sign-in token was still being refreshed` are the sign-in
+# race, added 2026-11-17. Claude Code shares one login across its processes; when a
+# scheduled run starts while another one (an open session, the desktop app) is
+# refreshing that login's token, the CLI exits 1 within seconds, saying it couldn't
+# verify the sign-in "yet" because the token "was still being refreshed", and names the
+# account. One vault lost its 01:04 research and 08:04 briefing runs to it the same day,
+# 3 s each, filed `failure_class: unknown`. The CLI (2.1.x) prints the sentence as a
+# line of its own, opening "Claude Code couldn't verify your sign-in with Anthropic
+# yet"; the first alternative is that, the second its cause clause on a line Claude Code
+# opens, in case the sentence is reworded. Both are anchored to the line start: the
+# tail holds the session's own output too, and a briefing that quotes this incident
+# must not rerun a whole session. Both say "yet" / "still": a real signed-out state
+# words itself differently and stays on AUTH_PATTERNS, unretried. `.{1,3}` is the
+# apostrophe, straight or curly: in a byte-wise locale (GNU grep under the C locale
+# cron gives a run) `.` is one byte, `’` three. The refresh is one token request by the
+# other process, done in seconds, so the default 60 s backoff is ample, and
+# SCOUT_RETRY_MAX bounds it: a race that is still there on the last attempt ends the run.
+TRANSIENT_PATTERNS='socket connection was closed unexpectedly|Unable to connect to API \(ECONNRESET\)|Unable to connect to API \(ConnectionRefused\)|Unable to connect to API \(ENOTFOUND\)|Unable to connect to API \(FailedToOpenSocket\)|Can.t reach the API server|Stream idle timeout|Connection closed mid-response|went to sleep mid-response|529 Overloaded|^API Error: 500 |API Error: 403 Attention Required! \| Cloudflare|^(Error: )?(Claude Code )?couldn.{1,3}t verify your sign-in with Anthropic yet|^(Error: )?Claude Code .{0,80}sign-in token was still being refreshed'
 
 # Auth-failure class (HTTP 401/403). NOT retried — re-authentication needs a human —
 # but surfaced with a concrete remediation instead of the opaque "not classified"
@@ -217,6 +257,104 @@ if [ "${SCOUT_NO_CAFFEINATE:-0}" != "1" ]; then
     fi
 fi
 
+# WRITE SANDBOX (Phase 1c, spec 2026-11-15). The runner hands the sandbox-exec
+# profile here by value in SCOUT_SANDBOX_PROFILE (never a file a run could
+# rewrite before a retry); every attempt then runs claude, and everything it
+# starts, inside it, so no process of the session can write what decides whether
+# Scout's gates run. The variable is dropped from the environment first, so claude
+# doesn't inherit it. SCOUT_SANDBOX_STATUS=enforced with no profile is refused:
+# the runner said the run is sandboxed, so it never goes ahead unsandboxed.
+SANDBOX=()
+SANDBOX_PROFILE="${SCOUT_SANDBOX_PROFILE:-}"
+# A scheduled run never updates claude itself: the install it would rewrite is what the next run starts.
+export DISABLE_AUTOUPDATER=1
+# The sandbox keeps .git/config read-only, so git mustn't try to record upstreams in it: with these, `git
+# checkout -b x origin/x` and a plain `git push` don't write it (`git push -u` still pushes; only its upstream
+# record is refused). Appended after any GIT_CONFIG_* the environment already has.
+GIT_N="${GIT_CONFIG_COUNT:-0}"
+case "$GIT_N" in ''|*[!0-9]*) GIT_N=0 ;; esac
+export "GIT_CONFIG_KEY_$GIT_N=branch.autoSetupMerge" "GIT_CONFIG_VALUE_$GIT_N=false"
+GIT_N=$((GIT_N + 1))
+export "GIT_CONFIG_KEY_$GIT_N=push.autoSetupRemote" "GIT_CONFIG_VALUE_$GIT_N=false"
+export GIT_CONFIG_COUNT=$((GIT_N + 1))
+unset GIT_N
+unset SCOUT_SANDBOX_PROFILE
+if [ -n "$SANDBOX_PROFILE" ]; then
+    SANDBOX=(/usr/bin/sandbox-exec -p "$SANDBOX_PROFILE")
+elif [ "${SCOUT_SANDBOX_STATUS:-}" = "enforced" ]; then
+    echo "=== claude-with-retry: the runner asked for the write sandbox but passed no profile — not starting claude ===" >> "$LOG_FILE"
+    exit 3
+fi
+
+# RUN BROKERS (Phase 1d, spec 2026-11-16). In a sandboxed run, a broker outside
+# the sandbox makes the run's commits (scripts/git-safe-commit.sh hands over to
+# it) and sends its Telegram messages (scoutctl notify telegram), so the profile
+# can deny every write in the vault's git dir and every read in ~/.scout-secrets.
+# It starts once and outlives retries; on exit it is stopped, and whatever a
+# client queued while it didn't answer is applied (`scoutctl broker drain`). If it
+# doesn't answer, or the vault's helper predates it, the run keeps the 1c profile
+# and .scout-logs/.run-broker.json says why (`scoutctl health`).
+BROKER_DIR=""
+BROKER_PID=""
+BROKER_VAULT="${SCOUT_DATA_DIR:-{{SCOUT_DIR}}}"
+stop_broker() {
+    if [ -n "$BROKER_PID" ]; then
+        kill "$BROKER_PID" 2>/dev/null || true
+        wait "$BROKER_PID" 2>/dev/null || true
+    fi
+    if [ -n "$BROKER_DIR" ]; then
+        # The runner still holds the session lock: the drain starts no entry after 120 s, and a watchdog stops it
+        # at 480 s (one commit may take 300 s; SCOUT_BROKER_DRAIN_WATCHDOG_S, for tests), taking the commit helper
+        # it is running with it, so nothing it meets can hold the lock longer.
+        "$SCOUTCTL_BIN" broker drain --vault "$BROKER_VAULT" --deadline 120 --run "$(basename "$BROKER_DIR")" >> "$LOG_FILE" 2>&1 &
+        local drain_pid=$! waited=0 limit="${SCOUT_BROKER_DRAIN_WATCHDOG_S:-480}"
+        case "$limit" in ''|*[!0-9]*) limit=480 ;; esac
+        limit=$((limit * 10))
+        while kill -0 "$drain_pid" 2>/dev/null; do
+            if [ "$waited" -ge "$limit" ]; then
+                echo "=== claude-with-retry: the broker drain ran past its watchdog and was stopped; the queue waits for the tick ===" >> "$LOG_FILE"
+                kill "$drain_pid" 2>/dev/null || true
+                break
+            fi
+            sleep 0.1
+            waited=$((waited + 1))
+        done
+        wait "$drain_pid" 2>/dev/null || true
+        rm -rf "$BROKER_DIR" 2>/dev/null || true
+    fi
+}
+broker_status() {  # status reason: what the health check reads when `broker profile` can't say it itself
+    printf '{"at": %s, "status": "%s", "reason": "%s"}\n' "$(date +%s)" "$1" "$2" \
+        > "$(dirname "$LOG_FILE")/.run-broker.json" 2>/dev/null || true
+}
+if [ -n "$SANDBOX_PROFILE" ]; then
+    if [ -n "${SCOUTCTL_BIN:-}" ] && [ -x "$SCOUTCTL_BIN" ]; then
+        BROKER_DIR="$(mktemp -d "${TMPDIR:-/tmp}/scout-broker.XXXXXX" 2>/dev/null)" || BROKER_DIR=""
+    fi
+    [ -n "$BROKER_DIR" ] || broker_status unavailable "the runner passed no scoutctl, or no temp folder could be made"
+else
+    broker_status off "the run has no write sandbox"
+fi
+if [ -n "$BROKER_DIR" ]; then
+    trap stop_broker EXIT
+    "$SCOUTCTL_BIN" broker serve --vault "$BROKER_VAULT" --dir "$BROKER_DIR" --parent $$ >> "$LOG_FILE" 2>&1 &
+    BROKER_PID=$!
+    broker_rc=0
+    BROKER_PROFILE="$(printf '%s' "$SANDBOX_PROFILE" | "$SCOUTCTL_BIN" broker profile --vault "$BROKER_VAULT" --dir "$BROKER_DIR" 2>>"$LOG_FILE")" || broker_rc=$?
+    if [ "$broker_rc" -eq 0 ] && [ -n "$BROKER_PROFILE" ]; then
+        SANDBOX=(/usr/bin/sandbox-exec -p "$BROKER_PROFILE")
+        # GIT_OPTIONAL_LOCKS=0: `git status` skips its optional index refresh, which the git dir now refuses.
+        export SCOUT_RUN_BROKER="$BROKER_DIR/b.sock" GIT_OPTIONAL_LOCKS=0
+        echo "=== claude-with-retry: run brokers on: commits and Telegram go through the broker ===" >> "$LOG_FILE"
+    else
+        echo "=== claude-with-retry: run brokers unavailable (exit $broker_rc); the run keeps the 1c sandbox ===" >> "$LOG_FILE"
+        # Whatever `broker profile` recorded, this run is not tightened: say so, so its commits come from git.
+        "$SCOUTCTL_BIN" broker profile --unapplied --vault "$BROKER_VAULT" --dir "$BROKER_DIR" \
+            < /dev/null >> "$LOG_FILE" 2>&1 || true
+    fi
+    unset broker_rc BROKER_PROFILE
+fi
+
 # ATTEMPT COST (#561). The budget gate runs once, before this wrapper, and the
 # runner's cost row lands after it, so a failed attempt's spend was invisible to
 # the gate and a retry got the full --max-budget-usd again. After every failed
@@ -273,7 +411,7 @@ while :; do
     attempt_start="$(log_size)"
     exit_code=0
     # ${POWER[@]+…}: bash 3.2 (macOS /bin/bash) calls an empty array unbound under set -u.
-    ${POWER[@]+"${POWER[@]}"} "$CLAUDE_BIN" "$@" >> "$LOG_FILE" 2>&1 || exit_code=$?
+    ${POWER[@]+"${POWER[@]}"} ${SANDBOX[@]+"${SANDBOX[@]}"} "$CLAUDE_BIN" "$@" >> "$LOG_FILE" 2>&1 || exit_code=$?
 
     if [ "$exit_code" -eq 0 ]; then
         rm -f "$AUTH_ALERT_MARKER" 2>/dev/null || true
@@ -317,12 +455,12 @@ while :; do
                     if [ "$TOKEN_UNREADABLE" -eq 1 ]; then
                         echo "    A long-lived token is stored in $TOKEN_STORE, but this run couldn't read it, so it used your login."
                     fi
-                    echo "    Re-authenticate the claude binary this runner uses ($CLAUDE_BIN):"
-                    echo "      - interactive: run: $AUTH_FIX   (or: $CLAUDE_BIN auth login), or"
+                    echo "    Re-authenticate the claude binary this runner uses ($AGENT_BIN):"
+                    echo "      - interactive: run: $AUTH_FIX   (or: $AGENT_BIN auth login), or"
                     echo "      - headless:    run: scoutctl auth setup-token   (stores a long-lived 'claude setup-token' token every scheduled run uses)."
                     ;;
             esac
-            echo "    Then verify before the next scheduled run:  $CLAUDE_BIN -p 'hello' --model ${SCOUT_MODEL:-opus}"
+            echo "    Then verify before the next scheduled run:  $AGENT_BIN -p 'hello' --model ${SCOUT_MODEL:-opus}"
         } >> "$LOG_FILE"
         notify_auth_failure || true
         exit "$exit_code"

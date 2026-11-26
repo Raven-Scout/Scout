@@ -22,10 +22,21 @@ struct ScoutApp: App {
         let pluginChecker: any PluginUpdateChecking = AppState.Configuration.isTestHost
             ? InertPluginChecker()
             : PluginUpdateChecker.standard()
-        _updates = StateObject(wrappedValue: UpdateService(
+        let updates = UpdateService(
             pluginChecker: pluginChecker,
             engineStates: state.engineHealth.$state.eraseToAnyPublisher(),
-            makeAppController: { AppUpdater(onEvent: $0) }))
+            // Same rule as the plugin checker: the test host posts nothing.
+            appUpdateNotifier: AppState.Configuration.isTestHost ? nil : AppUpdateNotifier(),
+            makeAppController: { AppUpdater(onEvent: $0) })
+        _updates = StateObject(wrappedValue: updates)
+        // A clicked run notification opens that run (card C3).
+        AppDelegate.openRun = { [weak state] id in state?.openRun(id: id) }
+        AppDelegate.retrySlot = { [weak state] slot in state?.retryFromNotification(slotKey: slot) }
+        // A clicked "Scout X is ready" brings up Sparkle's alert for it.
+        AppDelegate.showAppUpdate = { [weak updates] in
+            NSApp.activate()
+            updates?.showAppUpdate()
+        }
     }
 
     var body: some Scene {
@@ -37,14 +48,22 @@ struct ScoutApp: App {
         Window("Scout", id: "main") {
             MainWindowView()
                 .environmentObject(appState)
+                .environment(\.resolvePromptService, appState.resolvePromptService)
                 .environmentObject(appState.proposalsDocumentService)
                 .environmentObject(updates)
-                .frame(minWidth: 1100, minHeight: 640)
+                .frame(minWidth: MainWindowSize.minWidth, minHeight: MainWindowSize.minHeight)
         }
         .commands {
             CommandGroup(replacing: .newItem) { }  // suppress File > New Window
             CommandGroup(after: .appInfo) {        // app menu ▸ Check for Updates… (under About Scout)
                 CheckForUpdatesView(updates: updates)
+            }
+            GoCommands(appState: appState)         // Go ▸ each page, ⌘1–⌘9
+            CommandGroup(replacing: .help) {       // Help ▸ docs, doctor, logs, diagnostics (audit C11)
+                HelpCommands(vault: appState.scoutDirectory)
+            }
+            CommandGroup(after: .help) {           // Help ▸ Scout Glossary
+                GlossaryMenuItem()
             }
         }
         // "Start in menu bar": suppress the window at launch instead of
@@ -56,17 +75,48 @@ struct ScoutApp: App {
         MenuBarExtra {
             MenuBarExtraContent()
                 .environmentObject(appState)
+                .environment(\.resolvePromptService, appState.resolvePromptService)
                 .environmentObject(updates)
         } label: {
-            MenuBarIcon(status: appState.menuBarStatus, updateAvailable: updates.anyUpdateAvailable)
+            MenuBarIcon(status: appState.status, updateAvailable: updates.anyUpdateAvailable)
         }
         .menuBarExtraStyle(.window)
 
+        // Help ▸ Scout Glossary is its one menu item: `commandsRemoved()`
+        // keeps the window out of the Window menu (UI audit R11).
+        Window("Scout Glossary", id: GlossaryView.windowID) {
+            GlossaryView()
+        }
+        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(.suppressed)
+        .commandsRemoved()
+
+        // ⌘, — Scout's only Settings (UI audit #10). Every "Open Settings"
+        // button and link opens this window at its tab.
         Settings {
             SettingsView()
                 .environmentObject(appState)
                 .environmentObject(updates)
         }
+        .windowResizability(.contentMinSize)
+
+        // Help ▸ Run Doctor… and Help ▸ Export Diagnostics… (audit C11).
+        Window("Scout Doctor", id: HelpWindow.doctor) {
+            DoctorView(health: appState.engineHealth)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultLaunchBehavior(.suppressed)   // opened from Help only, never at launch
+        .restorationBehavior(.disabled)
+        .commandsRemoved()                    // Help's item only, not the Window menu too
+
+        Window("Export Diagnostics", id: HelpWindow.diagnostics) {
+            DiagnosticsExportView()
+                .environmentObject(appState)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultLaunchBehavior(.suppressed)   // opened from Help only, never at launch
+        .restorationBehavior(.disabled)
+        .commandsRemoved()                    // Help's item only, not the Window menu too
     }
 }
 

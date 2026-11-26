@@ -30,7 +30,26 @@ private nonisolated struct ScheduleSlotSummary: Decodable, Sendable {
 /// the main actor.
 @MainActor
 final class OnboardingViewModel: ObservableObject {
-    enum Step: Int, CaseIterable { case welcome, prerequisites, engine, identity, connectors, vault, ready }
+    enum Step: Int, CaseIterable {
+        case welcome, prerequisites, engine, identity, connectors, vault, ready
+
+        /// The step's name in the step indicator ("Step 3 of 7 · Install the engine").
+        var title: String {
+            switch self {
+            case .welcome: return "Welcome"
+            case .prerequisites: return "Check this Mac"
+            case .engine: return "Install the engine"
+            case .identity: return "About you"
+            case .connectors: return "Connectors"
+            case .vault: return "Create your Scout folder"
+            case .ready: return "Done"
+            }
+        }
+
+        /// 1-based position, for "Step N of M".
+        var number: Int { rawValue + 1 }
+        static var count: Int { allCases.count }
+    }
 
     @Published var step: Step
     @Published var vaultPath: String
@@ -80,6 +99,10 @@ final class OnboardingViewModel: ObservableObject {
     /// that run has settled, so a hop that arrives late is dropped.
     private var liveGeneration: Int?
 
+    /// Where the "About you" name is kept as the comment byline (Settings ▸
+    /// General ▸ Your name, UI audit #85). Nil writes nothing (tests).
+    private let authorDefaults: UserDefaults?
+
     static let briefingSlotType = "briefing"   // `SlotType.BRIEFING` in plugin/engine/scout/schedule.py
 
     init(engineState: EngineState, layout: EngineLayout, release: EngineRelease?, runner: any ProcessRunner,
@@ -87,10 +110,11 @@ final class OnboardingViewModel: ObservableObject {
          makeInstaller: @escaping (@escaping @Sendable (InstallProgress) -> Void) async -> EngineInstaller?,
          handoff: @escaping @MainActor (String) throws -> Void = { try TerminalHandoff.run($0) },
          appVault: URL? = nil,
+         authorDefaults: UserDefaults? = nil,
          onFinished: @escaping () -> Void) {
         self.engineState = engineState; self.layout = layout; self.release = release; self.runner = runner
         self.checker = prerequisites; self.makeInstaller = makeInstaller; self.handoff = handoff
-        self.appVault = appVault; self.onFinished = onFinished
+        self.appVault = appVault; self.authorDefaults = authorDefaults; self.onFinished = onFinished
         let vault = engineState.install?.vault ?? layout.home.appending(path: "Scout")
         self.vaultPath = vault.path
         self.identity = Self.prefilledIdentity(gitName: nil, gitEmail: nil, vault: vault)
@@ -123,8 +147,10 @@ final class OnboardingViewModel: ObservableObject {
         case .welcome: return didStart && vaultPathIsValid
         case .prerequisites: return prerequisites?.canInstallEngine == true
         case .engine: return [.unpackEngine, .buildVenv, .registerWithClaudeCode].allSatisfy { isDone($0) }
-        case .identity: return !identity.userName.trimmingCharacters(in: .whitespaces).isEmpty && identity.userEmail.contains("@")
-        case .connectors: return dailyBudgetIsValid
+        case .identity:
+            return !identity.userName.trimmingCharacters(in: .whitespaces).isEmpty && identity.userEmail.contains("@")
+                && dailyBudgetIsValid
+        case .connectors: return true
         case .vault: return isDone(.bootstrapVault)
         case .ready: return true
         }
@@ -189,6 +215,92 @@ final class OnboardingViewModel: ObservableObject {
     }
 
     var restartNote: String? { appVault.flatMap { Self.restartNote(chosenVault: vaultURL, appVault: $0) } }
+
+    /// A broken engine runs this same flow to repair it, so it says so
+    /// instead of greeting the user as if Scout were new (audit #89).
+    var isRepair: Bool {
+        if case .broken = engineState { return true }
+        return false
+    }
+
+    var flowTitle: String { isRepair ? "Repair Scout" : "Set up Scout" }
+
+    /// Continue's label. Where moving on changes the Mac (Check this Mac →
+    /// installs the engine, Connectors → creates the Scout folder and its
+    /// scheduled runs), the button names that instead of "Continue".
+    var continueTitle: String { Self.continueTitle(for: step) }
+
+    static func continueTitle(for step: Step) -> String {
+        switch step {
+        case .prerequisites: return "Install engine"
+        case .connectors: return "Create Scout folder"
+        default: return "Continue"
+        }
+    }
+
+    /// Whether Return may trigger Continue. Not on the steps whose Continue
+    /// installs or creates something, nor while Retry is offered: those take
+    /// a click, so Return in a text field can't set up the Mac by accident.
+    var continueTakesReturn: Bool { Self.continueTitle(for: step) == "Continue" && !canRetry }
+
+    /// Set the Scout folder from a folder the user picked, written with `~`
+    /// when it's inside the home folder, as the field's placeholder is.
+    func chooseVault(_ url: URL) {
+        vaultPath = Self.displayPath(url, home: layout.home)
+    }
+
+    static func displayPath(_ url: URL, home: URL) -> String {
+        let path = url.standardizedFileURL.path, homePath = home.standardizedFileURL.path
+        if path == homePath { return "~" }
+        if path.hasPrefix(homePath + "/") { return "~" + path.dropFirst(homePath.count) }
+        return path
+    }
+
+    /// The time zones the Identity step offers, with the current value kept
+    /// even when the system doesn't list it (an older or hand-typed name).
+    static func timezoneChoices(including current: String) -> [String] {
+        var ids = TimeZone.knownTimeZoneIdentifiers
+        if !current.isEmpty, !ids.contains(current) { ids.append(current) }
+        return ids.sorted()
+    }
+
+    /// What the Ready step says about the doctor's check, in plain words
+    /// (audit #88): no "green/yellow/red", and the engine's own lines only
+    /// behind Details.
+    struct ReadySummary: Equatable {
+        enum Tone: Equatable { case ok, warn, err }
+        let title: String
+        let detail: String
+        let tone: Tone
+        /// The doctor's own lines, for the Details disclosure.
+        let details: [String]
+    }
+
+    static func readySummary(_ d: DoctorReport) -> ReadySummary {
+        let lines = d.errors + d.warnings
+        switch d.severity {
+        case .green:
+            return ReadySummary(title: "Everything checks out", detail: "Scout's health check found nothing to fix.",
+                                tone: .ok, details: lines)
+        case .yellow:
+            let n = d.warnings.count
+            // A warning-level check with no warning lines (an older engine,
+            // or lines it didn't name): don't print "0 things".
+            guard n > 0 else {
+                return ReadySummary(title: "Ready, with something to look at later",
+                                    detail: "Nothing stops Scout from running. Settings ▸ Engine has the details.",
+                                    tone: .warn, details: lines)
+            }
+            let things = n == 1 ? "1 thing" : "\(n) things"
+            return ReadySummary(title: "Ready, with \(things) to look at later",
+                                detail: "Nothing stops Scout from running. Settings ▸ Engine lists them.",
+                                tone: .warn, details: lines)
+        case .red:
+            return ReadySummary(title: "Something needs attention before the first run",
+                                detail: "Scout is installed, but its health check found a problem. Settings ▸ Engine has the details and a Repair button.",
+                                tone: .err, details: lines)
+        }
+    }
 
     /// True once this flow has changed the machine in a way the user should
     /// see through to "Open Scout" — an install is running, the vault was
@@ -288,7 +400,7 @@ final class OnboardingViewModel: ObservableObject {
 
     func finish() { onFinished() }
 
-    static let changeVaultHint = "To use a different folder, choose Change… beside the vault path (it goes back to the first step, where you pick the folder)."
+    static let changeVaultHint = "To use a different folder, choose Change… beside the Scout folder (it goes back to the first step, where you pick the folder)."
 
     /// The Vault step shows the chosen folder with a Change… button while
     /// the vault isn't created yet and nothing runs.
@@ -363,6 +475,11 @@ final class OnboardingViewModel: ObservableObject {
         // only written once bootstrap created the vault. Its failure is
         // reported but never fails setup.
         if let budget, isDone(.bootstrapVault) { await setDailyBudget(budget) }
+        // The name from "About you" signs the owner's comments, so they
+        // aren't signed "user" (UI audit #85). Never over a name set in Settings.
+        if isDone(.bootstrapVault), let authorDefaults {
+            CommentAuthor.adoptOnboardingName(identity.userName, into: authorDefaults)
+        }
     }
 
     @discardableResult
@@ -465,7 +582,7 @@ final class OnboardingViewModel: ObservableObject {
         do {
             let r = try await runner.run(executable: scoutctl, arguments: ["schedule", "fire-now", slot.key], environment: environment, workingDirectory: vaultURL)
             if r.exitCode == 0 {
-                briefingStatus = "Started \u{201C}\(slot.key)\u{201D}. It runs in the background; results land in your vault."
+                briefingStatus = "Started \u{201C}\(slot.key)\u{201D}. It runs in the background; results land in your Scout folder."
             } else {
                 lastError = "Could not start the briefing: \(Self.oneLine(r.stderr.isEmpty ? r.stdout : r.stderr))"
             }

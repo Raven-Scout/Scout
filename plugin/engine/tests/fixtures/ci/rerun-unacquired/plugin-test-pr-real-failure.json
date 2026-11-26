@@ -1,0 +1,324 @@
+{
+  "_note": "Captured 2026-11-18 from the GitHub API. branch_runs is that workflow's runs on the same branch and event, as of when this attempt completed.",
+  "_source": "https://github.com/Raven-Scout/Scout/actions/runs/44334699876/attempts/1",
+  "annotations": {},
+  "branch_runs": [
+    {
+      "created_at": "2026-11-18T15:38:56Z",
+      "head_sha": "bfce3b82374fc1cea491267cec5ffbc302f39e22",
+      "id": 44338061420,
+      "run_number": 1196
+    },
+    {
+      "created_at": "2026-11-18T15:21:31Z",
+      "head_sha": "f806e7f418a3fe222d377b4d24c38f0fdb41e158",
+      "id": 44334699876,
+      "run_number": 1195
+    },
+    {
+      "created_at": "2026-11-18T15:14:29Z",
+      "head_sha": "11a30b8ef779f43f92427bc94bca64f2cbf3ea2a",
+      "id": 44333322096,
+      "run_number": 1192
+    },
+    {
+      "created_at": "2026-11-18T14:47:11Z",
+      "head_sha": "cc4fb2b26cb08ec5df12c6f25bec768e60226df7",
+      "id": 44328096934,
+      "run_number": 1186
+    },
+    {
+      "created_at": "2026-11-18T14:45:09Z",
+      "head_sha": "b399ea90128e43cbbf360a6ffb6244a55ff67129",
+      "id": 44327709019,
+      "run_number": 1185
+    }
+  ],
+  "jobs": [
+    {
+      "completed_at": "2026-11-18T15:21:40Z",
+      "conclusion": "success",
+      "created_at": "2026-11-18T15:21:31Z",
+      "id": 134908099240,
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "name": "changes",
+      "run_attempt": 1,
+      "runner_name": "GitHub Actions 1000018586",
+      "started_at": "2026-11-18T15:21:33Z",
+      "status": "completed",
+      "steps": [
+        {
+          "conclusion": "success",
+          "name": "Set up job"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run actions/checkout@v4"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run .github/scripts/changed-paths.sh '^(plugin/|\\.claude-plugin/|scripts/|apps/macos/Scout\\.xcodeproj/project\\.pbxproj$|\\.github/workflows/plugin-test\\.yml$|\\.github/scripts/(changed-paths|version-bump-only)\\.sh$)'"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run .github/scripts/version-bump-only.sh"
+        },
+        {
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v4"
+        },
+        {
+          "conclusion": "success",
+          "name": "Complete job"
+        }
+      ]
+    },
+    {
+      "completed_at": "2026-11-18T15:35:30Z",
+      "conclusion": "failure",
+      "created_at": "2026-11-18T15:21:40Z",
+      "id": 134908198376,
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "name": "test (ubuntu-latest, 3.12, dev,full, true, 8)",
+      "run_attempt": 1,
+      "runner_name": "GitHub Actions 1000018589",
+      "started_at": "2026-11-18T15:21:42Z",
+      "status": "completed",
+      "steps": [
+        {
+          "conclusion": "success",
+          "name": "Set up job"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run actions/checkout@v4"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run astral-sh/setup-uv@v3"
+        },
+        {
+          "conclusion": "success",
+          "name": "Setup Python"
+        },
+        {
+          "conclusion": "success",
+          "name": "Create venv"
+        },
+        {
+          "conclusion": "success",
+          "name": "Install"
+        },
+        {
+          "conclusion": "success",
+          "name": "Install ripgrep"
+        },
+        {
+          "conclusion": "failure",
+          "name": "Pytest (parallel)"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Pytest (perf, serial)"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Coverage floor"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Post Run astral-sh/setup-uv@v3"
+        },
+        {
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v4"
+        },
+        {
+          "conclusion": "success",
+          "name": "Complete job"
+        }
+      ]
+    },
+    {
+      "completed_at": "2026-11-18T15:30:18Z",
+      "conclusion": "failure",
+      "created_at": "2026-11-18T15:21:40Z",
+      "id": 134908198455,
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "name": "test (ubuntu-latest, 3.11, dev, 8)",
+      "run_attempt": 1,
+      "runner_name": "GitHub Actions 1000018590",
+      "started_at": "2026-11-18T15:21:42Z",
+      "status": "completed",
+      "steps": [
+        {
+          "conclusion": "success",
+          "name": "Set up job"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run actions/checkout@v4"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run astral-sh/setup-uv@v3"
+        },
+        {
+          "conclusion": "success",
+          "name": "Setup Python"
+        },
+        {
+          "conclusion": "success",
+          "name": "Create venv"
+        },
+        {
+          "conclusion": "success",
+          "name": "Install"
+        },
+        {
+          "conclusion": "success",
+          "name": "Install ripgrep"
+        },
+        {
+          "conclusion": "failure",
+          "name": "Pytest (parallel)"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Pytest (perf, serial)"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Coverage floor"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Post Run astral-sh/setup-uv@v3"
+        },
+        {
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v4"
+        },
+        {
+          "conclusion": "success",
+          "name": "Complete job"
+        }
+      ]
+    },
+    {
+      "completed_at": "2026-11-18T15:46:54Z",
+      "conclusion": "failure",
+      "created_at": "2026-11-18T15:21:40Z",
+      "id": 134908198666,
+      "labels": [
+        "macos-latest"
+      ],
+      "name": "test (macos-latest, 3.12, dev, 6)",
+      "run_attempt": 1,
+      "runner_name": "GitHub Actions 1000018596",
+      "started_at": "2026-11-18T15:25:51Z",
+      "status": "completed",
+      "steps": [
+        {
+          "conclusion": "success",
+          "name": "Set up job"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run actions/checkout@v4"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run astral-sh/setup-uv@v3"
+        },
+        {
+          "conclusion": "success",
+          "name": "Setup Python"
+        },
+        {
+          "conclusion": "success",
+          "name": "Create venv"
+        },
+        {
+          "conclusion": "success",
+          "name": "Install"
+        },
+        {
+          "conclusion": "success",
+          "name": "Install ripgrep"
+        },
+        {
+          "conclusion": "failure",
+          "name": "Pytest (parallel)"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Pytest (perf, serial)"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Coverage floor"
+        },
+        {
+          "conclusion": "skipped",
+          "name": "Post Run astral-sh/setup-uv@v3"
+        },
+        {
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v4"
+        },
+        {
+          "conclusion": "success",
+          "name": "Complete job"
+        }
+      ]
+    },
+    {
+      "completed_at": "2026-11-18T15:46:59Z",
+      "conclusion": "failure",
+      "created_at": "2026-11-18T15:46:54Z",
+      "id": 134925513174,
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "name": "plugin-test",
+      "run_attempt": 1,
+      "runner_name": "GitHub Actions 1000018623",
+      "started_at": "2026-11-18T15:46:56Z",
+      "status": "completed",
+      "steps": [
+        {
+          "conclusion": "success",
+          "name": "Set up job"
+        },
+        {
+          "conclusion": "failure",
+          "name": "Fail if any gated job failed or was cancelled"
+        },
+        {
+          "conclusion": "success",
+          "name": "Complete job"
+        }
+      ]
+    }
+  ],
+  "run": {
+    "conclusion": "failure",
+    "created_at": "2026-11-18T15:21:31Z",
+    "event": "pull_request",
+    "head_branch": "feat/s1b-agnes-instant-stop",
+    "head_sha": "f806e7f418a3fe222d377b4d24c38f0fdb41e158",
+    "id": 44334699876,
+    "name": "plugin-test",
+    "run_attempt": 1,
+    "run_number": 1195,
+    "status": "completed",
+    "workflow_id": 374875302
+  }
+}

@@ -25,7 +25,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
@@ -55,7 +55,7 @@ grep -q '"managed_by": "scout-app"' "$HOME/.local/state/scout/engine.json" 2>/de
 Scout's plugin lives in `Raven-Scout/Scout` under `plugin/`. That repo is the former `Raven-Scout/scout-plugin`, renamed when the app moved in; GitHub redirects the old name, so a marketplace that still says `Raven-Scout/scout-plugin` is fine. A `scout-plugin` marketplace pointing at any other repo makes Step 0.5's refresh "succeed" while pulling nothing of Scout's, so the vault would be upgraded against the wrong templates. Check before refreshing:
 
 ```bash
-python3 - "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/known_marketplaces.json" <<'EOF'
+python3 -I - "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/known_marketplaces.json" <<'EOF'
 import json, os, re, sys
 try:
     entry = json.load(open(sys.argv[1], encoding="utf-8")).get("scout-plugin")
@@ -112,7 +112,7 @@ else
   # registered, so the resolver below would hand back the old plugin. update switches it,
   # once for every scope Scout is installed in (update alone only touches user scope).
   SCOPES="$(claude plugin list --json 2>/dev/null \
-    | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(" ".join(sorted({p.get("scope") or "user" for p in e if p.get("id")=="scout@scout-plugin"})) or "user")' \
+    | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(" ".join(sorted({p.get("scope") or "user" for p in e if p.get("id")=="scout@scout-plugin"})) or "user")' \
     || echo user)"
   for scope in $SCOPES; do
     claude plugin update scout@scout-plugin --scope "$scope" || echo "PLUGIN_UPDATE_FAILED:$scope"
@@ -134,12 +134,12 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
 echo "Upgrading vault against plugin root: $NEW_ROOT"
-[ -x "$NEW_ROOT/.venv/bin/scoutctl" ] || bash "$NEW_ROOT/scripts/install-venv.sh"
+[ -x "$NEW_ROOT/.venv/bin/scoutctl" ] || /bin/bash "$NEW_ROOT/scripts/install-venv.sh"
 SCOUTCTL="$NEW_ROOT/.venv/bin/scoutctl"
 ```
 
@@ -159,7 +159,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
@@ -196,12 +196,12 @@ EOF
 - `PENDING_SIDECAR:<file>` (zero or more lines): informational, not a refusal. Tell the user: "`<file>` from an earlier upgrade is still unresolved. This upgrade will leave `<file without .proposed-merge>` exactly as it is and update everything else; resolve the sidecar (see Step 3) and the next upgrade picks the file up again." Then act on the line that follows, `READY` or one of the refusals below.
 - `VENV_MISSING:<plugin-root>`: "Engine venv missing at `<plugin-root>/.venv/`. Install it with:" then show:
   ```
-  bash "$NEW_ROOT/scripts/install-venv.sh"
+  /bin/bash "$NEW_ROOT/scripts/install-venv.sh"
   ```
   Then re-run `/scout-update`.
 - `VENV_MISMATCH:<installed>|<expected>`: "The venv at `$NEW_ROOT/.venv/` is editable-installed from `<installed>`, but this plugin is loaded from `<expected>`. Running the upgrade now would apply the OTHER tree's templates, not the ones in this checkout. Re-install the venv pinned to this plugin source:" then show:
   ```
-  bash "$NEW_ROOT/scripts/install-venv.sh"
+  /bin/bash "$NEW_ROOT/scripts/install-venv.sh"
   ```
   Then re-run `/scout-update`.
 - `READY`: continue.
@@ -220,7 +220,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
@@ -248,7 +248,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
@@ -308,7 +308,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }
@@ -351,7 +351,7 @@ elif [ -e "$HOME/scout-plugin/.git" ] && [ -f "$HOME/scout-plugin/plugin/.claude
   NEW_ROOT="$HOME/scout-plugin/plugin"    # Raven-Scout/Scout monorepo clone: plugin under plugin/
 fi
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(claude plugin list --json 2>/dev/null \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
+  | python3 -I -c 'import sys,json;d=json.load(sys.stdin);e=d if isinstance(d,list) else [p for ps in d.get("plugins",{}).values() for p in ps];print(next((p["installPath"] for p in e if p.get("id")=="scout@scout-plugin"),""))' 2>/dev/null)"
 [ -n "$NEW_ROOT" ] || NEW_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/scout-plugin/scout/*/ 2>/dev/null | sort -V | tail -1)"
 NEW_ROOT="${NEW_ROOT%/}"
 [ -n "$NEW_ROOT" ] || { echo "PLUGIN_ROOT_NOT_FOUND"; exit 1; }

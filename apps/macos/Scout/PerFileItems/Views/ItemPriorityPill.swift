@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// Small color-coded capsule for a per-file item's priority. Read-only by
-/// default; when `options` is non-empty it becomes a Menu for changing the
-/// priority (issue #41).
+/// A per-file item's priority as a design-system pill. Read-only by default;
+/// when `options` is non-empty it becomes a Menu for changing the priority
+/// (issue #41).
 struct ItemPriorityPill: View {
     let priority: ItemPriority
     var options: [ItemPriority] = []
@@ -10,7 +10,7 @@ struct ItemPriorityPill: View {
 
     var body: some View {
         if options.isEmpty || onSelect == nil {
-            capsule
+            pill
         } else {
             Menu {
                 ForEach(options, id: \.self) { opt in
@@ -22,7 +22,7 @@ struct ItemPriorityPill: View {
                     }
                 }
             } label: {
-                capsule
+                pill
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
@@ -31,24 +31,16 @@ struct ItemPriorityPill: View {
         }
     }
 
-    private var capsule: some View {
-        Text(priority.displayName.uppercased())
-            .font(DS.sans(10, weight: .semibold))
-            .tracking(0.06 * 10)
-            .foregroundStyle(tint)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(tint.opacity(0.14)))
-            .overlay(Capsule().strokeBorder(tint.opacity(0.35), lineWidth: 0.5))
-            .fixedSize()
+    private var pill: some View {
+        DSPill(priority.displayName, tone: Self.tone(priority))
     }
 
-    private var tint: Color {
+    nonisolated static func tone(_ priority: ItemPriority) -> DS.PillTone {
         switch priority {
-        case .urgent: return DS.Priority.urgent
-        case .high:   return DS.Priority.todo
-        case .medium: return DS.Priority.watch
-        case .low:    return DS.Ink.p3
+        case .urgent: return .urgent
+        case .high:   return .accent
+        case .medium: return .ok
+        case .low:    return .neutral
         }
     }
 }

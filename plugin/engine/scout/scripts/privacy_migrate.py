@@ -36,7 +36,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import sys
 import tempfile
 from collections.abc import Iterable, Mapping
@@ -47,7 +46,7 @@ from typing import Any, Literal
 
 import yaml
 
-from scout import paths
+from scout import paths, safe_write
 from scout.kb.frontmatter import FENCE
 from scout.kb.lint_config import glob_match
 from scout.kb.outbound import PrivateTerms, find_mentions, private_terms
@@ -60,6 +59,7 @@ from scout.kb.privacy import (
 )
 from scout.kb.read import all_labels
 from scout.kb.reader import resolve_reader
+from scout.plural import agree, count
 from scout.yaml_safe import load_yaml, yaml_problem
 
 Outcome = Literal["rewritten", "unchanged", "refused"]
@@ -144,15 +144,8 @@ def odd_visibility_notes(vault: Path, *, persist: bool = True) -> list[str]:
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-        shutil.copymode(path, tmp)
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+    """Replace ``path`` whole, keeping a regular file's mode; a symlink there is replaced, never followed."""
+    safe_write.atomic_write_bytes(path, data)
 
 
 def set_private(vault: Path, path: str | Path) -> tuple[Outcome, str]:
@@ -241,7 +234,11 @@ def private_links_in_shared(vault: Path, *, persist: bool = True) -> list[tuple[
         own = terms
         if labels[rel].visibility == "private":
             # any_term is only a pre-check, so a superset of the remaining notes' terms is fine.
-            own = PrivateTerms(notes=tuple(n for n in terms.notes if n.path != rel), any_term=terms.any_term)
+            own = PrivateTerms(
+                notes=tuple(n for n in terms.notes if n.path != rel),
+                any_term=terms.any_term,
+                any_bare=terms.any_bare,
+            )
         lines = find_mentions(data.decode("utf-8", errors="replace"), own, allow_markers=True)
         if lines:
             out.append((rel, lines))
@@ -402,10 +399,7 @@ def add_local_only(vault: Path, globs: Iterable[str]) -> list[str]:
         result = _dump_keeping_comments(text, want)
     if _load(result) != want:
         raise RuntimeError("could not write scout-config.yaml → privacy.local_only_add")
-    if config.exists():
-        _atomic_write_bytes(config, result.encode("utf-8"))
-    else:
-        config.write_text(result, encoding="utf-8")
+    _atomic_write_bytes(config, result.encode("utf-8"))  # a symlink there, dangling or not, is replaced
     return new
 
 
@@ -460,13 +454,18 @@ class MigrationReport:
         out: list[str] = []
         if self.visibility_values:
             out.append(
-                f"visibility: {len(self.visibility_values)} note(s) set visibility: to something other than "
-                "normal/private; they already count as private:"
+                f"visibility: {count(len(self.visibility_values), 'note')} "
+                f"{agree(len(self.visibility_values), 'sets', 'set')} visibility: to something other than "
+                f"normal/private; {agree(len(self.visibility_values), 'it already counts', 'they already count')} "
+                "as private:"
             )
             out += [f"  {p}" for p in self.visibility_values]
             out.append("  with the owner's OK, per note: scoutctl bootstrap privacy-migrate --set-private <path>")
         if self.private_links:
-            out.append(f"private links: {len(self.private_links)} shared file(s) link or name a private note:")
+            out.append(
+                f"private links: {count(len(self.private_links), 'shared file')} "
+                f"{agree(len(self.private_links), 'links to or names', 'link to or name')} a private note:"
+            )
             for p, ls in self.private_links:
                 out.append(f"  {p}: line{'s' if len(ls) > 1 else ''} {', '.join(str(n) for n in ls)}")
             out.append("  remove the reference, or allow one with %%privacy:allow <slug>%% on that line")

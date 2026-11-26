@@ -41,7 +41,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any
 
-from scout import paths
+from scout import paths, safe_write
 from scout.config import resolve_timezone
 from scout.events import Event, now_iso
 from scout.hooks import run_context
@@ -304,7 +304,7 @@ def _append_row(record: dict[str, Any], vault: Path | None = None) -> None:
     tracker = _tracker_path(vault)
     try:
         tracker.parent.mkdir(parents=True, exist_ok=True)
-        with tracker.open("a", encoding="utf-8") as f:
+        with safe_write.open_append(tracker) as f:
             # Compact output to match `jq -nc` (bash line 41 etc.).
             f.write(json.dumps(record, separators=(",", ":")) + "\n")
     except OSError:
@@ -359,7 +359,7 @@ def record_run_cost(vault: Path, *, mode: str, session_id: str, cost_usd: float,
         row["model"] = model
     try:
         tracker.parent.mkdir(parents=True, exist_ok=True)
-        with tracker.open("a", encoding="utf-8") as f:
+        with safe_write.open_append(tracker) as f:
             f.write(json.dumps(row, separators=(",", ":")) + "\n")
     except OSError:
         return 0.0
@@ -374,6 +374,16 @@ def _make_event(record: dict[str, Any]) -> Event:
         source="hook:session-tokens",
         payload=record,
     )
+
+
+def _record_reliance(payload: dict[str, Any], transcript_path: Path | None, ctx: run_context.RunContext) -> None:
+    """Count which Scout surfaces an owner session used. A side effect: nothing it raises escapes the hook."""
+    try:
+        from scout.changes import reliance
+
+        reliance.record_reliance(payload, transcript_path, ctx, os.environ, now=datetime.now(UTC))
+    except Exception:
+        pass
 
 
 def run(*, stdin: IO[str] | None = None) -> Event | None:
@@ -393,13 +403,22 @@ def run(*, stdin: IO[str] | None = None) -> Event | None:
     if not isinstance(payload, dict):
         return None
 
-    session_id = str(payload.get("session_id") or "")
     transcript_path_str = str(payload.get("transcript_path") or "")
-    cwd = str(payload.get("cwd") or "")
     transcript_path = Path(transcript_path_str).expanduser() if transcript_path_str else None
     if transcript_path is not None and not transcript_path.is_file():
         transcript_path = None
     ctx = run_context.resolve(payload, transcript_path)
+    try:
+        return _record_tokens(payload, transcript_path, ctx)
+    finally:
+        # After the token row is on disk, so a slow reliance pass can't cost the session its row.
+        _record_reliance(payload, transcript_path, ctx)
+
+
+def _record_tokens(payload: dict[str, Any], transcript_path: Path | None, ctx: run_context.RunContext) -> Event:
+    """Sum the transcript's usage, append one tracker row (and a prompt-named run's cost), return the Event."""
+    session_id = str(payload.get("session_id") or "")
+    cwd = str(payload.get("cwd") or "")
     scout_mode = ctx.mode or "manual"
 
     # Guard 1 + 2: missing / empty transcript path (bash line 40 `[ -z ... ]`), or no such

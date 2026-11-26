@@ -22,28 +22,85 @@ struct KBStatsView: View {
 
     private var healthBlock: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionLabel("VAULT HEALTH")
-            row(KBNetworkStats.healthTitle(stats.dangling.count,
-                                           singular: "dangling link", plural: "dangling links"),
-                icon: "link.badge.plus",
-                labels: stats.dangling.map { "\(KBNode.displayName(forPath: $0.source)) → \($0.target)" },
-                paths: stats.dangling.map(\.source))
+            sectionLabel("KNOWLEDGE BASE HEALTH")
+            danglingRow
             row(KBNetworkStats.healthTitle(stats.orphans.count,
                                            singular: "orphaned note", plural: "orphaned notes"),
-                icon: "circle.dashed",
+                icon: "circle.dashed", metric: .orphans,
                 labels: stats.orphans.map(KBNode.displayName(forPath:)), paths: stats.orphans)
             islandsRow
             row(KBNetworkStats.healthTitle(stats.weaklyLinked.count,
                                            singular: "weakly linked note", plural: "weakly linked notes"),
-                icon: "link",
+                icon: "link", metric: .weaklyLinked,
                 labels: stats.weaklyLinked.map(KBNode.displayName(forPath:)), paths: stats.weaklyLinked)
+            setAsideRow
+        }
+    }
+
+    /// Dangling links, one line per note that holds them (UI audit #73): the
+    /// note opens on click, its missing targets follow. Notes with the most
+    /// broken links first.
+    private var danglingRow: some View {
+        let groups = stats.danglingBySource
+        return VStack(alignment: .leading, spacing: 6) {
+            rowHeader(stats.danglingTitle, icon: "link.badge.plus", clean: groups.isEmpty, metric: .dangling)
+            ForEach(groups.prefix(topN)) { danglingLine($0) }
+            if groups.count > topN {
+                let window = KBNetworkStats.disclosureWindow(count: groups.count, topN: topN, cap: expandCap)
+                DisclosureGroup("Show all \(groups.count) notes") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(groups[window.shown]) { danglingLine($0) }
+                        moreLine(window.hidden)
+                    }
+                    .padding(.top, 4)
+                }
+                .font(DS.font(.caption)).foregroundStyle(DS.Accent.ink)
+            }
+        }
+    }
+
+    /// Most targets listed after a note before "+N more".
+    private let targetsShown = 4
+
+    private func danglingLine(_ group: KBDanglingGroup) -> some View {
+        let name = KBNode.displayName(forPath: group.source)
+        let shown = group.targets.prefix(targetsShown).joined(separator: ", ")
+        let rest = group.targets.count - min(group.targets.count, targetsShown)
+        let targets = "→ " + shown + (rest > 0 ? " +\(rest) more" : "")
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            chips(["\(name) · \(group.targets.count)"], [group.source])
+                .fixedSize()
+            Text(targets)
+                .font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
+                .lineLimit(1).truncationMode(.tail)
+                .help(group.targets.joined(separator: ", "))
+        }
+    }
+
+    /// Archive copies and paperwork aren't live notes, so they're left out of
+    /// the rows above and the insight below; this line says how many.
+    @ViewBuilder
+    private var setAsideRow: some View {
+        if let summary = stats.setAsideSummary {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Image(systemName: "archivebox").font(DS.font(.label)).foregroundStyle(DS.Ink.p3)
+                        .accessibilityHidden(true)
+                    Text(summary).font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p2)
+                }
+                Text("Notes in archive folders, and paperwork such as receipts, invoices and certificates, aren't checked for links.")
+                    .font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityElement(children: .combine)
         }
     }
 
     /// A health row: an ok/warn icon + title, then the items as chips.
-    private func row(_ title: String, icon: String, labels: [String], paths: [String]) -> some View {
+    private func row(_ title: String, icon: String, metric: KBHealthMetric,
+                     labels: [String], paths: [String]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            rowHeader(title, icon: icon, clean: labels.isEmpty)
+            rowHeader(title, icon: icon, clean: labels.isEmpty, metric: metric)
             if !labels.isEmpty { chipList(labels, paths) }
         }
     }
@@ -55,7 +112,7 @@ struct KBStatsView: View {
             rowHeader(KBNetworkStats.healthTitle(stats.islands.count,
                                                  singular: "disconnected island",
                                                  plural: "disconnected islands"),
-                      icon: "square.on.square.dashed", clean: stats.islands.isEmpty)
+                      icon: "square.on.square.dashed", clean: stats.islands.isEmpty, metric: .islands)
             ForEach(Array(stats.islands.prefix(topN).enumerated()), id: \.offset) { _, island in
                 chips(island.map(KBNode.displayName(forPath:)), island)
             }
@@ -68,7 +125,7 @@ struct KBStatsView: View {
                     .padding(.top, 4)
                     moreLine(window.hidden)
                 }
-                .font(DS.sans(11)).foregroundStyle(DS.Accent.ink)
+                .font(DS.font(.caption)).foregroundStyle(DS.Accent.ink)
             }
         }
     }
@@ -78,21 +135,22 @@ struct KBStatsView: View {
     private var insightBlock: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionLabel("INSIGHT")
-            Text(stats.degreeSummary).font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
-            Text(stats.componentsSummary).font(DS.sans(12)).foregroundStyle(DS.Ink.p2)
+            insightLine(stats.degreeSummary, metric: .connections)
+            insightLine(stats.componentsSummary, metric: .clusters)
 
             if !stats.topHubs.isEmpty {
-                Text("Top hubs").font(DS.sans(11, weight: .semibold)).foregroundStyle(DS.Ink.p3)
+                Text("Top hubs").font(DS.font(.caption, weight: .semibold)).foregroundStyle(DS.Ink.p3)
+                explanation(.hubs)
                 chipList(stats.topHubs.map { "\(KBNode.displayName(forPath: $0.path)) · \($0.degree)" },
                          stats.topHubs.map(\.path))
             }
 
-            Text("By type").font(DS.sans(11, weight: .semibold)).foregroundStyle(DS.Ink.p3)
+            Text("By type").font(DS.font(.caption, weight: .semibold)).foregroundStyle(DS.Ink.p3)
             FlowLayout(spacing: 10) {
                 ForEach(stats.byType.filter { $0.count > 0 }) { tc in
                     HStack(spacing: 4) {
                         Circle().fill(tc.group.color).frame(width: 7, height: 7)
-                        Text("\(tc.group.label) \(tc.count)").font(DS.sans(11)).foregroundStyle(DS.Ink.p2)
+                        Text("\(tc.group.label) \(tc.count)").font(DS.font(.caption)).foregroundStyle(DS.Ink.p2)
                     }
                 }
             }
@@ -102,15 +160,33 @@ struct KBStatsView: View {
     // MARK: - Building blocks
 
     private func sectionLabel(_ text: String) -> some View {
-        Text(text).font(DS.sans(10, weight: .semibold)).tracking(0.6).foregroundStyle(DS.Ink.p4)
+        Text(text).font(DS.font(.caption2, weight: .semibold)).tracking(0.6).foregroundStyle(DS.Ink.p4)
     }
 
-    private func rowHeader(_ title: String, icon: String, clean: Bool) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon).font(.system(size: 12))
-                .foregroundStyle(clean ? DS.Status.ok : DS.Status.warn)
-            Text(title).font(DS.sans(12, weight: .medium)).foregroundStyle(DS.Ink.p2)
+    /// A row's icon and title, with the metric's one-line explanation under it.
+    private func rowHeader(_ title: String, icon: String, clean: Bool, metric: KBHealthMetric) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Image(systemName: icon).font(DS.font(.label))
+                    .foregroundStyle(clean ? DS.Status.ok : DS.Status.warn)
+                    .accessibilityHidden(true)
+                Text(title).font(DS.font(.label, weight: .medium)).foregroundStyle(DS.Ink.p2)
+            }
+            explanation(metric).padding(.leading, 18)
         }
+    }
+
+    private func insightLine(_ text: String, metric: KBHealthMetric) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(text).font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
+            explanation(metric)
+        }
+    }
+
+    private func explanation(_ metric: KBHealthMetric) -> some View {
+        Text(metric.explanation)
+            .font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     /// The first `topN` items as chips, plus a "Show all N" disclosure for the
@@ -125,14 +201,14 @@ struct KBStatsView: View {
                     .padding(.top, 4)
                 moreLine(window.hidden)
             }
-            .font(DS.sans(11)).foregroundStyle(DS.Accent.ink)
+            .font(DS.font(.caption)).foregroundStyle(DS.Accent.ink)
         }
     }
 
     @ViewBuilder
     private func moreLine(_ hidden: Int) -> some View {
         if hidden > 0 {
-            Text("…and \(hidden) more").font(DS.sans(11)).foregroundStyle(DS.Ink.p4).padding(.top, 2)
+            Text("…and \(hidden) more").font(DS.font(.caption)).foregroundStyle(DS.Ink.p4).padding(.top, 2)
         }
     }
 
@@ -140,11 +216,10 @@ struct KBStatsView: View {
         FlowLayout(spacing: 6) {
             ForEach(Array(zip(labels, paths).enumerated()), id: \.offset) { _, pair in
                 Button { onOpen(pair.1) } label: {
-                    Text(pair.0).font(DS.sans(11)).foregroundStyle(DS.Ink.p1)
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(Capsule().fill(DS.Paper.sunk))
+                    Text(pair.0).truncationMode(.middle).dsTag(link: true)
                 }
-                .buttonStyle(.plainHit)
+                .buttonStyle(.plainHit)  // ds-guard: hit area — a link tag, drawn by .dsTag
+                .help(pair.0)
             }
         }
     }

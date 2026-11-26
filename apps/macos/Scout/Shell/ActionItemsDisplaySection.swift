@@ -44,21 +44,22 @@ struct ActionItemsDisplaySection: View {
                 SettingsRow(title: "Planned time", help: "List: the /scout-plan block, estimate and actual time on a card.") {
                     SettingsToggle(isOn: service.binding(\.fields.plan))
                 }
-                SettingsRow(title: "Done range", help: "Topics, from the next update: how far back the Done list goes.") {
+                SettingsRow(title: "Done range", help: "Topics: how far back the Done list goes. Clicking the range above the Done list changes it too.") {
                     Picker("", selection: service.binding(\.topics.doneRange)) {
                         ForEach(DoneRange.allCases, id: \.self) { Text($0.label.capitalizedFirst).tag($0) }
                     }
                     .labelsHidden()
+                    .labelledBySettingsRow()
                     .pickerStyle(.menu)
                     .fixedSize()
                 }
             }
             Text("Saved in \(path)")
-                .font(DS.mono(11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p4)
             if let warning {
                 Text(warning)
-                    .font(DS.sans(11.5))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Status.warn)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -74,6 +75,7 @@ struct ActionItemsDisplaySection: View {
             ForEach(options) { Text(label($0)).tag($0) }
         }
         .labelsHidden()
+        .labelledBySettingsRow()
         .pickerStyle(.menu)
         .fixedSize()
     }

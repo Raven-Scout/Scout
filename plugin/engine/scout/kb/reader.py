@@ -3,14 +3,23 @@
 A reader says whose eyes a command's output is for: ``owner`` and
 ``autonomous`` see every file (labelled); ``agent:<principal>`` sees nothing in
 v1. ``<principal>`` is ``person:<email>`` or ``group:<id>`` (spec §12.2).
+``delegate:<id>`` is one of the owner's own agents running off the laptop
+(#550 §4.1): it sees what ``privacy.delegates.<id>`` in the policy lets it
+(:func:`scout.kb.privacy.visible_to`), and nothing when it isn't listed.
+``elsewhere`` is the owner reading from outside the vault, where the answer may
+end up in another repository's commits or files: it sees what a listed delegate
+without ``include_private`` would: no private, local-only or shared-in note
+and no phone inbox. Nothing defaults to it; a caller narrows to
+it with ``--reader elsewhere``. It ranks with the delegates, so it can be
+narrowed to an agent but never swapped for a delegate, nor a delegate for it.
 
 Readers are canonicalised (scheme case-insensitive, person email lower-cased).
 
 Resolution: ``SCOUT_READER`` if set; else ``autonomous`` if ``SCOUT_MODE`` is
 set (a scheduled run); else ``owner``. ``--reader`` may only *narrow* that
-(``owner`` > ``autonomous`` > ``agent:*``). An agent reader can't be swapped
-for another agent principal either: that is lateral today, but the principals
-get different rights in Stage 2, so it's refused now.
+(``owner`` > ``autonomous`` > ``elsewhere`` = ``delegate:*`` > ``agent:*``). A reader can't be
+swapped for another of its own rank either (an agent principal for another, a
+delegate for another): the two may have different rights, so it's refused.
 
 A malformed ``SCOUT_READER`` fails closed: it resolves to
 :data:`FAIL_CLOSED_READER`, an ``agent:`` reader with no rights, which nothing
@@ -26,10 +35,24 @@ from collections.abc import Mapping
 # on every tool call, and typer alone costs ~0.35 s to import. Only a bad ``--reader`` needs it.
 
 FAIL_CLOSED_READER = "agent:invalid"
+# The owner outside the vault (scout-ask in another repository): no private, local-only or shared-in note.
+ELSEWHERE_READER = "elsewhere"
 
 _PERSON_RE = re.compile(r"^person:[^\s@,\[\]]+@[^\s@,\[\]]+$", re.IGNORECASE)
 _GROUP_RE = re.compile(r"^group:[A-Za-z0-9_-]{1,64}$")
 _AGENT_PREFIX = "agent:"
+_DELEGATE_PREFIX = "delegate:"
+# A delegate id (#550 §4.5): the key under ``privacy.delegates``. Match it with is_delegate_id.
+DELEGATE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
+
+
+# Words a delegate id can't be: ``inbox review promote --to author`` means the note's own author.
+RESERVED_DELEGATE_IDS = frozenset({"author"})
+
+
+def is_delegate_id(value: str) -> bool:
+    """Whether ``value`` is a delegate id: ASCII, matched whole (no trailing newline), and not reserved."""
+    return value.isascii() and DELEGATE_ID_RE.fullmatch(value) is not None and value not in RESERVED_DELEGATE_IDS
 
 
 def _canonical(reader: str) -> str | None:
@@ -37,10 +60,16 @@ def _canonical(reader: str) -> str | None:
 
     The ``agent:`` and ``person:`` schemes are case-insensitive and a person's
     email is lower-cased (spec §12.2, like ``_parse_principal``); a ``group:``
-    id is opaque and kept as written. ``owner``/``autonomous`` are exact.
+    id is opaque and kept as written. A ``delegate:`` reader is lower-cased
+    whole. ``owner``/``autonomous``/``elsewhere`` are exact.
     """
-    if reader in ("owner", "autonomous"):
+    if reader in ("owner", "autonomous", ELSEWHERE_READER):
         return reader
+    if reader[: len(_DELEGATE_PREFIX)].lower() == _DELEGATE_PREFIX:
+        if not reader.isascii():  # before lower(): a non-ASCII letter may lower to an ASCII one
+            return None
+        lowered = reader.lower()
+        return lowered if is_delegate_id(lowered[len(_DELEGATE_PREFIX) :]) else None
     if reader[: len(_AGENT_PREFIX)].lower() != _AGENT_PREFIX:
         return None
     principal = reader[len(_AGENT_PREFIX) :]
@@ -51,8 +80,20 @@ def _canonical(reader: str) -> str | None:
     return None
 
 
+def delegate_id(reader: str) -> str | None:
+    """The id of a canonical ``delegate:<id>`` reader, else None."""
+    if not reader.startswith(_DELEGATE_PREFIX):
+        return None
+    rest = reader[len(_DELEGATE_PREFIX) :]
+    return rest if is_delegate_id(rest) else None
+
+
 def _rank(reader: str) -> int:
-    return {"owner": 2, "autonomous": 1}.get(reader, 0)
+    if delegate_id(reader) is not None:
+        return 1
+    # elsewhere shares the delegates' rank: neither may be swapped for the other (a delegate with
+    # include_private would see private notes that elsewhere hides).
+    return {"owner": 3, "autonomous": 2, ELSEWHERE_READER: 1}.get(reader, 0)
 
 
 def resolve_reader(flag: str | None, env: Mapping[str, str]) -> str:
@@ -70,10 +111,11 @@ def resolve_reader(flag: str | None, env: Mapping[str, str]) -> str:
     canon = _canonical(flag)
     if canon is None:
         raise typer.BadParameter(
-            f"unknown reader {flag!r}: use owner, autonomous, agent:person:<email> or agent:group:<id>",
+            f"unknown reader {flag!r}: use owner, autonomous, elsewhere, delegate:<id>, agent:person:<email>"
+            " or agent:group:<id>",
             param_hint="--reader",
         )
-    if _rank(canon) > _rank(base) or (_rank(base) == 0 and canon != base):
+    if _rank(canon) > _rank(base) or (_rank(canon) == _rank(base) and canon != base):
         raise typer.BadParameter(
             f"--reader {canon} would widen the ambient reader {base}; --reader can only narrow",
             param_hint="--reader",

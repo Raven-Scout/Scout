@@ -37,6 +37,10 @@ struct TaskCardView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.openKBNote) private var openKBNote
     @Environment(\.revealTaggedTask) private var revealTaggedTask
+    /// Off while the engine check fails: the page's banner says so.
+    @Environment(\.actionItemsWritesEnabled) private var writesEnabled
+    /// The List's keyboard model: which card is current, and its ⌘↵ (#50).
+    @Environment(\.actionItemsKeyboard) private var keyboard
 
     init(
         task: ActionTask,
@@ -102,25 +106,27 @@ struct TaskCardView: View {
                 detail
                     .padding(.horizontal, 14)
                     .padding(.bottom, 14)
+            } else if let err = Self.collapsedError(expanded: expanded, inlineError: inlineError) {
+                inlineErrorLabel(err)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
             }
         }
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(isSelected ? DS.Accent.wash.opacity(0.55) : DS.Paper.raised)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .strokeBorder(isSelected ? DS.Accent.fill.opacity(0.65) : DS.Rule.soft, lineWidth: 0.5)
-                )
-        )
-        .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(DS.priorityColor(effectiveKind))
-                .frame(width: 3)
-                .padding(.vertical, 10)
-                .opacity(task.done ? 0.5 : 1)
-        }
+        // Picked for copying is `marked`; keyboard-current is `selected`.
+        .editorialCard(padding: 0, cornerRadius: 10, selected: isCursor, marked: isSelected,
+                       accentBar: DS.priorityColor(effectiveKind).opacity(task.done ? 0.5 : 1))
+        // While the list itself has the keys, the current card rings (T4).
+        .dsCursorRing(keyboard.ringID == task.id, cornerRadius: 10)
+        // A click anywhere on the card makes it keyboard-current and gives the
+        // list the keys, alongside whatever the click hit (a button still does
+        // its own thing; a comment editor keeps the keys it took).
+        .simultaneousGesture(TapGesture().onEnded { keyboard.focusCard?(task.id) })
+        .contextMenu { contextMenuItems }
         .padding(.bottom, 10)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: isSelected)
+        .onChange(of: keyboard.toggleRequest) { _, request in
+            if request?.id == task.id { toggle() }
+        }
         // Picking a density applies to the cards already on screen too, not
         // only to cards created after the change.
         .onChange(of: density) { _, newDensity in
@@ -144,21 +150,24 @@ struct TaskCardView: View {
                 }
                 // Not selectable: a click on the title opens or closes the card.
                 InlineMarkdownText(task.subject)
-                    .font(DS.serif(15.5, weight: .medium))
+                    .dsFont(.headline, .serif, weight: .medium)
                     .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p1)
-                    .strikethrough(task.done, color: DS.Ink.p4)
+                    .strikethrough(task.done, color: DS.Ink.decorative)
                     .lineLimit(expanded ? nil : 2)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                     .onTapGesture { toggle() }
+                    // On the title alone: on the card it reached every
+                    // button inside ("Mark done, selected").
+                    .accessibilityAddTraits(isCursor ? .isSelected : [])
                 if !expanded { quickActions }
                 trailingStatus
                 chevron
             }
             if !expanded && !summary.isEmpty && density == .comfortable {
                 InlineMarkdownText(summary)
-                    .font(DS.serif(13))
+                    .dsFont(.body, .serif)
                     .foregroundStyle(DS.Ink.p3)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
@@ -177,17 +186,19 @@ struct TaskCardView: View {
     private var chevron: some View {
         Button { toggle() } label: {
             Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                .font(.system(size: 11, weight: .medium))
+                .font(DS.font(.caption, weight: .medium))
                 .foregroundStyle(DS.Ink.p4)
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plainHit)
         .help(expanded ? "Collapse action item" : "Expand action item")
+        .accessibilityLabel("Action item details")
+        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
     }
 
     private func toggle() {
-        withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+        withMotion(.easeInOut(duration: 0.15)) { expanded.toggle() }
         if !expanded { onCollapse?() }
     }
 
@@ -196,6 +207,13 @@ struct TaskCardView: View {
     /// (its `--subject` lookup matches open tasks).
     static func canComment(_ task: ActionTask) -> Bool {
         !task.done || task.shortPrefix != nil
+    }
+
+    /// Whether a comment's Edit and Delete show: only where a comment could be
+    /// added, and only while writes are on. With the engine check failing
+    /// they'd fail every time, so they're left out like any write.
+    static func canChangeComments(_ task: ActionTask, writesEnabled: Bool) -> Bool {
+        writesEnabled && canComment(task)
     }
 
     // MARK: - Source/context chips
@@ -283,15 +301,10 @@ struct TaskCardView: View {
     private func chipBody(for chip: TaskChip) -> some View {
         HStack(spacing: 4) {
             Image(systemName: chipGlyph(chip.glyph))
-                .font(.system(size: 9))
+                .font(DS.font(.micro))
             Text(chip.label)
-                .font(DS.mono(10.5))
-                .lineLimit(1)
         }
-        .foregroundStyle(DS.Ink.p3)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 2)
-        .background(EditorialChipBackground())
+        .dsTag(.mono)
     }
 
     private func chipGlyph(_ glyph: TaskChip.Glyph) -> String {
@@ -316,7 +329,7 @@ struct TaskCardView: View {
                     Task { await runOp(.reopen(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
                 }
             } else {
-                iconButton("checkmark", help: "Mark done") {
+                iconButton("checkmark", help: "Mark done", shortcut: doneShortcut) {
                     Task { await runOp(.markDone(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
                 }
                 iconButton("moon.zzz", help: "Snooze") { showingQuickSnooze = true }
@@ -335,12 +348,16 @@ struct TaskCardView: View {
                     }
             }
         }
+        // Every quick action saves; the page's banner says why they're off.
+        .disabled(!writesEnabled)
+        .opacity(writesEnabled ? 1 : 0.45)
     }
 
-    private func iconButton(_ systemImage: String, help: String, action: @escaping () -> Void) -> some View {
+    private func iconButton(_ systemImage: String, help: String, shortcut: KeyboardShortcut? = nil,
+                            action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: 11))
+                .font(DS.font(.caption))
                 .foregroundStyle(DS.Ink.p3)
                 .frame(width: 24, height: 22)
                 .background(RoundedRectangle(cornerRadius: 5).fill(DS.Paper.base))
@@ -348,34 +365,28 @@ struct TaskCardView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plainHit)
-        .help(help)
+        .keyboardShortcut(shortcut)
+        .help(ShortcutLabel.help(help, shortcut))
+        .accessibilityLabel(help)
     }
 
     @ViewBuilder
     private var trailingStatus: some View {
         switch Self.trailingStatus(task, fields: fields) {
         case .done(let label):
-            statusPill(label, color: DS.Status.ok)
+            DSPill(label, tone: .ok)
         case .snoozed(let until):
             HStack(spacing: 3) {
                 Image(systemName: "moon.zzz.fill").imageScale(.small)
                 Text(dateShort(until))
             }
-            .font(DS.mono(10.5))
-            .foregroundStyle(DS.Ink.p3)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(EditorialChipBackground())
+            .dsTag(.mono)
         case .plan(let label):
             HStack(spacing: 3) {
                 Image(systemName: "clock").imageScale(.small)
                 Text(label)
             }
-            .font(DS.mono(10.5))
-            .foregroundStyle(DS.Ink.p3)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(EditorialChipBackground())
+            .dsTag(.mono)
             .help(Self.planChipHelp(task.plan))
         case .none:
             EmptyView()
@@ -464,38 +475,33 @@ struct TaskCardView: View {
         return f
     }()
 
-    private func statusPill(_ label: String, color: Color) -> some View {
-        Text(label)
-            .font(DS.mono(10.5, weight: .medium))
-            .foregroundStyle(color)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(EditorialChipBackground())
-    }
-
     // MARK: - Expanded detail
 
     // Typed properties rather than inline `cond ? nil : { … }` ternaries:
     // Xcode 26.3 (CI) can't type-check those inside the detail VStack.
-    private var editCommentHandler: ((Int, String) async -> Void)? {
-        guard Self.canComment(task) else { return nil }
+    private var editCommentHandler: ((Int, String) async -> Bool)? {
+        guard Self.canChangeComments(task, writesEnabled: writesEnabled) else { return nil }
         return { index, newText in
-            await runOp(.editComment(
+            // The row hides Edit for a comment without a selector; this is
+            // the backstop, so a guessed index is never sent.
+            guard let selector = task.commentSelector(at: index) else { return false }
+            return await runOp(.editComment(
                 subject: task.matchableSubject,
                 shortPrefix: task.shortPrefix,
-                selector: task.commentSelector(at: index),
+                selector: selector,
                 newText: newText
             ))
         }
     }
 
     private var deleteCommentHandler: ((Int) async -> Void)? {
-        guard Self.canComment(task) else { return nil }
+        guard Self.canChangeComments(task, writesEnabled: writesEnabled) else { return nil }
         return { index in
+            guard let selector = task.commentSelector(at: index) else { return }
             await runOp(.deleteComment(
                 subject: task.matchableSubject,
                 shortPrefix: task.shortPrefix,
-                selector: task.commentSelector(at: index)
+                selector: selector
             ))
         }
     }
@@ -525,36 +531,35 @@ struct TaskCardView: View {
             }
 
             if !task.deepLinks.isEmpty {
-                TaskLinksView(links: task.deepLinks)
+                // The header's ref chips are these links' Tab stops while they show.
+                TaskLinksView(links: task.deepLinks, headerHasChips: fields.refs)
             }
 
             TaskActionsView(
                 task: task,
                 kind: effectiveKind,
                 displayedDate: displayedDate,
-                scoutDirectory: scoutDirectory
+                scoutDirectory: scoutDirectory,
+                doneShortcut: doneShortcut
             ) { op in
                 await runOp(op)
             }
 
             if Self.canComment(task) {
                 CommentComposerView(task: task, displayedDate: displayedDate) { text in
-                    let author = UserDefaults.standard.string(forKey: "authorName") ?? "user"
-                    await runOp(.addComment(
+                    let author = CommentAuthor.configuredName()
+                    return await runOp(.addComment(
                         subject: task.matchableSubject,
                         shortPrefix: task.shortPrefix,
                         text: text,
                         author: author
                     ))
                 }
+                .disabled(!writesEnabled)
             }
 
             if let err = inlineError {
-                Text(err)
-                    .font(DS.sans(11))
-                    .foregroundStyle(DS.Status.err)
-                    .padding(.top, 2)
-                    .textSelection(.enabled)
+                inlineErrorLabel(err)
             }
         }
     }
@@ -573,14 +578,14 @@ struct TaskCardView: View {
                 .padding(.top, 7)
             VStack(alignment: .leading, spacing: 4) {
                 InlineMarkdownText(task.subject)
-                    .font(DS.serif(13.5))
+                    .dsFont(.body, .serif)
                     .foregroundStyle(task.done ? DS.Ink.p3 : DS.Ink.p2)
-                    .strikethrough(task.done, color: DS.Ink.p4)
+                    .strikethrough(task.done, color: DS.Ink.decorative)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if !task.summary.isEmpty {
                     InlineMarkdownText(task.summary)
-                        .font(DS.serif(12.5))
+                        .dsFont(.label, .serif)
                         .foregroundStyle(DS.Ink.p3)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -591,6 +596,58 @@ struct TaskCardView: View {
         .padding(.vertical, 6)
         .padding(.leading, CGFloat(task.indentLevel) * 24 + 16)
         .padding(.trailing, 14)
+    }
+
+    // MARK: - Keyboard and context menu (#50)
+
+    private var isCursor: Bool { keyboard.cursorID == task.id }
+
+    /// ⌘↵ marks this card done while it is the keyboard-current one. Only one
+    /// card binds it, so the key always means one card.
+    private var doneShortcut: KeyboardShortcut? { keyboard.doneShortcut(for: task.id) }
+
+    /// The card's actions, for a right-click. Writes are off with the rest of
+    /// the card's while the engine check fails (R2).
+    @ViewBuilder
+    private var contextMenuItems: some View {
+        if task.done {
+            Button("Reopen") {
+                Task { await runOp(.reopen(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
+            }
+            .disabled(!writesEnabled)
+        } else {
+            Button("Mark Done") {
+                Task { await runOp(.markDone(subject: task.matchableSubject, shortPrefix: task.shortPrefix)) }
+            }
+            .disabled(!writesEnabled)
+            Menu("Snooze") {
+                ForEach(SnoozePopoverView.presets, id: \.label) { preset in
+                    Button(preset.label) { snooze(days: preset.days) }
+                }
+            }
+            .disabled(!writesEnabled)
+        }
+        Divider()
+        Button(expanded ? "Collapse" : "Expand") { toggle() }
+        Divider()
+        Button("Copy") {
+            TaskActionsView.copy(task, format: .fullContext, scoutDirectory: scoutDirectory)
+        }
+        Menu("Copy As") {
+            ForEach(ClaudeLauncher.CopyFormat.allCases) { format in
+                Button(format.label) {
+                    TaskActionsView.copy(task, format: format, scoutDirectory: scoutDirectory)
+                }
+            }
+        }
+    }
+
+    private func snooze(days: Int) {
+        guard let target = SnoozePopoverView.presetTarget(days: days, from: displayedDate) else { return }
+        Task {
+            await runOp(.snooze(subject: task.matchableSubject, shortPrefix: task.shortPrefix,
+                                until: target, fromKind: kind.rawValue))
+        }
     }
 
     // MARK: - Helpers
@@ -609,7 +666,7 @@ struct TaskCardView: View {
             }
         } label: {
             Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 15, weight: .medium))
+                .font(DS.font(.headline, weight: .medium))
                 .foregroundStyle(isSelected ? DS.Accent.ink : DS.Ink.p4)
                 .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                 .frame(width: 28, height: 28)
@@ -622,30 +679,42 @@ struct TaskCardView: View {
     }
 
     /// Dispatches a write through `onOp` and threads any failure into the
-    /// inline error label.
-    private func runOp(_ op: WriteOp) async {
+    /// inline error label. Returns whether the write landed, so editors can
+    /// keep their text on failure.
+    @discardableResult
+    private func runOp(_ op: WriteOp) async -> Bool {
         do {
             try await onOp(op, task.lineNumber)
             await MainActor.run { inlineError = nil }
+            return true
         } catch let err as ActionItemsWriterError {
             await MainActor.run { inlineError = describe(err) }
         } catch {
             await MainActor.run { inlineError = error.localizedDescription }
         }
+        return false
     }
 
+    /// The error shown under a collapsed card's header. Quick actions (Done,
+    /// Snooze, Reopen) run from the collapsed header, and the expanded detail
+    /// that normally shows `inlineError` isn't on screen then.
+    static func collapsedError(expanded: Bool, inlineError: String?) -> String? {
+        expanded ? nil : inlineError
+    }
+
+    private func inlineErrorLabel(_ err: String) -> some View {
+        Text(err)
+            .font(DS.font(.caption))
+            .foregroundStyle(DS.Status.err)
+            .padding(.top, 2)
+            .textSelection(.enabled)
+    }
+
+    /// The shared write-problem wording (C10): what happened and what to do.
+    /// Raw engine output stays behind the problem's details.
     private func describe(_ err: ActionItemsWriterError) -> String {
-        switch err {
-        case .cliNonZeroExit(_, let stderr, let kind):
-            switch kind {
-            case .noMatch:     return "Task may have been edited externally — refreshing.\n\(stderr)"
-            case .ambiguous:   return "Subject matched multiple tasks.\n\(stderr)"
-            case .environment: return "Python environment problem.\n\(stderr)"
-            case .other:       return stderr.isEmpty ? "Write failed." : stderr
-            }
-        case .processFailed(let e):
-            return "Process failed: \(e.localizedDescription)"
-        }
+        let problem = WriteProblem.from(err, action: "save that change")
+        return "\(problem.title). \(problem.message)"
     }
 
     /// Shared "MMM d" formatter — DateFormatter init is expensive, and this

@@ -31,6 +31,34 @@ nonisolated enum EngineUpgradeAction: Equatable, Sendable {
     }
 }
 
+/// One severity's worth of doctor findings in Settings ▸ Engine.
+nonisolated struct DoctorFindingGroup: Equatable, Sendable {
+    nonisolated enum Severity: Int, CaseIterable, Comparable, Sendable {
+        case problem, warning, note
+        static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
+        var title: String {
+            switch self { case .problem: "Problems"; case .warning: "Warnings"; case .note: "Notes" }
+        }
+        var singular: String {
+            switch self { case .problem: "problem"; case .warning: "warning"; case .note: "note" }
+        }
+    }
+    let severity: Severity
+    let items: [DoctorFindingItem]
+}
+
+/// One doctor finding: an install error or warning (summary only), or a
+/// run-health finding with its fix, the failing run's own line and its log.
+nonisolated struct DoctorFindingItem: Equatable, Sendable, Identifiable {
+    let id: String
+    let summary: String
+    var fix: String? = nil
+    var detail: String? = nil
+    var logURL: URL? = nil
+    /// The files a grouped warning stands for, listed behind a disclosure (UI audit R1).
+    var items: [String] = []
+}
+
 /// Pure presentation model for Settings ▸ Engine (spec §5). Views stay thin;
 /// this is what the tests pin.
 nonisolated struct EngineSettingsModel: Equatable, Sendable {
@@ -71,26 +99,36 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
     var bundledVersionLabel: String? { bundledVersion }
     var rootPath: String? { state.install?.root.path }
 
-    var healthIsOK: Bool {
-        guard !state.gatesTabs, case .some(let d) = doctor else { return false }
-        return d.severity != .red
+    /// The worse of the install's verdict and the runs': the one the Health page shows (R1, T4).
+    /// nil while the tabs are gated or there is no report.
+    private var verdict: DoctorReport.Severity? {
+        guard !state.gatesTabs, let doctor else { return nil }
+        return summary.overall(doctor: doctor.severity)
     }
+    var healthIsOK: Bool { verdict.map { $0 != .red } ?? false }
     var healthLabel: String {
         if case .notInstalled = state { return "Not installed" }
         if case .broken = state { return "Broken" }
-        if case .managed(_, let vaultBootstrapped) = state, !vaultBootstrapped { return "Vault not set up" }
+        if case .managed(_, let vaultBootstrapped) = state, !vaultBootstrapped { return "Scout folder not set up" }
         if doctorFailed { return "Could not run doctor" }
-        guard let doctor else { return "Unknown" }
-        switch doctor.severity {
-        case .green: return "Healthy"
-        case .yellow: return "Healthy, with warnings"
-        case .red: return "Needs attention"
+        guard let verdict else { return "Unknown" }
+        // "1 problem · 3 warnings" once read "Healthy, with warnings": a problem never reads as healthy (T4).
+        return HealthSummary.verdictLabel(verdict)
+    }
+    /// The Health row's colour, as the status bar colours the same state (`ScoutStatus`):
+    /// the verdict's for a report; amber while setup is unfinished; red for a broken engine
+    /// or a doctor that couldn't run; grey while the first check is still out.
+    var healthTone: ScoutStatus.Tone {
+        if let verdict { return HealthSummary.tone(verdict) }
+        switch state {
+        case .notInstalled, .managed(_, vaultBootstrapped: false): return .warn
+        case .broken: return .err
+        case .managed, .external: return doctorFailed ? .err : .neutral
         }
     }
 
     /// The "Runs" row (spec §4.3) appears only when the engine reported run health.
     var showsRuns: Bool { doctor?.runHealth != nil }
-    var runsIsOK: Bool { doctor?.runHealth?.severity == .green }
     /// A Claude usage limit is holding the runs; it lifts on its own (#424).
     var runsIsPaused: Bool { runsFinding?.id == "runs.paused" }
     var runsLabel: String {
@@ -101,6 +139,11 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
         case .yellow: return "Warnings"
         case .red: return "Failing"
         }
+    }
+    /// "Failing" is red, as the Health page paints a run that needs attention (T4); a pause is grey.
+    var runsTone: ScoutStatus.Tone {
+        guard let rh = doctor?.runHealth else { return .neutral }
+        return runsIsPaused ? .neutral : HealthSummary.tone(rh.severity)
     }
     var runsHelp: String {
         guard let rh = doctor?.runHealth else { return "" }
@@ -127,6 +170,35 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
         return relative(date)
     }
 
+    /// What every health surface shares (UI audit R1); empty while the tabs are gated.
+    var summary: HealthSummary { HealthSummary(doctor: state.gatesTabs ? nil : doctor) }
+
+    /// Every finding the doctor reported, install and run health together,
+    /// grouped worst first (card C3: Settings used to show only the first).
+    /// Empty groups are left out. A run-health severity this build doesn't
+    /// know is shown as a warning rather than hidden; warnings the engine
+    /// groups are one item with their files (R1).
+    var findingGroups: [DoctorFindingGroup] {
+        guard doctor != nil, !state.gatesTabs else { return [] }
+        let summary = summary
+        return DoctorFindingGroup.Severity.allCases.compactMap { severity in
+            let items = summary.issues(severity).map { issue in
+                DoctorFindingItem(id: issue.id, summary: issue.title, fix: issue.fix, detail: issue.detail,
+                                  logURL: issue.log.map { URL(fileURLWithPath: $0) }, items: issue.items)
+            }
+            return items.isEmpty ? nil : DoctorFindingGroup(severity: severity, items: items)
+        }
+    }
+
+    /// "2 problems · 1 warning", for the Health row; nil when there is nothing.
+    /// The problem and warning counts are the ones every other surface shows.
+    var findingCountsLabel: String? {
+        let summary = summary
+        let notes = summary.noteCount
+        let parts = [summary.attentionLabel, notes > 0 ? "\(notes) note\(notes == 1 ? "" : "s")" : nil].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
     var messages: [String] {
         if case .broken(_, let reason) = state { return [reason] }
         if doctorFailed, let lastError { return [lastError] }
@@ -147,9 +219,9 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
     /// One line under the Set up / Repair row.
     var setupHelp: String? {
         switch state {
-        case .notInstalled: return "Install the engine that ships with this app and create your vault."
-        case .managed(_, vaultBootstrapped: false): return "The engine is installed; finish setting up your vault."
-        case .broken: return state.isBrokenOutsideApp ? nil : "Reinstall the engine that ships with this app and re-run vault setup."
+        case .notInstalled: return "Install the engine that ships with this app and create your Scout folder."
+        case .managed(_, vaultBootstrapped: false): return "The engine is installed; finish setting up your Scout folder."
+        case .broken: return state.isBrokenOutsideApp ? nil : "Reinstall the engine that ships with this app and set up your Scout folder again."
         case .managed, .external: return nil
         }
     }
@@ -216,11 +288,11 @@ nonisolated struct EngineSettingsModel: Equatable, Sendable {
         return "This engine is managed outside the app. Run `/scout-update` in Claude Code."
     }
 
-    /// The Scout vault field's help: scheduled runs follow the vault the
+    /// The Scout folder field's help: scheduled runs follow the folder the
     /// engine was set up for, which only `/scout-update` changes for an
     /// engine managed in Claude Code.
     var vaultHelp: String {
-        let base = "Folder Scout reads and writes. Blank = `~/Scout`, or the vault the engine was set up for. Points the app at a vault; never moves data. Takes effect after restarting Scout. Scheduled runs keep the vault the engine was set up for"
+        let base = "The folder Scout reads and writes. Use Default reads `~/Scout`, or the folder the engine was set up for. Points the app at a Scout folder; never moves data. Takes effect after restarting Scout. Scheduled runs keep the folder the engine was set up for"
         if case .external = state { return base + " until you run /scout-update in Claude Code." }
         return base + "."
     }

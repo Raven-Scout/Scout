@@ -51,6 +51,24 @@ first.** The two have different languages, test runners, and release flows.
   `plugin/v0.15.x` patch via `plugin/scripts/release-plugin.sh`); the existing ones (`app/v0.1.0`–`app/v0.14.0`,
   `plugin/v0.14.0`, `plugin/v0.15.0`) are history. The app was never released as 0.15.0. Bare `v0.4.0`–`v0.13.0` are the plugin's pre-monorepo releases. Agents never
   run `finalize`/`rc` for real.
+- **A changelog entry is a fragment file, never an edit to a CHANGELOG.** Add
+  `plugin/changelog.d/<branch-slug>.<section>.md` (plugin and engine) and/or
+  `apps/macos/changelog.d/<branch-slug>.<section>.md` (app): `<branch-slug>` is
+  your branch name after its last `/`, `<section>` one of `added`, `changed`,
+  `fixed`, `removed`, `security`, `deprecated`, `performance`, `documentation`,
+  `upgrade-notes`, and the content the entry's `- ` bullets, no headings
+  (format: `plugin/changelog.d/README.md`). `scripts/release.sh prepare`
+  assembles them into `## [X.Y.Z]` and deletes them. If the slug is generic or
+  reused, add a short random suffix, and never edit a fragment main already
+  has. Never add to `## [Unreleased]` (it is kept only for PRs opened before
+  fragments, and goes once they merge) and never touch a `## [X.Y.Z]` section
+  main already has: `contract` runs `python -m scout.scripts.changelog check`
+  and fails on a bad fragment and, on PRs and in the merge queue (not on the
+  push to main), on a changed existing fragment or a changed versioned
+  section. Two exceptions: a PR into `release/vX.Y.Z` edits
+  `[X.Y.Z]` directly and adds no fragment (one there would never reach X.Y.Z),
+  and a deliberate fix to a published entry ends a commit message with the
+  trailer `Changelog-Edit-Released: X.Y.Z <why>`.
 - **Issue and PR numbers come from two repos.** This repo is the former
   `Raven-Scout/scout-plugin`, renamed `Raven-Scout/Scout` when the app moved in,
   so its own `#N` numbering is scout-plugin's. The old app repo is
@@ -89,6 +107,84 @@ first.** The two have different languages, test runners, and release flows.
   `apps/macos/ScoutTests/Fixtures/doctor-run-health.json` and update the pins in
   `apps/macos/ScoutTests/Engine/DoctorReportTests.swift` — all in one commit.
   `contract.yml` byte-compares the two copies.
+- **The connector alert state has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/connector-alerts.json`, the format of
+  `.scout-logs/connector-alerts.json` (documented on `render_alerts_state` in
+  `connector_health_report.py`), which the app's `ConnectorAlert.parseFile`
+  reads. Generate it the same way, from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_connector_alerts_contract.py`,
+  then `cp` it to `apps/macos/ScoutTests/Fixtures/connector-alerts.json` and
+  update the pins in `apps/macos/ScoutTests/Models/ConnectorAlertContractTests.swift`
+  — all in one commit. `connector-alerts.log` is for people; neither side parses it.
+- **The usage summary has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/usage-summary.json`, the output of
+  `scoutctl budget usage --json` (`scout/scripts/usage_summary.py`), which the
+  app's `ScoutUsageService` decodes for the usage card and status bar. Generate
+  it from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_usage_summary.py`,
+  then `cp` it to `apps/macos/ScoutTests/Fixtures/usage-summary.json` and
+  update the pins in `apps/macos/ScoutTests/Services/ScoutUsageServiceTests.swift`
+  — all in one commit.
+- **The run protection summary has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/protection-status.json`, the output of
+  `scoutctl protection status --json`, which the app's Run protection card reads.
+  Generate it from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_run_protection_contract.py`,
+  then `cp` it to `apps/macos/ScoutTests/Fixtures/protection-status.json` and update
+  the pins in `apps/macos/ScoutTests/Engine/RunProtectionTests.swift` — all in one commit.
+- **The run ledger has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/run-ledger.json`, the output of
+  `scoutctl runs --json` (`scout/run_ledger.py`; recent `run-outcomes.jsonl`
+  rows plus the run-health report, versioned by `schema_version`), which the
+  app's Health panel reads (`RunLedger.parse`). Generate it the same way, from
+  `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_run_ledger_contract.py`,
+  then from the repo root `cp` it to
+  `apps/macos/ScoutTests/Fixtures/run-ledger.json` and update the pins in
+  `apps/macos/ScoutTests/Health/RunLedgerContractTests.swift` — all in one
+  commit. A new ledger field or outcome goes into the test's vault builder, not
+  the JSON.
+- **The changes map has two canonical copies:**
+  `plugin/engine/tests/fixtures/contract/changes.json` and `engagement.json`, the output of
+  `scoutctl changes --json` and `scoutctl engagement --json` (`scout/changes/report.py`, versioned by
+  `schema_version`). Generate them from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_changes_contract.py`.
+  The app's byte copies and the `contract.yml` comparison land with the first client (Plan 3).
+- **The lab has two canonical copies:**
+  `plugin/engine/tests/fixtures/contract/lab-list.json` and `lab-thread.json`, the output of
+  `scoutctl lab list --json` and `scoutctl lab show --json` (`scout/lab/summary.py`, versioned by
+  `schema_version`). Generate them from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_lab_contract.py`.
+- **The delegate status has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/delegate-status.json`, the output of
+  `scoutctl delegate status --json` (`scout/delegate_status.py`, #550), which
+  the app's Settings ▸ Agent copies card reads (`DelegateStatus.parse`).
+  Generate it from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_delegate_status_contract.py`,
+  then from the repo root `cp` it to
+  `apps/macos/ScoutTests/Fixtures/delegate-status.json` and update the pins in
+  `apps/macos/ScoutTests/Engine/DelegateStatusTests.swift` — all in one commit.
+  It never carries a key, token, vault path or note name.
+- **The resolve prompt has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/resolve-prompt.json`, one document per
+  kind from `scoutctl health resolve-prompt <kind> <key> --json`
+  (`scout/resolve_prompt.py`), which the app's "Resolve with Claude" button
+  reads (`ResolvePrompt.parse`). Generate it from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_resolve_prompt_contract.py`,
+  then from the repo root `cp` it to
+  `apps/macos/ScoutTests/Fixtures/resolve-prompt.json` and update the pins in
+  `apps/macos/ScoutTests/Engine/ResolvePromptContractTests.swift` — all in one
+  commit. A prompt carries paths, ids and SHAs, never a file's body.
+- **The run progress line has one canonical copy too:**
+  `plugin/engine/tests/fixtures/contract/run-progress.alive`, the format of
+  `.scout-logs/.scout-session.lock.alive` that `scoutctl progress watch`
+  (`scout/run_progress.py`) writes beside every scheduled run and the lock
+  reaper, `scoutctl health` and the app's `RunProgress` read (the run log is
+  not progress: review of #701). Generate it from `plugin/engine`:
+  `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_run_progress.py`,
+  then from the repo root `cp` it to
+  `apps/macos/ScoutTests/Fixtures/run-progress.alive` and update the pins in
+  `apps/macos/ScoutTests/Services/RunProgressTests.swift` — all in one commit.
 - **Never edit a `*.snapshot.json` by hand.** That is what broke the shipped
   connector roster for four months.
 - **Plugin history was absorbed with `git subtree`, SHAs preserved.** `git blame

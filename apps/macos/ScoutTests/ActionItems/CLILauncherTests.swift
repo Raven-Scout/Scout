@@ -86,18 +86,18 @@ struct CLILauncherTests {
 
     @Test func makeTerminalShellCommand_basic() {
         let cmd = ClaudeLauncher.makeTerminalShellCommand(claudePath: "/cl", cwd: "/w")
-        #expect(cmd.hasPrefix("cd \"/w\" && "))
-        #expect(cmd.hasSuffix("exec \"/cl\""))
+        #expect(cmd.hasPrefix("cd '/w' && "))
+        #expect(cmd.hasSuffix("exec '/cl'"))
         #expect(cmd.contains("clear"))
     }
 
-    @Test func makeTerminalShellCommand_escapesQuotesAndBackslashes() {
-        // cwd contains a quote and a backslash; both must be escaped for the
-        // surrounding double-quoted shell string.
+    @Test func makeTerminalShellCommand_singleQuotesTheFolderAndClaude() {
+        // Single quotes keep a double quote and a backslash literal with no
+        // escaping; only an embedded single quote is closed and reopened.
         let cmd = ClaudeLauncher.makeTerminalShellCommand(claudePath: "/cl", cwd: #"/a"b\c"#)
-        #expect(cmd.contains(#"cd "/a\"b\\c""#))
-        let cmd2 = ClaudeLauncher.makeTerminalShellCommand(claudePath: #"/x"y\z"#, cwd: "/w")
-        #expect(cmd2.contains(#"exec "/x\"y\\z""#))
+        #expect(cmd.contains(#"cd '/a"b\c'"#))
+        let cmd2 = ClaudeLauncher.makeTerminalShellCommand(claudePath: #"/x'y\z"#, cwd: "/w")
+        #expect(cmd2.contains(#"exec '/x'\''y\z'"#))
     }
 
     @Test func makeTerminalAppScript_wrapsInTellBlock() {
@@ -105,8 +105,7 @@ struct CLILauncherTests {
         #expect(s.contains(#"tell application "Terminal""#))
         #expect(s.contains("activate"))
         #expect(s.contains("do script"))
-        // The shell command's double-quotes are AppleScript-escaped (\").
-        #expect(s.contains(#"cd \"/w\""#))
+        #expect(s.contains("cd '/w'"))
     }
 
     @Test func makeITermScript_usesDefaultProfileAndWriteText() {
@@ -114,6 +113,6 @@ struct CLILauncherTests {
         #expect(s.contains(#"tell application "iTerm""#))
         #expect(s.contains("create window with default profile"))
         #expect(s.contains("write text"))
-        #expect(s.contains(#"cd \"/w\""#))
+        #expect(s.contains("cd '/w'"))
     }
 }

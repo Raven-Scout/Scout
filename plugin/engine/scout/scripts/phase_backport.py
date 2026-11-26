@@ -24,6 +24,7 @@ from pathlib import Path
 import yaml
 
 from scout.custom_connectors import CustomConnector
+from scout.plural import noun
 from scout.scripts.custom_assembly import render_custom_sections
 from scout.scripts.phase_assembly import parse_phase_file, render_template, select_sections
 
@@ -33,6 +34,7 @@ _ASSEMBLY_MAP: dict[str, tuple[tuple[str, ...], set[str]]] = {
     "SKILL": (("core", "connectors"), {"briefing", "consolidation"}),
     "DREAMING": (("core", "modes"), {"dreaming"}),
     "RESEARCH": (("core", "research"), {"research"}),
+    "RESPOND": (("core", "respond"), {"respond"}),
 }
 
 # Template vars whose values are long/unique enough to reverse without false
@@ -145,7 +147,7 @@ def build_rendered_sections(
     try:
         src_dirs, modes = _ASSEMBLY_MAP[kind]
     except KeyError:
-        raise ValueError(f"unknown brain-file kind: {kind!r} (expected SKILL/DREAMING/RESEARCH)") from None
+        raise ValueError(f"unknown brain-file kind: {kind!r} (expected SKILL/DREAMING/RESEARCH/RESPOND)") from None
     out: list[RenderedSection] = []
     for dirname in src_dirs:
         src = phases_root / dirname
@@ -306,7 +308,7 @@ def plan_backport(snapshot: str, live: str, sections: list[RenderedSection], var
                     anchor=hunk.anchor,
                     retemplatized=retempl,
                     risky_hits=risky,
-                    reason="risky template var(s) in added text — genericize before writing",
+                    reason=f"risky template {noun(len(risky), 'var')} in added text — genericize before writing",
                 )
             )
             continue

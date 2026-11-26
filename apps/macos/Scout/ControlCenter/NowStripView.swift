@@ -19,6 +19,56 @@ struct NowStripView: View {
             column(label: "Next up") { nextColumn }
         }
         .editorialCard(padding: 14)
+        // The usage card loads the summary too, but a side detail can hide it; the tile
+        // mustn't sit on "cost —" then (R1 review).
+        .task(id: todayRunsKey) { await state.scoutUsageService.refresh() }
+    }
+
+    /// Today's runs by the vault's day (the usage summary's `today` bounds), so the run count
+    /// and the cost beside it count the same day. The host's day until the summary loads, and
+    /// when its day is over (a refresh after midnight failed): never yesterday's count.
+    ///
+    /// The day's bounds are worked out once, and each run is a plain date compare: this runs
+    /// several times per Control Center render (the Today tile, its task key, the Signals
+    /// card) over every run on record, and a per-run ISO parse or calendar call made that
+    /// most of the page's main-thread time on a vault with ~2,000 run logs.
+    nonisolated static func todayRuns(_ runs: [Run], today: UsagePeriod?, now: Date = Date(),
+                                      calendar: Calendar = .current) -> [Run] {
+        guard let day = todayBounds(today: today, now: now, calendar: calendar) else {
+            return runs.filter { calendar.isDate($0.startedAt, inSameDayAs: now) }
+        }
+        return runs.filter { day.contains($0.startedAt) }
+    }
+
+    /// `[start, end)` of today: the vault's day from the usage summary while `now` is in it,
+    /// else the host calendar's day holding `now`. nil only if the calendar has no such day.
+    nonisolated static func todayBounds(today: UsagePeriod?, now: Date,
+                                        calendar: Calendar = .current) -> Range<Date>? {
+        if let vaultDay = today?.bounds, vaultDay.contains(now) { return vaultDay }
+        return calendar.dateInterval(of: .day, for: now).map { $0.start..<$0.end }
+    }
+
+    /// Today's date as well as its runs: a render after midnight re-reads the summary even
+    /// when no run has finished yet (the service's own rollover refresh can fail).
+    private var todayRunsKey: String {
+        let day = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
+        return "\(day)|" + todayRuns().map(\.id).joined(separator: "|")
+    }
+
+    /// "cost ≥$42.09 · budget $8/day". The cost is today's from the engine's usage summary
+    /// (`scoutctl budget usage`), the figure the usage card and the status bar show, so a
+    /// cost no run measured reads "unknown" or "≥", never $0 (UI audit R1). "—" until it loads.
+    /// The budget comes from the vault's own budget settings (`scoutctl budget show`), and is
+    /// left off until they have loaded — never a made-up figure (card C3).
+    nonisolated static func costLine(today: UsagePeriod?, dailyBudgetUSD: Double?) -> String {
+        let cost: String
+        if let today {
+            cost = today.costKind == UsageCostKind.none ? "no cost yet" : "cost \(UsageFormat.shortCost(today))"
+        } else {
+            cost = "cost —"
+        }
+        guard let daily = dailyBudgetUSD, daily > 0 else { return cost }
+        return "\(cost) · budget \(daily.formatted(.currency(code: "USD").precision(.fractionLength(0...2))))/day"
     }
 
     // MARK: - Column layout helper
@@ -26,7 +76,7 @@ struct NowStripView: View {
     private func column<Content: View>(label: String, @ViewBuilder _ content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(label.uppercased())
-                .font(DS.sans(10.5, weight: .medium))
+                .font(DS.font(.caption2, weight: .medium))
                 .tracking(0.08 * 10.5)
                 .foregroundStyle(DS.Ink.p4)
                 .padding(.bottom, 6)
@@ -51,20 +101,28 @@ struct NowStripView: View {
         // failed to write would latch the hero on "running · started 4 h ago"
         // even though a later run of the same type already completed cleanly.
         let runs = state.sessionLogService.runs
-        let live = runs.first { $0.status == .running }
+        // A run that is working beats one queued behind it for the session lock.
+        let live = runs.first { $0.status == .running && !$0.isWaitingForLock }
+            ?? runs.first { $0.status == .running }
         let resolved = runs.first { $0.status != .running && $0.status != .orphaned }
         VStack(alignment: .leading, spacing: 4) {
             if let r = live {
                 bigName(r.displayName)
-                sub("running · started \(r.startedAt.formatted(.relative(presentation: .named)))", color: DS.Status.warn)
+                sub(r.isWaitingForLock
+                    ? "waiting for another run · queued \(r.startedAt.formatted(.relative(presentation: .named)))"
+                    : "running · started \(r.startedAt.formatted(.relative(presentation: .named)))",
+                    color: DS.Status.warn)
             } else if let r = resolved {
                 bigName(r.displayName)
+                // One status model (UI audit R10, #21): a routine skip is
+                // amber with a pause, not a red ✗.
                 HStack(spacing: 4) {
-                    Image(systemName: statusIcon(for: r.status)).imageScale(.small)
-                    Text("\(r.status.rawValue) · \(r.startedAt.formatted(.relative(presentation: .named))) · \(r.commits.count) commit\(r.commits.count == 1 ? "" : "s")")
+                    Image(systemName: RunOutcomeDisplay.symbol(r.status)).imageScale(.small)
+                        .accessibilityHidden(true)
+                    Text("\(r.status.displayName) · \(r.startedAt.formatted(.relative(presentation: .named))) · \(r.commits.count) commit\(r.commits.count == 1 ? "" : "s")")
                 }
-                .font(DS.mono(12))
-                .foregroundStyle(r.status == .success ? DS.Status.ok : DS.Status.err)
+                .font(DS.font(.label))
+                .foregroundStyle(RunOutcomeDisplay.tone(r.status).color)
             } else if let r = runs.first {
                 // Only orphaned entries on record — say so explicitly rather
                 // than pretending the latest is fine.
@@ -79,12 +137,24 @@ struct NowStripView: View {
 
     @ViewBuilder private var todayColumn: some View {
         let runs = todayRuns()
-        let failures = runs.filter { [.failure, .timeout, .rateLimited].contains($0.status) }.count
-        let total = runs.compactMap(\.cost).reduce(Decimal(0), +)
         VStack(alignment: .leading, spacing: 4) {
-            bigName("\(runs.count) runs · \(failures) failed")
-            sub("cost $\(total as NSDecimalNumber) · budget $8.00", color: DS.Ink.p3)
+            bigName(Self.todayHeadline(runs))
+            // Yesterday's figure (a refresh after midnight failed) is no figure for today.
+            sub(Self.costLine(today: state.scoutUsageService.summary?.today.ifCurrent(at: Date()),
+                              dailyBudgetUSD: state.budgetSettingsService.settings?.dailyUSD),
+                color: DS.Ink.p3)
         }
+    }
+
+    /// The Next column's sub-line: when the run starts, in words ("Starts in
+    /// 3 hours"). It used to add "· dispatcher armed", an engine word (UI
+    /// audit R11). A run whose time has come reads "Due now", never "Starts
+    /// 5 minutes ago".
+    nonisolated static func nextRunLine(_ scheduledAt: Date, now: Date = Date()) -> String {
+        guard scheduledAt.timeIntervalSince(now) >= 60 else { return "Due now" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.dateTimeStyle = .named
+        return "Starts \(formatter.localizedString(for: scheduledAt, relativeTo: now))"
     }
 
     @ViewBuilder private var nextColumn: some View {
@@ -99,8 +169,8 @@ struct NowStripView: View {
         }
         VStack(alignment: .leading, spacing: 4) {
             if let u = next {
-                bigName(u.type.displayName)
-                sub("\(u.scheduledAt.formatted(.relative(presentation: .named))) · dispatcher armed", color: DS.Ink.p3)
+                bigName(u.displayName)
+                sub(Self.nextRunLine(u.scheduledAt), color: DS.Ink.p3)
             } else {
                 bigName("No scheduled runs")
                 sub("check LaunchAgents", color: DS.Status.warn)
@@ -112,7 +182,7 @@ struct NowStripView: View {
 
     private func bigName(_ s: String) -> some View {
         Text(s)
-            .font(DS.serif(22, weight: .medium))
+            .dsFont(.hero, .serif, weight: .medium)
             .foregroundStyle(DS.Ink.p1)
             .lineLimit(1)
             .truncationMode(.tail)
@@ -120,16 +190,17 @@ struct NowStripView: View {
 
     private func sub(_ s: String, color: Color) -> some View {
         Text(s)
-            .font(DS.mono(12))
+            .font(DS.font(.label))
             .foregroundStyle(color)
     }
 
-    private func statusIcon(for status: RunStatus) -> String {
-        status == .success ? "checkmark" : status == .running ? "circle.fill" : "xmark"
+    /// "5 runs · 1 failed", counted by `RunOutcomeDisplay.isFailure`, the
+    /// rule the heatmap and the Signals card count with.
+    nonisolated static func todayHeadline(_ runs: [Run]) -> String {
+        "\(runs.count) run\(runs.count == 1 ? "" : "s") · \(RunOutcomeDisplay.failedCount(runs)) failed"
     }
 
     private func todayRuns() -> [Run] {
-        let cal = Calendar.current
-        return state.sessionLogService.runs.filter { cal.isDateInToday($0.startedAt) }
+        Self.todayRuns(state.sessionLogService.runs, today: state.scoutUsageService.summary?.today)
     }
 }

@@ -9,16 +9,21 @@ the subcommand functions, not at module level.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import typer
+from typer.core import TyperGroup
 
 from scout import __version__
 from scout.errors import ConfigError, ScoutError
+from scout.plural import agree, count
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
+    from scout.agent_runtimes.base import AgentRuntime
     from scout.repo_sync import AgnesHost
     from scout.scripts.bootstrap import BootstrapConfig
 
@@ -27,12 +32,35 @@ if TYPE_CHECKING:
 # crashed in an unexpected way" as its own failure mode.
 INTERNAL_ERROR_EXIT_CODE = 70
 
+
+class _ScoutGroup(TyperGroup):
+    """The root command group. ``lab`` is added the first time it is looked up (a ``scoutctl lab ...`` call, or
+    ``--help`` listing the commands), so every other command starts without importing the Lab
+    (``tests/perf/test_startup.py`` counts the modules ``scoutctl version`` loads)."""
+
+    def _add_lab(self) -> None:
+        if "lab" not in self.commands:
+            from scout.lab.cli import app as lab_app
+
+            self.add_command(typer.main.get_group(lab_app), "lab")
+
+    def list_commands(self, ctx: Any) -> list[str]:
+        self._add_lab()
+        return super().list_commands(ctx)
+
+    def get_command(self, ctx: Any, cmd_name: str) -> Any:
+        if cmd_name == "lab":
+            self._add_lab()
+        return super().get_command(ctx, cmd_name)
+
+
 app = typer.Typer(
     name="scoutctl",
     help="Scout engine control CLI.",
     no_args_is_help=True,
     add_completion=False,
     rich_markup_mode=None,  # avoid importing rich at startup
+    cls=_ScoutGroup,
 )
 
 
@@ -40,6 +68,18 @@ app = typer.Typer(
 def version() -> None:
     """Print the engine version."""
     print(__version__)
+
+
+@app.command("diagnostics")
+def cli_diagnostics(
+    as_json: bool = typer.Option(False, "--json", help="Emit the full report as JSON."),
+    no_jobs: bool = typer.Option(False, "--no-jobs", help="Skip the scheduler registration check."),
+) -> None:
+    """A redacted report for a bug report: versions, doctor, sandbox, runtime, recent runs. Never vault content."""
+    from scout import diagnostics
+    from scout import paths as _paths
+
+    typer.echo(diagnostics.main(_paths.data_dir(), as_json=as_json, check_jobs=not no_jobs))
 
 
 manifest_app = typer.Typer(help="Engine capability manifest operations.")
@@ -81,8 +121,1005 @@ def _register_planning() -> None:
 _register_planning()
 
 
+def _register_wishlist() -> None:
+    from scout.wishlist.cli import app as wishlist_app
+
+    app.add_typer(wishlist_app, name="wishlist")
+
+
+_register_wishlist()
+
+
 hook_app = typer.Typer(help="PostToolUse / lifecycle hook entry points (invoked by Claude Code).")
 app.add_typer(hook_app, name="hook")
+
+gates_app = typer.Typer(help="Checks that Scout's privacy gates are live before a scheduled run.")
+app.add_typer(gates_app, name="gates")
+
+
+@gates_app.command("probe")
+def cli_gates_probe(
+    claude_bin: str = typer.Option(
+        "", "--claude-bin", help="The claude the runners launch (default: as bootstrap finds it)."
+    ),
+    vault: str | None = typer.Option(
+        None, "--vault", help="Vault whose .scout-state caches the result (default: SCOUT_DATA_DIR / cwd)."
+    ),
+    cached: bool = typer.Option(
+        False, "--cached", help="Reuse a fresh matching pass from .scout-state/gate-probe.json."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the result as JSON."),
+    plugin_root: str | None = typer.Option(None, "--plugin-root", hidden=True),
+    extra_flag: list[str] = typer.Option(
+        [], "--extra-flag", hidden=True, help="Append a claude flag (manual checks, e.g. --bare)."
+    ),
+    runtime: str = typer.Option(
+        "claude-code", "--runtime", help="The run's agent runtime (the runners pass it when it isn't claude-code)."
+    ),
+) -> None:
+    """Exit 0 when claude, run with the runners' flags, fires Scout's kb-read-gate; exit 3 when it doesn't.
+
+    With --runtime other than claude-code, the probe is that runtime's adapter's: exit 0 when its verified
+    capabilities include every hook capability a run on the vault needs, else 3 (an unknown runtime is 3 too).
+
+    Runs claude once against a local fake endpoint (no model, no spend, never your
+    credentials) in a throwaway fixture vault. Where there's no network sandbox it
+    refuses instead of running: exit 4 when a setting names an endpoint it can't
+    keep on this machine, exit 5 when the claude launcher hides its provider
+    switches. The runners call this with --cached before each run and skip the run
+    on any non-zero exit. See scout/agent_runtimes/gate_probe.py and spec
+    2026-11-13 §3.5.
+    """
+    import json
+
+    from scout import paths
+    from scout.agent_runtimes import gate_probe, registry
+    from scout.scripts.bootstrap import resolve_claude_bin
+
+    if runtime.strip().lower() != registry.BUILTIN_DEFAULT:
+        try:
+            adapter = registry.get(runtime.strip().lower())
+        except KeyError as e:
+            typer.echo(f"[scout:gates] unknown agent runtime {runtime!r}", err=True)
+            raise typer.Exit(3) from e
+        checked = gate_probe.runtime_probe(adapter, paths.data_dir(vault))
+        if as_json:
+            typer.echo(json.dumps(checked.to_json(), indent=2))
+        else:
+            typer.echo(f"{'ok' if checked.ok else 'REFUSED'}: {checked.reason}")
+        if not checked.ok:
+            typer.echo(f"[scout:gates] {checked.reason}", err=True)
+            raise typer.Exit(3)
+        return
+
+    binary = Path(resolve_claude_bin(claude_bin))
+    root = Path(plugin_root) if plugin_root else gate_probe.default_plugin_root()
+    flags = (*gate_probe.PROBE_FLAGS, *extra_flag)
+    data_dir = paths.data_dir(vault)  # its .claude/settings*.json go into the probe, as they would into a run
+    if cached:
+        result = gate_probe.cached_probe(data_dir, binary, plugin_root=root, flags=flags)
+    else:
+        result = gate_probe.probe(binary, plugin_root=root, flags=flags, vault=data_dir)
+    if as_json:
+        typer.echo(json.dumps(result.to_json(), indent=2))
+    else:
+        typer.echo(f"{'ok' if result.ok else 'REFUSED'}: {result.reason} (claude {result.claude_version or 'unknown'})")
+    if not result.ok:
+        typer.echo(f"[scout:gates] {result.reason}", err=True)
+        raise typer.Exit(gate_probe.UNSAFE_EXIT.get(result.unsafe, 3))
+
+
+sandbox_app = typer.Typer(help="The scheduled runs' OS write sandbox (spec 2026-11-15, Phase 1c).")
+app.add_typer(sandbox_app, name="sandbox")
+
+
+@sandbox_app.command("profile")
+def cli_sandbox_profile(
+    vault: str | None = typer.Option(None, "--vault", help="The run's vault (default: SCOUT_DATA_DIR / cwd)."),
+    runtime: str = typer.Option(
+        "claude-code", "--runtime", help="The run's agent runtime, whose adapter may add protected and writable paths."
+    ),
+) -> None:
+    """Print the sandbox-exec profile for a scheduled run of this vault; the exit code is the status.
+
+    0 enforced (profile on stdout), 3 failed (a sandbox is expected here but couldn't be built or self-tested:
+    the runners skip the run; an unknown --runtime is failed too), 6 unavailable on this platform, 7 turned off
+    (`scoutctl sandbox off`), 8 Claude Code's own Bash sandbox is on (they can't nest). The runners run the
+    session sandboxed only on 0, go ahead as today on 6/7/8, and skip on anything else. The reason goes to
+    stderr as `[scout:sandbox] <status>: …`.
+    """
+    import os
+
+    from scout import paths
+    from scout.agent_runtimes import registry
+    from scout.sandbox import launch
+
+    runtime_id = runtime.strip().lower()
+    try:
+        adapter = registry.get(runtime_id)
+        runtime_paths = adapter.sandbox_paths(os.environ)
+    except Exception as e:  # noqa: BLE001 - no adapter, no profile: the run is skipped, never run unprotected
+        typer.echo(f"[scout:sandbox] failed: the {runtime!r} runtime's sandbox paths: {e}", err=True)
+        raise typer.Exit(launch.Prepared("failed", "").exit_code) from e
+    result = launch.prepare(paths.data_dir(vault), runtime_paths=runtime_paths, runtime_id=runtime_id)
+    if result.profile:
+        typer.echo(result.profile, nl=False)
+    typer.echo(f"[scout:sandbox] {result.status}: {result.reason}", err=True)
+    raise typer.Exit(result.exit_code)
+
+
+@sandbox_app.command("status")
+def cli_sandbox_status(
+    vault: str | None = typer.Option(None, "--vault", help="The run's vault (default: SCOUT_DATA_DIR / cwd)."),
+    as_json: bool = typer.Option(False, "--json", help="Print the status as JSON."),
+) -> None:
+    """Say whether the next scheduled run would be sandboxed, and why (builds and self-tests the profile)."""
+    import json
+
+    from scout import paths
+    from scout.sandbox import launch
+
+    result = launch.prepare(paths.data_dir(vault))
+    if as_json:
+        typer.echo(json.dumps({"status": result.status, "reason": result.reason}))
+    else:
+        typer.echo(f"run sandbox: {result.status} ({result.reason})")
+
+
+@sandbox_app.command("off")
+def cli_sandbox_off() -> None:
+    """Run scheduled sessions without the OS write sandbox (the hook gates stay on). Health will say so.
+
+    The owner only: a scheduled or engine-launched run is refused (exit 2), as for `agent-runtime set-limit`.
+    """
+    import os
+
+    from scout.sandbox import launch
+    from scout.scripts.privacy_migrate import headless_reason
+
+    why = headless_reason(os.environ)
+    if why:
+        typer.echo(f"refused: {why}. Only the owner may turn the run sandbox off; nothing was changed.", err=True)
+        raise typer.Exit(2)
+    path = launch.set_switch(False)
+    typer.echo(f"run sandbox: off (wrote {path}); turn it back on with `scoutctl sandbox on`")
+
+
+@sandbox_app.command("on")
+def cli_sandbox_on() -> None:
+    """Run scheduled sessions inside the OS write sandbox (the default)."""
+    from scout.sandbox import launch
+
+    path = launch.set_switch(True)
+    typer.echo(f"run sandbox: on (wrote {path})")
+
+
+protection_app = typer.Typer(help="What protects scheduled runs: sandbox, privacy-check probe, integrity, limits.")
+app.add_typer(protection_app, name="protection")
+
+
+@protection_app.command("status")
+def cli_protection_status(
+    vault: str | None = typer.Option(None, "--vault", help="The vault (default: SCOUT_DATA_DIR / cwd)."),
+    as_json: bool = typer.Option(False, "--json", help="Print the summary as JSON (the app's contract)."),
+    check_sandbox: bool = typer.Option(
+        False,
+        "--check-sandbox",
+        help="Build and self-test the write sandbox's profile now (runs sandbox-exec in a temp dir) instead of "
+        "taking its status from the last run.",
+    ),
+) -> None:
+    """The write sandbox, the last privacy-check probe, the last run's integrity check, the broker, and each slot's
+    runtime and limits, with what needs fixing. Always exits 0; never starts claude.
+
+    Read-only: it starts no process and writes nothing, so whether the sandbox works comes from the newest run that
+    recorded it. --check-sandbox self-tests it instead, as `scoutctl sandbox status` does.
+    """
+    import json
+
+    from scout import paths, run_protection
+
+    data = run_protection.report(paths.data_dir(vault), check_sandbox=check_sandbox)
+    typer.echo(json.dumps(data, indent=2) if as_json else run_protection.format_text(data))
+
+
+@sandbox_app.command("snapshot")
+def cli_sandbox_snapshot(
+    vault: str | None = typer.Option(None, "--vault", help="The run's vault (default: SCOUT_DATA_DIR / cwd)."),
+) -> None:
+    """Print the start state the post-run integrity check compares against (JSON, one line).
+
+    The runners call it outside the sandbox before claude starts and keep the output in memory, then pipe it to
+    `scoutctl sandbox verify` after claude exits. Exit 12 (and nothing on stdout) when it can't be taken.
+    """
+    from scout import paths
+    from scout.changes import run_commits
+    from scout.sandbox import integrity
+
+    data_dir = paths.data_dir(vault)
+    try:
+        snap = integrity.snapshot(data_dir)
+        # What the changes map's run-commit ledger needs (scout.changes.run_commits): when, and every ref.
+        snap["changes"] = run_commits.snapshot_extra(data_dir)
+    except integrity.IntegrityError as e:
+        typer.echo(f"[scout:integrity] couldn't take the start snapshot: {e}", err=True)
+        raise typer.Exit(integrity.STATUS_EXIT["error"]) from None
+    typer.echo(integrity.dumps(snap))
+
+
+@sandbox_app.command("verify")
+def cli_sandbox_verify(
+    vault: str | None = typer.Option(None, "--vault", help="The run's vault (default: SCOUT_DATA_DIR / cwd)."),
+    label: str = typer.Option("scheduled", "--label", help="The run's mode, for the restoring commit's message."),
+) -> None:
+    """After a run: compare the vault's protected tracked files with the start snapshot on stdin, and put back
+    what the run changed in git.
+
+    Exit 0 clean, 10 restored (a new commit on each changed branch, and the index), 11 a tag or the stash still
+    holds a change (reported, not rewritten), 12 the check couldn't run. Paths go to stdout, never file content.
+    """
+    import sys
+
+    from scout import paths
+    from scout.sandbox import integrity
+
+    data_dir = paths.data_dir(vault)
+    try:
+        start = integrity.loads(sys.stdin.read())
+    except integrity.IntegrityError as e:
+        result = integrity.Result("error", reason=str(e))
+    else:
+        from scout.changes import run_commits
+
+        # A brokered run's commits were recorded by its broker, exactly; a broker-less run's are worked out from git
+        # (best effort, not sound: scout.changes.run_commits), before the check makes its restore commits, so those
+        # are never counted as the run's.
+        state = run_commits.broker_state(data_dir, start)
+        if state == "on":
+            recorded: run_commits.Recorded | None = run_commits.Recorded(0, 0, brokered=True)
+        else:
+            why = "broker-gap" if state == "gap" else "no-broker"
+            recorded = run_commits.record(data_dir, start, label=label, why=why)
+        result = integrity.verify(data_dir, start, label=label)
+        if recorded is None:
+            # The changes map would judge this run's commits by their subjects, which the run chose. Run health shows
+            # it as a check that couldn't run, unless the integrity check found worse.
+            missed = "this run's commits couldn't be recorded for the changes map"
+            if result.status == "clean":
+                result = integrity.Result("error", reason=f"protected files unchanged, but {missed}")
+            else:
+                typer.echo(f"integrity check: {missed}")
+        elif recorded.brokered:
+            typer.echo("changes map: this run's commits were recorded by its commit broker")
+        else:
+            made = count(recorded.commits, "commit")
+            extra = f", and {count(recorded.windows, 'window')} too big to list" if recorded.windows else ""
+            if state == "gap":
+                cause = (
+                    "the commit broker was on but couldn't name every commit it made (usually an old "
+                    "scripts/git-safe-commit.sh: run /scout-update)"
+                )
+            else:
+                cause = "no commit broker"
+            typer.echo(
+                f"changes map: {cause}, so {made} this run made {agree(recorded.commits, 'was', 'were')} "
+                f"worked out from git (best effort){extra}"
+            )
+    for line in result.lines():
+        typer.echo(line)
+    raise typer.Exit(result.exit_code)
+
+
+@sandbox_app.command("replay")
+def cli_sandbox_replay(
+    transcripts: str = typer.Option(..., "--transcripts", help="A Claude Code project dir of session .jsonl files."),
+    vault: str = typer.Option(..., "--vault", help="The vault those sessions ran in (their paths resolve here)."),
+    limit: int = typer.Option(50, "--limit", help="How many of the newest scheduled-run sessions to read."),
+    as_json: bool = typer.Option(False, "--json", help="Print the counts as JSON."),
+    brokers: bool = typer.Option(
+        False,
+        "--brokers",
+        help="Judge against the profile the run brokers tighten (Phase 1d); say what replaces each refused call.",
+    ),
+) -> None:
+    """Read-only: which tool calls of past scheduled runs the sandbox would refuse. Prints counts and forms only."""
+    import json
+
+    from scout.sandbox import replay
+
+    report = replay.replay(Path(transcripts).expanduser(), Path(vault).expanduser(), limit=limit, brokers=brokers)
+    typer.echo(json.dumps(report, indent=2) if as_json else replay.format_report(report))
+
+
+broker_app = typer.Typer(help="The scheduled runs' commit and Telegram brokers (spec 2026-11-16, Phase 1d).")
+app.add_typer(broker_app, name="broker")
+
+
+@broker_app.command("serve")
+def cli_broker_serve(
+    vault: str = typer.Option(..., "--vault", help="The run's vault."),
+    broker_dir: str = typer.Option(..., "--dir", help="The run's broker folder (mode 0700); the socket goes here."),
+    parent: int | None = typer.Option(None, "--parent", help="Stop when this process (the wrapper) is gone."),
+) -> None:
+    """Outside the sandbox: commit and send for one run until SIGTERM. claude-with-retry.sh starts it."""
+    from scout.sandbox import broker
+
+    try:
+        code = broker.serve(Path(vault), Path(broker_dir), parent=parent)
+    except (broker.BrokerError, OSError) as e:
+        typer.echo(f"broker: not started: {e}", err=True)
+        raise typer.Exit(1) from None
+    raise typer.Exit(code)
+
+
+@broker_app.command("profile")
+def cli_broker_profile(
+    vault: str = typer.Option(..., "--vault", help="The run's vault."),
+    broker_dir: str = typer.Option(..., "--dir", help="The run's broker folder."),
+    unapplied: bool = typer.Option(
+        False, "--unapplied", help="The wrapper's record that the run keeps the 1c profile after all."
+    ),
+) -> None:
+    """Read the run's 1c profile on stdin; print it tightened for a run whose brokers answer (exit 0).
+
+    Exit 1 (reason on stderr, `.scout-logs/.run-broker.json` says unavailable) when the broker doesn't answer, the
+    vault's git-safe-commit.sh predates it, the tightened profile fails its self-test, or it can't be printed: the
+    run keeps the 1c profile then. The tightened row is written only once the profile is printed, and the wrapper
+    passes ``--unapplied`` whenever it doesn't apply it, so a row that says tightened never sits over a 1c run.
+    """
+    import sys
+
+    from scout.changes import run_commits
+    from scout.sandbox import broker
+
+    data_dir = Path(vault)
+    run = Path(broker_dir).name
+    if unapplied:
+        # A later untightened row turns broker_state off for this run: its commits are attributed from git.
+        run_commits.mark_broker_profile(data_dir, run, tightened=False)
+        return
+    try:
+        text = broker.build_profile(data_dir, Path(broker_dir), sys.stdin.read())
+    except broker.BrokerError as e:
+        # Outside the sandbox, before claude starts: the run can't write these (scout.changes.run_commits).
+        run_commits.mark_broker_profile(data_dir, run, tightened=False)
+        broker.write_status(data_dir, "unavailable", str(e))
+        typer.echo(f"[scout:broker] unavailable: {e}", err=True)
+        raise typer.Exit(1) from None
+    try:
+        typer.echo(text, nl=False)  # click flushes: once this returns, the wrapper has the profile
+    except OSError as e:
+        run_commits.mark_broker_profile(data_dir, run, tightened=False)
+        broker.write_status(data_dir, "unavailable", f"the tightened profile couldn't be handed over: {e}")
+        raise typer.Exit(1) from None
+    broker.write_status(data_dir, "on", "commits and Telegram go through the run's broker")
+    run_commits.mark_broker_profile(data_dir, run, tightened=True)
+
+
+@broker_app.command("commit", context_settings={"ignore_unknown_options": True, "allow_interspersed_args": False})
+def cli_broker_commit(
+    args: list[str] = typer.Argument(None, help="MESSAGE PATH…, as git-safe-commit.sh takes them."),
+) -> None:
+    """In-session client for scripts/git-safe-commit.sh: the run's broker commits (exit 6: queued, no SHA yet)."""
+    from scout.sandbox import broker
+
+    args = list(args or [])
+    if args and args[0] == "--":
+        args = args[1:]
+    if len(args) < 2:
+        typer.echo('git-safe-commit: usage: git-safe-commit.sh "commit message" <path> [<path> ...]', err=True)
+        raise typer.Exit(2)
+    raise typer.Exit(broker.client_commit(args[0], args[1:]))
+
+
+@broker_app.command("drain")
+def cli_broker_drain(
+    vault: str | None = typer.Option(None, "--vault", help="The vault (default: SCOUT_DATA_DIR / cwd)."),
+    deadline: float = typer.Option(120.0, "--deadline", help="Start no entry after this many seconds; the rest wait."),
+    run: str | None = typer.Option(None, "--run", help="The wrapper's drain: close this run afterwards."),
+) -> None:
+    """Outside the sandbox: apply what runs queued while their broker didn't answer, each checked like a live one."""
+    import signal
+
+    from scout import paths
+    from scout.sandbox import broker
+
+    def stopped(_sig: int, _frame: object) -> None:
+        raise SystemExit(143)  # unwinds through run_commit, which stops the helper's process group first
+
+    signal.signal(signal.SIGTERM, stopped)
+    result = broker.drain(paths.data_dir(vault), deadline_s=deadline, run=run)
+    if result.done or result.kept or result.failed or result.busy or result.unsafe:
+        typer.echo(result.line())
+    for reason in result.reasons:
+        typer.echo(f"  failed: {reason}")
+
+
+changes_app = typer.Typer(
+    help="The changes map: what changed in Scout's own brain, and why.", invoke_without_command=True
+)
+engagement_app = typer.Typer(
+    help="Engagement signals for the changes map, and the owner's consent.", invoke_without_command=True
+)
+app.add_typer(changes_app, name="changes")
+app.add_typer(engagement_app, name="engagement")
+
+
+def _changes_document(command: str, since: str, build: Callable[..., dict], *, installed: bool = False) -> None:
+    """Shared tail of ``scoutctl changes --json`` / ``engagement --json``: resolve --since and the vault, print.
+
+    ``installed``: owner engagement is keyed to the installed vault (``scout.changes.vault``), never the cwd's."""
+    import json as _json
+    import os
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout import paths as _paths
+    from scout.changes.vault import installed_vault
+    from scout.run_ledger import parse_since
+
+    now = _dt.now(UTC)
+    try:
+        cutoff = parse_since(since, now=now)
+    except ValueError as e:
+        typer.echo(f"scoutctl {command}: {e}", err=True)
+        raise typer.Exit(code=2) from None
+    try:
+        vault = installed_vault(os.environ) if installed else _paths.data_dir()
+    except ValueError as e:  # no home directory to find the installed vault from
+        typer.echo(f"scoutctl {command}: {e}", err=True)
+        raise typer.Exit(code=2) from None
+    if not vault.is_dir():
+        typer.echo(f"scoutctl {command}: vault directory missing", err=True)
+        raise typer.Exit(code=2)
+    typer.echo(_json.dumps(build(vault, now, cutoff)))
+
+
+@changes_app.callback()
+def cli_changes(
+    ctx: typer.Context,
+    json_out: bool = typer.Option(False, "--json", help="Emit the versioned JSON document the app reads."),
+    since: str = typer.Option("30d", "--since", help="How far back: 30d, 48h, 90m, or an ISO time."),
+    limit: int = typer.Option(500, "--limit", min=1, max=5000, help="At most this many changes, newest first."),
+) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    if not json_out:
+        typer.echo(ctx.get_help())
+        return
+    import os
+
+    from scout.changes.report import changes_report
+    from scout.changes.vault import installed_vault
+    from scout.config import resolve_timezone
+
+    def build(vault: Path, now: datetime, cutoff: datetime) -> dict:
+        # Git and .scout-logs/ come from the vault resolved here (it may be the cwd's); owner rows are keyed to the
+        # installed vault, as `engagement --json` reads them, so a worktree cwd doesn't undercount the owner.
+        try:
+            owner = installed_vault(os.environ)
+        except ValueError as e:  # no home directory to find the installed vault from
+            typer.echo(f"scoutctl changes: {e}", err=True)
+            raise typer.Exit(code=2) from None
+        return changes_report(
+            vault, now=now, since=cutoff, env=os.environ, tz=resolve_timezone(vault), limit=limit, owner_vault=owner
+        )
+
+    _changes_document("changes", since, build)
+
+
+@engagement_app.callback()
+def cli_engagement(
+    ctx: typer.Context,
+    json_out: bool = typer.Option(False, "--json", help="Emit the versioned JSON document the app reads."),
+    since: str = typer.Option("30d", "--since", help="How far back: 30d, 48h, 90m, or an ISO time."),
+) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    if not json_out:
+        typer.echo(ctx.get_help())
+        return
+    import os
+
+    from scout.changes.report import engagement_report
+    from scout.config import resolve_timezone
+
+    _changes_document(
+        "engagement",
+        since,
+        lambda vault, now, cutoff: engagement_report(
+            vault, os.environ, now=now, since=cutoff, tz=resolve_timezone(vault)
+        ),
+        installed=True,
+    )
+
+
+@changes_app.command("scan")
+def cli_changes_scan(
+    since: str | None = typer.Option(
+        None,
+        "--since",
+        help="How far back: 2d, 48h, 90m, or an ISO time. Default: every commit since the last plain scan.",
+    ),
+    backfill: bool = typer.Option(False, "--backfill", help="Mark rows as backfilled; --since defaults to 2026-06-01."),
+) -> None:
+    """Read the vault's git log and record any new changes (idempotent).
+
+    With no --since, it reads from where the last plain scan stopped (its first time: the last 14 days), so a
+    gap between runs loses nothing. An explicit --since or --backfill reads that window and leaves the mark."""
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout import paths
+    from scout.changes.scan import scan, scan_new
+    from scout.run_ledger import parse_since
+
+    now = _dt.now(UTC)
+    if not (since or backfill):
+        typer.echo(count(len(scan_new(paths.require_data_dir(), now=now)), "new change"))
+        return
+    try:
+        cutoff = parse_since(since or "2026-06-01", now=now)
+    except ValueError as e:
+        typer.echo(f"scoutctl changes scan: {e}", err=True)
+        raise typer.Exit(2) from None
+    typer.echo(count(len(scan(paths.require_data_dir(), since=cutoff, backfilled=backfill)), "new change"))
+
+
+def _owner_changes(command: str) -> tuple[Path, Path]:
+    """``(vault, installed)`` for an owner-only ``scoutctl changes`` command; exit 2 (nothing written) for anyone else.
+
+    Both are the installed vault (a linked worktree resolves to its main one, scout.changes.vault.main_worktree):
+    git, ``.scout-logs/`` and ``governance-pending/`` are read from the vault the runs use, and owner rows and
+    settings are keyed to it, as ``changes --json`` and ``changes due`` read them. A decision made from a vault
+    worktree is filed where the runs look."""
+    import os
+
+    from scout.changes.store import is_owner_caller
+    from scout.changes.vault import installed_vault
+
+    try:
+        installed = installed_vault(os.environ)
+        if not is_owner_caller(os.environ, installed):
+            raise PermissionError("this is the owner's decision; a scheduled run may not make it")
+        if not installed.is_dir():
+            raise ValueError("vault directory missing")
+    except (ValueError, PermissionError) as e:
+        typer.echo(f"scoutctl changes {command}: {e}", err=True)
+        raise typer.Exit(2) from None
+    return installed, installed
+
+
+def _decision_surface(command: str, surface: str) -> str:
+    if surface not in ("scoutctl", "app"):
+        typer.echo(f"scoutctl changes {command}: --surface is scoutctl or app", err=True)
+        raise typer.Exit(2)
+    return surface
+
+
+_SURFACE_HELP = "Where the owner decided: scoutctl (default) or app."
+
+
+def _record_decision(command: str, kind: str, ref: str, surface: str, installed: Path, *, once: bool) -> None:
+    """Append an owner ``approval`` / ``verdict-wrong`` row, keyed to the installed vault. ``once``: dedupe on ref."""
+    import os
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout.changes.models import Signal
+    from scout.changes.store import append_signal, append_signal_once
+
+    signal = Signal(ts=_dt.now(UTC), kind=kind, surface=surface, ref=ref)
+    try:
+        if once:
+            if not append_signal_once(signal, vault=installed, env=os.environ):
+                typer.echo("already recorded")
+        else:
+            append_signal(signal, vault=installed, env=os.environ)
+    except (OSError, PermissionError) as e:
+        typer.echo(f"scoutctl changes {command}: {e}", err=True)
+        raise typer.Exit(2) from None
+
+
+def _decide_gov(command: str, verb: str, gov_id: str, surface: str, seen_hash: str | None) -> None:
+    import os
+
+    from scout.changes.governance import decision_ref, filed_by, read_pending, state_of
+    from scout.changes.store import read_signals
+
+    surface = _decision_surface(command, surface)
+    vault, installed = _owner_changes(command)
+    item = next((p for p in read_pending(vault)[0] if p.id == gov_id), None)
+    if item is None:
+        typer.echo(f"scoutctl changes {command}: no pending governance change {gov_id!r}", err=True)
+        raise typer.Exit(2)
+    # The decision is bound to the item as it is now (its hash), so a file edited afterwards waits for a new one. An
+    # approval must name the hash the owner saw: without it, a file swapped in between reading and approving would
+    # be approved unseen.
+    if verb == "approve" and seen_hash is None:
+        typer.echo(
+            f"scoutctl changes {command}: pass --diff-hash with the diff_hash `changes --json` showed for {gov_id}",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if seen_hash is not None and seen_hash != item.hash:
+        typer.echo(f"scoutctl changes {command}: {gov_id} changed since you saw it; review it again", err=True)
+        raise typer.Exit(2)
+    state = {"approve": "approved", "reject": "rejected"}[verb]
+    signals, _ = read_signals(vault, os.environ, owner_vault=installed)
+    if state_of(vault, signals, item) == state:
+        typer.echo(f"already {state}")
+        return
+    # Bound to the commit that filed it, when it is committed, so a later re-filing waits for a new decision. Not
+    # deduped on the ref: approve, reject, approve is three decisions and the newest one stands.
+    ref = decision_ref(verb, gov_id, item.hash, filed_by(vault, item))
+    _record_decision(command, "approval", ref, surface, installed, once=False)
+
+
+_DIFF_HASH_HELP = (
+    "The diff_hash `changes --json` showed for it (required to approve); refused if the file has changed since."
+)
+
+
+@changes_app.command("approve")
+def cli_changes_approve(
+    gov_id: str = typer.Argument(..., help="A pending governance change id (gov-...), from `changes --json` needs_ok."),
+    surface: str = typer.Option("scoutctl", "--surface", help=_SURFACE_HELP),
+    diff_hash: str | None = typer.Option(None, "--diff-hash", help=_DIFF_HASH_HELP),
+) -> None:
+    """Approve a pending governance change's current diff (owner only). The newest decision stands."""
+    _decide_gov("approve", "approve", gov_id, surface, diff_hash)
+
+
+@changes_app.command("reject")
+def cli_changes_reject(
+    gov_id: str = typer.Argument(..., help="A pending governance change id (gov-...), from `changes --json` needs_ok."),
+    surface: str = typer.Option("scoutctl", "--surface", help=_SURFACE_HELP),
+    diff_hash: str | None = typer.Option(None, "--diff-hash", help=_DIFF_HASH_HELP),
+) -> None:
+    """Reject a pending governance change's current diff (owner only). The newest decision stands."""
+    _decide_gov("reject", "reject", gov_id, surface, diff_hash)
+
+
+@changes_app.command("undo")
+def cli_changes_undo(
+    change_id: str = typer.Argument(..., help="A change id (chg-...) whose test has started."),
+    surface: str = typer.Option("scoutctl", "--surface", help=_SURFACE_HELP),
+) -> None:
+    """Ask for a tested change to be rolled back (owner only). Governance changes can't be undone this way."""
+    import os
+    from datetime import UTC, timedelta
+    from datetime import datetime as _dt
+
+    from scout.changes.models import CHANGE_ID_RE
+    from scout.changes.report import changes_report
+    from scout.config import resolve_timezone
+
+    surface = _decision_surface("undo", surface)
+    vault, installed = _owner_changes("undo")
+    now = _dt.now(UTC)
+    doc = changes_report(
+        vault,
+        now=now,
+        since=now - timedelta(days=3650),
+        env=os.environ,
+        tz=resolve_timezone(vault),
+        limit=5000,
+        owner_vault=installed,
+    )
+    change = next((c for c in doc["changes"] if c["id"] == change_id), None) if CHANGE_ID_RE.match(change_id) else None
+    if change is None:
+        typer.echo(f"scoutctl changes undo: no such change {change_id!r}", err=True)
+        raise typer.Exit(2)
+    if change["governance"]:
+        typer.echo("scoutctl changes undo: a governance change is never undone automatically", err=True)
+        raise typer.Exit(2)
+    if change["test"]["state"] == "not-tested":
+        typer.echo(
+            "scoutctl changes undo: this change isn't under test (interactive, backfilled or not a brain edit)",
+            err=True,
+        )
+        raise typer.Exit(2)
+    _record_decision("undo", "approval", f"undo:{change_id}", surface, installed, once=True)
+
+
+@changes_app.command("wrong")
+def cli_changes_wrong(
+    change_id: str = typer.Argument(..., help="A change id (chg-...) whose verdict you disagree with."),
+    surface: str = typer.Option("scoutctl", "--surface", help=_SURFACE_HELP),
+) -> None:
+    """Mark a change's verdict wrong (owner only); it counts as feedback."""
+    from scout.changes.models import CHANGE_ID_RE
+
+    surface = _decision_surface("wrong", surface)
+    _, installed = _owner_changes("wrong")
+    if not CHANGE_ID_RE.match(change_id):
+        typer.echo(f"scoutctl changes wrong: not a change id: {change_id!r}", err=True)
+        raise typer.Exit(2)
+    _record_decision("wrong", "verdict-wrong", change_id, surface, installed, once=True)
+
+
+@changes_app.command("auto-rollback")
+def cli_changes_auto_rollback(
+    mode: str = typer.Argument(..., help="off, targeted or one-at-a-time."),
+) -> None:
+    """Set the auto-rollback mode (owner only). Only ``off`` for now: the automatic modes stay refused until the
+    rollback race and governance-approval gaps are closed."""
+    import os
+    from dataclasses import replace
+
+    from scout.changes.settings import AUTO_MODES, read_settings, write_settings
+
+    if mode not in AUTO_MODES:
+        typer.echo(f"scoutctl changes auto-rollback: mode is one of {', '.join(AUTO_MODES)}", err=True)
+        raise typer.Exit(2)
+    if mode != "off":
+        typer.echo(
+            f"scoutctl changes auto-rollback: {mode} isn't available yet; automatic rollback stays off until two "
+            "known gaps are closed (an unapproved governance move, and a race between undo's check and its write). "
+            "Undo a change yourself with `scoutctl changes undo <id>`.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    _owner_changes("auto-rollback")
+    try:
+        write_settings(replace(read_settings(os.environ), auto_rollback=mode), os.environ)
+    except (OSError, ValueError) as e:
+        typer.echo(f"scoutctl changes auto-rollback: {e}", err=True)
+        raise typer.Exit(2) from None
+
+
+@changes_app.command("calibrated")
+def cli_changes_calibrated(
+    reset: bool = typer.Option(False, "--reset", help="Go back to calibrating (clears the date)."),
+) -> None:
+    """End calibration as of today in the host timezone (owner only), or `--reset` to start it again."""
+    import os
+    from dataclasses import replace
+    from datetime import datetime as _dt
+
+    from scout.changes.settings import read_settings, write_settings
+    from scout.config import resolve_timezone
+
+    vault, _ = _owner_changes("calibrated")
+    today = None if reset else _dt.now(resolve_timezone(vault)).date()
+    try:
+        write_settings(replace(read_settings(os.environ), calibrated_on=today), os.environ)
+    except (OSError, ValueError) as e:
+        typer.echo(f"scoutctl changes calibrated: {e}", err=True)
+        raise typer.Exit(2) from None
+
+
+def _run_vaults(command: str) -> tuple[Path, Path]:
+    """``(vault, installed)`` for a run-facing ``scoutctl changes`` command (no owner gate): git, ``.scout-logs/`` and
+    ``governance-pending/`` from the CLI's vault, owner rows keyed to the installed vault. Exit 2 when either is
+    missing."""
+    import os
+
+    from scout import paths as _paths
+    from scout.changes.vault import installed_vault
+
+    try:
+        installed = installed_vault(os.environ)
+        vault = _paths.data_dir()
+        if not vault.is_dir():
+            raise ValueError("vault directory missing")
+    except ValueError as e:
+        typer.echo(f"scoutctl changes {command}: {e}", err=True)
+        raise typer.Exit(2) from None
+    return vault, installed
+
+
+@changes_app.command("due")
+def cli_changes_due(
+    ctx: typer.Context,
+    json_out: bool = typer.Option(False, "--json", help="Emit the versioned JSON document a run reads."),
+) -> None:
+    """What a run must do now: rollbacks, blocked ones, governance to apply or discard, unannounced suspects.
+
+    Never fails: anything it can't read lists nothing to do."""
+    import json as _json
+    import os
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout.changes.actions import due, empty_due
+    from scout.changes.vault import installed_vault
+    from scout.config import resolve_timezone
+
+    if not json_out:
+        typer.echo(ctx.get_help())
+        return
+    doc = empty_due()
+    try:
+        # The installed vault (a linked worktree resolves to its main one): where the owner's decisions are keyed
+        # and where the runs keep .scout-logs/ and governance-pending/.
+        vault = installed_vault(os.environ)
+        if vault.is_dir():
+            doc = due(vault, os.environ, now=_dt.now(UTC), tz=resolve_timezone(vault), owner_vault=vault)
+        else:
+            typer.echo("scoutctl changes due: vault directory missing", err=True)
+    except Exception as e:  # noqa: BLE001 - a run reads this every time; a broken input is nothing to do
+        typer.echo(f"scoutctl changes due: {e}", err=True)
+    typer.echo(_json.dumps(doc))
+
+
+def _changes_action(command: str, act: Callable[[Path, Path], list[str]]) -> None:
+    """Run one action and print its paths, one per line; ``ActionRefused`` (or a failed write) is exit 2."""
+    from scout.changes.actions import ActionRefused
+
+    vault, installed = _run_vaults(command)
+    try:
+        paths = act(vault, installed)
+    except ActionRefused as e:
+        typer.echo(f"scoutctl changes {command}: {e.reason}", err=True)
+        raise typer.Exit(2) from None
+    except OSError as e:
+        typer.echo(f"scoutctl changes {command}: {e}", err=True)
+        raise typer.Exit(2) from None
+    for p in paths:
+        typer.echo(p)
+
+
+@changes_app.command("rollback")
+def cli_changes_rollback(
+    change_id: str = typer.Argument(..., help="A change id (chg-...) listed in `changes due --json` rollbacks."),
+) -> None:
+    """Undo a due change in the working tree; prints the paths to commit with git-safe-commit.sh."""
+    import os
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout.changes.actions import rollback
+    from scout.config import resolve_timezone
+
+    _changes_action(
+        "rollback",
+        lambda vault, installed: rollback(
+            vault, os.environ, change_id, now=_dt.now(UTC), tz=resolve_timezone(vault), owner_vault=installed
+        ),
+    )
+
+
+@changes_app.command("apply")
+def cli_changes_apply(
+    gov_id: str = typer.Argument(..., help="An approved governance change id (gov-...), from `changes due --json`."),
+) -> None:
+    """Apply an approved governance change to the working tree; prints the paths to commit."""
+    import os
+
+    from scout.changes.actions import apply_governance
+
+    _changes_action(
+        "apply", lambda vault, installed: apply_governance(vault, os.environ, gov_id, owner_vault=installed)
+    )
+
+
+@changes_app.command("discard")
+def cli_changes_discard(
+    gov_id: str = typer.Argument(..., help="A rejected governance change id (gov-...), from `changes due --json`."),
+) -> None:
+    """Delete a rejected governance change's pending file; prints its path to commit."""
+    import os
+
+    from scout.changes.actions import discard_governance
+
+    _changes_action(
+        "discard", lambda vault, installed: discard_governance(vault, os.environ, gov_id, owner_vault=installed)
+    )
+
+
+@changes_app.command("announced")
+def cli_changes_announced(
+    change_ids: list[str] = typer.Argument(..., help="Change ids (chg-...) the wrap just announced."),
+    blocked: bool = typer.Option(False, "--blocked", help="They were reported as blocked undos, not as suspects."),
+) -> None:
+    """Record that these suspects (or, with --blocked, blocked undos) were reported, so no later run repeats them."""
+    from scout.changes.actions import mark_announced
+
+    vault, _ = _run_vaults("announced")
+    try:
+        mark_announced(vault, change_ids, blocked=blocked)
+    except (ValueError, OSError) as e:
+        typer.echo(f"scoutctl changes announced: {e}", err=True)
+        raise typer.Exit(2) from None
+
+
+@engagement_app.command("record")
+def cli_engagement_record(
+    kind: str = typer.Argument(
+        ...,
+        help="session-reliance, app-edit, inline-comment, approval, verdict-wrong (owner only) or a run kind.",
+    ),
+    surface: str = typer.Option(
+        ...,
+        "--surface",
+        help="slack-dm, telegram, kb, action-items, skill, scoutctl, vault-session, app, mistake-audit, calendar.",
+    ),
+    ref: str | None = typer.Option(
+        None,
+        "--ref",
+        help="An id: a Slack message ts, a commit sha or a slug. Never content; a path outside the vault is refused. "
+        "Required for every kind but session-reliance, app-edit and inline-comment.",
+    ),
+    sentiment: str | None = typer.Option(None, "--sentiment", help="positive, negative or neutral."),
+    ts: str | None = typer.Option(None, "--ts", help="ISO time or a Slack ts (epoch seconds, UTC); default now."),
+    change: str | None = typer.Option(
+        None, "--change", help="dm-reply only: the id (chg-...) of the change the reply is about."
+    ),
+) -> None:
+    """Append one engagement row, once per kind and ref. Owner kinds are refused (exit 2) in a scheduled run."""
+    import os
+    import re
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout.changes.models import OWNER_KINDS, REF_REQUIRED, Signal
+    from scout.changes.store import append_signal_once, is_owner_caller
+    from scout.changes.vault import installed_vault
+
+    try:
+        vault = installed_vault(os.environ)
+        if ref is not None and ref.startswith(("/", "~")):
+            raise ValueError("--ref is an id (a Slack ts, a commit sha), not a path")
+        if kind in REF_REQUIRED and not ref:
+            raise ValueError(f"{kind!r} needs --ref (an id to dedupe and join on)")
+        if change is not None and kind != "dm-reply":
+            raise ValueError("--change is for dm-reply only")
+        if ts and re.fullmatch(r"\d{9,11}(\.\d+)?", ts):
+            when = _dt.fromtimestamp(float(ts), UTC)
+        else:
+            when = _dt.fromisoformat(ts) if ts else _dt.now(UTC)
+        signal = Signal.from_row(
+            {
+                "ts": when.isoformat(),
+                "kind": kind,
+                "surface": surface,
+                "ref": ref,
+                "sentiment": sentiment,
+                "change": change,
+            }
+        )
+        if signal.kind in OWNER_KINDS and not is_owner_caller(os.environ, vault):
+            raise PermissionError(f"{signal.kind!r} is owner-sourced; a run may not write it")
+        if not vault.is_dir():
+            raise ValueError(f"vault directory missing: {vault}")
+        if not append_signal_once(signal, vault=vault, env=os.environ):
+            typer.echo("already recorded")
+    except (ValueError, PermissionError, OSError) as e:  # OSError: the ledger couldn't be written
+        typer.echo(f"scoutctl engagement record: {e}", err=True)
+        raise typer.Exit(2) from None
+
+
+@engagement_app.command("consent")
+def cli_engagement_consent(
+    out_of_vault: str | None = typer.Option(
+        None, "--out-of-vault", help="yes or no: may Scout read activity outside the vault?"
+    ),
+    show: bool = typer.Option(False, "--show", help="Print yes, no or 'not asked'."),
+) -> None:
+    """The owner's out-of-vault answer. Only an owner session may set it."""
+    import os
+
+    from scout.changes import consent
+
+    if show:
+        answer = consent.out_of_vault_answer(os.environ)
+        typer.echo("not asked" if answer is None else "yes" if answer else "no")
+        return
+    if out_of_vault not in ("yes", "no"):
+        typer.echo("scoutctl engagement consent: pass --out-of-vault yes|no or --show", err=True)
+        raise typer.Exit(2)
+    from scout.changes.store import is_owner_caller
+    from scout.changes.vault import installed_vault
+
+    try:
+        if not is_owner_caller(os.environ, installed_vault(os.environ)):
+            raise PermissionError("the consent answer is the owner's; a scheduled run may not write it")
+        consent.set_out_of_vault(out_of_vault == "yes", os.environ)
+    except (PermissionError, ValueError) as e:
+        typer.echo(f"scoutctl engagement consent: {e}", err=True)
+        raise typer.Exit(2) from None
 
 
 @hook_app.command("connector-log")
@@ -128,12 +1165,28 @@ def hook_kb_read_gate() -> None:
     raise typer.Exit(kb_read_gate_main())
 
 
+@hook_app.command("kb-write-gate")
+def hook_kb_write_gate() -> None:
+    """PreToolUse hook: deny a scheduled run's file write into what decides which checks run (Phase 1b)."""
+    from scout.hooks.kb_write_gate import main as kb_write_gate_main
+
+    raise typer.Exit(kb_write_gate_main())
+
+
 @hook_app.command("kb-read-label")
 def hook_kb_read_label() -> None:
     """PostToolUse hook: attach a KB note's privacy label to a Read of it (private: never to a shared surface)."""
     from scout.hooks.kb_read_label import main as kb_read_label_main
 
     raise typer.Exit(kb_read_label_main())
+
+
+@hook_app.command("front-page-reads")
+def hook_front_page_reads() -> None:
+    """PostToolUse hook: warn a run that edits a front page without reading its project's knowledge/ notes."""
+    from scout.hooks.front_page_reads import main as front_page_reads_main
+
+    raise typer.Exit(front_page_reads_main())
 
 
 @hook_app.command("shared-read-record")
@@ -169,6 +1222,10 @@ def hook_kb_pre_filter(
 
 kb_app = typer.Typer(help="Knowledge-base structure checks (size budgets, run-diary headings).")
 app.add_typer(kb_app, name="kb")
+
+_READER_HELP = (
+    "owner | autonomous | elsewhere | delegate:<id> | agent:person:<email> | agent:group:<id>. Can only narrow."
+)
 
 
 def _kb_repo(repo: Path | None) -> Path:
@@ -207,7 +1264,7 @@ def kb_lint(
         missing = lossless_check(root, lossless_rev, lossless_path)
         for tok in missing:
             print(f"missing: {tok}")
-        print(f"lossless: {len(missing)} token(s) missing")
+        print(f"lossless: {count(len(missing), 'token')} missing")
         raise typer.Exit(1 if missing else 0)
     if report:
         from scout.kb.lint import config_problems, over_budget
@@ -218,7 +1275,7 @@ def kb_lint(
         for problem in config_problems(root, cfg):
             print(f"config: {problem}")
         rows = over_budget(root, cfg)
-        print(f"{len(rows)} file(s) over budget")
+        print(f"{count(len(rows), 'file')} over budget")
         for rel, size, budget in rows[:top]:
             print(f"{size / 1024:9.1f} KB  (budget {budget / 1024:.0f} KB, +{(size - budget) / 1024:.1f} KB)  {rel}")
         for line in format_report(privacy_report(root)):
@@ -248,7 +1305,9 @@ def kb_install_hook(
 def kb_classify(
     paths: list[str] = typer.Argument(..., help="Vault files (any spelling: relative, absolute, knowledge_base/...)."),
     reader: str | None = typer.Option(
-        None, "--reader", help="owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+        None,
+        "--reader",
+        help=_READER_HELP,
     ),
     as_json: bool = typer.Option(False, "--json", help="Print a JSON list."),
     repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
@@ -258,31 +1317,42 @@ def kb_classify(
     owner and autonomous readers get labels. An agent reader gets
     {"path": ..., "denied": true} for every path, without the file being looked
     at, so a denial says nothing about whether the file exists or what it is.
+    A delegate reader gets the label of each existing file it may see and the
+    same denial for every other path, missing ones included.
     """
     args = _kb_args("classify", dict(locals()))
 
     def body(who: str, root: Path) -> object:
-        from scout.kb.privacy import FULL_READERS, label_file, load_policy, normalize_rel
+        from scout.kb.privacy import FULL_READERS, label_file, load_policy, normalize_rel, reads_any, visible_to
         from scout.kb.read import Output, UsageError
 
-        if who not in FULL_READERS:
+        if not reads_any(who):
             return Output(
                 data=[{"path": p, "denied": True} for p in paths],
                 lines=[f"{p}: denied" for p in paths],
                 denied=len(paths),
             )
         policy = load_policy(root)
-        labels = []
+        data: list[dict[str, object]] = []
+        lines: list[str] = []
+        shown = []
         for p in paths:
             try:
                 rel = normalize_rel(root, p)
             except ValueError as e:
                 raise UsageError(str(e)) from e
-            labels.append(label_file(root, rel, policy))
+            label = label_file(root, rel, policy)
+            hidden_kind = ".git" in rel.split("/") or not (root / rel).is_file()
+            if not visible_to(label, who, policy) or (who not in FULL_READERS and hidden_kind):
+                # a delegate: a hidden file, a missing one and anything under .git/ get the same denial
+                data.append({"path": p, "denied": True})
+                lines.append(f"{p}: denied")
+                continue
+            data.append(label.to_json())
+            shown.append(label)
+            lines.append(f"[private] {label.path}" if label.visibility == "private" else label.path)
         return Output(
-            data=[label.to_json() for label in labels],
-            lines=[f"[private] {label.path}" if label.visibility == "private" else label.path for label in labels],
-            labels=[label.to_json() for label in labels],
+            data=data, lines=lines, labels=[label.to_json() for label in shown], denied=len(paths) - len(shown)
         )
 
     _kb_run(args, reader, repo, as_json, body)
@@ -291,7 +1361,9 @@ def kb_classify(
 @kb_app.command("policy")
 def kb_policy(
     reader: str | None = typer.Option(
-        None, "--reader", help="owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+        None,
+        "--reader",
+        help=_READER_HELP,
     ),
     as_json: bool = typer.Option(False, "--json", help="Print the effective policy as JSON."),
     repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
@@ -407,10 +1479,17 @@ def kb_share(
     warning, then writes scout-config.yaml → privacy.federation_defaults and
     turns sharing on. Agnes enforces it once you commit scout-config.yaml and
     then run `scoutctl repo sync`, which refuses while the change is uncommitted.
-    Exit 1 = refused or not confirmed, 2 = bad argument.
+
+    On a vault linked to Agnes it also clears the stops `kb unshare` (or Agnes)
+    made on this share for the people named here, so they read it again at once.
+    That is the only way a stop is cleared, and only by the owner at the
+    keyboard: a scheduled run, an agent run and a delegate checkout are refused.
+    Exit 1 = refused or not confirmed, 2 = bad argument or a clear Scout refuses.
     """
     import json
+    import os
 
+    from scout.kb import share_stops
     from scout.kb.share import ShareRefused, ShareUsage, apply, directory_for, plan_share
 
     _owner_only(as_json)
@@ -425,30 +1504,53 @@ def kb_share(
         _share_refused(f"error: {e}", as_json, 2)
     except ShareRefused as e:
         _share_refused(str(e), as_json)
+    client, link_problem = share_stops.connect(root)
+    view, why = share_stops.fetch_view(client)
+    if view is not None:
+        plan.clears = share_stops.share_clears(view, plan.target, plan.principals)
+    else:
+        plan.stops_note = link_problem or why
+    if link_problem and not as_json:
+        print(f"warning: {link_problem}: its stops on this share, if any, stay in force.", file=sys.stderr)
+    clears = plan.clears if plan.clears else None
+    if clears is not None and client is not None and not dry_run:
+        refusal = share_stops.clear_refusal(root, os.environ, client)
+        if refusal:
+            _share_refused(refusal + "; nothing was written", as_json, 2)
     if not as_json:
         for line in plan.lines():
             print(line)
     written = False
-    if plan.changed and not dry_run:
+    cleared: list[str] = []
+    if (plan.changed or clears is not None) and not dry_run:
         if not yes:
             if not _interactive() or as_json:
                 if as_json:
-                    print(json.dumps({**plan.to_json(), "written": False}, indent=2))
+                    print(json.dumps({**plan.to_json(), "written": False, "cleared": []}, indent=2))
                 print("Preview only: nothing was written. Re-run with --yes to share.", file=sys.stderr)
                 raise typer.Exit(1)
             if not typer.confirm("Share these notes?"):
                 print("Nothing was written.")
                 raise typer.Exit(1)
-        apply(root, plan)
-        written = True
+        if plan.changed:
+            apply(root, plan)
+            written = True
+        if clears is not None and client is not None:
+            try:
+                cleared = share_stops.apply_clears(root, os.environ, client, clears)
+            except share_stops.ClearRefused as e:
+                _share_refused(str(e), as_json, 2)
     if as_json:
-        print(json.dumps({**plan.to_json(), "written": written}, indent=2))
-    elif written:
+        print(json.dumps({**plan.to_json(), "written": written, "cleared": cleared}, indent=2))
+        return
+    for line in cleared:
+        print(line)
+    if written:
         from scout.kb.share import SYNC_NOTE
 
         print("Wrote scout-config.yaml → privacy.federation_defaults.")
         print(SYNC_NOTE)
-    elif not plan.changed:
+    elif not plan.changed and clears is None:
         print("Nothing to change: already shared that way.")
 
 
@@ -465,13 +1567,23 @@ def kb_unshare(
 ) -> None:
     """Stop sharing a folder or note, with some people or everyone (owner only).
 
-    Narrows scout-config.yaml → privacy.federation_defaults. In this release it
-    is vault only, so Agnes stops the share once you commit scout-config.yaml and
-    then run `scoutctl repo sync`, which refuses while the change is uncommitted.
-    A note that shares itself in its own frontmatter is listed, not edited.
+    On a vault linked to Agnes, first asks Agnes to stop the share at once, so
+    readers lose it from their next read (a stop for one member of a shared
+    group included), then narrows scout-config.yaml →
+    privacy.federation_defaults. Only `kb share` clears that stop. While Agnes
+    has no stop endpoint, or can't be reached, the stop takes effect once you
+    commit scout-config.yaml and run `scoutctl repo sync`. A note that shares
+    itself in its own frontmatter is listed, not edited.
+
+    Exit 1 = refused, 2 = bad argument, 4 = the vault was narrowed but Agnes
+    didn't confirm every stop (unreachable, an error, a refusal): it may serve
+    the share until the next sync, and running the same command again retries
+    the stop. An Agnes without the stop endpoint, or with sharing off, isn't a
+    failure (exit 0).
     """
     import json
 
+    from scout.kb import share_stops
     from scout.kb.share import ShareRefused, ShareUsage, apply, directory_for, plan_unshare
 
     _owner_only(as_json)
@@ -483,35 +1595,51 @@ def kb_unshare(
         _share_refused(f"error: {e}", as_json, 2)
     except ShareRefused as e:
         _share_refused(str(e), as_json)
+    client, link_problem = share_stops.connect(root)
+    view, why = share_stops.fetch_view(client)
+    wanted, notes = share_stops.unshare_stops(view, plan.target, plan.principals) if view is not None else ([], [])
+    # The stop goes first (ruling 15): Agnes leaves the share out from the next read, before the vault changes.
+    plan.agnes = share_stops.make_stops(client, view, why, wanted, notes, dry_run=dry_run, link_problem=link_problem)
     written = False
     if plan.changed and not dry_run:
         apply(root, plan)
         written = True
     if as_json:
         print(json.dumps({**plan.to_json(), "written": written}, indent=2))
+        if plan.agnes.failed:
+            raise typer.Exit(4)
         return
     for line in plan.lines():
         print(line)
-    if not plan.changed:
+    if not plan.changed and not plan.agnes.made and not plan.agnes.planned:
         print("Nothing to change: it wasn't shared that way.")
+    if plan.agnes.failed:
+        raise typer.Exit(4)
 
 
 @kb_app.command("shares")
 def kb_shares(
     reader: str | None = typer.Option(
-        None, "--reader", help="owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
+        None,
+        "--reader",
+        help=_READER_HELP,
     ),
     as_json: bool = typer.Option(False, "--json", help="Print the shares as JSON."),
     repo: Path | None = typer.Option(None, "--repo", help="Vault repo (default: the git top level of the cwd)."),
 ) -> None:
     """List what this vault shares: per folder or note, the people, the notes shared and the notes left out.
 
-    Owner and autonomous readers only; another person's agent is denied
-    (exit 3). Group names come from Agnes when the vault is linked.
+    On a vault linked to Agnes it also shows the stops Agnes holds: open ones
+    per share (who, since when), ones on shares the vault no longer lists, and
+    the ones cleared in the last 30 days. Owner and autonomous readers only;
+    another person's agent is denied (exit 3). Group names come from Agnes when
+    the vault is linked.
     """
     args = _kb_args("shares", dict(locals()))
 
     def body(who: str, root: Path) -> object:
+
+        from scout.kb import share_stops
         from scout.kb.privacy import FULL_READERS
         from scout.kb.read import Output
         from scout.kb.share import directory_for, group_names, list_shares, shares_lines
@@ -520,8 +1648,22 @@ def kb_shares(
             return Output(data={"denied": True}, lines=["denied"], denied=1, code=3)
         enabled, rows = list_shares(root)
         names = group_names(directory_for(root), rows)
-        data = {"enabled": enabled, "group_names": names, "shares": [row.to_json() for row in rows]}
-        return Output(data=data, lines=shares_lines(enabled, rows, names))
+        client, link_problem = share_stops.connect(root)
+        view, why = share_stops.fetch_view(client) if client is not None else (None, None)
+        if link_problem and who == "owner":  # a sandboxed autonomous run can't read the token: stay quiet there
+            why = link_problem
+        stops = {row.glob: share_stops.row_stops(view, row.glob) for row in rows}
+        shares = [{**row.to_json(), "stops": [s.to_json() for s in stops[row.glob]]} for row in rows]
+        agnes: dict[str, Any] = view.to_json() if view is not None else {"available": False, "note": why}
+        granted = {row.glob: row.principals for row in rows if row.source == "default"} if enabled else {}
+        served = share_stops.still_served(view, granted) if view is not None else []
+        if view is not None:
+            agnes["still_served"] = [{"glob": g, "principals": p} for g, p in served]
+        data = {"enabled": enabled, "group_names": names, "shares": shares, "agnes": agnes}
+        lines = shares_lines(enabled, rows, names, stops)
+        lines += share_stops.stop_lines(view, why, [row.glob for row in rows])
+        lines += share_stops.still_served_lines(served, granted)
+        return Output(data=data, lines=lines)
 
     _kb_run(args, reader, repo, as_json, body)
 
@@ -538,7 +1680,6 @@ def _scope_text(scope: object) -> str:
 
 # ----- the labelled read gate (#453, spec §6.1): logic in scout/kb/read.py ------
 
-_READER_HELP = "owner | autonomous | agent:person:<email> | agent:group:<id>. Can only narrow."
 _KB_ROOT_HELP = "KB root (default: <vault>/knowledge-base); the vault is the one holding it."
 _SCHEMA_HELP = "Ontology schema (default: the KB's ontology/schema.yaml, else the engine's)."
 
@@ -567,9 +1708,11 @@ def _kb_run(
 
     from scout.errors import KBError
     from scout.kb.read import Output, UsageError, audit, graph_vault
-    from scout.kb.reader import resolve_reader
+    from scout.kb.reader import delegate_id, resolve_reader
 
-    vault = graph_vault(_kb_repo(repo), None if repo else kb_root)
+    # A delegate never gets --kb-root's vault lookup: it would stat a path of its choosing.
+    delegate = delegate_id(resolve_reader(None, os.environ)) is not None
+    vault = graph_vault(_kb_repo(repo), None if repo or delegate else kb_root)
     try:
         who = resolve_reader(reader, os.environ)
     except typer.BadParameter:
@@ -631,6 +1774,36 @@ _KBR = typer.Option(None, "--kb-root", help=_KB_ROOT_HELP)
 _SCH = typer.Option(None, "--schema", help=_SCHEMA_HELP)
 
 
+@kb_app.command("vault")
+def kb_vault(
+    as_json: bool = typer.Option(False, "--json", help="Print {vault, scoutctl, source, in_vault, reason}."),
+) -> None:
+    """Print the vault's absolute path, from any working directory. Exit 1 = no usable vault.
+
+    From configuration only: SCOUT_DATA_DIR, else the engine pointer's vault, else ~/Scout (when there is no
+    pointer); never the cwd, which only sets `in_vault`. `--json` adds the absolute `scoutctl` of this engine,
+    which a skill calls with `--repo <vault>`; nothing in the vault is ever run. Reads no note.
+    """
+    import json
+    import os
+
+    from scout.kb.locate import engine_scoutctl, locate_vault
+
+    try:
+        cwd: Path | None = Path.cwd()
+    except OSError:  # the working directory was deleted
+        cwd = None
+    loc = locate_vault(os.environ, cwd)
+    if as_json:
+        typer.echo(json.dumps(loc.as_json(engine_scoutctl())))
+    else:
+        if loc.vault is not None:
+            typer.echo(str(loc.vault))
+        if loc.reason:
+            typer.echo(f"scoutctl kb vault: {loc.reason}", err=True)
+    raise typer.Exit(0 if loc.vault is not None else 1)
+
+
 @kb_app.command("files")
 def kb_files(
     glob: list[str] | None = typer.Option(None, "--glob", help="Vault-relative glob; repeat to OR them."),
@@ -651,31 +1824,89 @@ def kb_search(
     glob: list[str] | None = typer.Option(None, "--glob", help="Vault-relative glob; repeat to OR them."),
     fixed: bool = typer.Option(False, "--fixed", help="Treat the pattern as a literal string."),
     ignore_case: bool = typer.Option(False, "-i", "--ignore-case", help="Case-insensitive."),
+    max_matches: int | None = typer.Option(
+        None, "--max-matches", help="Matching lines printed in all. Default 200; 0 = no limit."
+    ),
+    max_per_file: int | None = typer.Option(
+        None, "--max-per-file", help="Matching lines printed per file. Default 20; 0 = no limit."
+    ),
+    max_line: int | None = typer.Option(
+        None, "--max-line", help="Characters printed per line, around the match. Default 400; 0 = whole lines."
+    ),
+    everything: bool = typer.Option(
+        False, "--all", help="Print every matching line: the same as --max-matches 0 --max-per-file 0."
+    ),
     reader: str | None = _R,
     as_json: bool = _J,
     repo: Path | None = _REPO,
 ) -> None:
-    """Search the reader's visible files only. Each match carries its file's label. Exit 2 = bad pattern."""
-    args = _kb_args("search", dict(locals()))
-    from scout.kb.read import cmd_search
+    """Search the reader's visible files only. Each match carries its file's label. Exit 2 = bad pattern.
 
-    _kb_run(
-        args, reader, repo, as_json, lambda who, vault: cmd_search(vault, who, pattern, glob or (), fixed, ignore_case)
-    )
+    With no --glob it searches every listed file, not only knowledge-base/. The text output is bounded:
+    closing lines in parentheses say how many matches were left out, per top-level folder, and how
+    to narrow. --json prints every match whole unless a --max-* option is given (then they go to stderr).
+    """
+    params = dict(locals())
+    given = {k: params.pop(k) for k in ("max_matches", "max_per_file", "max_line")}
+    given = {k: v for k, v in given.items() if v is not None}
+    if not params["everything"]:
+        del params["everything"]
+    # a search at the default caps keeps the audit arguments it had before the caps existed
+    args = _kb_args("search", params | given)
+    from scout.kb.read import Output, cmd_search
+
+    lifted = dict.fromkeys(("max_matches", "max_per_file"), 0) if everything or as_json else {}
+    caps = lifted | ({"max_line": 0} if as_json else {}) | given
+
+    def body(who: str, vault: Path) -> Output:
+        out = cmd_search(vault, who, pattern, glob or (), fixed, ignore_case, **caps)
+        if as_json:  # the JSON form stays a list of matches: what was left out goes to stderr
+            for line in out.notice:
+                print(line, file=sys.stderr)
+        return out
+
+    _kb_run(args, reader, repo, as_json, body)
 
 
 @kb_app.command("read")
 def kb_read(
     path: str = typer.Argument(..., help="A vault file (any spelling)."),
+    lines: str | None = typer.Option(
+        None,
+        "--lines",
+        help="Only these lines, 1-based and inclusive: A:B, A: (to the end), :B (the first B), -N: (the last N). "
+        "In place of sed -n, head and tail.",
+    ),
     reader: str | None = _R,
     as_json: bool = _J,
     repo: Path | None = _REPO,
 ) -> None:
-    """Print a file with its label. Exit 3 = not visible to the reader; 2 = not a vault file."""
-    args = _kb_args("read", dict(locals()))
+    """Print a file with its label. Exit 3 = not visible to the reader; 2 = not a vault file or a bad --lines."""
+    params = dict(locals())
+    if lines is None:
+        del params["lines"]  # a whole-file read's audit arguments stay as they were
+    args = _kb_args("read", params)
     from scout.kb.read import cmd_read
 
-    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_read(vault, who, path))
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_read(vault, who, path, lines))
+
+
+@kb_app.command("stat")
+def kb_stat(
+    paths: list[str] | None = typer.Argument(None, help="Vault files (any spelling)."),
+    glob: list[str] | None = typer.Option(None, "--glob", help="Vault-relative glob; repeat to OR them."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+) -> None:
+    """Each file's size, labelled: bytes, lines, words. In place of wc, ls -l and stat.
+
+    Exit 3 = a named file is not visible to the reader (its row has no counts); 2 = not a vault file.
+    """
+    args = _kb_args("stat", dict(locals()))
+    from scout.kb.read import cmd_stat
+
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_stat(vault, who, paths or (), glob or ()))
 
 
 @kb_app.command("delta")
@@ -880,7 +2111,7 @@ def kb_name_lookup(
     lookup_type: str = typer.Option(
         "person",
         "--lookup-type",
-        help="Entity type(s) to search: person (default), organization, any, or a comma-separated list.",
+        help="The entity types to search: person (default), organization, any, or a comma-separated list.",
     ),
     reader: str | None = _R,
     as_json: bool = _J,
@@ -963,6 +2194,106 @@ def kb_structure(
     _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_structure(vault, who, next_))
 
 
+@kb_app.command("check-fact-check")
+def kb_check_fact_check(
+    date: str | None = typer.Option(
+        None, "--date", help="The run's day, YYYY-MM-DD (default: today in the configured timezone)."
+    ),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help="Vault root (default: $SCOUT_DATA_DIR or ~/Scout)."),
+    context: Path | None = typer.Option(
+        None, "--context", help="Pre-fetched context (default: <vault>/.scout-cache/session-context.json)."
+    ),
+    skipped: str | None = typer.Option(
+        None, "--skipped", help="Why no live source could be reached this run; accepts the run as it stands."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+) -> None:
+    """Check a deep-work run re-verified the KB notes the runner pre-fetched for its fact-check pass.
+
+    The runner lists the KB notes changed in the last 3 days that no run has
+    re-verified since (`fact_check_targets`, most consequential first). At least
+    2 of them (all, if fewer) must now carry `last_verified:` of today and a
+    `verified_against:`. A target moved, archived or shared since counts as done;
+    a shared note is never a target. `--skipped "<reason>"` accepts a run that
+    could not reach a live source, and prints the line for its session-log row.
+    Run it before committing a dreaming deep-work run. Exit codes: 0 = done,
+    1 = not done, 2 = cannot check (or no reason given). Prints paths only,
+    private ones marked `[private]`.
+    """
+    import datetime as dt
+    import json as _json
+
+    from scout.action_items.prefetched import PrefetchCheckError
+    from scout.config import today as _today
+    from scout.kb.fact_check import SKIP_MARK, check_fact_check
+
+    name = "check-fact-check"
+    if date is not None:
+        try:
+            dt.date.fromisoformat(date)
+        except ValueError:
+            typer.echo(f"{name}: --date: invalid date {date!r}")
+            raise typer.Exit(2) from None
+    day = date or _today(data_dir).isoformat()
+    try:
+        result = check_fact_check(data_dir=data_dir, today=day, context=context, skipped=skipped)
+    except PrefetchCheckError as e:
+        typer.echo(_json.dumps({"error": str(e)}) if as_json else f"{name}: cannot check — {e}")
+        raise typer.Exit(2) from e
+
+    def mark(visibility: str) -> str:
+        return "[private] " if visibility != "normal" else ""
+
+    if result.skipped is not None:
+        import os
+
+        from scout import paths as _paths
+        from scout.kb.fact_check import record_skip
+
+        try:
+            record_skip(_paths.data_dir(data_dir), day, len(result.targets), os.environ.get("SCOUT_MODE"))
+        except OSError:
+            pass  # the skip stands; `scoutctl doctor` just won't count it
+
+    if as_json:
+        typer.echo(
+            _json.dumps(
+                {
+                    "targets": [t.to_json() for t in result.targets],
+                    "verified": result.verified,
+                    "required": result.required,
+                    "skipped": result.skipped is not None,
+                    "settled": result.settled,
+                    "passed": result.passed,
+                }
+            )
+        )
+    elif not result.targets:
+        typer.echo(f"{name}: no KB note changed in the last days is waiting to be re-verified")
+    elif result.passed and result.skipped is None:
+        typer.echo(f"{name}: {len(result.verified)} of {count(len(result.targets), 'recent note')} re-verified today")
+    elif result.passed:
+        typer.echo(
+            f"{name}: skipped. Put this in this run's session-log row and report: `{SKIP_MARK} {result.skipped}`"
+        )
+    else:
+        typer.echo(
+            f"{name}: {len(result.verified)} of the {count(result.required, 'required recent note')} "
+            "re-verified today. "
+            "Re-check the highest-stakes claims in these against a freshly read primary source, correct or mark "
+            "what doesn't hold, and set `last_verified:` (today) and `verified_against:` in each one you check:"
+        )
+        done = set(result.verified)
+        for t in result.targets:
+            typer.echo(f"  {'✓' if t.path in done else '·'} {mark(t.visibility)}{t.path} (changed {t.changed})")
+        typer.echo(
+            'If no live source could be reached this run, run this again with `--skipped "<why>"`, '
+            "and put the line it prints in this run's session-log row."
+        )
+    if not result.passed:
+        raise typer.Exit(1)
+
+
 # Top-level command — `connector-health-report` is a script, not a hook
 # (it runs AFTER the scheduled session ends, mirroring the bash invocation
 # from run-scout.sh). Single-token name keeps the runner-side migration
@@ -1020,10 +2351,28 @@ def budget_record_run_cmd(
     )
     if cost.measured:
         typer.echo(
-            f"run cost: ${cost.usd:.2f} by claude's figure ({cost.measured} of {cost.attempts} attempt(s) measured)"
+            f"run cost: ${cost.usd:.2f} by claude's figure "
+            f"({cost.measured} of {count(cost.attempts, 'attempt')} measured)"
         )
     else:
-        typer.echo(f"run cost: not measured ({cost.attempts} transcript(s) named {name}) — recorded $0")
+        typer.echo(f"run cost: not measured ({count(cost.attempts, 'transcript')} named {name}) — recorded $0")
+
+
+@budget_app.command("usage")
+def budget_usage_cmd(
+    as_json: bool = typer.Option(False, "--json", help="Print the summary the app's usage card reads, as JSON."),
+) -> None:
+    """What Scout's own scheduled runs used today and this week: tokens and cost.
+
+    Counts finished scheduled runs only (the usage tracker's runner rows), never
+    interactive Claude sessions. Tokens come from those runs' transcripts, each
+    message counted once; cost is the budget gate's figure, with how it was found
+    (cost_kind: reported, priced, unpriced, partial or none). Read-only.
+    """
+    from scout.scripts.usage_summary import describe, dumps, summarize
+
+    summary = summarize()
+    typer.echo(dumps(summary) if as_json else describe(summary), nl=not as_json)
 
 
 @budget_app.command("record-attempt")
@@ -1055,7 +2404,7 @@ def budget_record_attempt_cmd(
     )
     attempt_usd = sum(a.usd for a in outcome.recorded)
     typer.echo(
-        f"attempt cost: ${attempt_usd:.2f} ({len(outcome.recorded)} attempt(s) recorded); "
+        f"attempt cost: ${attempt_usd:.2f} ({count(len(outcome.recorded), 'attempt')} recorded); "
         f"this run so far ${outcome.cost.usd:.2f}; {outcome.reason}",
         err=True,
     )
@@ -1153,6 +2502,43 @@ def budget_set_cmd(
     typer.echo(f"wrote {payload['config_path']}")
     typer.echo(f"window:  {payload['window_hours']}h → ${payload['window_budget_usd']:.2f}")
     typer.echo(f"skip at: {payload['skip_at_pct']:.0f}% → ${payload['skip_threshold_usd']:.2f}")
+
+
+progress_app = typer.Typer(help="Is the run holding the vault lock making progress? (scout.run_progress)")
+app.add_typer(progress_app, name="progress")
+
+
+@progress_app.command("watch")
+def cli_progress_watch(
+    runner_pid: int = typer.Option(..., "--runner-pid", help="The runner holding the session lock."),
+    log: str = typer.Option(..., "--log", help="The run's log, named in the progress line."),
+    vault: str = typer.Option(..., "--vault", help="The vault whose session lock the runner holds."),
+) -> None:
+    """Sample the runner's session and keep .scout-logs/.scout-session.lock.alive current while it holds the lock.
+
+    Started by scripts/scout-lock.sh beside every scheduled run. The lock
+    reaper, `scoutctl health` and the app read the line it writes; see
+    scout/run_progress.py. Exits when the runner exits or loses the lock.
+    """
+    import signal
+
+    from scout import run_progress
+
+    def _stop(_signum: int, _frame: object) -> NoReturn:
+        raise SystemExit(0)  # ends the sample's sleep at once; watch() removes its line on the way out
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    run_progress.watch(
+        Path(vault),
+        runner_pid=runner_pid,
+        log=log,
+        sample_s=run_progress.env_secs(run_progress.SAMPLE_SECS_ENV, run_progress.DEFAULT_SAMPLE_SECS),
+        cpu_threshold_cs=run_progress.env_secs(
+            run_progress.CPU_SECS_ENV, run_progress.DEFAULT_CPU_SECS, allow_zero=True
+        )
+        * 100,
+    )
 
 
 # `scoutctl session index` builds .scout-cache/sessions-index.json from
@@ -1349,7 +2735,6 @@ def _register_connectors() -> None:
         so custom connector probes survive plugin updates (#97).
         """
         import json as _json
-        from typing import Any
 
         from scout.scripts.connector_probes import ProbeKind, resolve_registry
 
@@ -1697,8 +3082,8 @@ def _register_schedule() -> None:
             help=(
                 "Emit a JSON array of full slot records (key/type/runner/"
                 "fires_at_local/weekdays/missed_window_hours/on_miss/"
-                "cooldown_minutes/budget_usd/tz/runtime/model) instead of "
-                "tab-separated lines. Plan 6's ScheduleEditService consumes "
+                "cooldown_minutes/budget_usd/tz/runtime/model/agent_runtime) "
+                "instead of tab-separated lines. Plan 6's ScheduleEditService consumes "
                 "this for the in-app editor."
             ),
         ),
@@ -1727,6 +3112,9 @@ def _register_schedule() -> None:
                     "tz": sched[key].tz,
                     "runtime": sched[key].runtime.value,
                     "model": sched[key].model,
+                    # The app rewrites schedule.yaml from this list, so every Slot
+                    # field must appear here or an in-app save drops it.
+                    "agent_runtime": sched[key].agent_runtime,
                 }
                 for key in sorted(sched.keys())
             ]
@@ -1764,7 +3152,9 @@ def _register_schedule() -> None:
             "cooldown_minutes": slot.cooldown_minutes,
             "budget_usd": slot.budget_usd,
             "tz": slot.tz,
+            "runtime": slot.runtime.value,
             "model": slot.model,
+            "agent_runtime": slot.agent_runtime,
         }
         typer.echo(_json.dumps(record, indent=2))
 
@@ -1809,7 +3199,6 @@ def _register_schedule() -> None:
         force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing vault file."),
     ) -> None:
         """Seed the vault schedule.yaml from plugin defaults."""
-        import shutil
 
         from scout import paths as _paths
 
@@ -1822,7 +3211,9 @@ def _register_schedule() -> None:
             raise typer.Exit(code=1)
         target.parent.mkdir(parents=True, exist_ok=True)
         source = Path(__file__).parent / "defaults" / "schedule.yaml"
-        shutil.copy2(source, target)
+        from scout import safe_write
+
+        safe_write.atomic_write_bytes(target, source.read_bytes())
         typer.echo(f"wrote: {target}")
 
     @schedule_app.command("reload")
@@ -2177,15 +3568,29 @@ def _register_model() -> None:
     @model_app.command("resolve")
     def cli_model_resolve(
         slot: str | None = typer.Option(None, "--slot", help="The run's slot key (the runners pass $MODE)."),
+        runtime: str | None = typer.Option(
+            None, "--runtime", help="The run's agent runtime, when not claude-code (spec 2026-11-13 §8.7)."
+        ),
         as_json: bool = typer.Option(False, "--json", help='Emit {"model", "source"}.'),
     ) -> None:
-        """Print the model for one run: SCOUT_MODEL, else the slot's model, else models.default, else opus."""
+        """Print the model for one run: SCOUT_MODEL, else the slot's model, else models.default, else opus.
+
+        With --runtime other than claude-code: SCOUT_MODEL, the slot's model, agent_runtimes.<id>.model, then
+        that runtime's default; models.default is Claude Code's only.
+        """
         import json as _json
 
+        from scout.agent_runtimes.resolve import resolve_model_for
         from scout.models import resolve_model
 
         try:
-            resolved = resolve_model(slot_key=slot)
+            if runtime and runtime != "claude-code":
+                resolved = resolve_model_for(None, slot, runtime)
+            else:
+                resolved = resolve_model(slot_key=slot)
+        except KeyError as e:
+            typer.echo(f"error: {e.args[0]}", err=True)
+            raise typer.Exit(1) from e
         except ConfigError as e:
             typer.echo(f"error: {e}", err=True)
             raise typer.Exit(1) from e
@@ -2252,6 +3657,380 @@ def _register_model() -> None:
 
 
 _register_model()
+
+
+def _register_agent_runtime() -> None:
+    """scoutctl agent-runtime {list,show,resolve,check,exec} — which agent CLI runs a session (spec 2026-11-13 §8).
+
+    The runners call `resolve --slot "$MODE"`, then `check`, then launch through
+    `exec` (by way of claude-with-retry.sh). Only `claude-code` is registered in
+    Phase 1, and `exec` launches it exactly as the runners did.
+    """
+    import json as _json
+    import os as _os
+
+    agent_runtime_app = typer.Typer(help="Which agent CLI (Claude Code, …) scheduled runs use.")
+    app.add_typer(agent_runtime_app, name="agent-runtime")
+
+    def _adapter(runtime_id: str) -> AgentRuntime:
+        from scout.agent_runtimes import registry
+
+        try:
+            return registry.get(runtime_id)
+        except KeyError as e:
+            typer.echo(f"error: {e.args[0]}", err=True)
+            raise typer.Exit(2) from e
+
+    @agent_runtime_app.command("list")
+    def cli_agent_runtime_list(
+        as_json: bool = typer.Option(False, "--json", help="Emit a JSON list."),
+    ) -> None:
+        """Every runtime this engine knows: id, name, provider, binary, version, provider consent."""
+        from scout import paths as _paths
+        from scout.agent_runtimes import consent, registry
+
+        vault = _paths.data_dir()
+        rows = []
+        for rid in registry.ids():
+            adapter = registry.get(rid)
+            binary = adapter.locate(None)
+            try:
+                consented = consent.is_consented(vault, adapter.provider)
+            except Exception:  # noqa: BLE001 - shown as unknown, never as consented
+                consented = None
+            rows.append(
+                {
+                    "id": rid,
+                    "name": adapter.display_name,
+                    "provider": adapter.provider,
+                    "binary": str(binary) if binary else None,
+                    "version": adapter.version(binary) if binary else None,
+                    "consented": consented,
+                    "default_model": adapter.default_model(),
+                    "models": list(adapter.known_models()),
+                }
+            )
+        if as_json:
+            typer.echo(_json.dumps(rows))
+            return
+        for r in rows:
+            typer.echo(
+                f"{r['id']}\t{r['name']}\t{r['provider']}\t{r['version'] or 'not installed'}"
+                f"\t{'consented' if r['consented'] else 'not consented'}"
+            )
+
+    @agent_runtime_app.command("show")
+    def cli_agent_runtime_show(
+        slot: str | None = typer.Option(None, "--slot", help="A slot key: show what its run would use."),
+        as_json: bool = typer.Option(False, "--json", help="Emit JSON."),
+    ) -> None:
+        """The runtime and model a run of --slot would use (or the default), where each comes from, and its limits."""
+        from scout import paths as _paths
+        from scout.agent_runtimes import limits as _limits
+        from scout.agent_runtimes.resolve import resolve_model_for, resolve_runtime
+
+        vault = _paths.data_dir()
+        try:
+            rt = resolve_runtime(vault, slot)
+            model = resolve_model_for(vault, slot, rt.runtime)
+        except ConfigError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        lim = _limits.limits_for(vault, _adapter(rt.runtime), slot)
+        payload = {
+            "slot": slot,
+            "runtime": rt.runtime,
+            "runtime_source": rt.source,
+            "model": model.model,
+            "model_source": model.source,
+            "run_timeout_s": lim.run_timeout_s,
+            "timeout_source": lim.timeout_source,
+            "max_tokens_per_day": lim.max_tokens_per_day,
+            "ceiling_source": lim.ceiling_source,
+            "ignored": list(lim.ignored),
+        }
+        if as_json:
+            typer.echo(_json.dumps(payload))
+            return
+        for key, value in payload.items():
+            typer.echo(f"{key}: {value}")
+
+    @agent_runtime_app.command("set-limit")
+    def cli_agent_runtime_set_limit(
+        runtime: str = typer.Argument(..., help="The runtime id, e.g. claude-code."),
+        run_timeout_minutes: str | None = typer.Option(
+            None, "--run-timeout-minutes", help="Minutes of awake time per run, or off."
+        ),
+        max_tokens_per_day: str | None = typer.Option(
+            None, "--max-tokens-per-day", help="Tokens per 24 hours, auto (the default formula), or off."
+        ),
+        clear: bool = typer.Option(False, "--clear", help="Drop this runtime's limits, back to the defaults."),
+    ) -> None:
+        """Set the owner's run limits for RUNTIME on this vault. The owner only, never a run (exit 2).
+
+        Kept in ~/.local/state/scout/run-limits.json, which runs can't write. This is the only way to raise a
+        limit or turn it off; scout-config.yaml's budget.per_runtime can only make one stricter.
+        """
+        from scout import paths as _paths
+        from scout.agent_runtimes import limits as _limits
+        from scout.scripts.privacy_migrate import headless_reason
+
+        why = headless_reason(_os.environ)
+        if why:
+            typer.echo(f"refused: {why}. Only the owner may set run limits; nothing was changed.", err=True)
+            raise typer.Exit(2)
+        _adapter(runtime)
+        if not clear and run_timeout_minutes is None and max_tokens_per_day is None:
+            typer.echo("error: give --run-timeout-minutes, --max-tokens-per-day or --clear", err=True)
+            raise typer.Exit(1)
+        try:
+            block = _limits.set_owner_limit(
+                _paths.data_dir(),
+                runtime,
+                run_timeout_minutes=run_timeout_minutes,
+                max_tokens_per_day=max_tokens_per_day,
+                clear=clear,
+            )
+        except ValueError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        typer.echo(f"{runtime}: {_json.dumps(block, sort_keys=True) if block else 'defaults'}")
+
+    @agent_runtime_app.command("resolve")
+    def cli_agent_runtime_resolve(
+        slot: str | None = typer.Option(None, "--slot", help="The run's slot key (the runners pass $MODE)."),
+        as_json: bool = typer.Option(False, "--json", help='Emit {"runtime", "source"}.'),
+    ) -> None:
+        """Print the runtime for one run: SCOUT_AGENT_RUNTIME, the slot's, agent_runtimes.default, else claude-code.
+
+        Exit 1 on a config error; the runners then fall back to claude-code, as model resolve falls back to opus.
+        """
+        from scout.agent_runtimes.resolve import resolve_runtime
+
+        try:
+            resolved = resolve_runtime(None, slot)
+        except ConfigError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        if as_json:
+            typer.echo(_json.dumps({"runtime": resolved.runtime, "source": resolved.source}))
+        else:
+            typer.echo(resolved.runtime)
+
+    @agent_runtime_app.command("check")
+    def cli_agent_runtime_check(
+        slot: str | None = typer.Option(None, "--slot", help="The run's slot key (the runners pass $MODE)."),
+        runtime: str | None = typer.Option(None, "--runtime", help="Check this runtime (default: resolve --slot)."),
+        binary: str = typer.Option("", "--bin", help="The CLI the runner will start (default: the adapter finds it)."),
+        interactive: bool = typer.Option(False, "--interactive", help="For a skill's preamble, not a scheduled run."),
+        as_json: bool = typer.Option(False, "--json", help="Emit the report as JSON."),
+    ) -> None:
+        """Exit 0 when the runtime may run Scout on this vault; 3 when refused; 4 when over its daily token ceiling.
+
+        The reason goes to stderr as `[scout:agent-runtime] <code>: <reason>`. A check that can't
+        run refuses (check_failed). There is no fallback to another runtime (spec §8.3).
+        """
+        from scout import paths as _paths
+        from scout.agent_runtimes import check as _check
+        from scout.agent_runtimes.resolve import resolve_runtime
+
+        vault = _paths.data_dir()
+        try:
+            rid = runtime or resolve_runtime(vault, slot).runtime
+        except ConfigError as e:
+            typer.echo(f"[scout:agent-runtime] check_failed: {e}", err=True)
+            raise typer.Exit(_check.EXIT_REFUSE) from e
+        # An unknown runtime is a refusal (3), never a usage error (2): the runners read 2 as "this engine
+        # has no agent-runtime command" and launch claude directly, as before.
+        from scout.agent_runtimes import registry as _registry
+
+        try:
+            adapter = _registry.get(rid)
+        except KeyError as e:
+            typer.echo(f"[scout:agent-runtime] check_failed: {e.args[0]}", err=True)
+            raise typer.Exit(_check.EXIT_REFUSE) from e
+        reader = _os.environ.get("SCOUT_READER") or ("owner" if interactive else "autonomous")
+        report = _check.evaluate(
+            vault,
+            adapter,
+            reader=reader,
+            mode=_os.environ.get("SCOUT_MODE") or slot,
+            interactive=interactive,
+            binary=Path(binary) if binary else None,
+        )
+        if as_json:
+            refusal = report.refusal
+            typer.echo(
+                _json.dumps(
+                    {
+                        "runtime": report.runtime,
+                        "provider": report.provider,
+                        "binary": report.binary,
+                        "version": report.version,
+                        "tier": report.tier,
+                        "allowed": refusal is None,
+                        "code": refusal.code if refusal else None,
+                        "reason": refusal.reason if refusal else None,
+                    }
+                )
+            )
+        if report.refusal is not None:
+            typer.echo(f"[scout:agent-runtime] {report.refusal.code}: {report.refusal.reason}", err=True)
+            raise typer.Exit(report.refusal.exit_code)
+        if not as_json:
+            typer.echo(f"ok: {report.runtime} {report.version or ''} (Tier {report.tier or '-'})".rstrip())
+
+    @agent_runtime_app.command("exec")
+    def cli_agent_runtime_exec(
+        runtime: str = typer.Option(..., "--runtime", help="The runtime id (the runners pass $SCOUT_AGENT_RUNTIME)."),
+        binary: str = typer.Option("", "--bin", help="The CLI to start (default: the adapter finds it)."),
+        model: str = typer.Option(..., "--model", help="The run's model."),
+        budget_cap: str | None = typer.Option(None, "--max-budget-usd", help="The run's USD cap, passed as text."),
+        name: str = typer.Option(..., "--name", help="The run's name."),
+        prompt: str = typer.Option(..., "-p", help="The run's prompt."),
+        print_argv: bool = typer.Option(False, "--print-argv", hidden=True, help="Print the argv as JSON; don't run."),
+    ) -> None:
+        """Replace this process with the runtime's CLI, launched for one scheduled run.
+
+        The flag names are the retry wrapper's (it reads --name and rewrites --max-budget-usd).
+        For claude-code the CLI's argv is the runners' launch line, word for word. With a run
+        timeout (on by default only for runtimes that can't cap their own spend) this process
+        stays as the CLI's parent and stops it at the deadline (exit 124).
+        """
+        import dataclasses as _dataclasses
+
+        from scout import paths as _paths
+        from scout.agent_runtimes import exec as _exec
+        from scout.agent_runtimes import limits as _limits
+        from scout.agent_runtimes.base import caps_own_spend
+
+        adapter = _adapter(runtime)
+        vault = _paths.data_dir()
+        req = _exec.build_request(
+            vault=vault,
+            model=model,
+            budget_cap=budget_cap,
+            run_name=name,
+            prompt=prompt,
+            binary=Path(binary) if binary else None,
+            env=_os.environ,
+        )
+        if print_argv:
+            typer.echo(_json.dumps(list(adapter.headless_argv(req).argv)))
+            return
+        timeout_s: int | None
+        try:
+            run_type = _os.environ.get("SCOUT_RUN_TYPE") or None
+            lim = _limits.limits_for(vault, adapter, req.mode or None, run_type)
+            timeout_s = lim.run_timeout_s
+            if lim.ignored:
+                # Into the run's log (the wrapper sends exec's stderr there), so a run that tried to change
+                # its own limits leaves a trace (review of #653).
+                typer.echo(
+                    f"=== run limits: scout-config.yaml budget.per_runtime.{adapter.id} ignored: "
+                    + "; ".join(lim.ignored)
+                    + " ===",
+                    err=True,
+                )
+        except Exception:  # noqa: BLE001 - limits never stop a start; a runtime without a cap keeps its default
+            kind = _limits.kind_of(_os.environ.get("SCOUT_RUN_TYPE")) or _limits.kind_of(req.mode)
+            timeout_s = None if caps_own_spend(adapter) else _limits.default_timeout_minutes(kind) * 60
+        try:
+            code = _exec.run(adapter, _dataclasses.replace(req, timeout_s=timeout_s))
+        except FileNotFoundError as e:
+            typer.echo(f"[scout:agent-runtime] can't start {adapter.display_name}: {e}", err=True)
+            raise typer.Exit(127) from e
+        except PermissionError as e:
+            typer.echo(f"[scout:agent-runtime] can't start {adapter.display_name}: {e}", err=True)
+            raise typer.Exit(126) from e
+        raise typer.Exit(int(code) if isinstance(code, int) else 0)
+
+
+_register_agent_runtime()
+
+
+def _register_privacy() -> None:
+    """scoutctl privacy {providers,consent-provider,revoke-provider} — model-provider consent (spec 2026-11-13 §8.4)."""
+    import json as _json
+    import os as _os
+
+    privacy_app = typer.Typer(help="Which model providers a run may send this vault's content to.")
+    app.add_typer(privacy_app, name="privacy")
+
+    @privacy_app.command("providers")
+    def cli_privacy_providers(
+        as_json: bool = typer.Option(False, "--json", help="Emit a JSON list of {provider, consented_at}."),
+    ) -> None:
+        """The providers runs on this vault may use: anthropic, plus each one the owner consented to."""
+        from scout import paths as _paths
+        from scout.agent_runtimes import consent
+
+        try:
+            rows = consent.consented(_paths.data_dir())
+        except ValueError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        if as_json:
+            typer.echo(_json.dumps([{"provider": r.provider, "consented_at": r.consented_at} for r in rows]))
+            return
+        for r in rows:
+            typer.echo(f"{r.provider}\t{r.consented_at or 'default'}")
+
+    def _owner_only(verb: str) -> None:
+        from scout.scripts.privacy_migrate import headless_reason
+
+        why = headless_reason(_os.environ)
+        if why:
+            typer.echo(f"refused: {why}. Only the owner may {verb} a provider; nothing was changed.", err=True)
+            raise typer.Exit(2)
+
+    @privacy_app.command("consent-provider")
+    def cli_privacy_consent_provider(
+        provider: str = typer.Argument(..., help="The provider id, e.g. openai, google, xai."),
+    ) -> None:
+        """Let runs on this vault send its content to PROVIDER. The owner only, never a run (exit 2).
+
+        Recorded with the time in ~/.local/state/scout/provider-consent.json, which runs can't write.
+        A `privacy.providers` list in scout-config.yaml, if you keep one, must name it too.
+        Local-only paths never go to a provider other than Anthropic, consent or not.
+        """
+        from scout import paths as _paths
+        from scout.agent_runtimes import consent
+
+        _owner_only("consent to")
+        vault = _paths.data_dir()
+        try:
+            at = consent.consent(vault, provider)
+            overlay = consent.overlay_providers(vault)
+        except ValueError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        name = provider.strip().lower()
+        if not at:
+            typer.echo(f"{name}: always allowed (Claude Code's provider)")
+            return
+        typer.echo(f"consented: {name} at {at}")
+        if overlay is not None and name not in overlay:
+            typer.echo(f"note: scout-config.yaml privacy.providers doesn't list {name}, so runs still may not use it.")
+
+    @privacy_app.command("revoke-provider")
+    def cli_privacy_revoke_provider(
+        provider: str = typer.Argument(..., help="The provider id to revoke."),
+    ) -> None:
+        """Stop runs on this vault from using PROVIDER. The owner only (exit 2)."""
+        from scout import paths as _paths
+        from scout.agent_runtimes import consent
+
+        _owner_only("revoke")
+        try:
+            removed = consent.revoke(_paths.data_dir(), provider)
+        except ValueError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        typer.echo(f"{'revoked' if removed else 'not consented'}: {provider.strip().lower()}")
+
+
+_register_privacy()
 
 
 def _register_triggers() -> None:
@@ -2358,7 +4137,7 @@ def _register_triggers() -> None:
         if triggers is None:
             typer.echo("triggers OK: (no triggers.yaml; no triggers configured)")
         else:
-            typer.echo(f"triggers OK: {path} ({len(triggers)} trigger(s))")
+            typer.echo(f"triggers OK: {path} ({count(len(triggers), 'trigger')})")
 
     @trigger_app.command("reload")
     def cli_trigger_reload() -> None:
@@ -2484,7 +4263,7 @@ def _register_triggers() -> None:
             typer.echo(_json.dumps({"days": days, "by_trigger": by_trigger, "by_day": by_day}))
             return
         if not by_trigger:
-            typer.echo(f"(no trigger fires in the last {days} day(s))")
+            typer.echo(f"(no trigger fires in the last {count(days, 'day')})")
             return
         for tid in sorted(by_trigger):
             e = by_trigger[tid]
@@ -2542,18 +4321,36 @@ def _register_notify() -> None:
             "--allow-duplicate",
             help="Send even if a byte-identical message went to this chat in the last 10 minutes.",
         ),
+        reply_to: int | None = typer.Option(
+            None,
+            "--reply-to",
+            help="Reply to this inbound message id (the newest one answered). Marks it answered once delivered.",
+        ),
+        covers: str | None = typer.Option(
+            None,
+            "--covers",
+            help="Comma-separated inbound message ids this reply also answers (needs --reply-to).",
+        ),
     ) -> None:
         """Send a Telegram message via the configured bot.
 
         The receipt is `id=<ulid>` on the first line of stderr; stdout is the Event JSON.
         """
-        import json as _json
-        from dataclasses import asdict
+        import os as _os
 
-        import requests as _requests
+        from scout.scripts.notify_telegram import cli_send
 
-        from scout.errors import ConfigError as _ConfigError
-        from scout.scripts.notify_telegram import DuplicateSendError, OutboundBlockedError, send
+        try:
+            covered = sorted({int(p) for p in (covers or "").split(",") if p.strip()})
+        except ValueError as e:
+            typer.echo(f"scoutctl notify telegram: --covers takes comma-separated message ids ({e})", err=True)
+            raise typer.Exit(code=1) from e
+        if covered and reply_to is None:
+            typer.echo("scoutctl notify telegram: --covers needs --reply-to (a reply threads to a message)", err=True)
+            raise typer.Exit(code=1)
+        if any(i <= 0 for i in [*covered, *([reply_to] if reply_to is not None else [])]):
+            typer.echo("scoutctl notify telegram: message ids are positive integers", err=True)
+            raise typer.Exit(code=1)
 
         if body is not None and body_file is None:
             text = body
@@ -2567,72 +4364,155 @@ def _register_notify() -> None:
             typer.echo("scoutctl notify telegram: pass exactly one of --body or --body-file", err=True)
             raise typer.Exit(code=1)
 
-        try:
-            ev = send(
-                tier=tier,
-                body=text,
-                parse_mode=parse_mode,
-                dry_run=dry_run,
-                allow_duplicate=allow_duplicate,
-                receipt=lambda event_id: typer.echo(f"id={event_id}", err=True),
-            )
-        except DuplicateSendError as e:
-            # Receipt first (the earlier send's id), so a caller filtering
-            # stderr still finds it; then the refusal and how to override.
-            typer.echo(f"id={e.original_id}", err=True)
-            typer.echo(
-                f"scoutctl notify telegram: refused — byte-identical message sent at {e.sent_at} "
-                f"(id {e.original_id}); pass --allow-duplicate to send it again",
-                err=True,
-            )
-            raise typer.Exit(code=DuplicateSendError.exit_code) from e
-        except OutboundBlockedError as e:
-            typer.echo(f"scoutctl notify telegram: {e}", err=True)
-            raise typer.Exit(code=OutboundBlockedError.exit_code) from e
-        except _ConfigError as e:
-            # Map ScoutError exit codes at the command boundary so the CLI
-            # surface stays consistent with cli.main()'s ScoutError handler.
-            # The runner relies on exit 10 to know secrets are missing.
-            typer.echo(f"scoutctl notify telegram: {e}", err=True)
-            raise typer.Exit(code=_ConfigError.exit_code) from e
-        except ValueError as e:
-            typer.echo(f"scoutctl notify telegram: {e}", err=True)
-            raise typer.Exit(code=1) from e
-        except _requests.HTTPError as e:
-            # ``str(HTTPError)`` includes the request URL, and the Telegram
-            # URL embeds the bot token in its path
-            # (``/bot<token>/sendMessage``). On a 401 (revoked token) or
-            # any 4xx/5xx the raw token would dump to stderr — the worst
-            # leak path because it's exactly what operators debug live.
-            # Rebuild the message from status_code + reason instead of
-            # ``str(e)`` so the URL never appears.
-            status = getattr(e.response, "status_code", "?")
-            reason = getattr(e.response, "reason", "Unknown")
-            typer.echo(
-                f"scoutctl notify telegram: HTTP {status} {reason} (token redacted in URL)",
-                err=True,
-            )
-            raise typer.Exit(code=2) from e
-        except _requests.RequestException as e:
-            # Non-HTTP failures during a live send: timeout, DNS, connection
-            # refused, SSL. ``str()`` of a ConnectionError DOES include the
-            # request path (``Max retries exceeded with url: /bot<token>/…``).
-            # send() scrubs it; redact again here so this line can never
-            # carry the token. Exit non-zero with a clear stderr line instead
-            # of dumping a stack trace into the runner's prompt.
-            from scout.redact import redact_secrets
+        if _os.environ.get("SCOUT_RUN_BROKER"):
+            # A scheduled run with its send-only broker (Phase 1d): the broker sends it to the owner's chat, within
+            # the owner's limits, and the run never reads the token. Same output and exit codes, plus 5 (limits).
+            from scout.sandbox import broker
 
-            typer.echo(f"scoutctl notify telegram: HTTP error: {redact_secrets(str(e))}", err=True)
-            raise typer.Exit(code=2) from None
-
-        # Print the resulting Event JSON to stdout. Dry-run preamble (the
-        # [dry-run] lines) is intentionally routed through stderr inside
-        # send() so this stdout is always pure JSON and parsable by tests
-        # / downstream scripts.
-        typer.echo(_json.dumps(asdict(ev), indent=2))
+            fields = {
+                "tier": tier,
+                "parse_mode": parse_mode,
+                "body": text,
+                "allow_duplicate": allow_duplicate,
+                "dry_run": dry_run,
+                "reply_to": reply_to,
+                "covers": covered,
+            }
+            raise typer.Exit(code=broker.client_telegram(fields))
+        code = cli_send(
+            tier=tier,
+            text=text,
+            parse_mode=parse_mode,
+            dry_run=dry_run,
+            allow_duplicate=allow_duplicate,
+            echo_out=typer.echo,
+            echo_err=lambda line: typer.echo(line, err=True),
+            reply_to=reply_to,
+            covers=covered,
+        )
+        if code:
+            raise typer.Exit(code=code)
 
 
 _register_notify()
+
+
+def _register_telegram() -> None:
+    """scoutctl telegram {find-chat-id, inbound-status, pending} — setup, observability and the unanswered
+    messages for inbound Telegram."""
+    telegram_app = typer.Typer(help="Inbound Telegram: find your chat id, check the poller, list unanswered messages.")
+    app.add_typer(telegram_app, name="telegram")
+
+    @telegram_app.command("find-chat-id")
+    def cli_telegram_find_chat_id() -> None:
+        """List the chats that have messaged the bot: private chats (sender's first name) and groups (title).
+
+        Reads only the bot token (the chat id may not exist yet). Polls with offset 0, so it
+        never confirms an update: the inbound trigger, or a later run, still sees every message.
+        """
+        from scout.errors import ConfigError
+        from scout.scripts.notify_telegram import _read_secret
+        from scout.telegram_inbound import bot
+
+        try:
+            token = _read_secret("telegram-bot-token")
+            updates = bot.get_updates(token=token, offset=0, http_post=bot.default_http_post)
+        except (ConfigError, bot.TelegramApiError) as e:
+            typer.echo(f"scoutctl telegram find-chat-id: {e}", err=True)
+            raise typer.Exit(code=1) from e
+
+        found: dict[int, str] = {}
+        for update in updates:
+            message = update.get("message")
+            if not isinstance(message, dict):
+                continue
+            chat = message.get("chat")
+            if not isinstance(chat, dict) or type(chat.get("id")) is not int:
+                continue
+            if chat.get("type") == "private":
+                sender = message.get("from") or {}
+                label = str(sender.get("first_name") or chat.get("first_name") or "?")
+            elif chat.get("type") in ("group", "supergroup"):
+                label = f"{chat.get('title') or '?'}\tgroup (outbound only)"
+            else:
+                continue
+            found.setdefault(chat["id"], label)
+        if not found:
+            typer.echo(
+                "No chats found. Send your bot a message (any text), or add it to a group and post there, "
+                "then run this again. If you already did, the inbound trigger may have consumed the updates: "
+                "check `scoutctl telegram inbound-status`, or read telegram-chat-id from your own records."
+            )
+            return
+        for chat_id, label in found.items():
+            typer.echo(f"{chat_id}\t{label}")
+
+    @telegram_app.command("inbound-status")
+    def cli_telegram_inbound_status(
+        as_json: bool = typer.Option(False, "--json", help="Emit JSON instead of text."),
+    ) -> None:
+        """Show the inbound ledger counts and the poller's last poll and last error."""
+        import json as _json
+
+        from scout import paths as _paths
+        from scout.telegram_inbound.ledger import Ledger
+
+        ledger = Ledger(_paths.data_dir())
+        counts = ledger.counts()
+        state = ledger.get_poll_state()
+        last_poll_at = state.get("last_poll_at")
+        last_error = state.get("last_error")
+        if as_json:
+            typer.echo(_json.dumps({"counts": counts, "last_poll_at": last_poll_at, "last_error": last_error}))
+            return
+        typer.echo("messages: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
+        typer.echo(f"last poll: {last_poll_at or 'never'}")
+        typer.echo(f"last error: {last_error or 'none'}")
+
+    @telegram_app.command("pending")
+    def cli_telegram_pending(
+        as_json: bool = typer.Option(False, "--json", help="Emit JSON instead of text."),
+        ids: str | None = typer.Option(
+            None, "--ids", help="Comma-separated message ids: only these, and only those still unanswered."
+        ),
+        exclude_in_flight: bool = typer.Option(
+            False,
+            "--exclude-in-flight",
+            help="Leave out messages a respond run was given within the dispatch timeout (a scheduled run's drain).",
+        ),
+    ) -> None:
+        """Print the owner's unanswered Telegram messages (pending, dispatched, failed), oldest first.
+
+        The only place a run reads their text: the inbound ledger, which only trusted code writes.
+        Read-only: it never writes, locks or quarantines the ledger.
+        """
+        import json as _json
+
+        from scout import paths as _paths
+        from scout.telegram_inbound.ledger import Ledger
+
+        wanted: set[int] | None = None
+        if ids is not None:
+            parts = [p.strip() for p in ids.split(",") if p.strip()]
+            if not all(p.isascii() and p.isdigit() and int(p) > 0 for p in parts):
+                typer.echo("scoutctl telegram pending: --ids takes comma-separated message ids", err=True)
+                raise typer.Exit(code=1)
+            wanted = {int(p) for p in parts}
+        try:
+            rows = Ledger(_paths.data_dir()).unanswered(exclude_in_flight=exclude_in_flight)
+        except (OSError, ValueError) as e:  # ValueError: a ledger file that isn't UTF-8
+            typer.echo(f"scoutctl telegram pending: couldn't read the inbound ledger ({e})", err=True)
+            raise typer.Exit(code=1) from e
+        keys = ("message_id", "date", "text", "reply_to_text", "forwarded", "kind", "state", "attempt")
+        out = [{k: getattr(m, k) for k in keys} for m in rows if wanted is None or m.message_id in wanted]
+        if as_json:
+            typer.echo(_json.dumps({"messages": out}, ensure_ascii=False))
+            return
+        for m in out:
+            typer.echo(f"{m['message_id']}\t{m['state']}\t{_json.dumps(m['text'], ensure_ascii=False)}")
+
+
+_register_telegram()
 
 
 health_app = typer.Typer(
@@ -2698,8 +4578,87 @@ def _register_health() -> None:
         if not sent and not quiet:
             typer.echo("nothing to push")
 
+    @health_app.command("resolve-prompt")
+    def cli_health_resolve_prompt(
+        kind: str = typer.Argument(..., help="finding, connector or run."),
+        key: str = typer.Argument(..., help="A finding id, a connector_key, or a run log's file name."),
+        json_out: bool = typer.Option(False, "--json", help="Emit the versioned JSON document the app reads."),
+    ) -> None:
+        """Print an investigation prompt for one alert ("Resolve with Claude"). Read-only; exit 2 on a bad key."""
+        import json as _json
+
+        from scout import paths as _paths
+        from scout import resolve_prompt as _rp
+
+        def fail(error: str) -> NoReturn:
+            typer.echo(f"resolve-prompt: {error}", err=True)
+            if json_out:
+                typer.echo(_json.dumps({"schema_version": _rp.SCHEMA_VERSION, "error": error}))
+            raise typer.Exit(code=2)
+
+        vault = _paths.data_dir()
+        if not vault.is_dir():
+            fail(f"vault directory missing: {vault}")
+        try:
+            prompt = _rp.build(vault, kind, key)
+        except _rp.ResolveError as e:
+            fail(str(e))
+        typer.echo(_json.dumps(prompt.to_dict()) if json_out else prompt.prompt)
+
 
 _register_health()
+
+
+def _register_runs() -> None:
+    """scoutctl runs [--json] [--since 7d] [--limit N] — the run ledger plus run health, for the app."""
+
+    @app.command("runs")
+    def cli_runs(
+        json_out: bool = typer.Option(False, "--json", help="Emit the versioned JSON document the app reads."),
+        since: str = typer.Option("7d", "--since", help="How far back: 7d, 48h, 90m, or an ISO time."),
+        limit: int = typer.Option(200, "--limit", min=1, max=2000, help="At most this many runs, newest first."),
+    ) -> None:
+        """Recent scheduled runs (outcome, skip reason, sandbox, integrity) and run-health findings.
+
+        Read-only. Exits 0 whatever the runs' health is (use `scoutctl health` for an exit code);
+        2 on a bad --since or a missing vault.
+        """
+        import json as _json
+        from datetime import UTC
+        from datetime import datetime as _dt
+
+        from scout import paths as _paths
+        from scout import run_ledger as _rl
+
+        now = _dt.now(UTC)
+        try:
+            cutoff = _rl.parse_since(since, now=now)
+        except ValueError as e:
+            typer.echo(f"scoutctl runs: {e}", err=True)
+            raise typer.Exit(code=2) from None
+        vault = _paths.data_dir()
+        if not vault.is_dir():
+            error = f"vault directory missing: {vault}"
+            typer.echo(f"scoutctl runs: {error}", err=True)
+            if json_out:
+                typer.echo(_json.dumps({"schema_version": _rl.SCHEMA_VERSION, "error": error}))
+            raise typer.Exit(code=2)
+        doc = _rl.ledger_report(vault, now=now, since=cutoff, limit=limit)
+        if json_out:
+            typer.echo(_json.dumps(doc))
+            return
+        typer.echo(f"run health: {doc['health']['severity']}")
+        for run in doc["runs"]:
+            why = run["failure_class"] if run["outcome"] != "ok" else ""
+            extra = " ".join(
+                f"{k}={run[k]}" for k in ("sandbox", "integrity") if run[k] and run[k] not in ("enforced", "clean")
+            )
+            typer.echo(f"{run['finished_at']}  {run['slot']:<24} {run['outcome']:<16} {why} {extra}".rstrip())
+        if doc["truncated"]:
+            typer.echo(f"(showing the newest {limit}; use --limit for more)")
+
+
+_register_runs()
 
 
 def _register_auth() -> None:
@@ -2815,6 +4774,14 @@ def _register_bootstrap() -> None:
         "set that with `scoutctl budget set --daily-usd`."
     )
 
+    # Deprecated (spec 2026-11-13 §8.9): bootstrap never starts Claude, so the flag did nothing. Still
+    # accepted, hidden, so a script that passes it keeps working.
+    _SKIP_CLAUDE_HELP = "Deprecated and ignored: bootstrap never starts Claude."
+
+    def _warn_skip_claude(skip_claude: bool) -> None:
+        if skip_claude:
+            typer.echo("note: --skip-claude is deprecated and does nothing (bootstrap never starts Claude)", err=True)
+
     def _resolve_managed_by(value: str) -> str:
         """`preserve` → the concrete manager (engine_pointer.resolve_managed_by);
         an explicit value outside MANAGED_BY_VALUES is a usage error (exit 2)."""
@@ -2868,6 +4835,8 @@ def _register_bootstrap() -> None:
                 f"unfinished merge. Remove them (then `scoutctl bootstrap resolve {held}` if a sidecar was behind it)",
                 err=True,
             )
+        for name in payload.get("installed", []):
+            typer.echo(f"  installed (was missing): {name} — written from this release's assembly", err=True)
         # migrate-legacy prints these on stdout (its pre-E3 quirk), upgrade on stderr.
         to_err = action != "migrate-legacy"
         edits = payload.get("vault_edits") or []
@@ -2885,7 +4854,7 @@ def _register_bootstrap() -> None:
             for e in doctor["errors"]:
                 typer.echo(f"  error: {e}", err=True)
 
-    def _config_from_existing_vault(vault: Path, *, skip_jobs: bool, skip_claude: bool, managed_by: str):
+    def _config_from_existing_vault(vault: Path, *, skip_jobs: bool, managed_by: str):
         """BootstrapConfig for an existing vault, read back from scout-config.yaml
         (shared with the custom-connector commands via bootstrap.config_from_vault)."""
         import yaml as _yaml
@@ -2899,7 +4868,6 @@ def _register_bootstrap() -> None:
                 plugin_root=Path(__file__).parent.parent.parent,
                 plugin_version=__version__,
                 skip_jobs=skip_jobs,
-                skip_claude=skip_claude,
                 managed_by=managed_by,
             )
         except (_yaml.YAMLError, UnicodeDecodeError, ValueError) as e:
@@ -2915,7 +4883,7 @@ def _register_bootstrap() -> None:
         ),
         platform: str = typer.Option("macos", "--platform"),
         skip_jobs: bool = typer.Option(False, "--no-jobs"),
-        skip_claude: bool = typer.Option(False, "--skip-claude"),
+        skip_claude: bool = typer.Option(False, "--skip-claude", hidden=True, help=_SKIP_CLAUDE_HELP),
         connectors: str = typer.Option("", "--connectors", help="Comma-separated enabled connector names"),
         # Per-connector inputs collected by /scout-setup. Mirroring the
         # migrate-legacy flags keeps the two entrypoints symmetric and
@@ -2939,6 +4907,7 @@ def _register_bootstrap() -> None:
         json_out: bool = typer.Option(False, "--json", help="Emit the BootstrapResult JSON (consumed by Scout.app)."),
     ) -> None:
         """Install Scout into the user's vault directory."""
+        _warn_skip_claude(skip_claude)
         from scout import __version__
         from scout import paths as _paths
         from scout.scripts.bootstrap import BootstrapConfig, install, resolve_claude_bin
@@ -2966,7 +4935,6 @@ def _register_bootstrap() -> None:
                 "max_budget": max_budget,
             },
             skip_jobs=skip_jobs,
-            skip_claude=skip_claude,
             auto_update=auto_update,
             managed_by=managed_by,
         )
@@ -2980,11 +4948,12 @@ def _register_bootstrap() -> None:
     @bootstrap_app.command("upgrade")
     def cli_bootstrap_upgrade(
         skip_jobs: bool = typer.Option(False, "--no-jobs"),
-        skip_claude: bool = typer.Option(False, "--skip-claude"),
+        skip_claude: bool = typer.Option(False, "--skip-claude", hidden=True, help=_SKIP_CLAUDE_HELP),
         managed_by: str = typer.Option("preserve", "--managed-by", help=_MANAGED_BY_HELP),
         json_out: bool = typer.Option(False, "--json", help="Emit the BootstrapResult JSON (consumed by Scout.app)."),
     ) -> None:
         """Upgrade an existing vault against the current plugin templates."""
+        _warn_skip_claude(skip_claude)
         from scout import __version__
         from scout import paths as _paths
         from scout.scripts.bootstrap import upgrade
@@ -3001,9 +4970,7 @@ def _register_bootstrap() -> None:
             )
             raise typer.Exit(code=2)
         try:
-            cfg = _config_from_existing_vault(
-                vault, skip_jobs=skip_jobs, skip_claude=skip_claude, managed_by=managed_by
-            )
+            cfg = _config_from_existing_vault(vault, skip_jobs=skip_jobs, managed_by=managed_by)
         except ConfigError as e:
             # Preserve the pre-E3 exit code (10) for a malformed scout-config.yaml —
             # distinct from the "no vault"/"refused" (2) case above.
@@ -3018,7 +4985,7 @@ def _register_bootstrap() -> None:
 
     @bootstrap_app.command("resolve")
     def cli_bootstrap_resolve(
-        files: list[str] = typer.Argument(..., help="SKILL.md, DREAMING.md and/or RESEARCH.md"),
+        files: list[str] = typer.Argument(..., help="SKILL.md, DREAMING.md, RESEARCH.md and/or RESPOND.md"),
     ) -> None:
         """Record a brain file's sidecar as resolved.
 
@@ -3034,7 +5001,7 @@ def _register_bootstrap() -> None:
         kinds = [f.upper().removesuffix(".MD") for f in files]
         unknown = [f for f, k in zip(files, kinds, strict=True) if k not in BRAIN_KINDS]
         if unknown:
-            expected = "expected SKILL.md, DREAMING.md or RESEARCH.md"
+            expected = "expected SKILL.md, DREAMING.md, RESEARCH.md or RESPOND.md"
             typer.echo(f"not a brain file: {', '.join(unknown)} ({expected})", err=True)
             raise typer.Exit(code=2)
         vault = _paths.data_dir()
@@ -3187,7 +5154,62 @@ def _register_bootstrap() -> None:
             typer.echo(f"run health: {report.run_health.severity}")
             for f in report.run_health.findings:
                 typer.echo(f"run health {f.severity}: {f.id}: {f.summary}")
+        for entry in getattr(report, "warning_triage", None) or []:  # stand-in reports in tests lack it
+            if entry.reviewed_at:
+                typer.echo(f"reviewed {entry.reviewed_at}: {entry.id}: {entry.summary}")
         raise typer.Exit(code=report.exit_code)
+
+    @bootstrap_app.command("review-warning")
+    def cli_bootstrap_review_warning(
+        warning: str = typer.Argument(..., help="The warning's id, from `bootstrap doctor --json` warning_triage."),
+        fingerprint: str | None = typer.Option(
+            None, "--fingerprint", help="The fingerprint shown beside it: the review holds only while it matches."
+        ),
+        undo: bool = typer.Option(False, "--undo", help="Drop the review, so the warning shows again."),
+        json_out: bool = typer.Option(False, "--json", help='Emit {"id", "fingerprint", "reviewed_at"}.'),
+    ) -> None:
+        """Mark a doctor warning reviewed, or (--undo) not. The owner only, never a run (exit 2).
+
+        A reviewed warning leaves the doctor's warnings and severity until what it is about changes (its
+        files, a high-risk file's content, or its text). Kept in ~/.local/state/scout/scout-reviewed-warnings.json,
+        which runs can't write.
+        """
+        import json as _json
+        import os
+
+        from scout import doctor_triage
+        from scout import paths as _paths
+        from scout.scripts.privacy_migrate import headless_reason
+
+        why = headless_reason(os.environ)
+        if not why:
+            # Whatever its environment says (a run can `env -u SCOUT_MODE`): is a scheduled run the caller?
+            from scout.kb import live_run
+
+            src = live_run.commit_source_now(_paths.data_dir())
+            if src is not None and src.runs:
+                why = f"this command runs inside a scheduled run ({src.mode}, by {src.by})"
+        if why:
+            typer.echo(f"refused: {why}. Only the owner may mark a warning reviewed; nothing was changed.", err=True)
+            raise typer.Exit(2)
+        if undo == (fingerprint is not None):
+            typer.echo("error: give --fingerprint to mark it reviewed, or --undo", err=True)
+            raise typer.Exit(1)
+        try:
+            record = doctor_triage.set_review(_paths.data_dir(), warning, None if undo else fingerprint)
+        except ValueError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        except OSError as e:
+            typer.echo(f"error: couldn't save the review: {e}", err=True)
+            raise typer.Exit(1) from e
+        if json_out:
+            out = {"id": warning, "fingerprint": None, "reviewed_at": None, **(record or {})}
+            typer.echo(_json.dumps(out))
+        elif record:
+            typer.echo(f"{warning}: reviewed {record['reviewed_at']}")
+        else:
+            typer.echo(f"{warning}: not reviewed")
 
     @bootstrap_app.command("migrate-legacy")
     def cli_bootstrap_migrate_legacy(
@@ -3250,7 +5272,6 @@ def _register_bootstrap() -> None:
                 "max_budget": max_budget,
             },
             skip_jobs=skip_jobs,
-            skip_claude=True,
             managed_by=managed_by,
         )
         result = migrate_legacy(cfg)
@@ -3295,7 +5316,7 @@ def _register_bootstrap() -> None:
         claude_bin: str = typer.Option("auto", "--claude-bin", help="Absolute path, or auto (`command -v claude`)"),
         max_budget: str = typer.Option("5.00", "--max-budget", help=_MAX_BUDGET_HELP),
         skip_jobs: bool = typer.Option(False, "--no-jobs"),
-        skip_claude: bool = typer.Option(False, "--skip-claude"),
+        skip_claude: bool = typer.Option(False, "--skip-claude", hidden=True, help=_SKIP_CLAUDE_HELP),
         managed_by: str = typer.Option("preserve", "--managed-by", help=_MANAGED_BY_HELP),
         interactive: bool | None = typer.Option(
             None,
@@ -3312,6 +5333,7 @@ def _register_bootstrap() -> None:
         ),
     ) -> None:
         """Detect the vault's state and run install, upgrade or migrate-legacy accordingly (#26)."""
+        _warn_skip_claude(skip_claude)
         import platform as _platform
 
         from scout import __version__
@@ -3391,9 +5413,7 @@ def _register_bootstrap() -> None:
             if ignored:
                 typer.echo(f"note: ignored on upgrade (read from scout-config.yaml): {', '.join(ignored)}", err=True)
             try:
-                cfg = _config_from_existing_vault(
-                    vault, skip_jobs=skip_jobs, skip_claude=skip_claude, managed_by=managed_by
-                )
+                cfg = _config_from_existing_vault(vault, skip_jobs=skip_jobs, managed_by=managed_by)
             except (ConfigError, OSError) as e:
                 _emit(
                     result_dict(
@@ -3431,7 +5451,6 @@ def _register_bootstrap() -> None:
                     "max_budget": max_budget,
                 },
                 skip_jobs=skip_jobs,
-                skip_claude=skip_claude,
                 managed_by=managed_by,
             )
         cfg.auto_update = auto_update
@@ -3550,7 +5569,7 @@ def _register_bootstrap() -> None:
                     typer.echo(vault_drift.printable(fp.patch), nl=False)
                     produced += 1
             typer.echo(
-                f"{produced} file(s) in the patch — apply with `git apply` in a plugin checkout, review it, "
+                f"{count(produced, 'file')} in the patch — apply with `git apply` in a plugin checkout, review it, "
                 "then open a PR"
                 if produced
                 else "nothing to back-port",
@@ -3567,13 +5586,19 @@ def _register_bootstrap() -> None:
             return
 
         if privacy:
-            typer.echo(f"privacy drift — {len(privacy)} vault file(s) read the vault around the privacy labels:")
+            typer.echo(
+                f"privacy drift — {count(len(privacy), 'vault file')} {agree(len(privacy), 'reads', 'read')} the vault "
+                "around the privacy labels:"
+            )
             for finding in privacy:
                 typer.echo(f"  {finding.rule:<18} {finding.path}  {finding.message}")
         if not rows:
             typer.echo("no vault drift — every plugin-owned file matches what the plugin last wrote")
             return
-        typer.echo(f"vault drift — {len(rows)} plugin-owned file(s) differ from what the plugin last wrote:")
+        typer.echo(
+            f"vault drift — {count(len(rows), 'plugin-owned file')} {agree(len(rows), 'differs', 'differ')} from what "
+            "the plugin last wrote:"
+        )
         for row in rows:
             typer.echo(f"  {row.status:<9} {row.path}  {row.describe()}")
             if diff and row.diff:
@@ -3613,7 +5638,7 @@ def _register_phases() -> None:
 
     @phases_app.command("backport")
     def cli_phases_backport(
-        kind: str = typer.Option("all", "--kind", help="SKILL | DREAMING | RESEARCH | all"),
+        kind: str = typer.Option("all", "--kind", help="SKILL | DREAMING | RESEARCH | RESPOND | all"),
         apply: bool = typer.Option(
             False, "--apply", help="Write the round-trip-verified edits into phases/ (default: dry-run report)"
         ),
@@ -3627,7 +5652,7 @@ def _register_phases() -> None:
     ) -> None:
         """Back-port vault brain-file edits into their source phase fragments.
 
-        Diffs each vault SKILL/DREAMING/RESEARCH against its last-assembled
+        Diffs each vault SKILL/DREAMING/RESEARCH/RESPOND against its last-assembled
         snapshot, maps each divergence to a phase fragment, conservatively
         re-templatizes it, and — only for hunks that round-trip — writes it back
         so a future /scout-update re-render carries it forward instead of
@@ -3639,6 +5664,7 @@ def _register_phases() -> None:
         from scout import paths as _paths
         from scout.engine_checkout import refuse_live_engine_write
         from scout.scripts.bootstrap import _template_vars, load_custom
+        from scout.scripts.brain_merge import BRAIN_KINDS
         from scout.scripts.phase_backport import (
             build_rendered_sections,
             bundle_files,
@@ -3660,7 +5686,7 @@ def _register_phases() -> None:
         vars_ = _template_vars(cfg)
         snapshot_dir = vault / ".scout-state" / "last-assembled"
 
-        kinds = ["SKILL", "DREAMING", "RESEARCH"] if kind == "all" else [kind.upper()]
+        kinds = list(BRAIN_KINDS) if kind == "all" else [kind.upper()]
         custom = load_custom(cfg)
 
         # Plan every kind once. A hunk in a core fragment shows up in each brain
@@ -3706,11 +5732,11 @@ def _register_phases() -> None:
             unmapped = [r for r in results if r.status == "unmapped"]
 
             typer.echo(
-                f"\nphases backport — {k} ({len(results)} hunk(s): "
+                f"\nphases backport — {k} ({count(len(results), 'hunk')}: "
                 f"{len(applied)} applied · {len(review)} needs-review · {len(unmapped)} unmapped)"
             )
             for r in applied:
-                typer.echo(f"  ✓ applied      {r.phase_file}  «{r.section_name}»  (+{len(r.added)} line(s))")
+                typer.echo(f"  ✓ applied      {r.phase_file}  «{r.section_name}»  (+{count(len(r.added), 'line')})")
             for r in review:
                 where = f"{r.phase_file} «{r.section_name}»" if r.phase_file else "—"
                 extra = f" [risky: {', '.join(r.risky_hits)}]" if r.risky_hits else ""
@@ -3722,12 +5748,14 @@ def _register_phases() -> None:
         total_applied = len(all_applied) if apply else 0
         if apply:
             for pf, (_old, text) in bundle.items():
-                pf.write_text(text, encoding="utf-8")
+                from scout import safe_write
+
+                safe_write.atomic_write_text(pf, text)
                 typer.echo(f"  → wrote {pf}")
 
         if apply:
             typer.echo(
-                f"\nApplied {total_applied} hunk(s) to phases/. "
+                f"\nApplied {count(total_applied, 'hunk')} to phases/. "
                 "Review the diff, run the phase-assembly tests, commit, and open a PR."
             )
         else:
@@ -3764,17 +5792,18 @@ def self_update_run_cmd(
     """
     import datetime as _dt
     import json as _json
-    import sys as _sys
 
     from scout import paths as _paths
+    from scout._spawn import python_module_argv
     from scout.scripts.self_update_run import default_deps, run_lock, run_update, spawn_detached
 
     vault = _paths.data_dir()
     today = _dt.datetime.now().strftime("%Y-%m-%d")
     log_name = f"self-update-{today}.log"
     if detach:
-        argv = [_sys.executable, "-m", "scout", "self-update", "run"]
-        argv += [flag for flag, on in (("--scheduled", scheduled), ("--dry-run", dry_run), ("--force", force)) if on]
+        # The heartbeat runs this with the vault as cwd; -P keeps vault files off the child's sys.path.
+        flags = [flag for flag, on in (("--scheduled", scheduled), ("--dry-run", dry_run), ("--force", force)) if on]
+        argv = python_module_argv("scout", "self-update", "run", *flags)
         pid = spawn_detached(argv, log_path=vault / ".scout-logs" / log_name)
         typer.echo(f"self-update: started in the background (pid {pid}); log: .scout-logs/{log_name}")
         return
@@ -3788,7 +5817,9 @@ def self_update_run_cmd(
         # The heartbeat starts a scheduled run once per local day; this marker is what it checks.
         marker = vault / ".scout-cache" / f"self-update-{today}.done"
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.touch()
+        from scout import safe_write
+
+        safe_write.atomic_write_text(marker, "")  # never through a symlink a run put in the cache
     if json_out:
         payload = {
             "row": attempt.row.to_json() if attempt.row else None,
@@ -3978,12 +6009,12 @@ def _register_repo() -> None:
         for note in result.notes:
             typer.echo(note)
         if result.replayed:
-            typer.echo(f"replayed {len(result.replayed)} commit(s) from Agnes")
+            typer.echo(f"replayed {count(len(result.replayed), 'commit')} from Agnes")
         if result.action in ("link", "sync"):
             typer.echo(
-                f"pushed {len(result.pushed)} commit(s)"
+                f"pushed {count(len(result.pushed), 'commit')}"
                 + (f", {result.skipped} unchanged after filtering" if result.skipped else "")
-                + (f"; {result.stripped} local-only file(s) kept on this computer" if result.stripped else "")
+                + (f"; {count(result.stripped, 'local-only file')} kept on this computer" if result.stripped else "")
             )
 
     @repo_app.command("link")
@@ -4321,7 +6352,993 @@ def _register_repo() -> None:
 _register_repo()
 
 
+def _register_delegate() -> None:
+    delegate_app = typer.Typer(
+        help="Mirrors for your own agents off this computer (#550): each delegate:<id> gets a filtered copy of "
+        "the vault in its own private repository."
+    )
+    app.add_typer(delegate_app, name="delegate")
+
+    def _fail(e: Exception, as_json: bool) -> NoReturn:
+        import json as _json
+
+        from scout.repo_sync import RepoSyncError
+
+        assert isinstance(e, RepoSyncError)
+        if as_json:
+            typer.echo(_json.dumps({"ok": False, "code": e.code, "message": e.message}, indent=2))
+        else:
+            typer.echo(e.message, err=True)
+        raise typer.Exit(2) from e
+
+    def _say(result: object, as_json: bool) -> None:
+        import json as _json
+
+        from scout.delegate_mirror import Result
+
+        assert isinstance(result, Result)
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **result.to_json()}, indent=2, sort_keys=True))
+            return
+        r = result
+        if r.action in ("link", "sync", "preview"):
+            if r.unchanged:
+                typer.echo(f"{r.delegate}: up to date")
+            else:
+                verb = "would hold" if r.action == "preview" else "pushed a mirror commit with"
+                typer.echo(
+                    f"{r.delegate}: {verb} {count(r.files, 'file')}; {r.withheld} withheld"
+                    + (f", {r.left_out} left out after redaction" if r.left_out else "")
+                    + (
+                        f"; {count(r.redacted_lines, 'line')} removed from {count(r.redacted_files, 'file')}"
+                        if r.redacted_files
+                        else ""
+                    )
+                )
+        for note in r.notes:
+            typer.echo(note)
+
+    @delegate_app.command("link")
+    def cli_delegate_link(
+        delegate: str = typer.Argument(..., help="The delegate id, as listed under privacy.delegates."),
+        remote: str = typer.Option(
+            "", "--remote", help="Its private GitHub repository (https://github.com/<owner>/<repo>) or a local path."
+        ),
+        create_repo: str | None = typer.Option(
+            None, "--create-repo", help="Create this private GitHub repository (owner/name) with gh and use it."
+        ),
+        confirm_account_unshared: bool = typer.Option(
+            False,
+            "--confirm-account-unshared",
+            help="You confirm that only you use the agent's account: no team bot, shared handle or shared channel.",
+        ),
+        replace_remote: bool = typer.Option(
+            False, "--replace-remote", help="The remote has history: start it over with one mirror commit."
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Link a delegate to its own private repository and push its first mirror.
+
+        The mirror holds what scoutctl kb shows that delegate, with the lines that
+        name or link a note it can't see removed. Run scoutctl delegate preview first.
+        """
+        from scout import paths as _paths
+        from scout.delegate_mirror import link
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            result = link(
+                _paths.data_dir(),
+                delegate,
+                remote,
+                account_unshared=confirm_account_unshared,
+                replace_remote=replace_remote,
+                create_repo=create_repo,
+            )
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _say(result, as_json)
+
+    @delegate_app.command("sync")
+    def cli_delegate_sync(
+        delegate: str | None = typer.Argument(None, help="One delegate id. Omit with --all."),
+        all_: bool = typer.Option(False, "--all", help="Every linked delegate; one failing doesn't stop the rest."),
+        if_moved: bool = typer.Option(
+            False,
+            "--if-moved",
+            help="With --all: only delegates whose mirror may be behind (HEAD moved, or the last sync failed).",
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Push a new mirror commit when the vault's HEAD changed what the delegate may see.
+
+        Scheduled runs call `sync --all` when they finish, and the schedule tick
+        calls `sync --all --if-moved` at most every 15 minutes. A failure is
+        recorded for run health and doctor, never failing the run.
+        """
+        import json as _json
+
+        from scout import paths as _paths
+        from scout.delegate_mirror import sync, sync_all
+        from scout.repo_sync import RepoSyncError
+
+        if (delegate is None) == (not all_) or (if_moved and not all_):
+            typer.echo(
+                "scoutctl delegate sync: name one delegate, or pass --all (and --if-moved only with --all)", err=True
+            )
+            raise typer.Exit(2)
+        if delegate is not None:
+            try:
+                result = sync(_paths.data_dir(), delegate)
+            except RepoSyncError as e:
+                _fail(e, as_json)
+            _say(result, as_json)
+            return
+        try:
+            done, failed = sync_all(_paths.data_dir(), only_moved=if_moved)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        if as_json:
+            doc = {
+                "ok": not failed,
+                "synced": [r.to_json() for r in done],
+                "failed": {k: {"code": err.code, "message": err.message} for k, err in failed.items()},
+            }
+            typer.echo(_json.dumps(doc, indent=2, sort_keys=True))
+        else:
+            for r in done:
+                _say(r, False)
+            for k, err in failed.items():
+                typer.echo(f"{k}: {err.message}", err=True)
+        if failed:
+            raise typer.Exit(2)
+
+    @delegate_app.command("preview")
+    def cli_delegate_preview(
+        delegate: str = typer.Argument(..., help="The delegate id, as listed under privacy.delegates."),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Show what a sync of HEAD would put in the delegate's mirror. Writes nothing; no network."""
+        from scout import paths as _paths
+        from scout.delegate_mirror import preview
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            result = preview(_paths.data_dir(), delegate)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _say(result, as_json)
+
+    @delegate_app.command("init")
+    def cli_delegate_init(
+        clone: Path | None = typer.Option(  # noqa: B008
+            None, "--clone", help="The mirror clone (default: $SCOUT_DATA_DIR, else this folder or one above it)."
+        ),
+        inbox: Path | None = typer.Option(  # noqa: B008
+            None, "--inbox", help="The agent's clone of its inbox repository, where scoutctl inbox propose writes."
+        ),
+        print_env: bool = typer.Option(
+            False,
+            "--print-env",
+            help='Print only shell exports, for: e=$(scoutctl delegate init --print-env) && eval "$e".',
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Set up the agent's side of a delegate mirror: run in its clone, on the agent's platform.
+
+        Checks the clone, its config and this engine, reads once as the delegate,
+        and writes the environment Scout needs here inside the clone's .git (never
+        the tree). Safe to run again; the mirror's AGENTS.md says when.
+        """
+        import json as _json
+
+        from scout.delegate_agent import init
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            result = init(clone, inbox=inbox)
+        except Exception as e:  # every failure exits 2, so `e=$(... --print-env) && eval "$e"` loads nothing
+            failure = e if isinstance(e, RepoSyncError) else RepoSyncError("init_failed", f"refused: {e}")
+            if print_env:
+                typer.echo(failure.message, err=True)
+                raise typer.Exit(2) from e
+            _fail(failure, as_json)
+        if print_env:
+            for note in result.notes:
+                typer.echo(f"scoutctl delegate init: {note}", err=True)
+            typer.echo(result.exports(), nl=False)
+            return
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **result.to_json()}, indent=2, sort_keys=True))
+            return
+        typer.echo(f"{result.clone} is {result.delegate}'s mirror; {count(result.files, 'file')} visible to it")
+        for note in result.notes:
+            typer.echo(f"warning: {note}")
+        if result.env_file:
+            typer.echo(f"wrote {result.env_file}")
+        typer.echo('load it in each task with: e=$(scoutctl delegate init --print-env) && eval "$e"')
+
+    @delegate_app.command("status")
+    def cli_delegate_status(
+        as_json: bool = typer.Option(
+            False,
+            "--json",
+            help="Print the versioned status document the app reads (scout/delegate_status.py). Read-only; "
+            "a state it can't trust shows in it rather than failing.",
+        ),
+    ) -> None:
+        """List the linked delegates: remote, last sync and the vault commit it mirrors."""
+        import json as _json
+        import os as _os
+
+        from scout import paths as _paths
+        from scout.delegate_mirror import load_links
+        from scout.repo_sync import RepoSyncError
+
+        if as_json:
+            from scout.delegate_status import report
+
+            typer.echo(_json.dumps(report(_paths.data_dir(), env=_os.environ), indent=2, sort_keys=True))
+            return
+        try:
+            links = load_links(_paths.data_dir())
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        from scout.delegate_status import remote_text
+
+        if not links:
+            typer.echo("no delegate mirrors on this computer")
+        for k, v in sorted(links.items()):
+            key = "deploy key" if v.deploy_key_id is not None else "no deploy key"
+            if v.stale_key_ids:
+                key += f", {count(len(v.stale_key_ids), 'old key')} still live (scoutctl delegate key {k} retries)"
+            synced = f"last sync {v.last_sync or 'never'}; vault {(v.last_vault or '-')[:12]}"
+            typer.echo(f"{k}: {remote_text(v.remote, _os.environ)}; {key}; {synced}")
+
+    @delegate_app.command("key")
+    def cli_delegate_key(
+        delegate: str = typer.Argument(..., help="The delegate id."),
+        rotate: bool = typer.Option(False, "--rotate", help="Replace the agent's deploy key with a new one."),
+        revoke: bool = typer.Option(False, "--revoke", help="Delete the agent's deploy key: it can't fetch any more."),
+        inbox: bool = typer.Option(
+            False, "--inbox", help="The key the agent pushes proposals to its inbox with (writable, the inbox only)."
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Give the agent a read-only deploy key on its mirror repository (or rotate or revoke it).
+
+        With --inbox, the key is for its inbox repository instead, and can push there.
+
+        The private key is kept in ~/.scout-secrets/delegate-mirrors/ for you to
+        put in the agent's secret store; the command prints where, and how the
+        agent clones with it.
+        """
+        from scout import paths as _paths
+        from scout.delegate_mirror import deploy_key
+        from scout.repo_sync import RepoSyncError
+
+        if rotate and revoke:
+            typer.echo("scoutctl delegate key: pass --rotate or --revoke, not both", err=True)
+            raise typer.Exit(2)
+        if inbox:
+            from scout import delegate_inbox
+
+            try:
+                inbox_result = delegate_inbox.deploy_key(_paths.data_dir(), delegate, rotate=rotate, revoke=revoke)
+            except RepoSyncError as e:
+                _fail(e, as_json)
+            _say_inbox(inbox_result, as_json)
+            return
+        try:
+            result = deploy_key(_paths.data_dir(), delegate, rotate=rotate, revoke=revoke)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _say(result, as_json)
+
+    @delegate_app.command("push-token")
+    def cli_delegate_push_token(
+        token_file: Path | None = typer.Option(
+            None, "--token-file", help="A file holding the token. Default: ask for it."
+        ),
+    ) -> None:
+        """Store a GitHub token this computer pushes the mirrors with, instead of git's own login.
+
+        Make it fine-grained: contents read and write on the mirror repositories
+        only. It is kept in ~/.scout-secrets/delegate-mirrors/, never in the vault.
+        """
+        from scout import paths as _paths
+        from scout.delegate_mirror import push_token_path, save_push_token
+        from scout.repo_sync import RepoSyncError
+
+        vault = _paths.data_dir()
+        try:
+            if token_file is not None:
+                token = token_file.expanduser().read_text(encoding="utf-8")
+            else:
+                token = typer.prompt("GitHub token for the delegate mirrors", hide_input=True)
+            save_push_token(vault, token)
+        except RepoSyncError as e:
+            _fail(e, False)
+        except OSError as e:
+            _fail(RepoSyncError("token_missing", f"refused: can't read {token_file}: {e}"), False)
+        typer.echo(f"stored at {push_token_path(vault)}")
+
+    @delegate_app.command("trust-state")
+    def cli_delegate_trust_state(
+        confirm: list[str] = typer.Option(  # noqa: B008
+            [], "--confirm", help="A delegate id whose link you checked (once per link), instead of the prompt."
+        ),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Check every link in a state file whose signature doesn't match, and sign it again (the owner only).
+
+        Each delegate and its remote are shown and must be confirmed: at a
+        terminal by typing the delegate id, otherwise with --confirm <id> per link.
+        """
+        import sys as _sys
+
+        from scout import paths as _paths
+        from scout.delegate_mirror import trust_state
+        from scout.repo_sync import RepoSyncError
+
+        confirmed = set(confirm)
+
+        def ask(delegate: str, remote: str) -> bool:
+            if confirmed:
+                return delegate in confirmed
+            if not _sys.stdin.isatty():
+                return False
+            typer.echo(f"{delegate} -> {remote}")
+            return typer.prompt(f"Type {delegate} to trust this link", default="", show_default=False) == delegate
+
+        try:
+            result = trust_state(_paths.data_dir(), confirm=ask)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _say(result, as_json)
+
+    @delegate_app.command("inbox")
+    def cli_delegate_inbox(
+        delegate: str = typer.Argument(..., help="The delegate id."),
+        remote: str = typer.Option(
+            "", "--remote", help="Its private inbox repository (https://github.com/<owner>/<repo>) or a local path."
+        ),
+        create_repo: str | None = typer.Option(
+            None, "--create-repo", help="Create this private GitHub repository (owner/name), Actions off, and use it."
+        ),
+        reset: bool = typer.Option(
+            False, "--reset", help="After inbox_rewritten: take the inbox's main as it is now. Pushes nothing."
+        ),
+        unlink: bool = typer.Option(False, "--unlink", help="Forget the inbox and revoke its key. The repo stays."),
+        confirm: bool = typer.Option(False, "--confirm", help="With --reset: don't ask."),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Link a delegate to its inbox: a private repository its agent pushes proposals to (#550 V4).
+
+        The repository is bound by GitHub's own ids and checked before every pull:
+        private, no collaborators, no deploy key but the agent's, not a fork, GitHub Actions and Pages off.
+        """
+        import sys as _sys
+
+        from scout import delegate_inbox
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        if sum(map(bool, (remote or create_repo, reset, unlink))) != 1:
+            typer.echo("scoutctl delegate inbox: pass --remote or --create-repo, or --reset, or --unlink", err=True)
+            raise typer.Exit(2)
+
+        def ask(name: str, main: str) -> bool:
+            if confirm:
+                return True
+            if not _sys.stdin.isatty():
+                return False
+            typer.echo(f"{name}'s inbox main is now {main}")
+            return typer.prompt(f"Type {name} to build on it", default="", show_default=False) == name
+
+        vault = _paths.data_dir()
+        try:
+            if reset:
+                result = delegate_inbox.reset(vault, delegate, confirm=ask)
+            elif unlink:
+                result = delegate_inbox.unlink(vault, delegate)
+            else:
+                result = delegate_inbox.link(vault, delegate, remote, create_repo=create_repo)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _say_inbox(result, as_json)
+
+    @delegate_app.command("unlink")
+    def cli_delegate_unlink(
+        delegate: str = typer.Argument(..., help="The delegate id."),
+        as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+    ) -> None:
+        """Forget a delegate's mirror on this computer and revoke its deploy key. The repository stays."""
+        from scout import paths as _paths
+        from scout.delegate_mirror import unlink
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            result = unlink(_paths.data_dir(), delegate)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _say(result, as_json)
+
+
+_register_delegate()
+
+
+def _say_inbox(result: object, as_json: bool) -> None:
+    import json as _json
+
+    from scout.delegate_inbox import Result
+
+    assert isinstance(result, Result)
+    if as_json:
+        typer.echo(_json.dumps({"ok": True, **result.to_json()}, indent=2, sort_keys=True))
+        return
+    r = result
+    if r.action == "inbox-pull":
+        refused = sum(r.refused.values())
+        line = f"{r.delegate}: took {len(r.taken)}"
+        line += (
+            f", refused {refused} ({', '.join(f'{k} {v}' for k, v in sorted(r.refused.items()))})" if refused else ""
+        )
+        line += f", {r.already} taken before" if r.already else ""
+        typer.echo(line)
+    for note in r.notes:
+        typer.echo(note)
+
+
+def _register_inbox() -> None:
+    inbox_app = typer.Typer(
+        help="Delegates' inboxes (#550 V4): an agent proposes a change, the laptop pulls it. The agent's side is "
+        "inbox propose; the owner's is inbox pull."
+    )
+    app.add_typer(inbox_app, name="inbox")
+    propose_app = typer.Typer(help="Propose a change from a delegate's agent, in its inbox clone.")
+    inbox_app.add_typer(propose_app, name="propose")
+
+    def _fail(e: Exception, as_json: bool) -> NoReturn:
+        import json as _json
+
+        from scout.repo_sync import RepoSyncError
+
+        assert isinstance(e, RepoSyncError)
+        if as_json:
+            typer.echo(_json.dumps({"ok": False, "code": e.code, "message": e.message}, indent=2))
+        else:
+            typer.echo(e.message, err=True)
+        raise typer.Exit(2) from e
+
+    def _propose(kind: str, body: dict[str, object], inbox: Path | None, push: bool, as_json: bool) -> None:
+        import json as _json
+
+        from scout.delegate_inbox import propose
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            out = propose(kind, body, inbox=inbox, push=push)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **out.to_json()}, indent=2, sort_keys=True))
+            return
+        typer.echo(f"proposed {out.id} ({out.path}){', pushed' if out.pushed else ''}")
+        for note in out.notes:
+            typer.echo(note)
+
+    inbox_opt = typer.Option(None, "--inbox", help="The inbox clone (default: $SCOUT_INBOX_DIR, from delegate init).")
+    push_opt = typer.Option(False, "--push", help="Push it to the inbox now.")
+    json_opt = typer.Option(False, "--json", help="Print JSON.")
+
+    @propose_app.command("observation")
+    def cli_inbox_propose_observation(
+        text: str = typer.Option(..., "--text", help="What the agent noticed (up to 4000 characters)."),
+        about: str | None = typer.Option(None, "--about", help="What it is about: a name or slug (one line)."),
+        source: str | None = typer.Option(None, "--source", help="Where it came from: a URL or a note (one line)."),
+        inbox: Path | None = inbox_opt,
+        push: bool = push_opt,
+        as_json: bool = json_opt,
+    ) -> None:
+        """Propose an observation. The owner's Scout reviews it; nothing is applied from it automatically."""
+        body: dict[str, object] = {"text": text}
+        if about is not None:
+            body["about"] = about
+        if source is not None:
+            body["source"] = source
+        _propose("observation", body, inbox, push, as_json)
+
+    @propose_app.command("action")
+    def cli_inbox_propose_action(
+        op: str = typer.Argument(..., help="mark-done | snooze | add-comment | set-estimate | set-block | clear-block"),
+        tag: str = typer.Option(..., "--tag", help="The item's [#TAG], without the brackets."),
+        date: str = typer.Option(..., "--date", help="The daily file's date, YYYY-MM-DD."),
+        undo: bool = typer.Option(False, "--undo", help="mark-done: mark it not done."),
+        until: str | None = typer.Option(None, "--until", help="snooze: until YYYY-MM-DD."),
+        comment: str | None = typer.Option(None, "--comment", help="add-comment: one line."),
+        minutes: int | None = typer.Option(None, "--minutes", help="set-estimate: 1-1440."),
+        kind: str | None = typer.Option(None, "--kind", help="set-estimate: the kind of work (one word)."),
+        day: str | None = typer.Option(None, "--day", help="set-block: YYYY-MM-DD."),
+        start: str | None = typer.Option(None, "--start", help="set-block: HH:MM."),
+        end: str | None = typer.Option(None, "--end", help="set-block: HH:MM."),
+        inbox: Path | None = inbox_opt,
+        push: bool = push_opt,
+        as_json: bool = json_opt,
+    ) -> None:
+        """Propose a change to one action item, addressed by its [#TAG] in one day's file."""
+        given = {
+            "undo": undo or None,
+            "until": until,
+            "comment": comment,
+            "minutes": minutes,
+            "kind": kind,
+            "day": day,
+            "start": start,
+            "end": end,
+        }
+        args = {k: v for k, v in given.items() if v is not None}
+        _propose("action_item_op", {"op": op, "tag": tag, "date": date, "args": args}, inbox, push, as_json)
+
+    @inbox_app.command("pull")
+    def cli_inbox_pull(
+        delegate: str | None = typer.Argument(None, help="One delegate id. Omit with --all."),
+        all_: bool = typer.Option(False, "--all", help="Every linked inbox; one failing doesn't stop the rest."),
+        as_json: bool = json_opt,
+    ) -> None:
+        """Take new proposals from the delegates' inboxes into .scout-inbox/agents/ (the owner's computer).
+
+        Each is checked, recorded under this computer's signature, copied, then
+        removed from the inbox. Nothing is applied and nothing is committed here.
+        """
+        import json as _json
+
+        from scout import delegate_inbox
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        if (delegate is None) == (not all_):
+            typer.echo("scoutctl inbox pull: name one delegate, or pass --all", err=True)
+            raise typer.Exit(2)
+        vault = _paths.data_dir()
+        if delegate is not None:
+            try:
+                result = delegate_inbox.pull(vault, delegate)
+            except RepoSyncError as e:
+                _fail(e, as_json)
+            _say_inbox(result, as_json)
+            return
+        try:
+            results = delegate_inbox.pull_all(vault)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        failed = [r for r in results if isinstance(r, RepoSyncError)]
+        if as_json:
+            typer.echo(
+                _json.dumps(
+                    [
+                        {"ok": False, "delegate": r.detail.get("delegate"), "code": r.code, "message": r.message}
+                        if isinstance(r, RepoSyncError)
+                        else {"ok": True, **r.to_json()}
+                        for r in results
+                    ],
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            for r in results:
+                if isinstance(r, RepoSyncError):
+                    typer.echo(f"{r.detail.get('delegate')}: {r.message}", err=True)
+                else:
+                    _say_inbox(r, False)
+            if not results:
+                typer.echo("no delegate inboxes on this computer")
+        if failed:
+            raise typer.Exit(2)
+
+    @inbox_app.command("sync")
+    def cli_inbox_sync(as_json: bool = json_opt) -> None:
+        """Pull every inbox, commit the ledgers, then apply what was taken (the schedule tick starts this).
+
+        The owner's, outside any run. The session lock is held only to commit and apply, for about a minute at
+        most; a live run makes it wait for the next tick.
+        """
+        import json as _json
+
+        from scout import delegate_inbox_sync
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            result = delegate_inbox_sync.sync(_paths.data_dir())
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        except Exception as e:  # never a traceback from the tick's own step
+            _fail(RepoSyncError("sync_failed", f"refused: the inbox sync failed ({type(e).__name__}: {e})"), as_json)
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **result.to_json()}, indent=2, sort_keys=True))
+            return
+        for row in result.pulled + result.applied:
+            typer.echo(_json.dumps(row, sort_keys=True))
+        if result.ledger_commit:
+            typer.echo(f"committed the ledgers: {result.ledger_commit}")
+        if result.skipped:
+            typer.echo(f"commits and applies waited: {result.skipped}")
+        for note in result.notes:
+            typer.echo(note)
+
+    @inbox_app.command("apply")
+    def cli_inbox_apply(
+        delegate: str | None = typer.Argument(None, help="One delegate id. Omit with --all."),
+        all_: bool = typer.Option(False, "--all", help="Every delegate with taken proposals."),
+        as_json: bool = json_opt,
+    ) -> None:
+        """Apply the action-item proposals inbox pull took, each at most once (the owner's computer).
+
+        Only a copy whose bytes match what the pull recorded is applied, only to an
+        item the delegate's mirror showed it and still would, within daily limits.
+        Each applied change can be undone with: scoutctl inbox revert <ULID>.
+        """
+        import json as _json
+
+        from scout import delegate_apply
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        if (delegate is None) == (not all_):
+            typer.echo("scoutctl inbox apply: name one delegate, or pass --all", err=True)
+            raise typer.Exit(2)
+        vault = _paths.data_dir()
+        try:
+            results = (
+                [delegate_apply.apply(vault, delegate)] if delegate is not None else delegate_apply.apply_all(vault)
+            )
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        except Exception as e:  # as --all does per delegate: a failure is a refusal, never a traceback
+            _fail(
+                RepoSyncError("apply_failed", f"refused: {delegate}'s apply failed ({type(e).__name__}: {e})"), as_json
+            )
+        failed = [r for r in results if isinstance(r, RepoSyncError)]
+        if as_json:
+            typer.echo(
+                _json.dumps(
+                    [
+                        {"ok": False, "delegate": r.detail.get("delegate"), "code": r.code, "message": r.message}
+                        if isinstance(r, RepoSyncError)
+                        else {"ok": True, **r.to_json()}
+                        for r in results
+                    ],
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            for r in results:
+                if isinstance(r, RepoSyncError):
+                    typer.echo(f"{r.detail.get('delegate')}: {r.message}", err=True)
+                    continue
+                counts = ", ".join(f"{k} {v}" for k, v in r.counts().items()) or "nothing new"
+                typer.echo(f"{r.delegate}: {counts}")
+                for note in r.notes:
+                    typer.echo(note)
+        if failed:
+            raise typer.Exit(2)
+
+    @inbox_app.command("revert")
+    def cli_inbox_revert(
+        ulid: str = typer.Argument(..., help="The proposal's ULID, as inbox apply --json lists it."),
+        as_json: bool = json_opt,
+    ) -> None:
+        """Put back a task a delegate's applied proposal changed, if nothing changed it since (the owner only)."""
+        from scout import delegate_apply
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            delegate = delegate_apply.revert(_paths.data_dir(), ulid)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        typer.echo(f'{{"ok": true, "delegate": "{delegate}", "reverted": "{ulid}"}}' if as_json else
+                   f"reverted {delegate}'s {ulid}")  # fmt: skip
+
+    # ----- inbox review (#550 V4b2): the owner reads, accepts, rejects and promotes agents' text -----------------
+
+    review_app = typer.Typer(
+        help="What agents proposed that waits for you: observations and held comments (the owner only).",
+        invoke_without_command=True,
+    )
+    inbox_app.add_typer(review_app, name="review")
+
+    def _show_item(item: object) -> None:
+        from scout.delegate_review import Item
+
+        assert isinstance(item, Item)
+        what = item.kind if item.op is None else f"{item.kind} {item.op} [#{item.tag}] {item.date}"
+        when = f"{item.status}, proposed {item.proposed}"
+        typer.echo(f"{item.ulid}  FROM AGENT delegate-{item.delegate}  {what}  ({when})")
+        if item.about:
+            typer.echo(f"  about: {item.about}")
+        if item.source:
+            typer.echo(f"  source: {item.source}")
+        if item.look_alikes:
+            typer.echo(f"  LOOK-ALIKE WORDS (mixed or other scripts): {', '.join(item.look_alikes)}")
+        for line in item.text.split("\n"):
+            typer.echo(f"  | {line}")
+
+    def _typed(ulid: str, confirm: str | None, what: str) -> str | None:
+        """--confirm, or the ULID typed at a terminal; never a bare flag."""
+        import sys
+
+        if confirm is not None or not sys.stdin.isatty():
+            return confirm
+        return typer.prompt(f"To {what} it, type its ULID", default="", show_default=False)
+
+    @review_app.callback()
+    def cli_inbox_review(
+        ctx: typer.Context,
+        delegate: str | None = typer.Option(None, "--delegate", help="One delegate's items only."),
+        accepted: bool = typer.Option(
+            False, "--accepted", help="List the accepted observations instead (ids and times; promote acts on them)."
+        ),
+        as_json: bool = json_opt,
+    ) -> None:
+        """List what waits for your review, with hidden characters shown as \\u{...}."""
+        import json as _json
+
+        from scout import delegate_review
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        if ctx.invoked_subcommand is not None:
+            return
+        if accepted:
+            try:
+                notes = delegate_review.accepted(_paths.data_dir(), delegate=delegate)
+            except RepoSyncError as e:
+                _fail(e, as_json)
+            if as_json:
+                typer.echo(_json.dumps([a.to_json() for a in notes], indent=2, sort_keys=True))
+                return
+            for a in notes:
+                where = (f"promoted to {', '.join(a.promoted_to)}" if a.promoted_to else "promoted") if a.promoted \
+                    else "private"  # fmt: skip
+                typer.echo(f"{a.ulid}  FROM AGENT delegate-{a.delegate}  {a.note}  ({where})")
+            if not notes:
+                typer.echo("No accepted observations.")
+            return
+        try:
+            items = delegate_review.review(_paths.data_dir(), delegate=delegate)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        if as_json:
+            typer.echo(_json.dumps([i.to_json() for i in items], indent=2, sort_keys=True))
+            return
+        if not items:
+            typer.echo("Nothing waits for review.")
+            return
+        for item in items:
+            _show_item(item)
+            typer.echo("")
+        typer.echo("Accept: scoutctl inbox review accept <ULID>. Reject: scoutctl inbox review reject <ULID>.")
+        if any(i.kind == "observation" for i in items):
+            typer.echo(delegate_review.EDITED)
+
+    @review_app.command("accept")
+    def cli_inbox_review_accept(
+        ulid: str = typer.Argument(..., help="The item's ULID."),
+        confirm: str | None = typer.Option(None, "--confirm", help="The ULID again, to confirm without a terminal."),
+        as_json: bool = json_opt,
+    ) -> None:
+        """Write an observation into knowledge-base/from-agents/, or a held comment into today's file.
+
+        Runs read it from then on. An observation stays private and hidden from every delegate until you promote it.
+        """
+        from scout import delegate_review
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        vault = _paths.data_dir()
+        try:
+            if not as_json and confirm is None:
+                for item in delegate_review.review(vault):
+                    if item.ulid == ulid:
+                        _show_item(item)
+            decision = delegate_review.accept(vault, ulid, confirm=_typed(ulid, confirm, "accept"))
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _decided(decision, as_json)
+
+    def _decided(decision: object, as_json: bool) -> None:
+        import json as _json
+
+        from scout.delegate_review import Decision
+
+        assert isinstance(decision, Decision)
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **decision.to_json()}, indent=2, sort_keys=True))
+            return
+        where = f" ({decision.note})" if decision.note else ""
+        typer.echo(f"{decision.outcome}: delegate-{decision.delegate}'s {decision.ulid}{where}")
+        for note in decision.notes:
+            typer.echo(note)
+
+    @review_app.command("reject")
+    def cli_inbox_review_reject(
+        ulid: str = typer.Argument(..., help="The item's ULID."),
+        as_json: bool = json_opt,
+    ) -> None:
+        """Record it as rejected and delete the local copy. Nothing reaches the vault."""
+        from scout import delegate_review
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            decision = delegate_review.reject(_paths.data_dir(), ulid)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _decided(decision, as_json)
+
+    @review_app.command("promote")
+    def cli_inbox_review_promote(
+        ulid: str = typer.Argument(..., help="An accepted observation's ULID."),
+        to: str | None = typer.Option(
+            None, "--to", help="Only these delegates, comma-separated; 'author' is its author. Default: every delegate."
+        ),
+        confirm: str | None = typer.Option(None, "--confirm", help="The ULID again, to confirm without a terminal."),
+        preview_only: bool = typer.Option(
+            False, "--preview", help="Show the text and who would see it, with its sha256; write nothing."
+        ),
+        previewed: str | None = typer.Option(
+            None, "--previewed", help="A --preview's sha256: promote only if the note is still exactly that."
+        ),
+        as_json: bool = json_opt,
+    ) -> None:
+        """Let delegates' agents read an accepted observation (it becomes a normal note, promoted_from its agent)."""
+        from scout import delegate_review
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        vault = _paths.data_dir()
+        targets = [t.strip() for t in to.split(",") if t.strip()] if to is not None else None
+        try:
+            if preview_only or previewed is None:
+                preview = delegate_review.preview_promote(vault, ulid, to=targets)  # shown with --confirm too
+                if preview_only:
+                    _previewed(preview, as_json, "Would be visible to")
+                    return
+                if not as_json:
+                    _show_item(preview)
+                previewed = preview.sha256
+            decision = delegate_review.promote(
+                vault, ulid, confirm=_typed(ulid, confirm, "promote"), previewed=previewed, to=targets
+            )
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _decided(decision, as_json)
+
+    def _previewed(item: object, as_json: bool, who: str) -> None:
+        import json as _json
+
+        from scout.delegate_review import Item
+
+        assert isinstance(item, Item)
+        if as_json:
+            typer.echo(_json.dumps({"ok": True, **item.to_json()}, indent=2, sort_keys=True))
+            return
+        _show_item(item)
+        typer.echo(f"{who}: {', '.join(f'delegate-{d}' for d in item.audience or []) or 'no delegate'}")
+        typer.echo(f"sha256: {item.sha256}")
+
+    @review_app.command("unpromote")
+    def cli_inbox_review_unpromote(
+        ulid: str = typer.Argument(..., help="A promoted observation's ULID."),
+        preview_only: bool = typer.Option(
+            False, "--preview", help="Show the text and who sees it now, with its sha256; write nothing."
+        ),
+        previewed: str | None = typer.Option(
+            None, "--previewed", help="A --preview's sha256: unpromote only if the note is still exactly that."
+        ),
+        as_json: bool = json_opt,
+    ) -> None:
+        """Make a promoted note private again and hide it from every delegate, if it is unchanged since."""
+        from scout import delegate_review
+        from scout import paths as _paths
+        from scout.repo_sync import RepoSyncError
+
+        try:
+            if preview_only:
+                _previewed(delegate_review.preview_unpromote(_paths.data_dir(), ulid), as_json, "Seen now by")
+                return
+            decision = delegate_review.unpromote(_paths.data_dir(), ulid, previewed=previewed)
+        except RepoSyncError as e:
+            _fail(e, as_json)
+        _decided(decision, as_json)
+
+
+_register_inbox()
+
+
+# What a delegate checkout (SCOUT_READER=delegate:<id>, #550 §6.5) may run: reads only. A
+# delegate never writes the vault; it proposes through its inbox. This guards against an
+# accident, not an attack: it covers `scoutctl` only (not `python -m scout.scripts.*`), and
+# the boundary is that a delegate's copy can't push the vault. `action-items list` waits for
+# V2: the daily file links private notes, which only the delegate mirror redacts (#550 §4.4).
+_DELEGATE_COMMANDS = frozenset(
+    {
+        ("version",),
+        *(
+            ("kb", name)
+            for name in (
+                "files",
+                "search",
+                "read",
+                "stat",
+                "resolve",
+                "query",
+                "related",
+                "traverse",
+                "path",
+                "name-lookup",
+                "delta",
+                "classify",
+                "policy",
+                "entity",
+                "export",
+                "stats",
+                "validate",
+            )
+        ),
+        ("pre-session", "data"),
+        ("bootstrap", "doctor"),
+        ("manifest", "show"),
+        ("delegate", "init"),  # writes only the clone's .git/scout-delegate.env, never the tree
+        ("inbox", "propose"),  # writes only the agent's inbox clone, never the vault or the mirror
+    }
+)
+_DELEGATE_GROUPS = frozenset({"hook"})  # Claude Code's hooks, in a delegate session that runs them
+
+
+def delegate_write_refusal(argv: list[str], env: Mapping[str, str]) -> str | None:
+    """Why a ``delegate:<id>`` reader may not run ``argv`` (the words after ``scoutctl``), else None.
+
+    None for any other reader. Only the commands in ``_DELEGATE_COMMANDS`` (and
+    the ``hook`` group) pass, and ``--help`` right after the command words
+    (``scoutctl kb share --help``), where it can't be another option's value;
+    anything else, a bare group included, is refused. ``-h`` isn't help here:
+    on some commands it is ``--hours``.
+    """
+    from scout.kb.reader import delegate_id, resolve_reader
+
+    reader = resolve_reader(None, env)
+    if delegate_id(reader) is None:
+        return None
+    words: list[str] = []
+    for arg in argv:
+        if arg.startswith("-"):
+            break
+        words.append(arg)
+    if argv[len(words) : len(words) + 1] == ["--help"]:
+        return None
+    if words and (words[0] in _DELEGATE_GROUPS or tuple(words[:1]) in _DELEGATE_COMMANDS):
+        return None
+    if tuple(words[:2]) in _DELEGATE_COMMANDS:
+        return None
+    command = " ".join(words[:2]) or "(no command)"
+    return (
+        f"scoutctl: `{command}` isn't available to {reader}: this is a delegate checkout, which only reads "
+        "the vault. Propose the change through the delegate's inbox instead, or run it on the owner's computer."
+    )
+
+
 def main() -> None:
+    import os
+
+    refusal = delegate_write_refusal(sys.argv[1:], os.environ)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        sys.exit(3)
     try:
         app()
     except ScoutError as e:

@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import safe_write
 from scout.schedule import OnMissPolicy, Schedule, SlotType, load_default_schedule
 from scout.scripts import schedule_tick as st
 from scout.scripts.schedule_tick import Decision, SlotCandidate
@@ -367,14 +368,11 @@ def test_a_failed_cache_write_leaves_no_tempfile(tmp_path: Path, logs: Path, mon
     state = tmp_path / ".scout-state"
     state.mkdir()
     tracker = _tracker(logs, json.dumps({"ts": "2026-05-28T08:30:00Z", "slot_key": "b"}))
-    real_open = Path.open
 
-    def maybe_boom(self: Path, *a: object, **k: object):
-        if self.name.endswith(".json.tmp"):
-            raise OSError("read-only filesystem")
-        return real_open(self, *a, **k)  # type: ignore[arg-type]
+    def boom(*a: object, **k: object) -> None:
+        raise OSError("read-only filesystem")
 
-    monkeypatch.setattr(Path, "open", maybe_boom)
+    monkeypatch.setattr(safe_write.os, "replace", boom)  # fails once the temp file is written
     st._write_last_fire_cache(state, {"b": NOW}, tracker, logs / st.SESSION_TOKENS_FILENAME)
 
     assert not (state / st.LAST_FIRE_CACHE_FILENAME).exists()

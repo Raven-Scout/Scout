@@ -19,7 +19,6 @@ runner = CliRunner()
 IDENTITY = ["--user-name", "Alex", "--user-email", "alex@example.com"]
 HEADLESS = [
     "--no-jobs",
-    "--skip-claude",
     "--no-interactive",
     "--yes",
     "--json",
@@ -106,7 +105,7 @@ def test_doctor_json_shape(tmp_path, monkeypatch):
     runner.invoke(app, ["bootstrap", "auto", *HEADLESS, *IDENTITY])
     result = runner.invoke(app, ["bootstrap", "doctor", "--no-jobs", "--json"])
     payload = json.loads(result.stdout)
-    assert set(payload) == {"severity", "errors", "warnings", "notes", "run_health"}
+    assert set(payload) == {"severity", "errors", "warnings", "notes", "run_health", "warning_groups", "warning_triage"}
 
 
 def test_doctor_text_has_a_run_health_section_and_no_auth_error(tmp_path, monkeypatch):
@@ -135,7 +134,7 @@ def test_doctor_text_has_a_run_health_section_and_no_auth_error(tmp_path, monkey
 
 def test_install_json_matches_auto_contract(tmp_path, monkeypatch):
     _vault(tmp_path, monkeypatch)
-    result = runner.invoke(app, ["bootstrap", "install", "--no-jobs", "--skip-claude", "--json", *IDENTITY])
+    result = runner.invoke(app, ["bootstrap", "install", "--no-jobs", "--json", *IDENTITY])
     payload = json.loads(result.stdout)
     assert payload["action"] == "install" and "doctor" in payload
     assert payload["pointer"] is None  # --no-jobs
@@ -154,7 +153,6 @@ def test_auto_interactive_prompts_for_identity_and_installs(tmp_path, monkeypatc
             "bootstrap",
             "auto",
             "--no-jobs",
-            "--skip-claude",
             "--platform",
             "macos",
             "--claude-bin",
@@ -175,7 +173,6 @@ def test_auto_interactive_confirmation_declined_creates_nothing(tmp_path, monkey
             "bootstrap",
             "auto",
             "--no-jobs",
-            "--skip-claude",
             "--platform",
             "macos",
             "--claude-bin",
@@ -219,7 +216,6 @@ def test_auto_dry_run_text_mode_has_no_doctor_line(tmp_path, monkeypatch):
             "bootstrap",
             "auto",
             "--no-jobs",
-            "--skip-claude",
             "--no-interactive",
             "--yes",
             "--platform",
@@ -287,7 +283,6 @@ def test_auto_claude_bin_auto_resolves_via_which(tmp_path, monkeypatch):
             "bootstrap",
             "auto",
             "--no-jobs",
-            "--skip-claude",
             "--no-interactive",
             "--yes",
             "--platform",
@@ -311,7 +306,6 @@ def test_auto_upgrade_ignores_identity_flags_note_on_stderr(tmp_path, monkeypatc
             "bootstrap",
             "auto",
             "--no-jobs",
-            "--skip-claude",
             "--no-interactive",
             "--yes",
             "--claude-bin",
@@ -586,7 +580,7 @@ def test_auto_with_jobs_on_linux_doctor_reads_the_cron_block_install_wrote(tmp_p
 @pytest.mark.parametrize(
     "argv",
     [
-        ["bootstrap", "install", "--no-jobs", "--skip-claude", *IDENTITY],
+        ["bootstrap", "install", "--no-jobs", *IDENTITY],
         ["bootstrap", "upgrade", "--no-jobs"],
         ["bootstrap", "migrate-legacy", *IDENTITY],
         ["bootstrap", "auto", *HEADLESS, *IDENTITY],

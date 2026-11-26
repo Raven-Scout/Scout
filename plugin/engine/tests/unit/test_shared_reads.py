@@ -35,6 +35,7 @@ from scout.kb.ontology import clear_frontmatter_cache
 from scout.kb.privacy import classify, load_policy
 from scout.scripts import custom_connector_ops as ops
 from scout.scripts.bootstrap import BootstrapConfig, install
+from tests.unit._prefilter_root import with_prefilter
 from tests.unit.privacy_vault_helpers import build_privacy_vault, git
 
 PLUGIN = Path(__file__).parent.parent.parent.parent
@@ -195,7 +196,6 @@ def installed(tmp_path: Path) -> Path:
             enabled_connectors={"slack"},
             connector_inputs={},
             skip_jobs=True,
-            skip_claude=True,
         )
     )
     assert ops.add(v, dict(READER), plugin_root=PLUGIN, plugin_version="0.0.0", inputs={}).exit_code == 0
@@ -715,7 +715,7 @@ def _sh(env: dict, stdin: str, cwd: Path, root: Path = PLUGIN) -> subprocess.Com
     clean = {k: v for k, v in os.environ.items() if k not in ("SCOUT_MODE", "SCOUT_READER", "SCOUT_DATA_DIR")}
     return subprocess.run(
         ["sh", "-c", _entry()["hooks"][0]["command"]],
-        env={**clean, **env, "CLAUDE_PLUGIN_ROOT": str(root)},
+        env={**clean, **env, "CLAUDE_PLUGIN_ROOT": str(with_prefilter(root))},
         cwd=cwd,
         input=stdin,
         capture_output=True,
@@ -751,7 +751,7 @@ def test_a_run_records_through_the_real_launcher(vault: Path) -> None:
 
 
 def test_a_session_outside_a_vault_exits_in_the_shell(tmp_path: Path) -> None:
-    res = _sh({}, "{}", tmp_path, root=tmp_path / "missing")
+    res = _sh({}, json.dumps({"cwd": str(tmp_path)}), tmp_path, root=tmp_path / "missing")
     assert res.returncode == 0 and res.stdout == ""
 
 
@@ -798,14 +798,32 @@ def test_only_the_shared_prefix_is_provenance(value: str, expected: bool) -> Non
     assert shared_reads.is_shared_source(value) is expected
 
 
-def test_the_classifier_does_not_read_source() -> None:
-    """Lint only: the corpus Agnes vendors must not change, so `source:` never moves a label."""
+def test_a_shared_source_moves_only_the_federation_ceiling() -> None:
+    """`source: shared:` caps federation at none (your sharing must not pass on theirs); nothing else moves."""
+    from dataclasses import replace
+
     from scout.kb.privacy import policy_from_config_text
 
-    policy = policy_from_config_text("")
-    with_source = classify("knowledge-base/topics/misc/a.md", f"---\nsource: {SOURCE}\n---\nx\n", policy)
-    without = classify("knowledge-base/topics/misc/a.md", "---\ntitle: a\n---\nx\n", policy)
-    assert with_source == without
+    policy = policy_from_config_text(
+        "privacy:\n  federation:\n    enabled: true\n  federation_defaults:\n"
+        '    - {glob: "knowledge-base/topics/**", scope: ["person:sam@example.com"]}\n'
+    )
+    rel = "knowledge-base/topics/misc/a.md"
+    without = classify(rel, "---\ntitle: a\nvisibility: normal\n---\nx\n", policy)
+    assert without.federation_scope == ("person:sam@example.com",)  # the default shares an ordinary note
+    for fm, declared in (
+        (f"source: {SOURCE}", False),
+        (f"source: [meeting, '{SOURCE}']", False),
+        (f"source: {SOURCE}\nfederation_scope: org", True),  # still a shared file, so shared-source-reshared fires
+    ):
+        with_source = classify(rel, f"---\ntitle: a\nvisibility: normal\n{fm}\n---\nx\n", policy)
+        assert (with_source.federation_scope, with_source.ceiling) == ("none", "none")
+        assert with_source.shared_file is declared
+        assert with_source.visibility == "normal" and with_source.shared_source
+    plain = policy_from_config_text("")  # sharing off: the label is the same as without the source
+    assert classify(rel, f"---\nsource: {SOURCE}\n---\nx\n", plain) == replace(
+        classify(rel, "---\ntitle: a\n---\nx\n", plain), ceiling="none"
+    )
 
 
 def _note(*fm: str, body: str = "A note of my own.\n") -> str:
@@ -875,6 +893,32 @@ def test_it_may_not_declare_a_share_of_its_own(repo: Path) -> None:
     git(repo, "add", "scout-config.yaml")
     stage(repo, rel, _note(f"source: {SOURCE}", "visibility: normal", "federation_scope: ['person:sam@example.com']"))
     assert (rel, "shared-source-reshared", True) in findings(repo)
+
+
+@pytest.mark.parametrize("mode", ["report", "block"])
+def test_both_shared_source_checks_block_in_every_lint_mode(repo: Path, mode: str) -> None:
+    """They are privacy checks (PRIVACY_BLOCKING): before, they blocked only where a path's mode was `block`."""
+    import io
+
+    from scout.kb.lint import run_hook
+
+    config = repo / "scout-config.yaml"
+    config.write_text(config.read_text(encoding="utf-8") + f"kb_lint:\n  mode: {mode}\n", encoding="utf-8")
+    git(repo, "add", "scout-config.yaml")
+    git(repo, "commit", "-qm", "lint mode")
+    for rel, text, check in (
+        (DERIVED, _note(f"source: {SOURCE}", "visibility: normal"), "shared-source-private"),
+        ("drafts/widget-risks.md", _note(f"source: {SOURCE}", "visibility: private"), "shared-source-reshared"),
+    ):
+        stage(repo, rel, text)
+        buf = io.StringIO()
+        assert run_hook(repo, env=RUN, out=buf) == 1, buf.getvalue()
+        assert f"[{check}]" in buf.getvalue() and "Commit blocked by the privacy checks" in buf.getvalue()
+        git(repo, "reset", "-q", "--", rel)
+        (repo / rel).unlink()
+    stage(repo, DERIVED, _note(f"source: {SOURCE}", "visibility: normal"))
+    buf = io.StringIO()
+    assert run_hook(repo, env={}, out=buf) == 0, buf.getvalue()  # the owner's own normal: a warning still
 
 
 @pytest.mark.parametrize("value", ["slack", "Alex", "a meeting", "dreaming", "https://example.com/x"])

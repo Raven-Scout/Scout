@@ -28,7 +28,6 @@ def _config(vault: Path, *, plugin_root: Path) -> BootstrapConfig:
         enabled_connectors=set(),
         connector_inputs={},
         skip_jobs=True,  # don't touch ~/Library/LaunchAgents in tests
-        skip_claude=True,  # don't run a real Claude session
     )
 
 
@@ -115,7 +114,7 @@ def test_install_writes_assembled_files_and_snapshots(tmp_path):
     plugin = Path(__file__).parent.parent.parent.parent
     vault = tmp_path / "Scout"
     install(_config(vault, plugin_root=plugin))
-    for name in ("SKILL", "DREAMING", "RESEARCH"):
+    for name in ("SKILL", "DREAMING", "RESEARCH", "RESPOND"):
         assert (vault / f"{name}.md").exists()
         assert (vault / ".scout-state" / "last-assembled" / f"{name}.md").exists()
 

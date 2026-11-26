@@ -6,6 +6,8 @@ import json
 import time
 from pathlib import Path
 
+import pytest
+
 from scout import health
 from scout.scripts.bootstrap_auto import doctor_dict
 from scout.scripts.bootstrap_doctor import (
@@ -20,7 +22,7 @@ def _populate_minimal_vault(vault: Path) -> None:
     (vault / ".scout-state").mkdir(parents=True)
     (vault / ".scout-state" / "schedule.yaml").write_text("schema_version: 1\nslots: {}\n")
     (vault / ".scout-state" / "last-assembled").mkdir()
-    for name in ("SKILL", "DREAMING", "RESEARCH"):
+    for name in ("SKILL", "DREAMING", "RESEARCH", "RESPOND"):
         (vault / f"{name}.md").write_text(f"# {name}\n")
         (vault / ".scout-state" / "last-assembled" / f"{name}.md").write_text(f"# {name}\n")
     (vault / "scout-config.yaml").write_text(
@@ -231,7 +233,8 @@ def test_doctor_json_carries_run_health(tmp_path):
     _populate_minimal_vault(tmp_path)
     _expired_ledger(tmp_path)
     payload = doctor_dict(run_doctor(vault=tmp_path, check_jobs=False))
-    assert set(payload) == {"severity", "errors", "warnings", "notes", "run_health"}
+    assert set(payload) == {"severity", "errors", "warnings", "notes", "run_health", "warning_groups", "warning_triage"}
+    assert payload["warning_groups"] == []
     assert payload["run_health"]["findings"][0]["id"] == "auth.expired"
 
 
@@ -299,13 +302,56 @@ def test_empty_cat1_file_is_red(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_missing_snapshot_is_yellow(tmp_path):
-    """Missing snapshot file → YELLOW warning."""
+@pytest.mark.parametrize("name", ["SKILL", "RESPOND"])
+def test_missing_snapshot_is_yellow(tmp_path, name):
+    """Missing snapshot file → YELLOW warning, for every brain file, RESPOND included."""
     _populate_minimal_vault(tmp_path)
-    (tmp_path / ".scout-state" / "last-assembled" / "SKILL.md").unlink()
+    (tmp_path / ".scout-state" / "last-assembled" / f"{name}.md").unlink()
     report = run_doctor(vault=tmp_path, check_jobs=False)
     assert report.severity is Severity.YELLOW
-    assert any("snapshot missing" in w for w in report.warnings)
+    assert any(f"snapshot missing: .scout-state/last-assembled/{name}.md" in w for w in report.warnings)
+
+
+@pytest.mark.parametrize("name", ["SKILL", "DREAMING", "RESEARCH", "RESPOND"])
+def test_missing_live_brain_file_is_yellow_with_the_fix(tmp_path, name):
+    """A live brain file missing (v0.18.22 recorded RESPOND.md as installed without writing it) → YELLOW."""
+    _populate_minimal_vault(tmp_path)
+    (tmp_path / f"{name}.md").unlink()
+    report = run_doctor(vault=tmp_path, check_jobs=False)
+    assert report.severity is Severity.YELLOW
+    [warning] = [w for w in report.warnings if w.startswith("brain file missing")]
+    assert f"{name}.md" in warning
+    assert "scoutctl bootstrap upgrade" in warning
+    assert "deleted in vault commit" not in warning  # not a git repo
+
+
+def test_missing_brain_file_deleted_in_git_names_the_commit(tmp_path):
+    """An owner who deleted a brain file is told that doesn't switch the run off, and that upgrades restore it."""
+    import subprocess
+
+    _populate_minimal_vault(tmp_path)
+
+    def git(*args):
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "-c", "user.name=Alex", "-c", "user.email=alex@example.com", *args],
+            check=True,
+            capture_output=True,
+        )
+
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-qm", "seed")
+    (tmp_path / "RESPOND.md").unlink()
+    git("commit", "-qam", "drop the reply brain")
+    sha = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "--short", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    report = run_doctor(vault=tmp_path, check_jobs=False)
+    [warning] = [w for w in report.warnings if w.startswith("brain file missing")]
+    assert f"RESPOND.md — deleted in vault commit {sha}" in warning
+    assert "doesn't switch its run off" in warning
+    assert "triggers.yaml" in warning
 
 
 # ---------------------------------------------------------------------------
@@ -1004,7 +1050,7 @@ def test_doctor_names_a_rule_that_matches_no_linted_file(tmp_path):
 
 
 def test_doctor_names_a_misspelt_kb_lint_key_and_a_misshapen_section(tmp_path):
-    assert "unknown key(s) ['pathmodes']" in _kb_lint_warnings(tmp_path / "a", "kb_lint:\n  pathmodes: []\n")[0]
+    assert "unknown key ['pathmodes']" in _kb_lint_warnings(tmp_path / "a", "kb_lint:\n  pathmodes: []\n")[0]
     assert "not a mapping" in _kb_lint_warnings(tmp_path / "b", "kb_lint: nonsense\n")[0]
 
 
@@ -1037,7 +1083,7 @@ def test_doctor_counts_commits_made_while_the_privacy_check_was_down(tmp_path):
     report = run_doctor(vault=tmp_path, check_jobs=False, now=now)
     assert report.severity is Severity.YELLOW
     (line,) = [w for w in report.warnings if "privacy check could not run" in w]
-    assert line.startswith("privacy: 1 commit(s)") and "NOT checked" in line
+    assert line.startswith("privacy: 1 commit in the last 7 days was made") and "NOT checked" in line
 
 
 # ---------- repo sync: the cached host Local-Only list (#596) ----------

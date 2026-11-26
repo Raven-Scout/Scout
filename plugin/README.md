@@ -3,21 +3,21 @@
 > **The autonomous daily briefing that cross-checks all your work tools — so nothing falls through the cracks, and you can trust what it surfaces.**
 
 <p align="center">
-  <img src="docs/assets/scout-demo.svg" alt="A Scout morning briefing: action items cross-checked across Gmail, Slack, Calendar, GitHub and Linear, each tagged by confidence — with a source contradiction surfaced for the user instead of guessed" width="100%">
+  <img src="../docs/assets/scout-demo.svg" alt="A Scout morning briefing: action items cross-checked across Gmail, Slack, Calendar, GitHub and Linear, with a source contradiction surfaced for the user instead of guessed" width="100%">
 </p>
 
-Scout runs unattended as scheduled [Claude Code](https://claude.com/claude-code) sessions. It reads Slack, Calendar, Gmail, Linear, GitHub, and meeting transcripts; cross-checks every finding against the others; and each morning hands you a short list of what actually needs you — every item tagged by how many sources confirm it. What you get is a persistent, interlinked knowledge base you can browse in Obsidian, and a daily action list you can trust *because you can see its work*.
+Scout runs unattended as scheduled [Claude Code](https://claude.com/claude-code) sessions. It reads Slack, Calendar, Gmail, Linear, GitHub, and meeting transcripts; cross-checks every finding against the others; and each morning hands you a short list of what actually needs you, with each item's sources kept in a note. What you get is a persistent, interlinked knowledge base you can browse in Obsidian, and a daily action list you can trust *because you can see its work*.
 
-You shouldn't have to manually reconcile what happened across seven tools yesterday, what's still pending from last week, or what changed while you were in meetings. Scout does it — and when your tools disagree, it flags the contradiction instead of quietly picking a side.
+You shouldn't have to manually reconcile what happened across seven tools yesterday, what's still pending from last week, or what changed while you were in meetings. Scout does it — and when your tools disagree, it records both sides and asks you instead of quietly picking one.
 
 ## Why Scout is different
 
 Readable-markdown memory, scheduled runs, and a self-improvement loop are table stakes now — every serious agent has them. Scout's difference is what it does *before* it tells you anything:
 
 - **It cross-checks.** No single tool is treated as the truth. A calendar invite is verified against the transcript; a Linear ticket against the PR; an email against Slack. Claims only one source supports are flagged, not asserted.
-- **It shows its confidence.** Every entry is tagged — `verified` (2+ sources), `single-source`, `unverified`, `stale`, or `contradicted`. You always know how much weight to give it.
+- **It shows its confidence.** Knowledge-base claims carry a marker — none when 2+ sources agree, otherwise `single-source`, `unverified`, `stale`, `contradicted`, or `speculative` — so you know how much weight to give them.
 - **It's structured, not just stored.** A formal knowledge graph — typed people, projects, tasks, and relationships you can actually query — not a flat pile of notes.
-- **It surfaces disagreement.** When your sources conflict, that contradiction *is* the signal. Scout shows you both sides instead of guessing which is right.
+- **It surfaces disagreement.** When your sources conflict, that contradiction *is* the signal. Scout records both sides in the knowledge base and puts the question in your review queue instead of guessing which is right.
 
 Most assistants summarize. Scout corroborates — and that's the difference between output you skim and output you act on.
 
@@ -53,13 +53,13 @@ Underneath all of it: **everything is git.** An ontology-validated knowledge gra
 
 ## Install
 
-**The primary install is Scout.app** (starting with Scout 0.16): download it from [Releases](https://github.com/Raven-Scout/Scout/releases/latest), open it, and onboarding installs the engine, registers it with Claude Code and creates your vault — see the [repo README](https://github.com/Raven-Scout/Scout#install). The steps below are the **no-app path**: the plugin and engine from the terminal.
+**The primary install is Scout.app** (starting with Scout 0.16): [download `Scout.dmg`](https://github.com/Raven-Scout/Scout/releases/latest/download/Scout.dmg), open it, and onboarding installs the engine, registers it with Claude Code and creates your vault — see the [repo README](https://github.com/Raven-Scout/Scout#install). The steps below are the **no-app path**: the plugin and engine from the terminal.
 
 ### Before you start
 
 | You need | Why | How |
 |---|---|---|
-| **A Mac on macOS 13+** (Linux works for the engine; there is no Windows support) | Scheduled runs use launchd; the [Mac app](https://github.com/Raven-Scout/Scout) is macOS-only | — |
+| **A Mac** (the [Mac app](https://github.com/Raven-Scout/Scout) needs macOS 15.7 or later; Linux works for the engine; there is no Windows support) | Scheduled runs use launchd; the Mac app is macOS-only | — |
 | **A paid Claude plan** — Max recommended | Every scheduled run is a Claude Code session on Opus (~$2.50–$5 each, ~8 runs on a weekday) | [claude.com/pricing](https://claude.com/pricing) |
 | **Claude Code, installed and signed in** | Scout runs as headless `claude -p` sessions under your login | [Install Claude Code](https://docs.claude.com/claude-code), then run `claude` once in Terminal to sign in |
 | **Your tools connected on claude.ai** | Scout reads Slack, Gmail, Calendar, Linear, Granola, Drive through claude.ai connectors | [claude.ai/settings/connectors](https://claude.ai/settings/connectors) — turn on the ones you use |
@@ -87,9 +87,11 @@ curl -fsSL https://raw.githubusercontent.com/Raven-Scout/Scout/main/install.sh |
 
 `scoutctl setup --help` lists every flag. Re-running the installer on an existing vault upgrades it, and keeps the engine the vault already records as its manager (a dev checkout, say).
 
+The installer also downloads one small public file from GitHub Releases to tell you if a newer Scout is out; GitHub's download count of that file is how the project counts installs ([what that means for your privacy](../PRIVACY.md#the-installers-version-check)). To skip it, end the one-liner with `| SCOUT_NO_RELEASE_CHECK=1 bash`.
+
 ### 2. Add the Mac app later (optional)
 
-Set up this way and want the app too? Download the latest `Scout-*.dmg` from [Raven-Scout/Scout releases](https://github.com/Raven-Scout/Scout/releases/latest), drag **Scout.app** into Applications, and open it (it's signed and notarized). It adopts this install as-is — it never modifies an install it didn't create — and shows your action items, upcoming runs, costs and schedule on top of your vault.
+Set up this way and want the app too? [Download `Scout.dmg`](https://github.com/Raven-Scout/Scout/releases/latest/download/Scout.dmg), drag **Scout.app** into Applications, and open it (it's signed and notarized). It adopts this install as-is — it never modifies an install it didn't create — and shows your action items, upcoming runs, costs and schedule on top of your vault.
 
 **Updating later:** run `/scout-update` in Claude Code — it refreshes the plugin and upgrades your vault without overwriting your edits (conflicts are left as sidecar files for you to review).
 
@@ -147,7 +149,7 @@ Or run interactive sessions in the current conversation:
 /scout-meta-review    # System-level audit — are sessions running, is the mistake audit trending well, are proposals flowing?
 ```
 
-Ask about a project, person, meeting or decision in a session opened in your vault ("where are we on X?"), and the `scout-ask` skill answers from the knowledge base first, checking the live tools only when the record is stale.
+Ask about a project, person, meeting or decision in any Claude Code session on a machine with a Scout vault, in the vault or in another repository ("where are we on X?"), and the `scout-ask` skill answers from the knowledge base first, checking the live tools only when the record is stale. It finds the vault from Scout's configuration with `scoutctl kb vault` (never from the folder you are in), runs only read commands, which write nothing but Scout's own cache, and outside the vault treats what it reads as context: nothing from the knowledge base goes into that repository's commits, PRs, issues or files.
 
 ## How It Works
 
@@ -223,7 +225,7 @@ Scout's runner scripts call three shell hooks before launching Claude. Each hook
 
 | Hook | Output | What it replaces |
 |------|--------|-----------------|
-| `hooks/kb-pre-filter.sh` | `.scout-cache/kb-filter.md` — KB files bucketed into stale / fresh / undated, with ages | Walking every KB file from inside the session to check "Last updated" dates |
+| `hooks/kb-pre-filter.sh` | `.scout-cache/kb-filter.md` — KB files bucketed into stale / fresh / undated, with ages | Reading every KB file's `last_updated:` / `last_verified:` frontmatter from inside the session |
 | `scripts/pre-session-data.sh` | `.scout-cache/session-context.json` — recent git log, open PRs, PR review requests, KB file dates, open personal tasks, each KB path and task labelled with its privacy `visibility` | `git log`, `gh pr list`, `gh search prs`, the engine's labelled knowledge graph |
 | `scripts/cc-session-cache.sh` | `.scout-cache/cc-sessions.md` — non-Scout Claude Code sessions from the last 24h: project paths, first prompts, files touched | Discovering + parsing `~/.claude/projects/*/*.jsonl` manually |
 
@@ -328,7 +330,7 @@ privacy:
     - "notes/shared"          # a plain path takes in everything under it
 ```
 
-Everything else stays on this computer, a new folder included, and isn't named on the server either: the commit messages, the Local-Only list Agnes is told, and `.scout-state/privacy-policy.json` hold nothing outside the list. Local-Only and secret paths inside the list still stay home. Entries match paths exactly as written, case included: `Projects/` is not `projects/`. The list is pinned when you link, or at the first sync after you add it. Narrowing it in the config takes effect at once. Widening or removing it needs `scoutctl repo sync-only --accept`, which a scheduled run can't do; to remove it, commit the removal and sync first. What was on Agnes before the list stays in its history; for a clean start, `scoutctl repo unlink --delete-remote`, then link again. A note written in Agnes outside the list can't come home: sync warns, names the commit that still has it, and takes it off Agnes's current files. The check runs on this computer only, so an older engine or another clone of the vault could push more. Keep `scout-config.yaml` off the list unless the server may see your whole `privacy:` block. Agnes's planned share-stop write-back edits that file, so it won't reach a vault that doesn't mirror it.
+Everything else stays on this computer, a new folder included, and isn't named on the server either: the commit messages, the Local-Only list Agnes is told, and `.scout-state/privacy-policy.json` hold nothing outside the list. Local-Only and secret paths inside the list still stay home. Entries match paths exactly as written, case included: `Projects/` is not `projects/`. The list is pinned when you link, or at the first sync after you add it. Narrowing it in the config takes effect at once. Widening or removing it needs `scoutctl repo sync-only --accept`, which a scheduled run can't do; to remove it, commit the removal and sync first. What was on Agnes before the list stays in its history; for a clean start, `scoutctl repo unlink --delete-remote`, then link again. A note written in Agnes outside the list can't come home: sync warns, names the commit that still has it, and takes it off Agnes's current files. The check runs on this computer only, so an older engine or another clone of the vault could push more. Keep `scout-config.yaml` off the list unless the server may see your whole `privacy:` block. A stop made in Agnes's own pages is written back into that file, so on a vault that doesn't mirror it the stop lives in Agnes only; `scoutctl kb shares` shows it either way.
 
 **What never leaves this computer:** machine plumbing (`.scout-logs/`, `.scout-cache/`, `.claude/`, `.venv/`, `.obsidian/`, `.mcp.json`, `.env*`, most of `.scout-state/`), secret files (`*.pem`, `id_rsa*`, `.scout-secrets/`), every `privacy.local_only_add` path in `scout-config.yaml` (trading folders, once `/scout-update` asked you), and every path Agnes keeps on your Local-Only list. Personal notes and the inbox do sync, marked private: only you and your own runs see them. Each pushed commit carries `.scout-state/privacy-policy.json`, the effective privacy policy plus every file's label, which Agnes indexes by.
 
@@ -341,6 +343,17 @@ Everything else stays on this computer, a new folder included, and isn't named o
 **A sync can stop anywhere and be run again.** What came from Agnes stays on both sides, and what this computer already pushed isn't copied back over later work here.
 
 **Sharing changes need a commit.** After `scoutctl kb share` or `kb unshare`, commit `scout-config.yaml`, then run `scoutctl repo sync`. Link and sync refuse while the file's sharing settings differ from the last commit, and nothing is pushed, so a share you have and a share you're changing can't get mixed up.
+
+**Scheduled runs keep shared notes current (`privacy.shared_edits`).** By default (`checked`) a scheduled run may add or reword lines in a note that is already shared, such as a project page's "Where it stands". The nightly KB pass may rebuild a shared project page when every other note in its folder is shared with at least the page's readers (unshared files the rebuild's own commits added, such as its archive copy, don't count, so it can take several nights); otherwise the pass is told to only cut lines, which the hook can't tell from new prose. The commit hook checks every added or changed line. It matches the names, titles, aliases and links of private notes, local-only notes and notes shared with fewer people, and quotes of notes shared with you, through HTML entities and markup too, and a `%%privacy:allow%%` marker doesn't let a run's line through. **It does not read what a private note says, nor email, Slack or meetings:** a run that restates a private fact without naming its note passes, and so do initials, a role, a first or last name alone (unless it is an alias), a reordered name ("Rivers, Sammy"), parts joined by `.` or `/`, look-alike letters, and anything from unshared notes or connectors. The phase rules tell runs to write only what came from that note, notes shared with the same people, or sources those people were in. A run still can't share a note more widely, set or change `federation_scope`, add a marker, make a private note normal, write a shared note that isn't UTF-8 text, or change a non-note file in a share (a `.csv`, an `.xlsx`). To keep shared notes as they are unless you edit them yourself, set it to `refuse`:
+
+```yaml
+privacy:
+  shared_edits: refuse   # or: checked (the default)
+```
+
+A run's addition to a shared note is then refused, and it proposes the edit in your review queue instead. Any other value counts as `refuse`. Only you can change it: the hook refuses a scheduled run's edit to the `privacy:` block.
+
+**An unshare stops at once.** On a linked vault, `scoutctl kb unshare` first asks Agnes to stop the share, so its readers lose it from their next read, before any sync; a stop covers the whole folder, notes added to it later included. It can stop one member of a shared group too, which the vault can't say, so that stop lives in Agnes. Agnes stops only a whole share: unsharing a subfolder of a shared folder still waits for the next sync. `scoutctl kb shares` lists the stops (who, since when) and the ones cleared in the last 30 days. Only `scoutctl kb share`, run by you at the keyboard with the vault's personal access token, clears a stop, and only for the people it names; a scheduled run, an agent run and a delegate checkout are refused, and Agnes's own pages can stop a share but never reopen one. An Agnes without the stop (before A8b) keeps the old behaviour: the stop takes effect at the next sync. When Agnes has written commits on top of your last push (a stop it wrote into `scout-config.yaml`), `scoutctl repo sync` pulls them before it pushes.
 
 **Other uncommitted `scout-config.yaml` edits can only make a mirror stricter.** Until you commit the file, the stricter of its privacy settings and the last commit's applies, and the sync says so: what either keeps home stays home, and what either marks private is private. While they differ, an entry that opens up part of a private folder can lose to that folder, so a file can be stricter than either version says. A file only the uncommitted settings would upload stays home, and comes off Agnes's current files if an earlier sync uploaded it.
 
@@ -525,6 +538,9 @@ The more connectors you have, the more verification points each action item pass
 The heartbeat system opportunistically triggers extra sessions (dreaming or research) when budget is available and work is pending, while the budget check prevents overspend. Rate limit detection triggers automatic backoff, and the usage tracker provides cost visibility.
 
 ## FAQ / Troubleshooting
+
+**Reporting a bug.**
+In Scout.app, use Help ▸ Export Diagnostics…; it shows you the whole file before you save it. Without the app, run `scoutctl diagnostics` (add `--json` for the full report). Either way the report holds versions, health checks and recent run outcomes, and leaves out your notes: no note text, note or folder names, secrets, tokens, transcripts or run logs. Scout hid the names and paths it could recognise. Read it through before attaching it to a public issue: it may still contain something only you'd recognise.
 
 **Scout stopped running (it's gone quiet).**
 Almost always, your Claude Code login has expired. Every scheduled run then fails within seconds, before it can tell you anything. Open Terminal and run:

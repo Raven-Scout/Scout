@@ -31,7 +31,7 @@ SOURCE_ENV = "env"
 SOURCE_PROMPT = "prompt"
 
 _SLOT = re.compile(r"Your run mode is `([a-z0-9][a-z0-9-]*)`")
-_NAMED = re.compile(r"\brunning in (RESEARCH|DREAMING) mode\b")
+_NAMED = re.compile(r"\brunning in (RESEARCH|DREAMING|RESPOND) mode\b")
 # The run prompt is the first user message; give up after this many transcript rows.
 _MAX_ROWS = 50
 

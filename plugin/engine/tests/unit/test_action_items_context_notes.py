@@ -187,13 +187,13 @@ def test_cli_dry_run_then_write(tmp_path: Path) -> None:
     vault, snap, daily = _vault(tmp_path, config="kb_budgets:\n  'action-items/context/**': 200\n")
     dry = runner.invoke(app, ["backfill-context", "--from", str(snap), "--daily", str(daily)])
     assert dry.exit_code == 0, dry.output
-    assert "would write 5 note(s)" in dry.stdout
+    assert "would write 5 notes" in dry.stdout
     assert "no snapshot entry: PLN" in dry.stdout
     assert "'action-items/context/DETX.md': null" in dry.stdout
     assert not (vault / "action-items" / "context").exists()
     wrote = runner.invoke(app, ["backfill-context", "--from", str(snap), "--daily", str(daily), "--write"])
     assert wrote.exit_code == 0, wrote.output
-    assert "wrote 5 note(s)" in wrote.stdout
+    assert "wrote 5 notes" in wrote.stdout
     assert (vault / context_note_rel("LBL")).exists()
 
 
@@ -268,6 +268,6 @@ def test_cli_prints_long_line_and_ambiguous_hints(tmp_path: Path) -> None:
         f.write("- [ ] [#SAM1] **Reworded** _(re-tagged from `[#DETX]`)_\n")
     result = runner.invoke(app, ["backfill-context", "--from", str(snap), "--daily", str(daily)])
     assert result.exit_code == 0, result.output
-    assert "line(s) over the kb-lint limit" in result.stdout
+    assert "a line over the kb-lint limit" in result.stdout
     assert "SCOUT_LINT_OVERRIDE" in result.stdout
     assert "ambiguous (several snapshot rows, none with this title): SAM1" in result.stdout

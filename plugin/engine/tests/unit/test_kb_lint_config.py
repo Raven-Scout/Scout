@@ -54,6 +54,8 @@ def test_scope_and_exclusions(tmp_path: Path) -> None:
     assert cfg.in_scope("knowledge-base/projects/widget/widget.md")
     assert cfg.in_scope("action-items/action-items-2026-09-28.md")
     assert not cfg.in_scope("SKILL.md")
+    assert cfg.in_scope("knowledge-base/topics/misc/Plan.MD")  # #605: any case of .md is a note
+    assert cfg.in_scope("action-items/Notes.Md")
     assert not cfg.in_scope("docs/superpowers/plans/x.md")
     assert not cfg.in_scope("knowledge-base/projects/acme-pilot/sprint-brief-lanes.csv")
     assert not cfg.in_scope("action-items/archive/action-items-2026-08-01.md")
@@ -321,8 +323,8 @@ def test_a_rule_matching_no_linted_file_is_named(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("config", "said"),
     [
-        ("kb_lint:\n  path_mode: []\n", "unknown key(s) ['path_mode']"),
-        ("kb_lint:\n  pathmodes: []\n", "unknown key(s) ['pathmodes']"),
+        ("kb_lint:\n  path_mode: []\n", "unknown key ['path_mode']"),
+        ("kb_lint:\n  pathmodes: []\n", "unknown key ['pathmodes']"),
         ("kb-lint:\n  mode: block\n", "top-level key 'kb-lint'"),
         ("KB_Lint:\n  mode: block\n", "top-level key 'KB_Lint'"),
         ("kb_lint: nonsense\n", "kb_lint is a str, not a mapping"),

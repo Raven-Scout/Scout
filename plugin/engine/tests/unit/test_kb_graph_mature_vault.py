@@ -235,7 +235,9 @@ def test_parse_errors_survive_the_cross_process_index(tmp_path: Path) -> None:
     first = kb(vault, "validate", "--json")
     clear_frontmatter_cache()
     second = kb(vault, "validate", "--json")
-    assert first.exit_code == second.exit_code == 0, first.output
+    # 3 both times: the planted parse failure is an error, and the point of the test is that
+    # the cached second pass reports it identically to the first.
+    assert first.exit_code == second.exit_code == 3, first.output
     assert json.loads(first.stdout) == json.loads(second.stdout)
     (row,) = [e for e in json.loads(second.stdout)["errors"] if "YAML parse failure" in e["message"]]
     assert row["entity"] == "knowledge-base/people/priya.md"
@@ -287,7 +289,7 @@ def test_validate_cli_reports_known_gaps_apart(tmp_path: Path) -> None:
     vault = _dangling_vault(tmp_path, VALIDATION)
     text = kb(vault, "validate").stdout
     assert "  [Alex] Dangling relationship target: works_with → 'Nobody' (no such entity)" in text
-    assert "\n1 known entity gap(s) — accepted backlog, not errors:\n" in text
+    assert "\n1 known entity gap — accepted backlog, not errors:\n" in text
     assert "  'Sam' — reviewed: a contact with no entity file  (referenced by: Alex, Priya)" in text
     data = json.loads(kb(vault, "validate", "--json").stdout)
     assert [e["message"] for e in data["errors"] if "Dangling" in e["message"]] == [
@@ -367,7 +369,7 @@ def test_name_lookup_cli_lookup_type(tmp_path: Path) -> None:
     hit = kb(vault, "name-lookup", "Acme", "--lookup-type", "any")
     assert hit.exit_code == 0, hit.output
     assert "  [exact] Acme Widgets (slug=acme-widgets, type=organization, matched_field=alias, score=1.0)" in hit.stdout
-    assert "candidate(s) — searched: any type." in hit.stdout
+    assert "\n2 candidates — searched: any type." in hit.stdout
     rows = json.loads(kb(vault, "name-lookup", "--token", "Acme", "--lookup-type", "organization", "--json").stdout)
     assert [(r["name"], r["type"], r["path"]) for r in rows] == [
         ("Acme Widgets", "organization", "knowledge-base/orgs/acme-widgets.md")

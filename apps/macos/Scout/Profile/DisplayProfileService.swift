@@ -91,6 +91,28 @@ final class DisplayProfileService: ObservableObject {
         write(entries)
     }
 
+    /// Where the Topics board kept its Done range before it read this profile
+    /// (audit #46).
+    static let legacyDoneRangeKey = "topicBoard.doneRange"
+
+    /// Moves a Done range the Topics board saved in `defaults` into the
+    /// profile, once, then drops the old key. A range already chosen in
+    /// Settings (anything but the default, last 7 days) wins over it. While
+    /// the file can't be written the key is kept, so the choice isn't lost.
+    func migrateLegacyDoneRange(from defaults: UserDefaults) {
+        guard let raw = defaults.string(forKey: Self.legacyDoneRangeKey) else { return }
+        if let legacy = DoneRange(rawValue: raw),
+           legacy != .week,
+           profile.actionItems.topics.doneRange == ActionItemsDisplay.Topics().doneRange {
+            guard status.canWrite else { return }
+            update { $0.topics.doneRange = legacy }
+            // A failed write (permissions, full disk) leaves `status` .ok but
+            // sets `writeError`: keep the key so the next launch tries again.
+            guard writeError == nil, status.canWrite else { return }
+        }
+        defaults.removeObject(forKey: Self.legacyDoneRangeKey)
+    }
+
     // MARK: - Private
 
     private struct Snapshot {

@@ -62,6 +62,7 @@ hitting the network.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import hashlib
 import html
@@ -69,7 +70,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -77,11 +78,12 @@ from typing import Any
 
 import requests
 
-from scout import paths
+from scout import paths, safe_write
 from scout.errors import ConfigError, ScoutError
 from scout.events import Event, append_event
 from scout.ids import new_ulid
 from scout.links import safe_href
+from scout.plural import count
 from scout.redact import redact_secrets
 
 TELEGRAM_API = "https://api.telegram.org"
@@ -112,6 +114,11 @@ class OutboundBlockedError(ScoutError):
     """The target is a group or channel and the message may not go there (#453, spec §8.4)."""
 
     exit_code = 4
+
+
+# A reply names an inbound message that isn't waiting for one (unknown, or already answered). Not one of the
+# broker's transient codes, so a queued reply fails at once rather than waiting for that id to appear.
+EXIT_UNANSWERABLE = 7
 
 
 # Output classes (spec §4.2): a private chat with the owner is owner-only, a
@@ -168,12 +175,8 @@ def _recent_rows(log: Path, now: datetime) -> list[dict[str, str]]:
 
 def _record_sent(log: Path, rows: list[dict[str, str]], new_row: dict[str, str]) -> None:
     """Rewrite the log with the live rows plus the new one (atomic; failures swallowed)."""
-    tmp = log.with_name(log.name + ".tmp")
-    try:
-        tmp.write_text("".join(json.dumps(r) + "\n" for r in [*rows, new_row]), encoding="utf-8")
-        os.replace(tmp, log)
-    except OSError:
-        pass
+    with contextlib.suppress(OSError):
+        safe_write.atomic_write_text(log, "".join(json.dumps(r) + "\n" for r in [*rows, new_row]))
 
 
 # ----- secret loading ------------------------------------------------------
@@ -567,8 +570,11 @@ def _is_parse_error(resp: requests.Response) -> bool:
 # ----- send ----------------------------------------------------------------
 
 
-def _build_payload(*, chat_id: str, text: str, tier: str, parse_mode: str = "none") -> dict[str, Any]:
-    """Build the JSON body for a single sendMessage call."""
+def _build_payload(
+    *, chat_id: str, text: str, tier: str, parse_mode: str = "none", reply_to: int | None = None
+) -> dict[str, Any]:
+    """Build the JSON body for a single sendMessage call. ``reply_to`` threads it under that message; it still
+    goes out if the message was deleted."""
     payload: dict[str, Any] = {
         "chat_id": chat_id,
         "text": text,
@@ -576,7 +582,13 @@ def _build_payload(*, chat_id: str, text: str, tier: str, parse_mode: str = "non
     }
     if parse_mode == "html":
         payload["parse_mode"] = "HTML"
+    if reply_to is not None:
+        payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
     return payload
+
+
+def _is_message_id(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 # ----- error scrubbing -------------------------------------------------------
@@ -661,6 +673,7 @@ def send(
     allow_duplicate: bool = False,
     now: datetime | None = None,
     receipt: Callable[[str], None] | None = None,
+    reply_to: int | None = None,
 ) -> Event:
     """Send a message via the Telegram Bot API and return an :class:`Event`.
 
@@ -675,8 +688,10 @@ def send(
     (before any dry-run output; after the last chunk of a real send), so the CLI
     can put ``id=<id>`` first on stderr.
 
+    ``reply_to``, when given, threads the first chunk under that message of the chat.
+
     Raises:
-        ValueError: empty body, unknown tier or unknown parse mode.
+        ValueError: empty body, unknown tier, unknown parse mode, or a ``reply_to`` that isn't a message id.
         ConfigError: missing secret files (exit code 10).
         OutboundBlockedError: the chat is a group or channel and the body
             names a private note, or there is no vault to check it against
@@ -693,6 +708,8 @@ def send(
         raise ValueError(f"unknown tier {tier!r}; valid tiers are: {', '.join(VALID_TIERS)}")
     if parse_mode not in VALID_PARSE_MODES:
         raise ValueError(f"unknown parse mode {parse_mode!r}; valid modes are: {', '.join(VALID_PARSE_MODES)}")
+    if reply_to is not None and not _is_message_id(reply_to):
+        raise ValueError(f"reply_to must be a positive message id, not {reply_to!r}")
 
     token = _read_secret("telegram-bot-token")
     chat_id = _read_secret("telegram-chat-id")
@@ -712,7 +729,7 @@ def send(
 
     chunks, dropped = _prepare(body, parse_mode)
     if dropped:
-        print(f"warning: dropped {dropped} link(s) whose href is not http(s) or mailto", file=sys.stderr)
+        print(f"warning: dropped {count(dropped, 'link')} whose href is not http(s) or mailto", file=sys.stderr)
     url = f"{TELEGRAM_API}/bot{token}/sendMessage"
 
     if dry_run:
@@ -738,8 +755,10 @@ def send(
         # printing — operators reading shell history or stderr-redirected
         # logs should never see the raw token.
         redacted_url = f"{TELEGRAM_API}/bot<REDACTED>/sendMessage"
-        for chunk in chunks:
-            payload = _build_payload(chat_id=chat_id, text=chunk, tier=tier, parse_mode=parse_mode)
+        for n, chunk in enumerate(chunks, 1):
+            payload = _build_payload(
+                chat_id=chat_id, text=chunk, tier=tier, parse_mode=parse_mode, reply_to=reply_to if n == 1 else None
+            )
             print(f"[dry-run] POST {redacted_url}", file=sys.stderr)
             print(
                 f"[dry-run] body: {json.dumps(payload, ensure_ascii=False)}",
@@ -749,7 +768,8 @@ def send(
 
     parse_fallback = False
     for n, chunk in enumerate(chunks, 1):
-        payload = _build_payload(chat_id=chat_id, text=chunk, tier=tier, parse_mode=parse_mode)
+        thread = reply_to if n == 1 else None  # the first chunk threads; the rest follow it
+        payload = _build_payload(chat_id=chat_id, text=chunk, tier=tier, parse_mode=parse_mode, reply_to=thread)
         resp = requests.post(url, json=payload, timeout=timeout)
         if parse_mode == "html" and _is_parse_error(resp):
             # Telegram's description names the offending tag and offset, never
@@ -760,7 +780,7 @@ def send(
                 file=sys.stderr,
             )
             parse_fallback = True
-            payload = _build_payload(chat_id=chat_id, text=_html_to_plain(chunk), tier=tier)
+            payload = _build_payload(chat_id=chat_id, text=_html_to_plain(chunk), tier=tier, reply_to=thread)
             resp = requests.post(url, json=payload, timeout=timeout)
         # Surface HTTP errors so the caller sees a non-zero exit. The CLI
         # layer maps requests.RequestException to a non-zero exit code.
@@ -788,6 +808,137 @@ def send(
 
 
 # ----- CLI entry -----------------------------------------------------------
+
+
+def cli_send(
+    *,
+    tier: str,
+    text: str,
+    parse_mode: str,
+    dry_run: bool,
+    allow_duplicate: bool,
+    echo_out: Callable[[str], None],
+    echo_err: Callable[[str], None],
+    reply_to: int | None = None,
+    covers: list[int] | None = None,
+    vault: Path | None = None,
+) -> int:
+    """``scoutctl notify telegram``'s send and its exit codes: the CLI calls it, and so does the run's send-only
+    broker (scout.sandbox.broker), so a run sees the same output and codes either way.
+
+    0 sent (``id=<ulid>`` first on stderr, the Event JSON on stdout), 1 a bad request, 2 HTTP failed,
+    3 duplicate, 4 outbound blocked, 7 a reply naming a message that isn't waiting, 10 not set up.
+
+    A reply (``reply_to``, plus any other messages it ``covers``) answers inbound messages in ``vault``'s ledger
+    (default :func:`scout.paths.data_dir`). Every id must be unanswered there, or nothing is sent (exit 7; see
+    :func:`unanswerable`). After a real send this function, never the run, records the reply, which marks them
+    answered; a record that fails is a warning, not a resend.
+    """
+    from dataclasses import asdict
+
+    reply: tuple[Path, int, list[int]] | None = None  # (ledger vault, reply_to, every id it answers)
+    if reply_to is not None or covers:
+        if reply_to is None:
+            echo_err("scoutctl notify telegram: --covers needs --reply-to (a reply threads to a message)")
+            return 1
+        answers = sorted({reply_to, *(covers or [])})
+        if not all(_is_message_id(i) for i in answers):
+            echo_err("scoutctl notify telegram: message ids are positive integers")
+            return 1
+        reply = (vault if vault is not None else paths.data_dir(), reply_to, answers)
+        if (problem := unanswerable(reply[0], answers)) is not None:
+            echo_err(f"scoutctl notify telegram: {problem[1]}")
+            return problem[0]
+
+    try:
+        ev = send(
+            tier=tier,
+            body=text,
+            parse_mode=parse_mode,
+            dry_run=dry_run,
+            allow_duplicate=allow_duplicate,
+            receipt=lambda event_id: echo_err(f"id={event_id}"),
+            reply_to=reply_to,
+        )
+    except DuplicateSendError as e:
+        # Receipt first (the earlier send's id), so a caller filtering
+        # stderr still finds it; then the refusal and how to override.
+        echo_err(f"id={e.original_id}")
+        echo_err(
+            f"scoutctl notify telegram: refused — byte-identical message sent at {e.sent_at} "
+            f"(id {e.original_id}); pass --allow-duplicate to send it again"
+        )
+        return DuplicateSendError.exit_code
+    except OutboundBlockedError as e:
+        echo_err(f"scoutctl notify telegram: {e}")
+        return OutboundBlockedError.exit_code
+    except ConfigError as e:
+        # The runner relies on exit 10 to know secrets are missing.
+        echo_err(f"scoutctl notify telegram: {e}")
+        return ConfigError.exit_code
+    except ValueError as e:
+        echo_err(f"scoutctl notify telegram: {e}")
+        return 1
+    except requests.HTTPError as e:
+        # ``str(HTTPError)`` includes the request URL, and the Telegram
+        # URL embeds the bot token in its path
+        # (``/bot<token>/sendMessage``). On a 401 (revoked token) or
+        # any 4xx/5xx the raw token would dump to stderr — the worst
+        # leak path because it's exactly what operators debug live.
+        # Rebuild the message from status_code + reason instead of
+        # ``str(e)`` so the URL never appears.
+        status = getattr(e.response, "status_code", "?")
+        reason = getattr(e.response, "reason", "Unknown")
+        echo_err(f"scoutctl notify telegram: HTTP {status} {reason} (token redacted in URL)")
+        return 2
+    except requests.RequestException as e:
+        # Non-HTTP failures during a live send: timeout, DNS, connection
+        # refused, SSL. ``str()`` of a ConnectionError DOES include the
+        # request path (``Max retries exceeded with url: /bot<token>/…``).
+        # send() scrubs it; redact again here so this line can never
+        # carry the token.
+        echo_err(f"scoutctl notify telegram: HTTP error: {redact_secrets(str(e))}")
+        return 2
+    if reply is not None and not dry_run:
+        _record_reply(*reply, echo_err)
+    # Dry-run preamble (the [dry-run] lines) goes through stderr inside
+    # send(), so this stdout is always pure JSON for tests and scripts.
+    echo_out(json.dumps(asdict(ev), indent=2))
+    return 0
+
+
+def unanswerable(vault: Path, ids: Iterable[int]) -> tuple[int, str] | None:
+    """Why a reply answering ``ids`` may not be sent, as (exit code, reason), or None when every id is unanswered
+    in ``vault``'s inbound ledger. The one check both :func:`cli_send` and the run's broker
+    (:meth:`scout.sandbox.broker.Broker.telegram`) use.
+
+    :data:`EXIT_UNANSWERABLE` (an id unknown or already answered) is final: a reply to a message id a run
+    predicted must never wait in the queue for that message to arrive. A ledger that can't be read is exit 1,
+    which a queued reply retries.
+    """
+    from scout.telegram_inbound.ledger import Ledger
+
+    try:
+        unknown = set(ids) - Ledger(vault).unanswered_ids()
+    except (OSError, ValueError) as e:  # ValueError: a ledger file that isn't UTF-8
+        return 1, f"couldn't read the inbound ledger ({e})"
+    if unknown:
+        return EXIT_UNANSWERABLE, "refused — unknown or already answered message ids: " + ", ".join(
+            map(str, sorted(unknown))
+        )
+    return None
+
+
+def _record_reply(vault: Path, reply_to: int, covers: list[int], echo_err: Callable[[str], None]) -> None:
+    """Mark the messages a delivered reply answers. The message is out, so a failure here only warns."""
+    from scout.telegram_inbound.ledger import Ledger
+
+    try:
+        ledger = Ledger(vault)
+        with ledger.locked():
+            ledger.record_reply(reply_to=reply_to, covers=covers, at=datetime.now(UTC))
+    except Exception as e:  # noqa: BLE001 - the send already happened; never turn it into a failure or a resend
+        echo_err(f"scoutctl notify telegram: warning: sent, but the reply couldn't be recorded in the ledger ({e})")
 
 
 def main(argv: list[str] | None = None) -> int:

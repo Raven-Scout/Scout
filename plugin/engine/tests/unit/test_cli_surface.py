@@ -540,7 +540,7 @@ def test_trigger_stats_json_and_empty_text(vault: Path) -> None:
 
     empty_text = runner.invoke(cli.app, ["trigger", "stats", "--days", "3"])
     assert empty_text.exit_code == 0, empty_text.output
-    assert "no trigger fires in the last 3 day(s)" in empty_text.stdout
+    assert "no trigger fires in the last 3 days" in empty_text.stdout
 
 
 def test_trigger_stats_skips_blank_and_unparseable_log_lines(vault: Path) -> None:
@@ -703,7 +703,6 @@ def _install_argv(*extra: str) -> list[str]:
         "--instance-name",
         "TestScout",
         "--no-jobs",
-        "--skip-claude",
         *extra,
     ]
 
@@ -856,7 +855,6 @@ def test_bootstrap_upgrade_reads_existing_config(vault: Path, monkeypatch: pytes
             connectors=set(cfg.enabled_connectors),
             inputs=dict(cfg.connector_inputs),
             skip_jobs=cfg.skip_jobs,
-            skip_claude=cfg.skip_claude,
         )
 
         class R:
@@ -864,6 +862,7 @@ def test_bootstrap_upgrade_reads_existing_config(vault: Path, monkeypatch: pytes
             conflicts = ["SKILL.md"]
             skipped = ["DREAMING.md.proposed-merge"]
             conflict_markers = ["RESEARCH.md"]
+            installed = ["RESPOND.md"]
             backups = ["SKILL.md.bak.2026-04-15"]
             vault_edits: list = []
 
@@ -877,6 +876,7 @@ def test_bootstrap_upgrade_reads_existing_config(vault: Path, monkeypatch: pytes
 
     monkeypatch.setattr("scout.scripts.bootstrap.upgrade", fake_upgrade)
 
+    # --skip-claude is deprecated: still accepted, ignored, with a note (spec 2026-11-13 §8.9).
     result = runner.invoke(cli.app, ["bootstrap", "upgrade", "--no-jobs", "--skip-claude"])
     assert result.exit_code == 0, result.output
     assert f"upgraded: {vault}" in result.stdout
@@ -886,13 +886,15 @@ def test_bootstrap_upgrade_reads_existing_config(vault: Path, monkeypatch: pytes
         in result.output
     )
     assert "held (conflict markers): RESEARCH.md — left as is" in result.output
+    assert "installed (was missing): RESPOND.md" in result.output
     assert "backup: SKILL.md.bak.2026-04-15" in result.output
     assert "doctor: warn" in result.stdout
     assert seen["timezone"] == "Europe/Prague"
     assert seen["platform"] == "linux"
     assert seen["connectors"] == {"github"}
     assert seen["inputs"] == {"github_username": "alex"}
-    assert seen["skip_jobs"] is True and seen["skip_claude"] is True
+    assert seen["skip_jobs"] is True
+    assert "note: --skip-claude is deprecated and does nothing" in result.output
 
 
 def test_bootstrap_upgrade_without_a_vault_exits_two(vault: Path) -> None:
@@ -951,7 +953,7 @@ def test_bootstrap_resolve_records_each_named_brain_file(vault: Path, monkeypatc
 def test_bootstrap_resolve_rejects_a_file_that_is_not_a_brain_file(vault: Path) -> None:
     result = runner.invoke(cli.app, ["bootstrap", "resolve", "parser.py"])
     assert result.exit_code == 2
-    assert "SKILL.md, DREAMING.md or RESEARCH.md" in result.output
+    assert "SKILL.md, DREAMING.md, RESEARCH.md or RESPOND.md" in result.output
 
 
 def test_bootstrap_resolve_refusal_exits_one(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -999,7 +1001,7 @@ def test_bootstrap_migrate_legacy_reports_snapshots_and_backups(vault: Path, mon
     seen: dict[str, object] = {}
 
     def fake_migrate(cfg):
-        seen.update(skip_jobs=cfg.skip_jobs, skip_claude=cfg.skip_claude, inputs=dict(cfg.connector_inputs))
+        seen.update(skip_jobs=cfg.skip_jobs, inputs=dict(cfg.connector_inputs))
 
         class R:
             vault = cfg.vault
@@ -1029,9 +1031,8 @@ def test_bootstrap_migrate_legacy_reports_snapshots_and_backups(vault: Path, mon
     assert "snapshots recorded: SKILL, DREAMING" in result.stdout
     assert "backup: run-briefing.sh.bak.2026-04-15" in result.stdout
     assert "warning: legacy runner backed up" in result.output
-    # migrate-legacy defaults to --no-jobs and never runs Claude.
+    # migrate-legacy defaults to --no-jobs.
     assert seen["skip_jobs"] is True
-    assert seen["skip_claude"] is True
 
 
 def test_bootstrap_migrate_legacy_rebootstrap_jobs_flips_skip_jobs(
@@ -1161,7 +1162,7 @@ def test_phases_backport_reports_unchanged_files(vault: Path) -> None:
 
     result = runner.invoke(cli.app, ["phases", "backport", "--kind", "SKILL"])
     assert result.exit_code == 0, result.output
-    assert "phases backport — SKILL (0 hunk(s)" in result.stdout
+    assert "phases backport — SKILL (0 hunks" in result.stdout
 
 
 def test_phases_backport_honours_explicit_vault_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1219,7 +1220,7 @@ def test_phases_backport_apply_writes_the_applied_hunks(vault: Path, monkeypatch
     assert result.exit_code == 0, result.output
     assert "✓ applied" in result.stdout
     assert f"→ wrote {fragment}" in result.stdout
-    assert "Applied 1 hunk(s) to phases/." in result.stdout
+    assert "Applied 1 hunk to phases/." in result.stdout
     assert "EDITED BODY" in fragment.read_text()
 
 
@@ -1295,7 +1296,7 @@ def test_phases_backport_plugin_root_reads_and_writes_that_checkout(
     result = runner.invoke(cli.app, ["phases", "backport", "--kind", "SKILL", "--apply", "--plugin-root", str(clone)])
     assert result.exit_code == 0, result.output
     assert seen["phases_root"] == clone / "phases"
-    assert "Applied 0 hunk(s) to phases/." in result.stdout
+    assert "Applied 0 hunks to phases/." in result.stdout
 
 
 def test_phases_backport_plugin_root_must_hold_phases(vault: Path, tmp_path: Path) -> None:
@@ -1365,7 +1366,7 @@ def test_phases_backport_apply_with_no_applied_hunks_writes_nothing(
 
     result = runner.invoke(cli.app, ["phases", "backport", "--kind", "SKILL", "--apply"])
     assert result.exit_code == 0, result.output
-    assert "Applied 0 hunk(s) to phases/." in result.stdout
+    assert "Applied 0 hunks to phases/." in result.stdout
     assert "→ wrote" not in result.stdout
 
 

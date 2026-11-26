@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Modal progress while the bundled engine replaces the installed one
 /// (spec §5 "every launch"). Steps follow `EngineUpgrader.upgradeSteps`. On
@@ -45,36 +46,80 @@ struct EngineUpgradeSheet: View {
         if progress[.registerWithClaudeCode]?.status == .done {
             return "The new engine is installed and Claude Code uses it; Retry re-runs the health check."
         }
-        return "Your vault already runs the new engine; Retry finishes switching Claude Code over."
+        return "Your Scout folder already runs the new engine; Retry finishes switching Claude Code over."
     }
 
+    /// Why this sheet opened by itself and how long it takes (audit #91):
+    /// it appears at launch with no click, so it has to say what it's doing.
+    nonisolated static func explanation(isRepair: Bool) -> String {
+        if isRepair {
+            return "The engine, the part of Scout that runs your scheduled briefings, didn't finish setting up last time, so Scout is finishing it now. This usually takes a minute or two."
+        }
+        return "This version of Scout comes with a newer engine, the part that runs your scheduled briefings, so Scout is installing it before you carry on. This usually takes a minute or two."
+    }
+
+    /// Everything a bug report needs: what was being done, how far it got,
+    /// and the failure itself.
+    nonisolated static func copyText(title: String, progress: [InstallStep: InstallProgress], error: String?) -> String {
+        var lines = [title]
+        for step in EngineUpgrader.upgradeSteps {
+            let status = progress[step]?.status ?? .pending
+            lines.append("- \(step.title): \(status.spokenStatus)")
+        }
+        if let failure = failure(progress: progress, error: error) { lines += ["", failure] }
+        return lines.joined(separator: "\n")
+    }
+
+    @State private var copied = false
+
     var body: some View {
+        let title = Self.title(targetVersion: targetVersion, isRepair: isRepair)
         VStack(alignment: .leading, spacing: 14) {
-            Text(Self.title(targetVersion: targetVersion, isRepair: isRepair))
-                .font(DS.serif(20, weight: .medium)).foregroundStyle(DS.Ink.p1)
-            ForEach(EngineUpgrader.upgradeSteps, id: \.rawValue) { s in
-                HStack(spacing: 10) {
-                    Text(glyph(progress[s]?.status)).font(DS.mono(13)).foregroundStyle(DS.Ink.p3).frame(width: 16)
-                    Text(s.title).font(DS.sans(13)).foregroundStyle(DS.Ink.p1)
+            Text(title)
+                .dsFont(.title, .serif, weight: .medium).foregroundStyle(DS.Ink.p1)
+                .accessibilityAddTraits(.isHeader)
+            Text(Self.explanation(isRepair: isRepair))
+                .font(DS.font(.label)).foregroundStyle(DS.Ink.p2)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(EngineUpgrader.upgradeSteps, id: \.rawValue) { s in
+                    HStack(spacing: 10) {
+                        InstallStepStatusIcon(status: progress[s]?.status)
+                        Text(s.title).font(DS.font(.body)).foregroundStyle(DS.Ink.p1)
+                    }
+                    .accessibilityElement(children: .combine)
                 }
             }
             if !isRunning, let failure = Self.failure(progress: progress, error: error) {
-                Text(failure).font(DS.mono(11)).foregroundStyle(DS.Status.warn).lineLimit(6).textSelection(.enabled)
-                Text(Self.statusNote(progress))
-                    .font(DS.sans(11.5)).foregroundStyle(DS.Ink.p3)
-                HStack(spacing: 16) {
-                    Button("Retry", action: retry)
-                    Button("Later", action: dismiss).keyboardShortcut(.cancelAction)
+                ScrollView {
+                    Text(failure).font(DS.font(.caption, .mono)).foregroundStyle(DS.Status.err)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
                 }
-                .buttonStyle(.plainHit).font(DS.sans(13, weight: .medium)).foregroundStyle(DS.Accent.ink)
+                .frame(maxHeight: 120)
+                Text(Self.statusNote(progress))
+                    .font(DS.font(.caption)).foregroundStyle(DS.Ink.p3)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Button(copied ? "Copied" : "Copy details") {
+                        let pb = NSPasteboard.general
+                        pb.clearContents()
+                        pb.setString(Self.copyText(title: title, progress: progress, error: error), forType: .string)
+                        copied = true
+                    }
+                    .buttonStyle(.dsLink)
+                    Spacer()
+                    Button("Later", action: dismiss)
+                        .buttonStyle(.dsSecondary)
+                        .keyboardShortcut(.cancelAction)
+                    // No Return: Retry re-runs the install.
+                    Button("Retry", action: retry)
+                        .buttonStyle(.dsPrimary)
+                }
             }
         }
         .padding(28)
         .frame(width: 460, alignment: .leading)
         .interactiveDismissDisabled(isRunning)
-    }
-
-    private func glyph(_ s: StepStatus?) -> String {
-        switch s { case .done?: return "✓"; case .skipped?: return "–"; case .running?: return "…"; case .failed?: return "✗"; default: return "○" }
     }
 }

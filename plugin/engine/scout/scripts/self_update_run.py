@@ -36,6 +36,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from scout import events, paths, plural, safe_write
 from scout.scripts.engine_pointer import EnginePointer
 from scout.scripts.self_update import ReleaseStatus, UpdateStatus, _semver_tuple, release_status
 from scout.update_outcomes import UpdateOutcome
@@ -53,6 +54,8 @@ RETRY_AFTER_FAILURE = timedelta(hours=24)
 MAX_FAILURES_PER_TARGET = 3
 SLOT_LOOKAHEAD = timedelta(minutes=45)
 NETWORK_PREFIX = "network: "
+# The ledger folds `detail` to one clean line, so an empty error reads back as "network:", without the space.
+_NETWORK_MARK = NETWORK_PREFIX.rstrip()
 _LOCK_BUSY_MARK = "held by live PID"
 _STEP_TIMEOUT_S = 900
 _DETAIL_MAX = 300
@@ -211,7 +214,7 @@ def scheduled_gate(deps: Deps, rows: list[UpdateOutcome]) -> str | None:
 def _target_backoff(rows: list[UpdateOutcome], target: str, *, now: datetime) -> str | None:
     # A network outage says nothing about the release itself, so it never counts against it.
     failures = [
-        r for r in rows if r.result == "failed" and r.target == target and not r.detail.startswith(NETWORK_PREFIX)
+        r for r in rows if r.result == "failed" and r.target == target and not r.detail.startswith(_NETWORK_MARK)
     ]
     if len(failures) >= MAX_FAILURES_PER_TARGET:
         return f"{target} failed {len(failures)} times; waiting for a newer release or --force"
@@ -223,7 +226,7 @@ def _target_backoff(rows: list[UpdateOutcome], target: str, *, now: datetime) ->
 def _trailing_network_failures(rows: list[UpdateOutcome]) -> int:
     count = 0
     for row in reversed(rows):
-        if row.step == "check" and row.result in ("deferred", "failed") and row.detail.startswith(NETWORK_PREFIX):
+        if row.step == "check" and row.result in ("deferred", "failed") and row.detail.startswith(_NETWORK_MARK):
             if row.result == "failed":
                 break
             count += 1
@@ -386,7 +389,7 @@ def _verify(att: _Attempt, scoutctl: Path, conflicts: list[str]) -> UpdateOutcom
         return att.row(
             "applied_with_sidecars",
             "verify",
-            f"left {len(conflicts)} file(s) to merge",
+            f"left {plural.count(len(conflicts), 'file')} to merge",
             doctor=severity,
             sidecars=tuple(conflicts),
         )
@@ -441,7 +444,9 @@ def run_update(deps: Deps, *, scheduled: bool, dry_run: bool = False, force: boo
                 return Attempt(row=None, reason=backoff, settled=True)
         sidecars = deps.blocking_sidecars()
         if sidecars:
-            raise att.stop("held", "check", f"unresolved merge file(s): {', '.join(sidecars)}")
+            raise att.stop(
+                "held", "check", f"unresolved merge {plural.noun(len(sidecars), 'file')}: {', '.join(sidecars)}"
+            )
         severity = deps.doctor_severity()
         if severity == "red":
             raise att.stop("held", "check", "the install doctor is red", doctor=severity)
@@ -471,6 +476,12 @@ def _finish(deps: Deps, row: UpdateOutcome, prior: list[UpdateOutcome], *, dry_r
 LOCK_NAME = ".scout-cache/self-update.lock"
 
 
+def _on_unsafe(log_dir: Path) -> safe_write.OnUnsafe:
+    """A link a run put at the self-update lock or log is removed and made again, never followed, and recorded:
+    refusing would stop every update."""
+    return events.unsafe_file_recorder(log_dir, kind="self_update.unsafe_file_replaced", source="self_update")
+
+
 @contextmanager
 def run_lock(vault: Path) -> Iterator[bool]:
     """Hold an exclusive, non-blocking lock for one attempt; yields False when another holds it.
@@ -481,7 +492,7 @@ def run_lock(vault: Path) -> Iterator[bool]:
     """
     path = vault / LOCK_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as fh:
+    with safe_write.open_lock(path, on_unsafe=_on_unsafe(paths.logs_dir(vault))) as fh:
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -500,9 +511,12 @@ def spawn_detached(argv: list[str], *, log_path: Path, popen: Callable[..., Any]
     whatever is left in the job's process group when the heartbeat exits. A
     backgrounded ``nohup … &`` stays in that group; a new session does not. This is
     the same pattern ``heartbeat.launch_runner`` and ``schedule_tick`` use.
+
+    The child inherits the caller's cwd, which for the heartbeat is the vault, so
+    an argv that runs Python must come from ``scout._spawn.python_module_argv``.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as log_fh:
+    with safe_write.open_append(log_path, on_unsafe=_on_unsafe(log_path.parent)) as log_fh:
         proc = popen(
             argv,
             env=os.environ.copy(),

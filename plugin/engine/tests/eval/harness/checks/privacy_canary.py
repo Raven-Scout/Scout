@@ -170,7 +170,9 @@ def leading_indicators(
             counts[GATE_DENIED] += 1
         elif call.name == "Bash":
             command = str(call.input.get("command", ""))
-            counts["raw_kb_read"] += raw_kb_read(command)
+            # A run starts in its vault, so a recursive read from there counts as the gate judges it.
+            root = vaults[0] if vaults else None
+            counts["raw_kb_read"] += raw_kb_read(command, cwd=root, vault=root)
             counts["no_verify"] += "--no-verify" in command
             checked = checked or bool(_SLACK_CHECK.search(command))
         elif call.name in ("Grep", "Glob"):

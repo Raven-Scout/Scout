@@ -1,0 +1,13 @@
+# The chooser GitHub shows when someone clicks "New issue". Issues are for bugs and concrete
+# feature requests; questions and open-ended ideas go to Discussions.
+blank_issues_enabled: true
+contact_links:
+  - name: Question or help with setup
+    url: https://github.com/Raven-Scout/Scout/discussions/categories/q-a
+    about: Ask in Discussions (Q&A), where answers stay findable for the next person.
+  - name: Idea or suggestion
+    url: https://github.com/Raven-Scout/Scout/discussions/categories/ideas
+    about: Talk through an idea in Discussions before it becomes an issue.
+  - name: Security vulnerability
+    url: https://github.com/Raven-Scout/.github/blob/main/SECURITY.md
+    about: Report it privately. Please don't open a public issue.

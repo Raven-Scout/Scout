@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from scout.scripts import versioning
+from scout.scripts import release_notes, versioning
 from tests.unit.release_harness import REAL_REPO, make_repo
 
 _DEV_VENV = "(cd plugin/engine && uv venv --python 3.12 && uv pip install -e '.[dev]')"
@@ -74,6 +74,101 @@ def test_prepare_bumps_every_version_file_and_both_changelogs(tmp_path):
     for rel in ("plugin/CHANGELOG.md", "apps/macos/CHANGELOG.md"):
         text = (r.root / rel).read_text()
         assert text.index("## [Unreleased]") < text.index("## [0.15.0] - ")
+
+
+def _fragments(r, files: dict[str, str], *, branch="main"):
+    """Commit changelog fragments on `branch` and push it, as merged PRs would leave them."""
+    for rel, text in files.items():
+        (r.root / rel).write_text(text, encoding="utf-8")
+    _git(r.root, "add", "-A")
+    _git(r.root, "commit", "-q", "-m", "docs: changelog fragments")
+    _git(r.root, "push", "-q", "origin", branch)
+
+
+_SEVERAL = {
+    "plugin/changelog.d/b-later.fixed.md": "- plugin fix B\n",
+    "plugin/changelog.d/a-first.fixed.md": "- plugin fix A\n  - its detail\n",
+    "plugin/changelog.d/a-first.added.md": "- plugin feature A\n",
+    "plugin/changelog.d/c-sec.security.md": "- plugin hardening\n",
+    "apps/macos/changelog.d/d-app.removed.md": "- app removal\n",
+    "apps/macos/changelog.d/e-app.added.md": "- app feature E\n",
+}
+
+
+def test_prepare_assembles_fragments_after_the_unreleased_entries(tmp_path):
+    """Both changelogs, several sections, and the transition: the seed's `[Unreleased]` entries come first."""
+    r = make_repo(tmp_path)
+    _fragments(r, _SEVERAL)
+    done = r.run("prepare", "0.15.0", extra_env={"SKIP_RELEASE": "1"})
+    assert done.returncode == 0, done.stderr
+    plugin = release_notes.extract_section((r.root / "plugin/CHANGELOG.md").read_text(encoding="utf-8"), "0.15.0")
+    assert plugin == (
+        "### Added\n- a plugin thing\n- plugin feature A\n\n"
+        "### Fixed\n- plugin fix A\n  - its detail\n- plugin fix B\n\n"
+        "### Security\n- plugin hardening"
+    )
+    app = release_notes.extract_section((r.root / "apps/macos/CHANGELOG.md").read_text(encoding="utf-8"), "0.15.0")
+    assert app == "### Added\n- an app thing\n- app feature E\n\n### Removed\n- app removal"
+    for rel in ("plugin/CHANGELOG.md", "apps/macos/CHANGELOG.md"):
+        text = (r.root / rel).read_text(encoding="utf-8")
+        assert release_notes.extract_section(text, "Unreleased") == ""
+        assert text.index("## [Unreleased]") < text.index("## [0.15.0] - ")
+    # The release commit deletes every fragment it assembled, and only those; the READMEs stay.
+    deleted = _git(r.root, "show", "--name-only", "--diff-filter=D", "--format=", "HEAD").split()
+    assert sorted(deleted) == sorted(_SEVERAL)
+    assert _git(r.root, "ls-files", "plugin/changelog.d", "apps/macos/changelog.d").split() == [
+        "apps/macos/changelog.d/README.md",
+        "plugin/changelog.d/README.md",
+    ]
+    assert _git(r.root, "status", "--porcelain") == ""
+    notes = (r.root / ".release" / "notes-v0.15.0.md").read_text(encoding="utf-8")
+    assert "- plugin fix B" in notes and "- app removal" in notes and "- a plugin thing" in notes
+
+
+def test_prepare_with_only_fragments_and_an_empty_unreleased(tmp_path):
+    r = make_repo(tmp_path)
+    for rel in ("plugin/CHANGELOG.md", "apps/macos/CHANGELOG.md"):
+        (r.root / rel).write_text("# Changelog\n\n## [Unreleased]\n\n## [0.14.0] - 2026-01-01\n\n- old\n")
+    _fragments(r, {"plugin/changelog.d/only.fixed.md": "- the only fix\n"})
+    done = r.run("prepare", "0.15.0", extra_env={"SKIP_RELEASE": "1"})
+    assert done.returncode == 0, done.stderr
+    plugin = (r.root / "plugin/CHANGELOG.md").read_text(encoding="utf-8")
+    assert plugin == (
+        "# Changelog\n\n## [Unreleased]\n\n## [0.15.0] - "
+        + plugin.split("## [0.15.0] - ")[1].split("\n")[0]
+        + "\n\n### Fixed\n- the only fix\n\n## [0.14.0] - 2026-01-01\n\n- old\n"
+    )
+    app = (r.root / "apps/macos/CHANGELOG.md").read_text(encoding="utf-8")
+    assert release_notes.extract_section(app, "0.15.0") == ""  # an empty app section is allowed, as before
+    assert release_notes.extract_section(app, "0.14.0") == "- old"
+
+
+def test_prepare_refuses_a_malformed_fragment_before_branching(tmp_path):
+    r = make_repo(tmp_path)
+    _fragments(r, {"plugin/changelog.d/ok.fixed.md": "- fine\n", "apps/macos/changelog.d/bad.fixes.md": "- x\n"})
+    head = _git(r.root, "rev-parse", "HEAD")
+    done = r.run("prepare", "0.15.0", extra_env={"SKIP_RELEASE": "1"})
+    assert done.returncode != 0
+    assert "bad.fixes.md: unknown section 'fixes'" in done.stderr and "does not parse" in done.stderr
+    assert _git(r.root, "rev-parse", "--abbrev-ref", "HEAD") == "main" and _git(r.root, "rev-parse", "HEAD") == head
+    assert _git(r.root, "branch", "--list", "release/*") == "" and _git(r.root, "status", "--porcelain") == ""
+    assert (r.root / "plugin/changelog.d/ok.fixed.md").exists()
+
+
+def test_an_rc_does_not_consume_fragments(tmp_path):
+    """prepare consumed main's fragments; one added on the release branch afterwards stays a fragment."""
+    r = make_repo(tmp_path)
+    _fragments(r, {"plugin/changelog.d/before.fixed.md": "- in the release\n"})
+    assert r.run("prepare", "0.15.0").returncode == 0  # leaves HEAD on release/v0.15.0, pushed
+    _fragments(r, {"plugin/changelog.d/after.fixed.md": "- after prepare\n"}, branch="release/v0.15.0")
+    changelogs = {rel: (r.root / rel).read_text(encoding="utf-8") for rel in versioning._CHANGELOGS}
+    done = r.run("rc", "v0.15.0-rc.1", extra_env={"SKIP_NOTARIZE": "1", "SKIP_RELEASE": "1"})
+    assert done.returncode == 0, done.stderr
+    assert (r.root / "plugin/changelog.d/after.fixed.md").exists()
+    assert {rel: (r.root / rel).read_text(encoding="utf-8") for rel in versioning._CHANGELOGS} == changelogs
+    assert _git(r.root, "status", "--porcelain") == ""
+    notes = (r.root / ".release/v0.15.0-rc.1/release-notes.md").read_text(encoding="utf-8")
+    assert "- in the release" in notes and "after prepare" not in notes
 
 
 def test_prepare_dry_run_pushes_nothing_and_opens_no_pr(tmp_path):
@@ -328,6 +423,7 @@ def test_finalize_publishes_once_after_notarization(tmp_path):
     line = calls[publish[0]]
     assert f"--target {sha}" in line and " --latest " in f"{line} " and "--prerelease" not in line
     assert "Scout-0.15.0.dmg" in line and "appcast.xml" not in line
+    assert any(w.endswith("/Scout.dmg") for w in line.split())  # the website's stable download name
     assert "MARKETING_VERSION=0.15.0" in next(c for c in calls if c.startswith("xcodebuild"))
     assert f"CURRENT_PROJECT_VERSION={_git(r.root, 'rev-list', '--count', sha)}" in next(
         c for c in calls if c.startswith("xcodebuild")
@@ -503,7 +599,52 @@ def test_finalize_attaches_the_appcast_when_present(tmp_path):
     r = make_repo(tmp_path)
     _merge_release(r)
     assert r.run("finalize", "v0.15.0", extra_env={"FAKE_APPCAST": "1"}).returncode == 0
-    assert "appcast.xml" in next(c for c in r.calls() if c.startswith("gh release create"))
+    line = next(c for c in r.calls() if c.startswith("gh release create"))
+    assert "appcast.xml" in line
+    assert any(w.endswith("/Scout.dmg") for w in line.split())
+
+
+def test_the_stable_dmg_is_a_copy_never_signed_or_notarized_again(tmp_path):
+    """Scout.dmg is a plain copy of the DMG that was signed, notarized and stapled: nothing touches it again."""
+    r = make_repo(tmp_path)
+    _merge_release(r)
+    done = r.run("finalize", "v0.15.0")
+    assert done.returncode == 0, done.stderr
+    calls = r.calls()
+    assert sum(c.startswith("gh release create") for c in calls) == 1
+    touched = [c for c in calls if c.split()[0] in ("codesign", "xcrun", "spctl", "hdiutil")]
+    assert not any(w.endswith("/Scout.dmg") for c in touched for w in c.split())
+
+
+def test_finalize_attaches_the_install_manifest(tmp_path):
+    r = make_repo(tmp_path)
+    _merge_release(r)
+    assert r.run("finalize", "v0.15.0").returncode == 0
+    assert "scout-release.json" in next(c for c in r.calls() if c.startswith("gh release create"))
+    manifest = json.loads(Path(f"{r.log}.manifest").read_text())
+    assert manifest == {"name": "scout", "version": "0.15.0", "tag": "v0.15.0"}
+
+
+def test_an_rc_manifest_names_the_rc_tag_and_the_version_it_carries(tmp_path):
+    r = make_repo(tmp_path)
+    assert r.run("prepare", "0.15.0").returncode == 0
+    assert r.run("rc", "v0.15.0-rc.1").returncode == 0
+    manifest = json.loads(Path(f"{r.log}.manifest").read_text())
+    assert manifest == {"name": "scout", "version": "0.15.0", "tag": "v0.15.0-rc.1"}
+    # A prerelease never becomes /releases/latest, so an rc's manifest can't answer an installer.
+    create = next(c for c in r.calls() if c.startswith("gh release create"))
+    assert "scout-release.json" in create
+    assert "--prerelease" in create and "--latest=false" in create
+
+
+def test_a_dry_run_builds_the_install_manifest_and_publishes_nothing(tmp_path):
+    r = make_repo(tmp_path)
+    _merge_release(r)
+    done = r.run("finalize", "v0.15.0", extra_env={"SKIP_NOTARIZE": "1", "SKIP_RELEASE": "1"})
+    assert done.returncode == 0, done.stderr
+    assert not [c for c in r.calls() if c.startswith("gh release create")]
+    built = r.root / ".release" / "v0.15.0" / "apps" / "macos" / "build" / "release" / "scout-release.json"
+    assert json.loads(built.read_text()) == {"name": "scout", "version": "0.15.0", "tag": "v0.15.0"}
 
 
 def test_refuses_before_the_release_pr_merged(tmp_path):
@@ -631,6 +772,7 @@ def test_rc_is_a_prerelease_never_latest(tmp_path):
     line = next(c for c in r.calls() if c.startswith("gh release create"))
     assert "--prerelease" in line and "--latest=false" in line and f"--target {sha}" in line
     assert "Scout-0.15.0-rc.1.dmg" in line and " --latest " not in f"{line} "
+    assert not any(w.endswith("/Scout.dmg") for w in line.split())  # an rc isn't Latest; no stable name
 
 
 def test_dry_run_rc_on_the_local_release_branch(tmp_path):

@@ -1,0 +1,44 @@
+{
+  "needs_you": {
+    "close_proposals": 0,
+    "proposals": 0
+  },
+  "schema_version": 1,
+  "threads": [
+    {
+      "counts": {
+        "answered": 1,
+        "dropped": 1,
+        "open": 2,
+        "raised_7d": 2
+      },
+      "experiments": {
+        "due": [],
+        "held": [],
+        "planned": [
+          "E2"
+        ],
+        "running": []
+      },
+      "last_run": "2026-11-21T01:11",
+      "path": "knowledge-base/lab/summary-drift/summary-drift.md",
+      "problems": 0,
+      "question": "What is the cheapest signal that a stored summary no longer matches the page it summarises?",
+      "scout_replies": [
+        {
+          "stamp": "2026-11-21 01:11",
+          "target": "Q3"
+        },
+        {
+          "stamp": "2026-11-21 01:11",
+          "target": "thread"
+        }
+      ],
+      "slug": "summary-drift",
+      "status": "active",
+      "title": "Keeping cached summaries honest",
+      "unanswered_comments": 1,
+      "visibility": "normal"
+    }
+  ]
+}

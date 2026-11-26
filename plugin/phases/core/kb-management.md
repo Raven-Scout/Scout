@@ -45,6 +45,7 @@ The KB is the **persistent memory** of this system. Action items are ephemeral (
 - The KB's front page for a workstream, written **for a person** to [[docs/kb-page-standard]]: one screen (under 8 KB), sections in its fixed order (intro · status line · Where it stands · What's next · Key decisions · Open questions · People · Go deeper · History), no run narration.
 - **Verification goes in frontmatter** (`last_verified:`, `verified_against:`), never a "Last verified" line in the body. **The dated decision log lives in `knowledge/<project-name>-decisions.md`**; the page shows its top 7.
 - **The folder:** `<project-name>.md` at the top; everything else in `knowledge/`, `documents/`, `research/` or `archive/`.
+- **Read the knowledge notes before you edit the page.** `.scout-cache/session-context.json` → `project_knowledge` (near the top of the file) lists each active project's Go deeper map and its `knowledge/` notes, newest `as_of` first. Before changing a front page, `scripts/scoutctl kb read` the notes your edit draws on (at least the one whose subject the edit touches), and make "Where it stands" agree with them. A front page edit with no read of its project's notes this session gets a `[scout:front-page-reads]` warning: read them, then check the edit.
 - Quality bar: after reading a project page, {{USER_NAME}} should understand what's happening *right now*, who's doing what, what was decided and why, and what's next, in under a minute. A page past one screen needs restructuring, not more sections.
 - **`slack_channels:` frontmatter (required for 🔴 projects):** every high-priority project file declares the Slack channels that carry its work, so runs can poll them directly (see the Slack connector's 🔴 Project Channel Poll). Shape:
   ```yaml
@@ -88,7 +89,7 @@ Move a project to `projects/archived/` when:
 - No meetings about it in the last 30 days
 - {{USER_NAME}} confirms it's complete (or the system detects no activity for 30+ days)
 
-To archive: `git mv` the project's folder into `archived/`; in the same commit, rewrite links that name its old path (`scripts/scoutctl kb search --fixed 'projects/<project-name>/'`) to the bare `[[<project-name>]]`, which resolves wherever the file lives; move its row to the Archived table in `projects.md`, and update `knowledge-base.md` if needed.
+To archive: `mv` the project's folder into `archived/` and name both paths when you commit with `scripts/git-safe-commit.sh`; in the same commit, rewrite links that name its old path (`scripts/scoutctl kb search --all --fixed 'projects/<project-name>/'`) to the bare `[[<project-name>]]`, which resolves wherever the file lives; move its row to the Archived table in `projects.md`, and update `knowledge-base.md` if needed.
 
 ### KB Freshness Standards
 
@@ -168,7 +169,7 @@ Never fan a causal claim out to multiple KB surfaces (project file + people + DM
 
 **Consequential claims carry an inline primary-source citation.** Any claim that — if wrong — would cause {{USER_NAME}} to act on bad information (who owns/built something, a strategy/decision, a status that gates action, an attribution) must cite the specific source inline: "per [Linear PROJ-123 status]", "per [DM from X 2026-05-01]", "per [PR #45 mergedAt]". A bare assertion with no traceable source is treated as `[unverified]`.
 
-**Dreaming fact-check pass (deep-work mode).** During deep-work runs, take the KB content written or changed in the last few runs (`scripts/scoutctl kb delta --since 3d --diff` finds it) and re-verify the highest-stakes claims against a **freshly re-read primary source** — do not paraphrase what a prior run already wrote (prior runs can be wrong; the KB is claims-to-verify, not facts). Correct or mark `[unverified]`/`[contradicted]` anything that doesn't hold up, and route genuine conflicts to the review queue. This is the active counterpart to the passive verification markers — hallucinations compound across runs unless something re-checks them. A `[private]` note is fact-checked like any other, but its names and content never go into a connector or web query (see the privacy phase).
+**Dreaming fact-check pass (deep-work mode).** During deep-work runs, take the notes in `fact_check_targets` (`scripts/scoutctl kb delta --since 3d --diff` shows their changes) and re-verify the highest-stakes claims against a **freshly re-read primary source** — do not paraphrase what a prior run already wrote (prior runs can be wrong; the KB is claims-to-verify, not facts). Correct or mark `[unverified]`/`[contradicted]` anything that doesn't hold up, and route genuine conflicts to the review queue. This is the active counterpart to the passive verification markers — hallucinations compound across runs unless something re-checks them. A `[private]` note is fact-checked like any other, but its names and content never go into a connector or web query (see the privacy phase). Skip `knowledge-base/from-agents/`: agents' text, kept as accepted.
 
 ### Audits Remediate or Hand Off — Never Just Report
 

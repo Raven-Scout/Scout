@@ -9,6 +9,9 @@ struct SchedulesHeader: View {
     let typeCount: Int
     @Binding var viewMode: SchedulesViewMode
     let onAddSlot: () -> Void
+    /// False until the schedule has loaded: adding a slot to a page that
+    /// failed to load would save a file holding only that slot.
+    var canAddSlot: Bool = true
 
     @State private var now: Date = Date()
     private let timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
@@ -17,10 +20,11 @@ struct SchedulesHeader: View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Schedules")
-                    .font(DS.serif(28, weight: .medium))
+                    .dsFont(.display, .serif, weight: .medium)
                     .foregroundStyle(DS.Ink.p1)
+                    .glossaryHelp(.schedule)
                 Text(subtitle)
-                    .font(DS.sans(12))
+                    .font(DS.font(.label))
                     .foregroundStyle(DS.Ink.p3)
             }
             Spacer()
@@ -45,7 +49,7 @@ struct SchedulesHeader: View {
     private var viewToggle: some View {
         HStack(spacing: 4) {
             Text("View")
-                .font(DS.sans(12))
+                .font(DS.font(.label))
                 .foregroundStyle(DS.Ink.p3)
                 .padding(.trailing, 4)
             EditorialSegmentedControl(
@@ -61,12 +65,8 @@ struct SchedulesHeader: View {
                 Image(systemName: "plus")
                 Text("New")
             }
-            .font(DS.sans(13, weight: .medium))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .background(DS.Accent.fill, in: RoundedRectangle(cornerRadius: 7))
-            .foregroundStyle(DS.Paper.base)
         }
-        .buttonStyle(.plainHit)
+        .buttonStyle(.dsPrimary)
+        .disabled(!canAddSlot)
     }
 }

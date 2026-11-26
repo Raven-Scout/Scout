@@ -226,7 +226,8 @@ def _parse_ts(value: object) -> datetime | None:
         return None
 
 
-def _row_ts(row: dict) -> datetime | None:
+def row_ts(row: dict) -> datetime | None:
+    """A tracker row's ``ts`` as an aware datetime (UTC when it has no offset), or None."""
     ts = _parse_ts(row.get("ts"))
     if ts is not None and ts.tzinfo is None:
         ts = ts.replace(tzinfo=UTC)
@@ -269,7 +270,7 @@ def _measured_runs(rows: list[tuple[datetime, dict]]) -> list[_MeasuredRun]:
     return runs
 
 
-def _window_cost(rows: list[tuple[datetime, dict]]) -> float:
+def window_cost_of_rows(rows: list[tuple[datetime, dict]]) -> float:
     """Sum ``budget_spent`` over the window's rows, counting each session once.
 
     - A runner row priced from the transcripts (``cost_source: "transcript"``) is
@@ -319,10 +320,10 @@ def window_cost(tracker_path: Path, config: BudgetConfig, *, now: datetime | Non
     window_start = (now or datetime.now(UTC)) - timedelta(hours=config.window_hours)
     rows = []
     for row in iter_tracker_rows(tracker_path):
-        ts = _row_ts(row)
+        ts = row_ts(row)
         if ts is not None and ts >= window_start:
             rows.append((ts, row))
-    return _window_cost(rows)
+    return window_cost_of_rows(rows)
 
 
 def decide(
@@ -354,7 +355,7 @@ def decide(
     in_window: list[tuple[datetime, dict]] = []
 
     for row in iter_tracker_rows(tracker_path):
-        ts = _row_ts(row)
+        ts = row_ts(row)
         if ts is None:
             continue
 
@@ -382,7 +383,7 @@ def decide(
             pass
         last_ts = ts
 
-    total_cost = _window_cost(in_window)
+    total_cost = window_cost_of_rows(in_window)
 
     if limit_lifts_at is not None:
         lifts = limit_lifts_at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

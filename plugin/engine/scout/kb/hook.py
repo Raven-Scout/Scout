@@ -29,11 +29,13 @@ brings every vault the current script.
 
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
 import sys
 from pathlib import Path
 
+from scout import safe_write
 from scout.kb.git_io import git
 
 MARKER = "# scout-managed: kb-lint pre-commit hook"
@@ -48,6 +50,24 @@ _TEMPLATE = """#!/bin/sh
 # If the check can't run (no scoutctl, an engine crash, any exit but 0 or a
 # 'kb-lint:' verdict with 1): a scheduled run's commit is refused; the owner's
 # commit goes on with a warning and an audit row (#453, spec 8.3).
+
+# Keep only absolute PATH entries: git runs this with the vault as cwd, and a
+# relative entry ('.', './bin', an empty one) would let a scoutctl, git or grep
+# planted in the vault run in place of the real one. A leading '~' becomes
+# $HOME, as bash's own PATH search reads it.
+safe_path=
+old_ifs=$IFS
+IFS=:
+set -f
+for path_entry in $PATH; do
+  case "$path_entry" in "~" | "~/"*) [ -z "$HOME" ] || path_entry="$HOME${{path_entry#"~"}}" ;; esac
+  case "$path_entry" in /*) safe_path="${{safe_path:+$safe_path:}}$path_entry" ;; esac
+done
+set +f
+IFS=$old_ifs
+PATH="${{safe_path:-/usr/bin:/bin}}"
+export PATH
+
 SCOUTCTL={scoutctl}
 
 vault_root() {{
@@ -70,7 +90,7 @@ live_run() {{
     $2 ~ /^Z/ {{ next }}
     {{ cmd = $0; sub(/^ *[0-9]+ +[^ ]+ */, "", cmd) }}
     {{ first = cmd; sub(/ .*/, "", first); rest = cmd; sub(/^[^ ]+ +/, "", rest) }}
-    $1 == holder && cmd ~ /(^|[ \\/])run-(scout|dreaming|research)\\.sh( |$)/ {{ found = 1 }}
+    $1 == holder && cmd ~ /(^|[ \\/])run-(scout|dreaming|research|respond)\\.sh( |$)/ {{ found = 1 }}
     index(cmd " ", root "/scripts/claude-with-retry.sh ") == 1 {{ found = 1 }}
     first ~ /(^|\\/)-?(ba|z|da|k)?sh$/ && index(rest " ", root "/scripts/claude-with-retry.sh ") == 1 {{ found = 1 }}
     index(cmd, "--max-budget" "-usd") && index(cmd, "--name") && index(cmd, root) {{ found = 1 }}
@@ -136,7 +156,16 @@ def default_scoutctl() -> str:
     beside = Path(sys.executable).parent / "scoutctl"
     if beside.exists():
         return str(beside)
-    return shutil.which("scoutctl") or "scoutctl"
+    # Absolute PATH entries only: a relative one ('.', './bin') would bake a path that resolves
+    # against whatever the cwd is at commit time. A leading '~' becomes $HOME, as bash reads it.
+    # The bare fallback is looked up by the hook itself, which filters PATH the same way.
+    home = os.environ.get("HOME", "")
+    entries = (
+        home + p[1:] if home and (p == "~" or p.startswith("~/")) else p
+        for p in os.environ.get("PATH", "").split(os.pathsep)
+    )
+    absolute = os.pathsep.join(p for p in entries if os.path.isabs(p))
+    return shutil.which("scoutctl", path=absolute) or "scoutctl"
 
 
 def hooks_dir(repo: Path) -> Path:
@@ -154,6 +183,5 @@ def install_hook(repo: Path, *, scoutctl: str | None = None) -> Path:
     target = d / "pre-commit"
     if target.exists() and MARKER not in target.read_text(encoding="utf-8", errors="replace"):
         raise HookConflict(f"{target} exists and is not Scout-managed — add `scoutctl kb lint --staged` to it by hand")
-    target.write_text(render_hook(scoutctl or default_scoutctl()), encoding="utf-8")
-    target.chmod(0o755)
+    safe_write.atomic_write_text(target, render_hook(scoutctl or default_scoutctl()), mode=0o755)
     return target

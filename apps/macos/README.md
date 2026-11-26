@@ -15,7 +15,7 @@ Scout is an autonomous knowledge-management and daily-briefing system that runs 
 
 ## Install
 
-**You need:** a Mac on macOS 13+ and a paid Claude plan (Max recommended). No
+**You need:** a Mac on macOS 15.7 or later and a paid Claude plan (Max recommended). No
 Homebrew or Python needed — and you don't need Claude Code installed first;
 onboarding offers to install it for you.
 
@@ -35,8 +35,8 @@ README](../../plugin/README.md#install) covers `install.sh`, the no-app path.
 
 ## Requirements (for building from source)
 
-- macOS 13 (Ventura) or newer.
-- Xcode 15 or newer (for build + codesign).
+- macOS 15.7 or newer (the app's deployment target).
+- Xcode 26 or newer (for build + codesign): the macOS 15.7 deployment target needs an SDK of 15.7 or later.
 - No pre-existing `~/Scout` vault is required — a Debug build runs the same
   onboarding as a release build, or adopts whatever engine/vault you already
   have, read-only.
@@ -83,7 +83,7 @@ Cmd+, opens Settings. A few fields are worth filling in:
 
 ## Updates
 
-From v0.16.0 the app updates itself through [Sparkle](https://sparkle-project.org). Use **Scout → Check for Updates…** at any time; Scout also checks daily and shows a badge when a new version is ready (see **Settings ▸ Updates**). Debug builds never check for updates.
+From v0.16.0 the app updates itself through [Sparkle](https://sparkle-project.org). Use **Scout → Check for Updates…** at any time; Scout also checks every hour, and when a new version is ready it shows a banner at the top of every page, sends one macOS notification, and badges **Settings ▸ Updates**. Click **Update now** on the banner, or the notification, to see what's new and install it. While an update waits for you, Scout doesn't check again until you install, skip or close it. Debug builds never check for updates.
 
 Which mechanism updates what:
 
@@ -170,7 +170,7 @@ If the plugin isn't installed, the app still builds and runs; it just shows empt
 
 ## License & legal
 
-This app is open-source under the [MIT License](LICENSE).
+This app is open-source under the [MIT License](../../LICENSE).
 
 Scout is local-first and collects no data of its own — the macOS app only reads and writes files in your local `~/Scout/` folder. See the project's shared legal documents:
 

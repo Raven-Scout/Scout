@@ -27,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from scout.plural import count
 from tests.unit.privacy_vault_helpers import CANARIES, build_privacy_vault
 
 PLUGIN = Path(__file__).resolve().parents[3]
@@ -406,13 +407,18 @@ def _strip_labels(value: Any) -> Any:
 
 
 _SEARCHED = re.compile(r"(?:, type=[^,]+| — searched: [^.]+|, searched: [^)]+)")
+# The pre-shim parser counted "N result(s).": the engine writes "1 result." / "2 results.".
+_LEGACY_PLURAL = re.compile(r"\b(\d+) ([a-z][a-z ]*?)\(s\)")
+_VALIDATE_TOTAL = re.compile(r"^\d+ validation errors? found\.$")
 
 
 def _normalise(command: str, out: str) -> Any:
     """``out`` without labels, and without what the engine adds on purpose: name_lookup's
-    candidate type and search scope (and its PEOPLE-only hint), validate's parse failures."""
+    candidate type and search scope (and its PEOPLE-only hint), validate's parse failures,
+    and real plurals where the pre-shim parser wrote "(s)"."""
     if command in ("export", "entity") and out.lstrip().startswith("{"):
         return _strip_labels(json.loads(out))
+    out = _LEGACY_PLURAL.sub(lambda m: count(int(m.group(1)), m.group(2)), out)
     out = out.replace("[private] ", "")
     if command == "name_lookup":
         out = "".join(line for line in out.splitlines(True) if "Searched PEOPLE only" not in line)
@@ -420,7 +426,8 @@ def _normalise(command: str, out: str) -> Any:
     if command == "validate":
         kept = [line for line in out.splitlines() if "YAML parse failure" not in line]
         errors = sum(1 for line in kept if line.startswith("  ["))
-        kept = [f"{errors} validation error(s) found." if "validation error(s) found" in ln else ln for ln in kept]
+        total = f"{count(errors, 'validation error')} found."
+        kept = [total if _VALIDATE_TOTAL.match(ln) else ln for ln in kept]
         out = "\n".join(kept) + "\n"
     return out
 
@@ -438,9 +445,75 @@ def test_shim_output_matches_the_pre_shim_parser(vault: Path, args: list[str]) -
         cwd=vault,
     )
     new = _run_shim(vault, args, f"{VENV_BIN}{os.pathsep}{env.get('PATH', '')}")
+    # This test owns *text* parity, not the exit code. The legacy fixture is the
+    # v0.18.2 parser, which printed `N validation error(s) found.` and returned 0
+    # anyway; this fixture vault carries two deliberate validation errors. Pinning
+    # `== 0` on both sides is what let the shim ship without `validate`'s exit 3 —
+    # see test_validate_exit_code_is_the_contract below, which owns that.
     assert old.returncode == 0, old.stderr
-    assert new.returncode == 0, new.stderr
+    assert new.returncode in (0, 3), new.stderr
     assert _normalise(args[0], new.stdout) == _normalise(args[0], old.stdout)
+
+
+_CONTRACT_SCHEMA = """\
+entity_types:
+  person:
+    properties:
+      required: [name, type]
+      optional: [role]
+    relationships:
+      - works_with
+
+relationship_types:
+  works_with:
+    inverse: works_with
+    symmetric: true
+"""
+
+# Two people who reference each other: well typed, neither orphaned.
+_CONTRACT_CLEAN = {
+    "people/ann.md": (
+        "---\nname: Ann\ntype: person\nrelationships:\n"
+        '  - type: works_with\n    target: "[[people/bo]]"\n---\n\n# Ann\n'
+    ),
+    "people/bo.md": "---\nname: Bo\ntype: person\n---\n\n# Bo\n",
+}
+
+
+@pytest.mark.parametrize(
+    "extra, want_code",
+    [
+        ({}, 0),
+        ({"topics/t.md": "---\nname: A Topic\ntype: topic\n---\n\n# A Topic\n"}, 3),
+    ],
+    ids=["clean graph exits 0", "unknown entity type exits 3"],
+)
+def test_validate_exit_code_is_the_contract(
+    tmp_path_factory: pytest.TempPathFactory, extra: dict[str, str], want_code: int
+) -> None:
+    """`validate`'s exit code is the only part of it another program reads.
+
+    A vault's dreaming preflight renders the knowledge graph's health row from
+    this code alone. When it returns 0 with findings on stdout, a red graph is
+    reported as `✅ clean` — which is what happened to the five live errors of
+    2026-10-30. Output parity above cannot catch this: it compares text, against
+    a baseline that had the same bug.
+
+    Built from scratch rather than from `build_privacy_vault`, which carries
+    deliberate validation errors and so can never show the clean-exit half.
+    """
+    v = tmp_path_factory.mktemp("validate-exit")
+    kb = v / "knowledge-base"
+    (kb / "ontology").mkdir(parents=True)
+    (kb / "ontology" / "schema.yaml").write_text(_CONTRACT_SCHEMA, encoding="utf-8")
+    shutil.copyfile(SHIM, kb / "ontology" / "parser.py")
+    for rel, body in {**_CONTRACT_CLEAN, **extra}.items():
+        target = kb / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8")
+    path_env = f"{VENV_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
+    out = _run_shim(v, ["validate"], path_env)
+    assert out.returncode == want_code, f"exit {out.returncode}\n{out.stdout}{out.stderr}"
 
 
 def test_shim_output_is_labelled_for_the_owner(vault: Path) -> None:
@@ -477,6 +550,6 @@ def test_shim_gives_an_agent_nothing(vault: Path) -> None:
         assert "task-renew-permit" not in result.stdout and "knowledge-base/" not in result.stdout
         assert "[private]" not in result.stdout and "_label" not in result.stdout
         if args[0] == "query":
-            assert result.stdout.strip() == "0 result(s)."
+            assert result.stdout.strip() == "0 results."
         if args[0] == "export":
             assert json.loads(result.stdout) == {"entities": {}, "relationships": []}

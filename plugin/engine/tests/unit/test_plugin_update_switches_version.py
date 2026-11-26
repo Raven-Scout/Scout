@@ -23,7 +23,7 @@ _UPDATE_MD = _REPO / "commands" / "scout-update.md"
 # A scout-plugin clone keeps install.sh beside commands/; in the Raven-Scout/Scout
 # monorepo _REPO is plugin/ and install.sh sits one level up, at the repo root.
 _INSTALL_SH = _REPO / "install.sh" if (_REPO / "install.sh").is_file() else _REPO.parent / "install.sh"
-_SCOPE_SNIPPET_RE = re.compile(r"python3 -c '([^']*\.get\(\"scope\"\)[^']*)'")
+_SCOPE_SNIPPET_RE = re.compile(r"python3 (?:-I )?-c '([^']*\.get\(\"scope\"\)[^']*)'")
 
 
 def _text(path: Path) -> str:
@@ -59,7 +59,11 @@ def _scopes(payload: object) -> str:
     match = _SCOPE_SNIPPET_RE.search(_text(_UPDATE_MD))
     assert match is not None, "the scope lookup in Step 0.5 is missing"
     done = subprocess.run(
-        [sys.executable, "-c", match.group(1)], input=json.dumps(payload), capture_output=True, text=True, check=True
+        [sys.executable, "-I", "-c", match.group(1)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return done.stdout.strip()
 

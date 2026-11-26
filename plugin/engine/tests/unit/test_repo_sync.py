@@ -304,7 +304,7 @@ def test_sync_mirrors_each_new_commit_and_never_a_local_only_path(vault: Path, h
     assert TRADING not in files and "TRADING/Notes.md" not in files
     for rev in _bare_git(host.bare, "rev-list", "main").split():
         doc = mirror_policy(host.bare, rev)
-        assert doc["labels"] and doc["policy"]["local_only"]["default"] == ["trading/**"]
+        assert doc["labels"] and doc["policy"]["local_only"]["default"] == [".scout-inbox/agents/**", "trading/**"]
     subjects = _bare_git(host.bare, "log", "--format=%s", "main").splitlines()
     assert subjects[:2] == ["personal", "people: priya"]
     assert rs.sync(vault, host).pushed == []
@@ -992,7 +992,7 @@ def test_a_commit_with_an_unreadable_overlay_goes_up_squashed(vault: Path, host:
     _commit(vault, "knowledge-base/people/priya.md", "edit\n", "edit")
     result = rs.sync(vault, host)
     assert len(result.pushed) == 1
-    assert "Scout sync: 3 commit(s)" in _bare_git(host.bare, "log", "-1", "--format=%B", "main")
+    assert "Scout sync: 3 commits" in _bare_git(host.bare, "log", "-1", "--format=%B", "main")
     assert TRADING not in mirror_history_paths(host.bare)
 
 
@@ -1038,12 +1038,12 @@ def test_cli_link_sync_and_unlink(vault: Path, host: FakeHost, monkeypatch: pyte
     runner = CliRunner()
     out = runner.invoke(app, ["repo", "link", "--agnes-url", "https://agnes.example.com"], input="pat-stand-in\n")
     assert out.exit_code == 0, out.output
-    assert "pushed 1 commit(s)" in out.output
+    assert "pushed 1 commit" in out.output
     assert rs.load_token(vault) == "pat-stand-in"
 
     _commit(vault, "knowledge-base/people/priya.md", "x\n", "edit")
     out = runner.invoke(app, ["repo", "sync"])
-    assert out.exit_code == 0 and "pushed 1 commit(s)" in out.output
+    assert out.exit_code == 0 and "pushed 1 commit" in out.output
     out = runner.invoke(app, ["repo", "sync", "--json"])
     assert json.loads(out.stdout)["ok"] is True
 

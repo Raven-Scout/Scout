@@ -12,9 +12,21 @@ struct ActionItemsEnvironmentResult: Equatable, Sendable {
     let ok: Bool
     /// One-line diagnostic shown in the env banner when `ok == false`.
     let message: String?
+    /// The engine runs but predates `action-items`: an update fixes it.
+    var engineTooOld: Bool = false
 
     /// Convenience for view code that just wants a yes/no.
     static let okResult = ActionItemsEnvironmentResult(ok: true, message: nil)
+}
+
+/// Thrown instead of running a write while the environment check fails: the
+/// page has turned its writes off (its banner says so), and this keeps any
+/// path that still reaches a write (undo, redo, a missed control) from
+/// running `scoutctl action-items` anyway.
+struct ActionItemsWritesOffError: Error, LocalizedError, Equatable {
+    var errorDescription: String? {
+        "Action Items writes are off because the engine check failed."
+    }
 }
 
 /// Probes scoutctl to verify Action Items writes will work. Runs
@@ -62,7 +74,8 @@ final class ActionItemsEnvironmentCheck: @unchecked Sendable {
                 ok: false,
                 message: stale
                     ? "scoutctl is too old — update scout-plugin to use Action Items writes."
-                    : "scoutctl action-items unavailable: \(detail)"
+                    : "scoutctl action-items unavailable: \(detail)",
+                engineTooOld: stale
             )
         }
         return .okResult

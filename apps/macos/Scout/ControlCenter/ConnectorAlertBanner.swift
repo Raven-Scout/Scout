@@ -1,10 +1,10 @@
 import SwiftUI
 
-/// Red banner stretched across the top of `ControlCenterView`, visible
-/// only when `ConnectorHealthService.activeAlerts` is non-empty. Click →
-/// popover with reason text + an "Acknowledge" button. Acking dismisses
-/// the banner in-app; the underlying alert still fires in scheduled-run
-/// Slack DMs until the connector recovers.
+/// Banner stretched across the top of `ControlCenterView`, visible only when
+/// `ConnectorHealthService.activeAlerts` is non-empty. Click → popover with
+/// each alert's reason and fix, an "Acknowledge" per alert and "Acknowledge
+/// all". Acking dismisses the banner in-app; the underlying alert still fires
+/// in scheduled-run Slack DMs until the connector recovers.
 struct ConnectorAlertBanner: View {
     @EnvironmentObject var state: AppState
     @State private var showPopover: Bool = false
@@ -14,83 +14,95 @@ struct ConnectorAlertBanner: View {
         if alerts.isEmpty {
             EmptyView()
         } else {
-            bannerView(alerts: alerts)
+            bannerView(alerts: Self.ordered(alerts))
         }
     }
 
+    /// Critical alerts make an error banner; warnings alone a warning one, so
+    /// a connector that is only degraded doesn't read like one that is down
+    /// (UI audit R10, #28).
     private func bannerView(alerts: [ConnectorAlert]) -> some View {
-        let head = alerts[0]
+        let head = Problem(connectorAlert: alerts[0])
         let more = alerts.count - 1
+        let title = more > 0 ? "\(head.title) (+\(more) more)" : head.title
+        // The whole banner is one click target that opens the details.
         return Button {
             showPopover = true
         } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: "exclamationmark.triangle").font(DS.mono(13))
-                Text(summary(for: head, moreCount: more))
-                    .font(DS.mono(12))
-                    .lineLimit(1)
-                    .foregroundStyle(.white)
-                Spacer()
-                Text("Details")
-                    .font(DS.mono(11))
-                    .foregroundStyle(.white.opacity(0.8))
+            DSBanner(tone: Self.isCritical(alerts) ? .error : .warning, accessibilityTitle: title) {
+                DSBannerText(title: title, message: head.impact)
+                Label("Show details", systemImage: "chevron.right")
+                    .labelStyle(.titleAndIcon)
+                    .font(DS.font(.label, weight: .medium))
+                    .foregroundStyle(DS.Accent.ink)
+                    .padding(.top, 2)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(Color(red: 0.75, green: 0.15, blue: 0.15))
+            .contentShape(RoundedRectangle(cornerRadius: DS.bannerCornerRadius))
         }
-        .buttonStyle(.plainHit)
+        .buttonStyle(.plainHit) // ds-guard: hit area — the whole banner opens the details
+        .accessibilityHint("Shows every connector problem")
         .popover(isPresented: $showPopover, arrowEdge: .bottom) {
             popoverContent(alerts: alerts)
         }
+        .padding(.bottom, 16)
     }
 
     private func popoverContent(alerts: [ConnectorAlert]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(alerts, id: \.fingerprint) { alert in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("\(alert.level.rawValue) · \(alert.connector)")
-                        .font(DS.sans(12, weight: .semibold))
+        VStack(alignment: .leading, spacing: 0) {
+            if alerts.count > 1 {
+                HStack {
+                    Text("\(alerts.count) connector problems")
+                        .font(DS.font(.label, weight: .semibold))
                         .foregroundStyle(DS.Ink.p1)
-                    Text(alert.reason)
-                        .font(DS.mono(11.5))
-                        .foregroundStyle(DS.Ink.p3)
-                    Button("Acknowledge") {
-                        state.connectorHealthService.acknowledge(fingerprint: alert.fingerprint)
+                    Spacer()
+                    Button("Acknowledge all") {
+                        for alert in alerts {
+                            state.connectorHealthService.acknowledge(fingerprint: alert.fingerprint)
+                        }
+                        showPopover = false
                     }
-                    .font(DS.sans(11))
-                    .padding(.top, 4)
+                    .buttonStyle(.ds(.secondary, size: .small))
+                    .help("Hide these alerts until a connector has a new problem")
                 }
-                .padding(.bottom, 8)
+                .padding(14)
+                EditorialRule()
             }
+            // A long list scrolls instead of growing past the screen.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(alerts, id: \.fingerprint) { alert in
+                        VStack(alignment: .leading, spacing: 4) {
+                            // Per-connector fix (claude.ai, gh, the Chrome extension…)
+                            // from `DisplayName.connectorFix`; the roster's own
+                            // command-level advice is behind Details.
+                            ProblemView(problem: Problem(connectorAlert: alert), style: .inline)
+                            Button("Acknowledge") {
+                                state.connectorHealthService.acknowledge(fingerprint: alert.fingerprint)
+                            }
+                            .buttonStyle(.ds(.link, size: .small))
+                            .padding(.top, 4)
+                        }
+                        .padding(.bottom, 8)
+                    }
+                }
+                .padding(14)
+            }
+            .frame(maxHeight: 420)
         }
-        .padding(14)
         .frame(width: 360)
     }
 
-    private func summary(for alert: ConnectorAlert, moreCount: Int) -> String {
-        let base = "\(displayName(for: alert.connector)) connector: \(alert.level.rawValue) — \(alert.reason)"
-        return moreCount > 0 ? "\(base)  (+\(moreCount) more)" : base
+    /// True when any alert is critical: only then is the banner red.
+    static func isCritical(_ alerts: [ConnectorAlert]) -> Bool {
+        alerts.contains { $0.level == .critical }
     }
 
-    private func displayName(for connector: String) -> String {
-        // Same labels as the rail card's header row, duplicated locally;
-        // anything unlisted gets the rail card's prettifier rather than the
-        // raw key.
-        // Alert keys are pre-canonicalized by `ConnectorAlert.parseFile`, so
-        // we only need the canonical entries here.
-        switch connector {
-        case "mcp:claude_ai_Slack":             return "Slack"
-        case "mcp:claude_ai_Linear":            return "Linear"
-        case "mcp:claude_ai_Gmail":             return "Gmail"
-        case "mcp:claude_ai_Google_Calendar":   return "Calendar"
-        case "mcp:claude_ai_Granola":           return "Granola"
-        case "mcp:fathom":                      return "Fathom"
-        case "mcp:claude_ai_Google_Drive":      return "Drive"
-        case "github":                          return "GitHub"
-        case "mcp:claude-in-chrome":            return "Chrome"
-        default:
-            return ConnectorHealthRailCard.heuristicLabel(for: connector)
-        }
+    /// Critical alerts first (otherwise as given), so the banner names the worst.
+    static func ordered(_ alerts: [ConnectorAlert]) -> [ConnectorAlert] {
+        alerts.enumerated().sorted { a, b in
+            let ra = a.element.level == .critical ? 0 : 1
+            let rb = b.element.level == .critical ? 0 : 1
+            return (ra, a.offset) < (rb, b.offset)
+        }.map(\.element)
     }
 }

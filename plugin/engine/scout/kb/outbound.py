@@ -26,14 +26,31 @@ checks; the lint checks ``private-link`` / ``private-mention`` (Task 8) reuse
   whatever the length of its target, so ``[[sam]]`` hits although ``sam`` is
   too short to be a term.
 
-**How terms match.** Text and terms are compared under full Unicode case
-folding (``STRASSE`` matches ``Straße``). A term's boundary is anything but a
+**How terms match.** Text and terms are compared NFKC-normalised under full
+Unicode case folding (``STRASSE`` matches ``Straße``; a fullwidth or
+combining-accent spelling matches the plain one). For terms of two words or
+more, and one-word terms of 5+ characters (``UNACCENT_MIN_CHARS``), accents on
+Latin, Greek and Cyrillic letters are also ignored on both sides, so ``Rene Lee``
+and ``René Lee`` match each other however either is written; a short term such
+as ``Mila`` stays exact, so the Czech greeting ``Milá`` passes. Japanese voicing
+marks, Indic vowel signs and Thai tone marks are never ignored. A term's boundary is anything but a
 letter or digit, so ``_Sammy_`` (Slack italics), ``sammy_notes``, ``Sammy.``
 and ``(Sammy)`` all match and ``Sammyson`` doesn't. The parts of a term match
 across any run of spaces, line breaks, ``-`` or ``_`` (``task renew permit``,
 ``task_renew_permit``, ``Mary-Jane`` for ``Mary Jane``), so matching runs over
 the whole text, and a term split over a line break reports every line it
-spans. Each line is also matched once more URL-decoded (``Jos%C3%A9+Lee``).
+spans. Each line is also matched once more URL-decoded (``Jos%C3%A9+Lee``), and
+the whole text once more with HTML comments and tags (across lines too) and a
+link's ``](…)`` dropped, then HTML entities decoded and inline markup dropped
+(``S&#97;mmy``, ``Sa**mm**y``, ``Sa<!--⏎-->mmy``, ``[Sa](x)mmy``, ``Sa![](x)mmy``;
+:func:`_demarked`), and once more line by line. Only real tags count (``<`` then a
+letter), and an unclosed ``<!--`` is literal text, as CommonMark renders it.
+
+**What it can't see.** Terms come from a private note's path and frontmatter,
+never its body: a sentence restating what the note says, initials, a role
+("the new hire"), a first or last name alone (unless it is an alias), a
+reordered name ("Rivers, Sammy"), parts joined by ``.`` or ``/``, or a
+look-alike letter from another script (Cyrillic ``а``) doesn't match.
 
 The result is a :class:`PrivateTerms`, grouped per private note, so a lint
 marker can allow one note's hits and not another's. It is cached per process,
@@ -57,9 +74,12 @@ the note or its path to a caller that would print it.
 from __future__ import annotations
 
 import bisect
+import functools
+import html
 import os
 import re
-from collections.abc import Iterable
+import unicodedata
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -88,6 +108,15 @@ from scout.kb.shared_reads import (
 )
 
 MIN_TERM_CHARS = 4
+# Which terms also match with their accents ignored (``Rene`` for ``René`` and back). The more terms,
+# the more an ordinary word in another language trips them: hidden ``Mila`` would block the Czech
+# greeting "Milá". Default: terms of two words or more, and one-word terms of 5+ characters. Set
+# UNACCENT_MIN_CHARS to MIN_TERM_CHARS to ignore accents on every term, or very high (with
+# UNACCENT_MULTI_WORD False) to never ignore them; exact and NFKC matching stay as they are. A deliberate
+# trade: a one-word term under 5 characters without accents (``Rene``) no longer matches text that has them
+# (``René``, precomposed or NFD); only the exact spelling does.
+UNACCENT_MIN_CHARS = 5
+UNACCENT_MULTI_WORD = True
 MIN_SHARED_NAME_WORDS = 3
 # Entity types whose names are proper nouns (schema.yaml's, and free-form ones vaults use):
 # a one-word name stays a term even when it's an ordinary word (#576).
@@ -99,6 +128,13 @@ _WIKILINK = re.compile(r"\[\[([^\[\]\n]+?)\]\]")
 ALLOW_MARKER_RE = r"%%[ \t]*privacy:allow[ \t]+([^%\s]+)[ \t]*%%"
 ALLOW_MARKER = re.compile(ALLOW_MARKER_RE, re.IGNORECASE)
 _MARKER = ALLOW_MARKER
+# Markup that can sit inside a word without showing. _SPANNING may run over line breaks: an HTML
+# comment start (its end is found with str.find: a lazy `.*?` was quadratic on unclosed ones), a
+# real CommonMark tag (`<` then a letter, so `a < b` and `<!` never open one), and the `](target)`
+# of a markdown link. _MARKUP is inline: emphasis, strike, highlight and code marks, and `![`.
+_TAG = r"</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>"
+_SPANNING = re.compile(r"<!--|" + _TAG + r"|\]\([^()\n]*\)")
+_MARKUP = re.compile(r"\*\*|__|~~|==|`|\*|!\[")
 _SEP = r"[-_\s]+"
 _SPLIT = re.compile(_SEP)
 # Not a letter or digit on either side: `_` and punctuation are boundaries.
@@ -122,6 +158,14 @@ class PrivateNote:
     link_keys: frozenset[str]
     link_path: str
     pattern: re.Pattern[str] | None
+    bare_pattern: re.Pattern[str] | None = None  # the accent-free forms of its longer terms, over bare text
+    # Every match of ``pattern`` (``bare_pattern``) starts with one of these, as written, so :func:`_hits` tries
+    # the pattern only where one occurs (:func:`_matches`). None: no such promise, the whole text is searched. Set
+    # only in the same call as the pattern, from the same words: ``prefixes=_term_prefixes(x)`` beside
+    # ``pattern=_term_regex(x)`` (``_bare_*`` likewise), or one literal beside ``_BEFORE + re.escape(it) + _AFTER``.
+    # tests/unit/test_kb_outbound_prefixes.py fails on any other way of setting them.
+    prefixes: tuple[str, ...] | None = None
+    bare_prefixes: tuple[str, ...] | None = None
 
     def linked_by(self, target: str) -> bool:
         """``target`` (already case-folded, heading, display and ``.md`` stripped) names this note."""
@@ -151,21 +195,103 @@ class PrivateTerms:
     notes: tuple[PrivateNote, ...]
     any_term: re.Pattern[str] | None  # a fast pre-check: any note's term
     excerpts: ExcerptIndex | None = None  # quotes of notes shared with this person (with_shared)
+    any_bare: re.Pattern[str] | None = None  # the same pre-check for the notes' bare_pattern
 
     def __bool__(self) -> bool:
         return bool(self.notes)
 
 
-def _term_regex(terms: Iterable[str]) -> re.Pattern[str] | None:
-    """One pattern for ``terms`` over case-folded text (module docstring)."""
-    parts: set[str] = set()
-    for t in terms:
-        words = [w for w in _SPLIT.split(t.casefold()) if w]
-        if words:
-            parts.add(_SEP.join(re.escape(w) for w in words))
+def _norm(text: str) -> str:
+    """NFKC case folding: ``Jose\u0301``, ``José`` and ``JOSÉ`` all become ``josé``."""
+    folded = unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", text).casefold())
+    return folded.translate(_INVISIBLE)  # a soft hyphen or zero-width character inside a name hides nothing
+
+
+# Characters that change no word a reader sees: the soft hyphen and the zero-width ones. ZWNJ and ZWJ do shape
+# Persian and Indic words; folding them out only makes a match likelier there (fails towards leaving text out).
+_INVISIBLE = dict.fromkeys(map(ord, "­᠎​‌‍⁠﻿"))
+
+
+def _strips(base: str) -> bool:
+    """Whether accents on ``base`` are ignored: Latin, Greek and Cyrillic only. A Japanese voicing
+    mark (``ガ`` is ``カ`` plus U+3099), an Indic vowel sign or a Thai tone mark changes the word."""
+    o = ord(base)
+    return o < 0x0530 or any(lo <= o <= hi for lo, hi in _STRIP_RANGES)
+
+
+# Latin, Greek and Cyrillic past U+0530: Cyrillic Extended-C, Latin and Greek Extended, Latin Extended-C,
+# Cyrillic Extended-A and -B, Latin Extended-D and -E.
+_STRIP_RANGES = ((0x1C80, 0x1C8F), (0x1E00, 0x1FFF), (0x2C60, 0x2C7F), (0x2DE0, 0x2DFF), (0xA640, 0xA69F),
+                 (0xA720, 0xA7FF), (0xAB30, 0xAB6F))  # fmt: skip
+
+
+def _unaccent(text: str) -> str:
+    """``text`` without the combining marks on Latin, Greek and Cyrillic letters: ``café`` becomes ``cafe``."""
+    out: list[str] = []
+    base = ""
+    for c in unicodedata.normalize("NFD", text):
+        if unicodedata.combining(c):
+            if base and _strips(base):
+                continue
+        else:
+            base = c
+        out.append(c)
+    return unicodedata.normalize("NFC", "".join(out))
+
+
+def _words_of(term: str) -> list[str]:
+    return [w for w in _SPLIT.split(term) if w]
+
+
+def _alternation(forms: Iterable[str]) -> re.Pattern[str] | None:
+    parts = {_SEP.join(re.escape(w) for w in words) for f in forms if (words := _words_of(f))}
     if not parts:
         return None
     return re.compile(_BEFORE + "(?:" + "|".join(sorted(parts, key=len, reverse=True)) + ")" + _AFTER)
+
+
+def _prefixes(forms: Iterable[str]) -> tuple[str, ...]:
+    """The first word of each alternative :func:`_alternation` builds from ``forms``.
+
+    An alternative is its words, each escaped, joined by separators; the pattern
+    is the alternatives between two zero-width boundary assertions. So every
+    match starts with an alternative's first word, as written.
+    """
+    return tuple(dict.fromkeys(words[0] for f in forms if (words := _words_of(f))))
+
+
+def _term_forms(terms: Iterable[str]) -> list[str]:
+    return [_norm(t) for t in terms]
+
+
+def _term_regex(terms: Iterable[str]) -> re.Pattern[str] | None:
+    """One pattern for ``terms`` over folded text (:func:`_fold`; module docstring)."""
+    return _alternation(_term_forms(terms))
+
+
+def _term_prefixes(terms: Iterable[str]) -> tuple[str, ...]:
+    """:func:`_prefixes` of :func:`_term_regex`'s forms (``PrivateNote.prefixes``)."""
+    return _prefixes(_term_forms(terms))
+
+
+def _unaccents(term: str) -> bool:
+    """Whether ``term`` also matches with its accents ignored (UNACCENT_MIN_CHARS, UNACCENT_MULTI_WORD)."""
+    words = _words_of(_norm(term))
+    return (UNACCENT_MULTI_WORD and len(words) > 1) or len(_norm(term)) >= UNACCENT_MIN_CHARS
+
+
+def _bare_forms(terms: Iterable[str]) -> list[str]:
+    return [_unaccent(_norm(t)) for t in terms if _unaccents(t)]
+
+
+def _bare_regex(terms: Iterable[str]) -> re.Pattern[str] | None:
+    """One pattern for the accent-free forms of ``terms`` that ignore accents, over bare text (:func:`_folds`)."""
+    return _alternation(_bare_forms(terms))
+
+
+def _bare_prefixes(terms: Iterable[str]) -> tuple[str, ...]:
+    """:func:`_prefixes` of :func:`_bare_regex`'s forms (``PrivateNote.bare_prefixes``)."""
+    return _prefixes(_bare_forms(terms))
 
 
 def _strings(value: Any) -> list[str]:
@@ -234,14 +360,17 @@ def note_from_text(rel: str, text: str | None) -> PrivateNote:
         parts = (rel[: len(rel) - len(name)] + slug).split("/")
         named += ["/".join(parts[i:]) for i in range(len(parts) - 1)] if len(parts) > 1 else [name]
     terms = tuple(dict.fromkeys(n for n in named if len(n) >= MIN_TERM_CHARS))
-    keys = {n.casefold() for n in names} | {name.casefold(), _strip_md(name).casefold()}
+    keys = {_norm(n) for n in names} | {_norm(name), _norm(_strip_md(name))}
     return PrivateNote(
         path=rel,
         slug=slug,
         terms=terms,
         link_keys=frozenset(keys),
-        link_path=_strip_md(rel).casefold(),
+        link_path=_norm(_strip_md(rel)),
         pattern=_term_regex(terms),
+        bare_pattern=_bare_regex(terms),
+        prefixes=_term_prefixes(terms),
+        bare_prefixes=_bare_prefixes(terms),
     )
 
 
@@ -286,7 +415,11 @@ def terms_of(notes: Iterable[PrivateNote]) -> PrivateTerms:
     for n in notes:
         seen.setdefault((n.path, n.terms, n.link_keys), n)
     kept = tuple(seen.values())
-    return PrivateTerms(notes=kept, any_term=_term_regex(t for n in kept for t in n.terms))
+    return PrivateTerms(
+        notes=kept,
+        any_term=_term_regex(t for n in kept for t in n.terms),
+        any_bare=_bare_regex(t for n in kept if n.bare_pattern is not None for t in n.terms),
+    )
 
 
 def _words(text: str) -> int:
@@ -312,13 +445,13 @@ def _shared_note(key: str, path: str, title: str | None) -> PrivateNote:
         return PrivateNote(path=key, slug=slug, terms=(rel,), link_keys=frozenset(), link_path="", pattern=None)
     names = [n for n in (title, slug) if n and _words(n) >= MIN_SHARED_NAME_WORDS]
     terms = tuple(dict.fromkeys(["/".join(parts[i:]) for i in range(len(parts) - 1)] + names))
-    keys = {slug.casefold(), path.rsplit("/", 1)[-1].casefold()} if slug in names else set()
+    keys = {_norm(slug), _norm(path.rsplit("/", 1)[-1])} if slug in names else set()
     return PrivateNote(
         path=key,
         slug=slug,
         terms=terms,
         link_keys=frozenset(keys),
-        link_path=rel.casefold(),
+        link_path=_norm(rel),
         pattern=None,
     )
 
@@ -359,62 +492,294 @@ def _with_shared(terms: PrivateTerms, vault: Path) -> PrivateTerms:
         _shared_note(key, group[0].path, next((r.title for r in group if r.title), None))
         for key, group in merged.items()
     ]
-    paths = _term_regex(t for n in shared for t in n.terms)
+    shared_terms = [t for n in shared for t in n.terms]
     together = PrivateNote(
         path="shared-note-paths",
         slug="shared-note-paths",
         terms=(),
         link_keys=frozenset(),
         link_path="",
-        pattern=paths,
+        pattern=_term_regex(shared_terms),
+        bare_pattern=_bare_regex(shared_terms),
+        prefixes=_term_prefixes(shared_terms),
+        bare_prefixes=_bare_prefixes(shared_terms),
     )
     notes = (*terms.notes, _CITATION, together, *shared)
-    patterns = [p.pattern for p in (terms.any_term, _CITATION.pattern, paths) if p is not None]
-    return PrivateTerms(notes=notes, any_term=re.compile("|".join(patterns)), excerpts=ExcerptIndex(merged))
+    patterns = [p.pattern for p in (terms.any_term, _CITATION.pattern, together.pattern) if p is not None]
+    bare = [p.pattern for p in (terms.any_bare, together.bare_pattern) if p is not None]
+    return PrivateTerms(
+        notes=notes,
+        any_term=re.compile("|".join(patterns)),
+        excerpts=ExcerptIndex(merged),
+        any_bare=re.compile("|".join(bare)) if bare else None,
+    )
 
 
 def _link_target(inner: str) -> str:
     """A wikilink's target, case-folded: display text (``|`` or a table's ``\\|``),
     heading/block ref and ``.md`` dropped."""
     target = inner.split("|", 1)[0].rstrip("\\").split("#", 1)[0].strip().strip("/")
-    return _strip_md(target).casefold()
+    return _norm(_strip_md(target))
+
+
+_ASCII_RUN = re.compile(r"[\x00-\x7f]+")
+
+
+def _joins(ch: str) -> bool:
+    """Whether ``ch`` belongs with the character before it: a combining mark, or a Hangul vowel or final jamo."""
+    return bool(unicodedata.combining(ch)) or "\u1160" <= ch <= "\u11ff"
+
+
+def _folds(text: str) -> tuple[tuple[str, list[int] | None], tuple[str, list[int] | None]]:
+    """``text`` NFKC case-folded (:func:`_norm`), then the same without accents
+    (:func:`_unaccent`), each with, for every folded character, the index of the
+    character it came from (None when ``text`` is ASCII, where folding keeps every
+    position). Normalised one base character with its marks at a time, so a name
+    spelled with combining accents (NFD) matches its precomposed term."""
+    if text.isascii():
+        lower = text.lower()
+        return (lower, None), (lower, None)
+    out: list[str] = []
+    bare: list[str] = []
+    origin: list[int] = []
+    bare_origin: list[int] = []
+    i, n = 0, len(text)
+    while i < n:
+        run = _ASCII_RUN.match(text, i)
+        if run is not None:
+            j = run.end()
+            if j < n and _joins(text[j]):
+                j -= 1  # the run's last character folds with the marks after it
+            if j > i:
+                part, where = text[i:j].lower(), range(i, j)
+                out.append(part)
+                bare.append(part)
+                origin.extend(where)
+                bare_origin.extend(where)
+                i = j
+                continue
+        j = i + 1
+        while j < n and _joins(text[j]):
+            j += 1
+        folded = _norm(text[i:j])
+        stripped = folded if folded.isascii() else _unaccent(folded)
+        out.append(folded)
+        bare.append(stripped)
+        origin.extend([i] * len(folded))
+        bare_origin.extend([i] * len(stripped))
+        i = j
+    return ("".join(out), origin), ("".join(bare), bare_origin)
 
 
 def _fold(text: str) -> tuple[str, list[int] | None]:
-    """``text`` case-folded, and for each folded character the index of the
-    character it came from (None when folding kept every length)."""
-    folded = text.casefold()
-    if len(folded) == len(text):  # casefold never shortens a character
-        return folded, None
-    out: list[str] = []
-    origin: list[int] = []
-    for i, ch in enumerate(text):
-        cf = ch.casefold()
-        out.append(cf)
-        origin.extend([i] * len(cf))
-    return "".join(out), origin
+    """``text`` NFKC case-folded, with each folded character's origin (:func:`_folds`)."""
+    return _folds(text)[0]
+
+
+def _line(starts: list[int], origin: list[int] | None, pos: int) -> int:
+    """The 0-based line of ``text`` that folded position ``pos`` came from (``starts``: each line's offset)."""
+    return bisect.bisect_right(starts, origin[pos] if origin is not None else pos) - 1
 
 
 def _hits(text: str, terms: PrivateTerms) -> list[tuple[str, int, int]]:
     """``(note path, first line, last line)`` (0-based lines of ``text``) of every term and link hit."""
-    folded, origin = _fold(text)
+    (folded, origin), bare = _folds(text)
     starts = [0] + [i + 1 for i, ch in enumerate(text) if ch == "\n"]
-
-    def line(pos: int) -> int:
-        return bisect.bisect_right(starts, origin[pos] if origin is not None else pos) - 1
-
     found: list[tuple[str, int, int]] = []
-    targets = [(line(m.start()), _link_target(m.group(1))) for m in _WIKILINK.finditer(folded)]
+    targets = [(_line(starts, origin, m.start()), _link_target(m.group(1))) for m in _WIKILINK.finditer(folded)]
     for n, target in targets:
         if target:
             found += [(note.path, n, n) for note in terms.notes if note.linked_by(target)]
-    if terms.any_term is not None and terms.any_term.search(folded):
+    for form, where, pre, attr, prefix_attr in (
+        (folded, origin, terms.any_term, "pattern", "prefixes"),
+        (bare[0], bare[1], terms.any_bare, "bare_pattern", "bare_prefixes"),  # accents ignored, where allowed
+    ):
+        if pre is None or not pre.search(form):
+            continue
+        seen: dict[str, list[int]] = {}
         for note in terms.notes:
-            if note.pattern is not None:
-                found += [(note.path, line(m.start()), line(m.end() - 1)) for m in note.pattern.finditer(folded)]
+            pattern = getattr(note, attr)
+            if pattern is not None:
+                found += [
+                    (note.path, _line(starts, where, m.start()), _line(starts, where, m.end() - 1))
+                    for m in _matches(pattern, getattr(note, prefix_attr), form, seen)
+                ]
     if terms.excerpts is not None:
         found += terms.excerpts.hits(text)
     return found
+
+
+def _occurrences(text: str, literal: str) -> list[int]:
+    """Every index ``literal`` starts at in ``text``, overlapping ones too."""
+    out: list[int] = []
+    i = text.find(literal)
+    while i >= 0:
+        out.append(i)
+        i = text.find(literal, i + 1)
+    return out
+
+
+def _alternatives(body: str) -> list[str] | None:
+    """The top-level ``|`` alternatives of regex source ``body``; None if it has a group (``(``, ``)``).
+
+    Escapes are kept whole and a ``[...]`` class is skipped, so an escaped ``\\|`` or a
+    ``|`` inside a class never splits. With no group there is no nested alternation,
+    no scoped flag (``(?i:``) and no lookaround but the ones the caller stripped.
+    """
+    out: list[str] = []
+    start = i = 0
+    n = len(body)
+    while i < n:
+        c = body[i]
+        if c == "\\":
+            i += 2
+        elif c == "[":
+            i += 1
+            if i < n and body[i] == "^":
+                i += 1
+            if i < n and body[i] == "]":
+                i += 1
+            while i < n and body[i] != "]":
+                i += 2 if body[i] == "\\" else 1
+            if i >= n:
+                return None
+            i += 1
+        elif c in "()":
+            return None
+        elif c == "|":
+            out.append(body[start:i])
+            i += 1
+            start = i
+        else:
+            i += 1
+    out.append(body[start:])
+    return out
+
+
+@functools.lru_cache(maxsize=4096)
+def _keeps_promise(pattern: re.Pattern[str], prefixes: tuple[str, ...]) -> bool:
+    """Whether every match of ``pattern`` provably starts with one of ``prefixes`` (``PrivateNote.prefixes``).
+
+    Checked from the pattern's own source each time it is used, so a pattern built
+    any other way, a ``replace()`` that kept old prefixes, or ``prefixes=()`` falls
+    back to the whole-text search. True only for the shapes the builders make:
+    ``_BEFORE`` + an alternation (or one literal) + ``_AFTER``, no flag but the
+    default, no group, and each alternative ``re.escape(prefix)`` then nothing or a
+    separator, so no quantifier can apply to the prefix's last character. The
+    prefixes are found with a case-sensitive ``str.find`` in the folded form the
+    pattern matches, so a case-insensitive pattern never qualifies.
+    """
+    if not prefixes or "" in prefixes or pattern.flags != re.UNICODE:
+        return False
+    src = pattern.pattern
+    if not (src.startswith(_BEFORE) and src.endswith(_AFTER)) or len(src) < len(_BEFORE) + len(_AFTER):
+        return False
+    body = src[len(_BEFORE) : len(src) - len(_AFTER)]
+    if body.startswith("(?:") and body.endswith(")"):
+        body = body[3:-1]
+    alts = _alternatives(body)
+    if not alts:
+        return False
+    escaped = [re.escape(p) for p in prefixes]
+    return all(any(alt.startswith(e) and (alt == e or alt[len(e) :].startswith(_SEP)) for e in escaped) for alt in alts)
+
+
+def _matches(
+    pattern: re.Pattern[str], prefixes: tuple[str, ...] | None, form: str, seen: dict[str, list[int]]
+) -> Iterator[re.Match[str]]:
+    """``pattern.finditer(form)``, trying the pattern only where one of ``prefixes`` starts.
+
+    ``prefixes`` is ``PrivateNote.prefixes``: every match starts with one
+    (:func:`_keeps_promise` checks that, or this is a plain finditer). So the
+    leftmost match at or after any index starts at one of their occurrences, and
+    ``pattern.match(form, i)`` there is the match finditer finds (its lookbehind
+    still sees ``form`` before ``i``). A match is never empty (it starts with a
+    prefix that isn't), so each search resumes at the last match's end, as
+    finditer does. ``seen`` keeps each prefix's occurrences across notes.
+    """
+    if prefixes is None or not _keeps_promise(pattern, prefixes):
+        yield from pattern.finditer(form)
+        return
+    starts: set[int] = set()
+    for p in prefixes:
+        if p not in seen:
+            seen[p] = _occurrences(form, p)
+        starts.update(seen[p])
+    pos = 0
+    for i in sorted(starts):
+        if i < pos:
+            continue
+        m = pattern.match(form, i)
+        if m is not None:
+            yield m
+            pos = m.end()
+
+
+def _spanning(text: str) -> Iterator[tuple[int, int]]:
+    """``(start, end)`` of each comment, tag and link target in ``text``, in order, in linear time.
+
+    A ``<!--`` runs to the next ``-->``. With none after it, it is literal text, as
+    CommonMark renders it: skipped, and since no later ``<!--`` can close either, those
+    are skipped without another search."""
+    pos, closable = 0, True
+    while (m := _SPANNING.search(text, pos)) is not None:
+        if m.group(0) != "<!--":
+            yield m.start(), m.end()
+            pos = m.end()
+            continue
+        close = text.find("-->", m.end()) if closable else -1
+        if close < 0:
+            closable, pos = False, m.end()
+            continue
+        yield m.start(), close + 3
+        pos = close + 3
+
+
+def _demarked(text: str) -> tuple[str, list[tuple[int, int]]]:
+    """``text`` without its markup, and for each of its lines the span of ``text``'s lines it came from.
+
+    A comment or tag over a line break joins the lines around it (``Sa<!--⏎-->mmy`` reads
+    ``Sammy``), so a joined line maps back to every line it took in: a hit on it reports
+    them all. Then, per line, entities are decoded and inline markup dropped."""
+    lines: list[str] = []
+    spans: list[tuple[int, int]] = []
+    current: list[str] = []
+    first = line = pos = 0
+
+    def take(segment: str) -> None:
+        nonlocal current, first, line
+        for k, part in enumerate(segment.split("\n")):
+            if k:
+                lines.append("".join(current))
+                spans.append((first, line))
+                current, line = [], line + 1
+                first = line
+            current.append(part)
+
+    for start, end in _spanning(text):
+        take(text[pos:start])
+        line += text.count("\n", start, end)  # swallowed: the line being built now reaches this far
+        pos = end
+    take(text[pos:])
+    lines.append("".join(current))
+    spans.append((first, line))
+    return "\n".join(_clean_line(ln) for ln in lines), spans
+
+
+def _clean_line(line: str) -> str:
+    """One line with entities decoded, then comments, tags, link targets and inline marks dropped."""
+    return _MARKUP.sub("", _without_spans(re.sub(r"[\r\n]", " ", html.unescape(line))))
+
+
+def _without_spans(line: str) -> str:
+    """``line`` with what :func:`_spanning` finds in it dropped (a comment or tag decoding an entity made)."""
+    out: list[str] = []
+    pos = 0
+    for start, end in _spanning(line):
+        out.append(line[pos:start])
+        pos = end
+    out.append(line[pos:])
+    return "".join(out)
 
 
 def find_mentions(text: str, terms: PrivateTerms, *, allow_markers: bool) -> list[int]:
@@ -435,6 +800,14 @@ def find_mentions(text: str, terms: PrivateTerms, *, allow_markers: bool) -> lis
         lines = text.split("\n")
     slugs = {note.path: note.slug.casefold() for note in terms.notes}
     hits = _hits(text, terms)
+    demarked, spans = _demarked(text)  # once more without markup, mapped back to text's lines
+    if demarked != text:
+        hits += [(p, spans[a][0], spans[b][1]) for p, a, b in _hits(demarked, terms)]
+    # And line by line, so markup a join swallowed (a comment that does close, lines later) can't hide one.
+    # It also flags a name inside a closed comment, which doesn't render: that fails closed, on purpose.
+    per_line = "\n".join(_clean_line(ln) for ln in text.split("\n"))
+    if per_line not in (text, demarked):
+        hits += _hits(per_line, terms)
     for i, ln in enumerate(lines):  # each line once more, URL-decoded
         decoded = unquote_plus(ln)
         if decoded != ln:
@@ -465,7 +838,7 @@ def linked_slugs(line: str, terms: PrivateTerms) -> set[str]:
     slugs never reach its output.
     """
     out: set[str] = set()
-    for m in _WIKILINK.finditer(line.casefold()):
+    for m in _WIKILINK.finditer(_fold(line)[0]):
         target = _link_target(m.group(1))
         if target:
             out |= {note.slug.casefold() for note in terms.notes if note.linked_by(target)}
@@ -476,17 +849,29 @@ def is_owner_only(policy: Policy, surface: str) -> bool:
     return surface_class(policy, surface) == "owner_only"
 
 
+def outbound_terms(vault: Path, surface: str) -> PrivateTerms | None:
+    """What may not go to ``surface``, or ``None`` for an owner-only one (nothing is checked there).
+
+    For a caller with several texts for one surface (the outbound gate checks a
+    tool call's every field): building this walks the vault each time, cache or
+    not, so build it once and give each text to :func:`find_mentions`. An
+    unknown surface id is shared (fail closed).
+    """
+    root = vault.resolve()
+    policy = load_policy(root)
+    if is_owner_only(policy, surface):
+        return None
+    return with_shared(private_terms(root, policy), root)
+
+
 def check_outbound(vault: Path, text: str, surface: str) -> list[int]:
     """Lines of ``text`` that may not go to ``surface``: ``[]`` for an owner-only one.
 
     An unknown surface id is shared (fail closed). Markers are ignored: a send
     is never allowed by one.
     """
-    root = vault.resolve()
-    policy = load_policy(root)
-    if is_owner_only(policy, surface):
-        return []
-    return find_mentions(text, with_shared(private_terms(root, policy), root), allow_markers=False)
+    terms = outbound_terms(vault, surface)
+    return [] if terms is None else find_mentions(text, terms, allow_markers=False)
 
 
 def _checked(vault: Path, text: str, surface: str) -> list[int]:

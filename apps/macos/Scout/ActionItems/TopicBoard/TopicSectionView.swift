@@ -52,10 +52,10 @@ struct TopicSectionView: View {
                     rowHovered: hovered,
                     onRename: { onRename?($0) }
                 )
-                .font(DS.sans(15, weight: .semibold))
+                .font(DS.font(.headline, weight: .semibold))
                 .foregroundStyle(DS.Ink.p1)
                 subtitle
-                    .font(DS.sans(11.5))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Ink.p3)
                     .lineLimit(1)
             }
@@ -80,8 +80,7 @@ struct TopicSectionView: View {
 extension View {
     /// The raised, outlined card a topic or a standalone step sits on.
     func boardCard() -> some View {
-        background(RoundedRectangle(cornerRadius: 10).fill(DS.Paper.raised))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DS.Rule.soft, lineWidth: 1))
+        editorialCard(padding: 0, cornerRadius: 10)
             .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 }

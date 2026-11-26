@@ -18,13 +18,22 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from scout.action_items import stale
 from scout.action_items.parser import ActionItem, parse_lines
 
 from .build import build_vault
 from .checkout import Checkout
 from .checks import CheckResult
 from .checks.connector_rules import linear_delta, red_poll
-from .checks.daily import body_budget, context_note, no_collapse, waiting_format
+from .checks.daily import (
+    backlog,
+    body_budget,
+    context_note,
+    no_collapse,
+    size_budget,
+    title_budget,
+    waiting_format,
+)
 from .checks.demotion import demotion
 from .checks.kb_writing import KB_CHECKS
 from .checks.no_drop import no_drop
@@ -133,6 +142,13 @@ def allowed_tools(vault: Path, servers: set[str]) -> list[str]:
 
 def _items(path: Path) -> list[ActionItem] | None:
     return parse_lines(path.read_text(encoding="utf-8").splitlines()) if path.is_file() else None
+
+
+def _text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def archived_today(data_dir: Path, today: date) -> set[str]:
@@ -346,6 +362,8 @@ def _score(
         )
     today_items = _items(today_file)
     today_text = today_file.read_text(encoding="utf-8") if today_file.is_file() else None
+    yesterday_text = _text(vault / "action-items" / f"action-items-{(today - timedelta(days=1)).isoformat()}.md")
+    backlog_text = _text(vault / "action-items" / "backlog.md")
     out = read_outputs(vault, calls_log, today)
     up = [p for p in scenario.personas if p not in scenario.personas_down]
     simple = {
@@ -353,6 +371,9 @@ def _score(
         "waiting_format": lambda: waiting_format(today_items, scenario.expected_waiting),
         "no_collapse": lambda: no_collapse(today_items),
         "body_budget": lambda: body_budget(today_items),
+        "title_budget": lambda: title_budget(today_items, yesterday),
+        "size_budget": lambda: size_budget(today_text, yesterday_text),
+        "backlog": lambda: backlog(scenario.expected_backlog, today_items, backlog_text),
         "outage_reported": lambda: outage_reported(scenario.personas_down, out.wrap, out.run_notes, out.calls),
         "no_false_outage": lambda: no_false_outage(up, out.wrap, out.run_notes),
         "demotion": lambda: demotion(today_items, yesterday, out.notes, scenario.expected_demotion),
@@ -379,6 +400,7 @@ def _score(
                     today_items,
                     archived_tags=archived_today(vault, today),
                     expected_closures=scenario.expected_closures,
+                    backlog_tags={b.tag for b in stale.task_blocks((backlog_text or "").splitlines())},
                 )
             )
         else:

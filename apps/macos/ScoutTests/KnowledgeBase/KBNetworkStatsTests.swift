@@ -12,7 +12,10 @@ struct KBNetworkStatsTests {
         let kb = root.appendingPathComponent("knowledge-base")
         try FileManager.default.createDirectory(at: kb, withIntermediateDirectories: true)
         for (name, body) in files {
-            try body.write(to: kb.appendingPathComponent(name), atomically: true, encoding: .utf8)
+            let url = kb.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            try body.write(to: url, atomically: true, encoding: .utf8)
         }
         return root
     }
@@ -110,6 +113,58 @@ struct KBNetworkStatsTests {
         #expect(s.byType.allSatisfy { $0.count == 0 })
     }
 
+    // MARK: Archive copies and paperwork are set aside
+
+    /// The mainland plus an archived snapshot full of broken and cross links,
+    /// and personal paperwork with no links — the shape that swamped a real vault's
+    /// health rows.
+    private static let withSetAside: [String: String] = mainland.merging([
+        "projects/demo/archive/2026-01-snapshot.md": "[[hub]] [[gone-1]] [[gone-2]] [[gone-3]]",
+        "people/archived/old-contact.md": "[[ghost-two]]",
+        "personal/receipts/2026-03-lamp.md": "paid",
+        "personal/home/2026-02-invoice.md": "paid",
+        "personal/home/plumber-visit.md": "---\ntype: invoice-scan\n---\npaid",
+        "personal/home/2026-05-boiler-certificate.md": "issued",
+    ]) { a, _ in a }
+
+    @Test func archivedAndPaperworkNotesAreListedApart() async throws {
+        let s = try await stats(Self.withSetAside)
+        #expect(s.archived == [
+            "knowledge-base/people/archived/old-contact.md",
+            "knowledge-base/projects/demo/archive/2026-01-snapshot.md",
+        ])
+        #expect(s.paperwork == [
+            "knowledge-base/personal/home/2026-02-invoice.md",
+            "knowledge-base/personal/home/2026-05-boiler-certificate.md",
+            "knowledge-base/personal/home/plumber-visit.md",
+            "knowledge-base/personal/receipts/2026-03-lamp.md",
+        ])
+        #expect(s.setAsideSummary == "Not counted: 2 archived notes · 4 paperwork notes")
+    }
+
+    @Test func healthAndInsightCoverLiveNotesOnly() async throws {
+        let s = try await stats(Self.withSetAside)
+        let live = try await stats(Self.mainland)
+        // The archived snapshot's broken links and the paperwork's missing links don't count.
+        #expect(s.dangling == live.dangling)
+        #expect(s.orphans == live.orphans)
+        #expect(s.weaklyLinked == live.weaklyLinked)
+        #expect(s.islands == live.islands)
+        // Its link to the hub doesn't make the hub bigger, or the snapshot a hub.
+        #expect(s.topHubs == live.topHubs)
+        #expect(s.avgDegree == live.avgDegree)
+        #expect(s.byType.reduce(0) { $0 + $1.count } == 7)
+        // Totals still count every note and link.
+        #expect(s.noteCount == 13)
+        #expect(s.linkCount == live.linkCount + 1)
+    }
+
+    @Test func aVaultWithNothingSetAsideHasNoSummary() async throws {
+        let s = try await stats(Self.mainland)
+        #expect(s.archived.isEmpty && s.paperwork.isEmpty)
+        #expect(s.setAsideSummary == nil)
+    }
+
     @Test func statsRecomputeAfterReparseAndPerHubCap() async throws {
         let (svc, root) = try await load(Self.mainland)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -122,6 +177,54 @@ struct KBNetworkStatsTests {
         #expect(after.noteCount == 8)
         #expect(!after.orphans.contains("knowledge-base/lonely.md"))
         #expect(svc.networkStats(hubCap: 1).topHubs.count == 1)    // hubCap is part of the key
+    }
+}
+
+@Suite("KBNoteKind")
+struct KBNoteKindTests {
+    @Test(arguments: [
+        ("knowledge-base/projects/demo/archive/snapshot.md", KBNoteKind.archived),
+        ("knowledge-base/people/Archived/old.md", .archived),
+        ("knowledge-base/archive/anything.md", .archived),
+        ("knowledge-base/receipts/lamp.md", .paperwork),
+        ("knowledge-base/personal/2026-02-invoice.md", .paperwork),
+        ("knowledge-base/personal/Invoices/march.md", .paperwork),
+        ("knowledge-base/projects/2026-02-invoice.md", .paperwork),
+        // The wider words count under a `personal` folder, at any depth…
+        ("knowledge-base/personal/home/boiler-certificate.md", .paperwork),
+        ("knowledge-base/personal/Estimates/roof.md", .paperwork),
+        ("knowledge-base/personal/2026-laptop-warranty.md", .paperwork),
+        ("knowledge-base/personal/payslips/march.md", .paperwork),
+        // …and nowhere else: in a work note they're live knowledge.
+        ("knowledge-base/projects/tls-certificate-rotation.md", .live),
+        ("knowledge-base/projects/migration-estimate.md", .live),
+        ("knowledge-base/projects/estimates/q3.md", .live),
+        // Reports are live notes, personal or not.
+        ("knowledge-base/personal/2026-health-report.md", .live),
+        ("knowledge-base/people/alex.md", .live),
+        // A file *named* archive is a live note; only an archive folder sets notes aside.
+        ("knowledge-base/linear-issues-archive.md", .live),
+        // Whole words only: these merely contain the letters.
+        ("knowledge-base/projects/receiptless-checkout.md", .live),
+        ("knowledge-base/projects/archiver.md", .live),
+        // Folders match whole: a folder that merely has the word in it is not a receipts folder.
+        ("knowledge-base/projects/receipt-scanner/overview.md", .live),
+        ("knowledge-base/archived-ideas/overview.md", .live),
+    ])
+    func byPath(_ path: String, _ kind: KBNoteKind) {
+        #expect(KBNoteKind.of(path) == kind)
+    }
+
+    @Test func frontmatterTypeMarksPaperwork() {
+        #expect(KBNoteKind.of("knowledge-base/personal/plumber-visit.md", type: "invoice-scan") == .paperwork)
+        #expect(KBNoteKind.of("knowledge-base/personal/plumber-visit.md", type: "receipt") == .paperwork)
+        #expect(KBNoteKind.of("knowledge-base/personal/boiler.md", type: "certificate") == .paperwork)
+        #expect(KBNoteKind.of("knowledge-base/projects/tls.md", type: "certificate") == .live)
+        #expect(KBNoteKind.of("knowledge-base/people/alex.md", type: "person") == .live)
+    }
+
+    @Test func archivedPaperworkCountsAsArchived() {
+        #expect(KBNoteKind.of("knowledge-base/archive/receipts/lamp.md") == .archived)
     }
 }
 

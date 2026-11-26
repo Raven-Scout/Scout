@@ -13,11 +13,11 @@ struct HoldGroupView: View {
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(DS.font(.micro, weight: .semibold))
                         .rotationEffect(.degrees(expanded ? 90 : 0))
                     Text("\(BoardState.hold.label) · \(steps.count)")
                 }
-                .font(DS.sans(13))
+                .font(DS.font(.body))
                 .foregroundStyle(DS.Ink.p3)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
@@ -25,6 +25,7 @@ struct HoldGroupView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .glossaryHelp(.onHold)
 
             if expanded {
                 ForEach(steps) { step in

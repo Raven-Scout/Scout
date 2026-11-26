@@ -20,6 +20,9 @@ Snapshot file format (v1)::
 Filtering rules:
   * Only ``tier == official`` rows participate in the cross-repo contract.
     Other tiers (``auto_discovered``, ``community``) are local-only in v0.4.
+  * Only the packaged ``connectors.yaml`` is read. The running vault's
+    ``.scout-state/connectors.local.yaml`` overlay and its custom connectors
+    are never layered in (``connectors.load_seed_registry``).
 
 Ordering:
   * The ``connectors`` array preserves YAML insertion order so a YAML
@@ -73,7 +76,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from scout.connectors import Tier, load_registry
+from scout.connectors import Tier, load_seed_registry
 
 SCHEMA_VERSION = 1
 
@@ -119,7 +122,11 @@ def _short_sha(repo_dir: Path) -> str:
 
 
 def build_snapshot(*, repo_dir: Path | None = None) -> dict[str, Any]:
-    """Build the in-memory snapshot dict from the live registry.
+    """Build the in-memory snapshot dict from the packaged ``connectors.yaml``.
+
+    Seed only: the vault this runs in (its ``connectors.local.yaml`` overlay,
+    its custom connectors) never reaches the snapshot, so a developer's Mac and
+    CI build the same bytes (#543).
 
     Filters to ``tier=official`` only. Order is YAML insertion order
     (the registry preserves dict insertion order from yaml.safe_load).
@@ -130,7 +137,7 @@ def build_snapshot(*, repo_dir: Path | None = None) -> dict[str, Any]:
         # engine/scout -> engine -> scout-plugin
         repo_dir = Path(__file__).resolve().parents[3]
 
-    reg = load_registry()
+    reg = load_seed_registry()
     connectors_list = []
     for key, c in reg.items():
         if c.tier != Tier.OFFICIAL:

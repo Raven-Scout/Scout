@@ -48,29 +48,36 @@ enum TaskBodyParser {
 
     // MARK: - Trailing links
 
-    private static func splitTrailingLinks(_ body: String) -> (prose: String, targets: [String]) {
-        guard let re = try? NSRegularExpression(pattern: #"((?:\s*\[\[[^\]]+\]\])+)\s*$"#) else {
-            return (body, [])
-        }
+    /// The final run of wikilinks, by `Wikilink`'s rule, separated only by
+    /// whitespace, split off the prose. A chip is made only for what renders
+    /// as a link inline. It walks the links back from the end, so it's
+    /// linear: the regex it replaced, `((?:\s*<link>)+)\s*$`, retried from
+    /// every link, and 8,000 links followed by a word took 21 s. Internal so
+    /// tests can pin it against that regex.
+    static func splitTrailingLinks(_ body: String) -> (prose: String, targets: [String]) {
         let ns = body as NSString
-        guard let m = re.firstMatch(in: body, range: NSRange(location: 0, length: ns.length)) else {
-            return (body, [])
+        let links = Wikilink.matches(in: body)
+        guard var first = links.indices.last,
+              onlyWhitespace(ns, from: NSMaxRange(links[first].range), to: ns.length) else { return (body, []) }
+        while first > 0, onlyWhitespace(ns, from: NSMaxRange(links[first - 1].range), to: links[first].range.location) {
+            first -= 1
         }
-        let cluster = ns.substring(with: m.range(at: 1))
-        let targets = wikilinkTargets(in: cluster)
         // Only treat as a pulled-out cluster if there are at least two links —
         // a single trailing link reads fine inline and pulling it looks odd.
-        guard targets.count >= 2 else { return (body, []) }
-        let prose = ns.substring(to: m.range.location).trimmingCharacters(in: .whitespacesAndNewlines)
-        return (prose, targets)
+        guard links.count - first >= 2 else { return (body, []) }
+        let prose = ns.substring(to: links[first].range.location).trimmingCharacters(in: .whitespacesAndNewlines)
+        return (prose, links[first...].map(\.target))
     }
 
-    private static func wikilinkTargets(in s: String) -> [String] {
-        guard let re = try? NSRegularExpression(pattern: #"\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]"#) else { return [] }
-        let ns = s as NSString
-        return re.matches(in: s, range: NSRange(location: 0, length: ns.length)).map {
-            ns.substring(with: $0.range(at: 1))
+    /// Whether `ns[from..<to]` is all whitespace as a regex `\s` reads it
+    /// (Unicode's White_Space property, all of it in the BMP).
+    private static func onlyWhitespace(_ ns: NSString, from: Int, to: Int) -> Bool {
+        var i = from
+        while i < to {
+            guard Unicode.Scalar(ns.character(at: i))?.properties.isWhitespace == true else { return false }
+            i += 1
         }
+        return true
     }
 
     // MARK: - Labeled segments

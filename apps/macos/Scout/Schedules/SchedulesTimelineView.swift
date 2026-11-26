@@ -15,6 +15,11 @@ struct SchedulesTimelineView: View {
     @Binding var selectedSlotKey: String?
 
     @State private var nowMin: Int = currentMinute()
+    /// The day the timeline draws. Starts on today, so a weekday-only
+    /// schedule no longer shows on a Saturday (UI audit #60).
+    @State private var day: TimelineDay = .today
+    /// Re-read once a minute (`tick`), so "Today" rolls over at midnight.
+    @State private var now: Date = .now
     private let tick = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     // Layout constants — keep in sync with schedules.jsx
@@ -29,7 +34,107 @@ struct SchedulesTimelineView: View {
     private let cardSlotHeight: CGFloat = 64      // height reserved per card
 
     var body: some View {
-        let sorted = slots.sorted { minutes($0.firesAtLocal) < minutes($1.firesAtLocal) }
+        VStack(alignment: .leading, spacing: 0) {
+            dayPicker
+            if Self.slots(slots, on: day, now: now).isEmpty {
+                emptyDay
+            } else {
+                timeline
+            }
+        }
+        .onReceive(tick) { _ in
+            now = .now
+            nowMin = Self.currentMinute()
+        }
+    }
+
+    // MARK: - Day (UI audit #60)
+
+    /// Which schedules the timeline draws.
+    enum TimelineDay: Hashable {
+        /// The ones that run today, each by its own time zone's date.
+        case today
+        /// The ones whose weekdays include this token ("Mon"…"Sun").
+        case weekday(String)
+        /// All of them, whatever their days.
+        case everyDay
+    }
+
+    static let weekdayOrder = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    static let weekdayNames = ["Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday", "Thu": "Thursday",
+                               "Fri": "Friday", "Sat": "Saturday", "Sun": "Sunday"]
+
+    /// The schedules drawn for `day`. "Today" asks each schedule's own time
+    /// zone (`tz`, else `calendar`'s) what day `now` is, as the engine does
+    /// when it decides whether a schedule is due today.
+    nonisolated static func slots(_ slots: [Slot], on day: TimelineDay, now: Date,
+                                  calendar: Calendar = .current) -> [Slot] {
+        switch day {
+        case .everyDay:
+            return slots
+        case .weekday(let token):
+            return slots.filter { $0.weekdays.contains(token) }
+        case .today:
+            return slots.filter { slot in
+                var cal = calendar
+                if let tz = slot.tz.flatMap(TimeZone.init(identifier:)) { cal.timeZone = tz }
+                return slot.weekdays.contains(weekdayToken(for: now, calendar: cal))
+            }
+        }
+    }
+
+    /// `date`'s weekday as the schedule spells it ("Mon"…"Sun").
+    nonisolated static func weekdayToken(for date: Date, calendar: Calendar = .current) -> String {
+        // Calendar weekdays run 1 = Sunday … 7 = Saturday.
+        let tokens = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        return tokens[(calendar.component(.weekday, from: date) - 1 + 7) % 7]
+    }
+
+    /// Whether the timeline's "now" line belongs on the day shown: today,
+    /// or every day at once.
+    nonisolated static func showsNow(day: TimelineDay, today: String) -> Bool {
+        switch day {
+        case .today, .everyDay: return true
+        case .weekday(let token): return token == today
+        }
+    }
+
+    private var dayPicker: some View {
+        let options: [(label: String, value: TimelineDay)] = [("Today", .today)]
+            + Self.weekdayOrder.map { ($0, .weekday($0)) }
+            + [("Every day", .everyDay)]
+        return AdaptiveSegmentedControl(
+            selection: $day,
+            options: options,
+            minSegmentWidth: 44,
+            accessibilityTitle: "Day shown"
+        )
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
+    }
+
+    private var emptyDay: some View {
+        let title: String = switch day {
+        case .today: "Nothing runs today"
+        case .weekday(let token): "Nothing runs on \(Self.weekdayNames[token] ?? token)"
+        case .everyDay: "No schedules"
+        }
+        return VStack(spacing: 8) {
+            Spacer()
+            Text(title)
+                .dsFont(.title, .serif, weight: .medium)
+                .foregroundStyle(DS.Ink.p2)
+            Text("Pick another day, or Every day to see all schedules.")
+                .font(DS.font(.label))
+                .foregroundStyle(DS.Ink.p3)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var timeline: some View {
+        let sorted = Self.slots(slots, on: day, now: now).sorted { minutes($0.firesAtLocal) < minutes($1.firesAtLocal) }
         let timeline = computeSegments(events: sorted.map { minutes($0.firesAtLocal) })
         let positioned = layoutCards(sorted: sorted, yFor: timeline.yForMinute)
 
@@ -51,7 +156,7 @@ struct SchedulesTimelineView: View {
                 }
 
                 // NOW marker.
-                if showNow(timeline: timeline) {
+                if Self.showsNow(day: day, today: Self.weekdayToken(for: now)) && showNow(timeline: timeline) {
                     nowMarker(y: timeline.yForMinute(nowMin), totalH: timeline.totalH)
                 }
 
@@ -65,7 +170,6 @@ struct SchedulesTimelineView: View {
             .padding(.horizontal, 24)
             .padding(.bottom, 32)
         }
-        .onReceive(tick) { _ in nowMin = Self.currentMinute() }
     }
 
     // MARK: - Pieces
@@ -74,7 +178,7 @@ struct SchedulesTimelineView: View {
         GeometryReader { geo in
             let center = geo.size.width / 2
             ZStack {
-                RoundedRectangle(cornerRadius: 14)
+                RoundedRectangle(cornerRadius: 14)  // ds-guard: not a card — the timeline's axis track
                     .fill(DS.Paper.raised)
                     .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(DS.Rule.soft, lineWidth: 0.5))
                     .frame(width: axisWidth)
@@ -93,12 +197,12 @@ struct SchedulesTimelineView: View {
             let center = geo.size.width / 2
             ZStack {
                 Rectangle()
-                    .fill(t.major ? DS.Ink.p4.opacity(0.4) : DS.Rule.soft)
+                    .fill(t.major ? DS.Ink.decorative.opacity(0.4) : DS.Rule.soft)
                     .frame(width: axisWidth - 16, height: 0.5)
                     .position(x: center, y: t.y)
                 if t.major {
                     Text(formatHour(t.h))
-                        .font(DS.mono(10.5, weight: .medium))
+                        .font(DS.font(.caption2, .mono, weight: .medium))
                         .foregroundStyle(DS.Ink.p3)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1)
@@ -118,15 +222,7 @@ struct SchedulesTimelineView: View {
         return GeometryReader { geo in
             let center = geo.size.width / 2
             VStack(spacing: 0) {
-                Text("\(formatHour(fromH)) – \(formatHour(toH)) · \(hrs)h quiet")
-                    .font(DS.mono(10, weight: .medium))
-                    .foregroundStyle(DS.Ink.p4)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 3)
-                    .background(
-                        Capsule().fill(DS.Paper.sunk)
-                            .overlay(Capsule().strokeBorder(DS.Rule.soft, lineWidth: 0.5))
-                    )
+                DSPill("\(formatHour(fromH)) – \(formatHour(toH)) · \(hrs)h quiet")
             }
             .position(x: center, y: seg.y0 + gapPx / 2)
         }
@@ -150,7 +246,7 @@ struct SchedulesTimelineView: View {
                     .frame(width: 10, height: 10)
                     .position(x: center, y: y)
                 Text("NOW")
-                    .font(DS.mono(9, weight: .semibold))
+                    .font(DS.font(.micro, .mono, weight: .semibold))
                     .tracking(1.5)
                     .foregroundStyle(DS.Status.err)
                     .padding(.horizontal, 6)
@@ -200,25 +296,11 @@ struct SchedulesTimelineView: View {
                     selectedSlotKey = slot.key
                 } label: {
                     cardContents(slot: slot, ring: ring)
+                        .editorialCard(padding: 0, selected: isSelected, accentBar: ring)
                         .frame(width: cardW)
                 }
-                .buttonStyle(.plainHit)
-                .overlay(alignment: .leading) {
-                    Rectangle()
-                        .fill(ring.opacity(0.85))
-                        .frame(width: 3)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 9))
-                .background(
-                    RoundedRectangle(cornerRadius: 9)
-                        .fill(isSelected ? DS.Paper.raised : DS.Paper.base)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 9)
-                                .strokeBorder(isSelected ? ring.opacity(0.7) : DS.Rule.soft, lineWidth: isSelected ? 1.5 : 0.5)
-                        )
-                        .shadow(color: DS.Neumorphic.shadow.opacity(0.6), radius: 4, x: 2, y: 2)
-                        .shadow(color: DS.Neumorphic.highlight, radius: 3, x: -1, y: -1)
-                )
+                .buttonStyle(.dsCard())
+                .accessibilitySelected(isSelected)
                 .position(x: xCenter, y: p.y)
             }
         }
@@ -231,22 +313,16 @@ struct SchedulesTimelineView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(t.hh + ":" + t.mm)
-                    .font(DS.mono(13, weight: .medium))
+                    .font(DS.font(.body, .mono, weight: .medium))
                     .foregroundStyle(DS.Ink.p1)
                 Text(t.suffix.uppercased())
-                    .font(DS.mono(9))
+                    .font(DS.font(.micro, .mono))
                     .foregroundStyle(DS.Ink.p4)
                 Spacer(minLength: 0)
-                Text(slot.type.rawValue.capitalized)
-                    .font(DS.sans(9, weight: .medium))
-                    .tracking(0.8)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(ring))
+                DSPill(slot.type.displayName, tone: .slot(slot.type))
             }
-            Text(slot.key)
-                .font(DS.mono(11, weight: .medium))
+            Text(slot.displayName)
+                .font(DS.font(.caption, weight: .medium))
                 .foregroundStyle(DS.Ink.p1)
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
@@ -254,7 +330,7 @@ struct SchedulesTimelineView: View {
                 weekdayStrip(weekdays: slot.weekdays, ring: ring)
                 Spacer(minLength: 0)
                 Text("\(slot.cooldownMinutes)m cool")
-                    .font(DS.mono(9))
+                    .font(DS.font(.micro, .mono))
                     .foregroundStyle(DS.Ink.p4)
             }
         }
@@ -270,14 +346,29 @@ struct SchedulesTimelineView: View {
             ForEach(names, id: \.self) { name in
                 let isOn = on.contains(name)
                 Text(String(name.prefix(1)))
-                    .font(DS.sans(8.5, weight: .medium))
-                    .foregroundStyle(isOn ? Color.white : DS.Ink.p4)
-                    .frame(width: 12, height: 12)
+                    .font(DS.font(.micro, weight: .medium))
+                    .foregroundStyle(isOn ? DS.Ink.onTint : DS.Ink.p4)
+                    .frame(width: DS.scaled(12), height: DS.scaled(12))   // grows with Text size
                     .background(
-                        Circle().fill(isOn ? ring : DS.Ink.p4.opacity(0.18))
+                        Circle().fill(isOn ? ring : DS.Ink.decorative.opacity(0.18))
                     )
             }
         }
+        // Seven single letters read badly; say the days instead.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Self.weekdaysAccessibilityLabel(weekdays))
+    }
+
+    /// "Runs Monday, Wednesday, Friday" / "Runs every day" / "No run days".
+    nonisolated static func weekdaysAccessibilityLabel(_ weekdays: [String]) -> String {
+        let order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        let full = ["Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday", "Thu": "Thursday",
+                    "Fri": "Friday", "Sat": "Saturday", "Sun": "Sunday"]
+        let on = Set(weekdays)
+        let days = order.filter(on.contains)
+        if days.isEmpty { return "No run days" }
+        if days.count == 7 { return "Runs every day" }
+        return "Runs " + days.compactMap { full[$0] }.joined(separator: ", ")
     }
 
     // MARK: - Layout helpers

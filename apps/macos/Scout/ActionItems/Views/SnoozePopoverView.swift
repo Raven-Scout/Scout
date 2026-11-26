@@ -6,13 +6,21 @@ import SwiftUI
 /// the wrapper would sometimes silently drop the seed and ``picked`` would
 /// read as ``Date(timeIntervalSinceReferenceDate: 0)`` — formatted in ET
 /// that's ``2000-12-31``, which is what ``snooze.py`` saw on the command
-/// line. The custom date path here re-seeds the binding from ``sourceDate``
-/// inside ``onAppear`` of the expanded panel so the picker never relies on
+/// line. The custom date path here re-seeds the binding (to the day after
+/// ``SnoozeDates/anchor(sourceDate:now:calendar:)``) inside ``onAppear`` of the expanded panel so the picker never relies on
 /// an `init`-time State value.
+///
+/// Presets count from the real today, not the displayed day (audit #46): on
+/// an old file, "Tomorrow" counted from that file's day was already in the
+/// past. See `SnoozeDates`.
 struct SnoozePopoverView: View {
+    /// The day of the file the task is on.
     let sourceDate: Date
     let onCommit: (Date) async -> Void
     let onCancel: () -> Void
+    /// Injected for tests; the clock otherwise. Last, so the trailing
+    /// closures at the call sites still match `onCommit` and `onCancel`.
+    var now: () -> Date = { .now }
 
     @State private var submitting = false
     @State private var showingCustom = false
@@ -23,7 +31,8 @@ struct SnoozePopoverView: View {
     /// committing it as a real date.
     @State private var customDate: Date = .distantPast
 
-    private static let presets: [(label: String, days: Int)] = [
+    /// Also the Snooze submenu of a card's context menu.
+    static let presets: [(label: String, days: Int)] = [
         ("Tomorrow",     1),
         ("In 3 days",    3),
         ("Next week",    7),
@@ -56,10 +65,10 @@ struct SnoozePopoverView: View {
                 showingCustom = true
             } label: {
                 HStack {
-                    Text("Other date…").font(.system(size: 12))
+                    Text("Other date…").font(DS.font(.label))
                     Spacer(minLength: 8)
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 9))
+                        .font(DS.font(.micro))
                         .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 12)
@@ -71,9 +80,7 @@ struct SnoozePopoverView: View {
 
             Divider().padding(.horizontal, 8)
             Button("Cancel", action: onCancel)
-                .buttonStyle(.plainHit)
-                .foregroundStyle(.secondary)
-                .font(.caption)
+                .buttonStyle(.ds(.quiet, size: .small))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -90,12 +97,13 @@ struct SnoozePopoverView: View {
                 Button {
                     showingCustom = false
                 } label: {
-                    Image(systemName: "chevron.left").font(.system(size: 10))
+                    Image(systemName: "chevron.left").font(DS.font(.caption2))
                 }
                 .buttonStyle(.plainHit)
+                .accessibilityLabel("Back")
                 .foregroundStyle(.secondary)
                 Text("Pick a date")
-                    .font(.caption.weight(.semibold))
+                    .font(DS.font(.caption2, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
             }
@@ -118,15 +126,11 @@ struct SnoozePopoverView: View {
             HStack(spacing: 8) {
                 Spacer()
                 Button("Cancel", action: onCancel)
-                    .buttonStyle(.plainHit)
-                    .foregroundStyle(.secondary)
-                // Matches the unstyled "Send" button in
-                // CommentComposerView — Alex's UI pass (eb88094) targeted
-                // toggles/segmented controls, leaving primary-action buttons
-                // on the system style. Stay consistent with that.
+                    .buttonStyle(.dsQuiet)
                 Button("Snooze") { commitCustom() }
+                    .buttonStyle(.dsPrimary)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(submitting || customDate <= sourceDate)
+                    .disabled(submitting || customDate < minimumCustomDate)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -136,8 +140,7 @@ struct SnoozePopoverView: View {
             // Lazy seed — see the file-level note about the macOS-26 popover
             // bug. Default to tomorrow as a sensible starting point.
             if customDate == .distantPast {
-                customDate = Calendar(identifier: .iso8601)
-                    .date(byAdding: .day, value: 1, to: sourceDate) ?? sourceDate
+                customDate = minimumCustomDate
             }
         }
     }
@@ -146,7 +149,7 @@ struct SnoozePopoverView: View {
 
     private func header(title: String) -> some View {
         Text(title)
-            .font(.caption.weight(.semibold))
+            .font(DS.font(.caption2, weight: .semibold))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12)
             .padding(.top, 6)
@@ -158,10 +161,10 @@ struct SnoozePopoverView: View {
             commit(days: days)
         } label: {
             HStack {
-                Text(label).font(.system(size: 12))
+                Text(label).font(DS.font(.label))
                 Spacer(minLength: 8)
                 Text(relativeLabel(days: days))
-                    .font(.caption2)
+                    .font(DS.font(.caption2))
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 12)
@@ -172,33 +175,48 @@ struct SnoozePopoverView: View {
         .disabled(submitting)
     }
 
+    /// The date a preset snoozes to, for this popover and the card's
+    /// right-click Snooze menu alike: counted from the real today, or from
+    /// `sourceDate` (the day on screen) when that is later (audit #46, via
+    /// `SnoozeDates`).
+    static func presetTarget(days: Int, from sourceDate: Date, now: Date = .now) -> Date? {
+        SnoozeDates.target(days: days, sourceDate: sourceDate, now: now)
+    }
+
     private func commit(days: Int) {
-        guard let target = Calendar(identifier: .iso8601)
-            .date(byAdding: .day, value: days, to: sourceDate),
-              target > sourceDate
-        else { return }
+        guard let target = Self.presetTarget(days: days, from: sourceDate, now: now()) else { return }
         submitting = true
         Task { await onCommit(target) }
     }
 
     private func commitCustom() {
-        guard customDate > sourceDate, customDate != .distantPast else { return }
+        guard customDate >= minimumCustomDate, customDate != .distantPast else { return }
         submitting = true
         let target = customDate
         Task { await onCommit(target) }
     }
 
     private var minimumCustomDate: Date {
-        Calendar(identifier: .iso8601)
-            .date(byAdding: .day, value: 1, to: sourceDate) ?? sourceDate
+        SnoozeDates.target(days: 1, sourceDate: sourceDate, now: now()) ?? sourceDate
     }
 
     private func relativeLabel(days: Int) -> String {
-        guard let d = Calendar(identifier: .iso8601)
-            .date(byAdding: .day, value: days, to: sourceDate) else { return "" }
-        let fmt = DateFormatter()
-        fmt.dateFormat = "EEE MMM d"
-        fmt.timeZone = .current
-        return fmt.string(from: d)
+        guard let d = SnoozeDates.target(days: days, sourceDate: sourceDate, now: now()) else { return "" }
+        return d.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
+    }
+}
+
+/// The dates the snooze presets pick.
+nonisolated enum SnoozeDates {
+    /// The day presets count from: the real today, or the displayed day when
+    /// that is later. Counting from an old file's day made "Tomorrow" a date
+    /// already past (audit #46).
+    static func anchor(sourceDate: Date, now: Date, calendar: Calendar = .current) -> Date {
+        max(calendar.startOfDay(for: now), calendar.startOfDay(for: sourceDate))
+    }
+
+    /// `days` after the anchor, or `nil` when the calendar can't say.
+    static func target(days: Int, sourceDate: Date, now: Date, calendar: Calendar = .current) -> Date? {
+        calendar.date(byAdding: .day, value: days, to: anchor(sourceDate: sourceDate, now: now, calendar: calendar))
     }
 }

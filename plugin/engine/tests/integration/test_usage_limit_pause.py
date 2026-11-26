@@ -31,10 +31,14 @@ RUN_TIMEOUT_S = 60
 SLOT = "morning-briefing"
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
-# Runs this checkout's engine for `scoutctl budget …`; records every other call.
+# Runs this checkout's engine for `scoutctl budget …` and the integrity check's `sandbox snapshot|verify`;
+# answers `agent-runtime resolve` as an engine with no runtime set does (else the run records a resolve fallback,
+# which health reports: #652 S7); records every other call.
 SCOUTCTL_STUB = """#!/usr/bin/env python3
 import json, os, sys
-if sys.argv[1:2] == ["budget"]:
+if sys.argv[1:3] == ["agent-runtime", "resolve"]:
+    print("claude-code")
+if sys.argv[1:2] == ["budget"] or sys.argv[1:3] in (["sandbox", "snapshot"], ["sandbox", "verify"]):
     os.execv({python!r}, [{python!r}, "-m", "scout.cli", *sys.argv[1:]])
 with open({calls!r}, "a") as fh:
     fh.write(json.dumps(sys.argv[1:]) + "\\n")
@@ -107,6 +111,7 @@ def _run_slot(vault: Path) -> None:
     runner = _render(TEMPLATES / "run-scout.sh.tmpl", vault / "run-scout.sh", vault)
     fake_bin = vault.parent / "fakebin"
     env = {k: v for k, v in os.environ.items() if not k.startswith("SCOUT_")}
+    env["SCOUT_RUN_SANDBOX"] = "off"  # the runners' write sandbox needs a real engine (tests/conftest.py)
     result = subprocess.run(
         [str(runner)],
         env={**env, "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}", "SCOUT_FORCE_MODE": SLOT},
@@ -156,7 +161,10 @@ def test_health_reads_the_held_slots_as_one_pause(vault: Path, lifts: datetime) 
     report = health.evaluate(vault, now=datetime.now(UTC))
 
     assert report.severity == "yellow"
-    assert [(f.id, f.severity) for f in report.findings] == [(health.PAUSED_FINDING_ID, "yellow")]
+    # Notes don't change severity (the suite's runners have SCOUT_RUN_SANDBOX=off, which health notes).
+    assert [(f.id, f.severity) for f in report.findings if f.severity != "note"] == [
+        (health.PAUSED_FINDING_ID, "yellow")
+    ]
     assert f"runs paused until {health.iso_z(lifts)}" in report.findings[0].summary
 
 

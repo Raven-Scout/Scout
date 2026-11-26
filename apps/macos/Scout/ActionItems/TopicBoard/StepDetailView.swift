@@ -25,7 +25,7 @@ struct StepDetailView: View {
         VStack(alignment: .leading, spacing: 8) {
             if task.body.count > Self.rowLineLength {
                 InlineMarkdownText(task.body)
-                    .font(DS.sans(13))
+                    .font(DS.font(.body))
                     .foregroundStyle(DS.Ink.p2)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
@@ -54,11 +54,11 @@ struct StepDetailView: View {
                     launchError: $launchError
                 )
             }
-            .font(DS.sans(11.5))
+            .font(DS.font(.caption))
             .foregroundStyle(DS.Ink.p3)
             if let launchError {
                 Text(launchError)
-                    .font(DS.sans(11))
+                    .font(DS.font(.caption))
                     .foregroundStyle(DS.Status.err)
                     .textSelection(.enabled)
             }

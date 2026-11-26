@@ -6,7 +6,7 @@ struct MetadataTab: View {
     var body: some View {
         ScrollView {
             Text(prettyJSON)
-                .font(.system(.caption, design: .monospaced))
+                .font(DS.font(.caption2, .mono))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding()
@@ -17,6 +17,7 @@ struct MetadataTab: View {
         let info: [String: String] = [
             "id": run.id,
             "type": run.type.rawValue,
+            "slot": run.slotKey ?? "—",
             "runnerScript": run.runnerScript,
             "source": run.source.rawValue,
             "status": run.status.rawValue,

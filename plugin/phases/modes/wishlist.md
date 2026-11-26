@@ -14,7 +14,7 @@ Process items from {{USER_NAME}}'s wishlist — feature requests, improvements, 
 
 ### Step 3a: Read the Wishlist
 
-Read every `*.md` file in `docs/wishlist/`. Each file is one item: YAML frontmatter plus a body describing the feature/improvement.
+Read every `*.md` file in `docs/wishlist/` (not its `progress/` folder). Each file is one item: YAML frontmatter plus a body describing the feature/improvement.
 
 **Frontmatter schema:** `title`, `status` (`open`|`in-progress`|`done`|`dropped`), `priority` (`urgent`|`high`|`medium`|`low`), `date` (`YYYY-MM-DD`), optional `source`.
 
@@ -54,13 +54,13 @@ Select actionable items and push as far as possible. Don't artificially limit yo
 
 **Execution rules by item type:**
 
-- **Skill or documentation changes**: Edit the target file directly. Follow existing conventions and formatting in the file. SKILL.md changes follow Step 1d (the proposal gate is retired): additive or corrective edits go in directly; large, structural, behavior-removing or governance changes go to `dreaming-proposals.md`.
+- **Skill or documentation changes**: Edit the target file directly. Follow existing conventions and formatting in the file. Brain and script changes follow Step 1d: additive or corrective ones go in directly, each committed with the change trailers (`Scout-Change-Why: wishlist:<item file name without .md>`); large, structural or behavior-removing ones go to `dreaming-proposals.md`; a governance or safety-gating change goes to a `governance-pending/<slug>.md` file, for {{USER_NAME}}'s OK.
 - **New files**: Create following the naming conventions and structure patterns established in the codebase. Link new files from their parent/index files.
 - **Configuration changes**: Edit the relevant config file. Test that the change is syntactically valid.
 - **Research items**: Do real research (check docs, test locally, query sources) — don't give superficial answers.
 - **Multi-run efforts**: Complete as many sub-tasks as you can per run, not just one.
 
-**Scope guard**: If an item turns out to be larger than expected mid-implementation, stop at a clean checkpoint. Set its frontmatter `status: in-progress` with a note (in the body) about what was completed and what remains. Do not leave half-finished work in an inconsistent state.
+**Scope guard**: If an item turns out to be larger than expected mid-implementation, stop at a clean checkpoint. Set its frontmatter `status: in-progress` and record what was completed and what remains (Step 3d). Do not leave half-finished work in an inconsistent state.
 
 ***
 
@@ -68,23 +68,30 @@ Select actionable items and push as far as possible. Don't artificially limit yo
 
 After executing (or deciding to skip), update each item file's frontmatter `status:` in place — never move or delete the file (git is the archive; Scout.app and this phase filter by `status:`).
 
-**For completed items:** set `status: done` and add a brief "what was delivered" note (with the date) to the body.
+**The item file is a card, not a log.** Scout.app shows its whole body, so it holds only the request (a few lines) and a `## Status` section: one or two sentences on where it stands now, then the open sub-tasks. Dated entries — what each run did or delivered, verification, ticked sub-tasks — go in the item's progress note, `docs/wishlist/progress/<item file name>`, newest first (a moved log keeps its own order, even oldest-first; this run's entry goes above it), and the card links it once: `[[docs/wishlist/progress/<item stem>|Progress log]]`. Never delete a log: when you touch an item whose body holds one, move it verbatim to the note in the same commit.
 
-**For newly-started items:** set `status: in-progress` and spell out remaining sub-tasks in the body:
 ```markdown
-- [x] Sub-task 1 — completed [date]
-- [ ] Sub-task 2 — remaining
+## Status
+Two of four sub-tasks done; the template exists, the index link is next.
+- [ ] Link the template from the KB index
+- [ ] Backfill the three existing decisions
+
+[[docs/wishlist/progress/2026-01-05-decision-template|Progress log]]
 ```
 
-**For items continuing from a prior run:** update the sub-task checklist in the item's body in place; add newly-identified sub-tasks as needed.
+**For completed items:** set `status: done`; the status says what was delivered, the dated note goes in the log.
+
+**For newly-started and continuing items:** set `status: in-progress`, rewrite the status, keep the open sub-tasks on the card (add new ones as found), and log the run's work.
 
 **For items skipped as ambiguous:** leave the item untouched (`status: open`) for {{USER_NAME}} to clarify. Optionally log which item was skipped and why in the session summary.
 
-**For a brand-new wishlist item:** create `docs/wishlist/<YYYY-MM-DD>-<slug>.md` with the frontmatter schema above (`status: open`).
+**For a brand-new wishlist item:** create `docs/wishlist/<YYYY-MM-DD>-<slug>.md` with the frontmatter schema above (`status: open`). It has no progress note until a run first logs work on it.
 
 ***
 
 ### Step 3e: Commit
+
+Before committing, run `scripts/scoutctl wishlist check-log-move --data-dir {{SCOUT_DIR}} <the paths you will commit>` until it exits 0, at most 3 tries. Exit 1 names an item and the first log line its card lost that its progress note lacks, quoted so trailing spaces, `\r` and `\xa0` show: copy the removed lines into the note exactly, in order (this run's entry may go above them), or put them back, and commit the note with the card. Still exit 1 after the third try: restore that card with `git show HEAD:<card> > <card>`, redo only this run's frontmatter `status:` and `## Status` edits (leave the log on the card), note `log move deferred: <item>` in the session log, and commit. Exit 2 (it couldn't check): note `log-move check could not run: <its message>` in the session log and go on.
 
 Explicit paths, never `-A` (see Step 1f):
 

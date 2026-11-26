@@ -22,16 +22,19 @@ file exists), and quiet when there is nothing to do — runner preambles invoke
 it best-effort before every session.
 
 Creating the day's file is also when items untouched for 60+ days leave it
-(``scout.action_items.stale``): once a day, before any session reads it.
+and the backlog (``scout.action_items.stale``), and when ``fit`` keeps it to
+its budget (``scout.action_items.fit``; it only reports unless
+``action_items.fit`` is ``apply``): once a day, before any session reads it.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
+import os
 import re
 from pathlib import Path
 
-from scout import paths
+from scout import paths, safe_write
 from scout.action_items.parser import parse_lines
 from scout.config import pinned_eval_day, resolve_timezone
 from scout.errors import ConfigError
@@ -45,6 +48,43 @@ _BANNER = (
     "next briefing/consolidation rewrites this file in full; until then every "
     "open item below carries as-is so nothing is invisible."
 )
+
+
+_SKIP_BANNER = (
+    "\n\n🔴 **Skipped an item-less day** — {skipped} had no checklist items at "
+    "all (no `- [ ]` and no `- [x]` lines), so it was not carried forward; "
+    "the list above comes from [[action-items-{prev}]] instead. An item-less "
+    "file after a non-empty one is a truncated rewrite, not a cleared board — "
+    "check {skipped} in git before trusting it."
+)
+
+# A checklist item of any state. A board the user genuinely cleared still has
+# its `- [x]` lines; a file with none at all lost its item sections.
+_CHECKBOX = re.compile(r"^\s*[-*] \[[ xX]\]", re.MULTILINE)
+
+
+def _has_items(path: Path) -> bool:
+    return bool(_CHECKBOX.search(path.read_text(encoding="utf-8")))
+
+
+def _pick_source(data_dir: Path | None, target_date: _dt.date) -> tuple[_dt.date, Path, list[_dt.date]] | None:
+    """Newest prior daily file within LOOKBACK_DAYS that has checklist items.
+
+    Item-less files newer than it are returned as skipped. When no file in the
+    window has items, the newest file is used as before (nothing to heal from).
+    """
+    found: list[tuple[_dt.date, Path]] = []
+    for days_back in range(1, LOOKBACK_DAYS + 1):
+        prev_date = target_date - _dt.timedelta(days=days_back)
+        prev = paths.action_items_daily_path(data_dir, date=prev_date)
+        if prev.exists():
+            found.append((prev_date, prev))
+    if not found:
+        return None
+    for i, (prev_date, prev) in enumerate(found):
+        if _has_items(prev):
+            return prev_date, prev, [d for d, _ in found[:i]]
+    return found[0][0], found[0][1], []
 
 
 def _human_date(d: _dt.date) -> str:
@@ -208,13 +248,18 @@ def _archive_stale(data_dir: Path | None, today: _dt.date, body: str) -> tuple[s
         ledger = stale.ActivityLedger.load(vault)
         ledger.catch_up(vault, before=today)
         result = stale.split_stale(body.splitlines(), ledger, today=today)
-        archive = stale.write_archive(vault, today, result.archived) if result.archived else None
+        daily_tags = frozenset(b.tag for b in stale.task_blocks(body.splitlines()))
+        backlog = stale.split_backlog(vault, ledger, today=today, skip=daily_tags)
+        archived = result.archived + (backlog[1].archived if backlog else [])
+        archive = stale.write_archive(vault, today, archived) if archived else None
+        if backlog and backlog[1].archived:
+            stale.write_lines_like(stale.backlog_path(vault), backlog[0], backlog[1].lines)
         ledger.save()
     except Exception:  # noqa: BLE001 — housekeeping must never block the copy
         return body, ""
     if archive is None:
         return body, ""
-    count = len(result.archived)
+    count = len(archived)
     noun = "item" if count == 1 else "items"
     note = f" 🗄️ {count} {noun} untouched for {stale.STALE_AFTER_DAYS}+ days auto-archived → [[archive/{archive.stem}]]."
     trailing = "\n" if body.endswith("\n") else ""
@@ -237,6 +282,35 @@ def _drop_dismissed(data_dir: Path | None, body: str) -> str:
         return body
     trailing = "\n" if body.endswith("\n") else ""
     return "\n".join(kept) + trailing
+
+
+def _record_red_carried(data_dir: Path | None, today: _dt.date, content: str, now: _dt.datetime) -> None:
+    """Note the 🔴 items nobody has touched for 3+ days (changes map noise signal).
+    Best-effort: the day's file is already written, and this must never change the result or raise."""
+    try:
+        from scout.changes import carried
+
+        vault = paths.data_dir() if data_dir is None else data_dir
+        carried.record_red_carried(vault, content.splitlines(), today=today, now=now, env=os.environ)
+    except Exception:  # noqa: BLE001 - housekeeping must never block the copy
+        pass
+
+
+def _fit(data_dir: Path | None, day: _dt.date) -> None:
+    """Keep the new file to its budget (or only report, per ``action_items.fit``).
+    Best-effort, like the archive: the file already exists complete. A failure
+    is said on stderr (the run log) and recorded in the fit report, never swallowed."""
+    import sys
+
+    from scout.action_items import fit as fit_module
+
+    try:
+        fit_module.fit(data_dir=data_dir, date=day)
+    except Exception as e:  # noqa: BLE001 — housekeeping must never block the copy
+        sys.stderr.write(
+            f"materialize: action-items fit failed ({type(e).__name__}: {e}); the day's file is complete\n"
+        )
+        fit_module.write_error_report(data_dir, day=day, error=e)
 
 
 def materialize(
@@ -265,15 +339,21 @@ def materialize(
     if not target.parent.is_dir():
         return None
 
-    for days_back in range(1, LOOKBACK_DAYS + 1):
-        prev_date = target_date - _dt.timedelta(days=days_back)
-        prev = paths.action_items_daily_path(data_dir, date=prev_date)
-        if not prev.exists():
-            continue
+    picked = _pick_source(data_dir, target_date)
+    if picked is not None:
+        prev_date, prev, skipped = picked
         banner = _BANNER.format(
             now=now.strftime("%H:%M %Z"),
             prev=prev_date.isoformat(),
         )
+        if skipped:
+            # Pattern #277: verbatim carry of a truncated file makes the
+            # accident tomorrow's baseline. Self-heal from the last good day,
+            # and say so in the file, because the session reading it needs to know.
+            banner += _SKIP_BANNER.format(
+                skipped=", ".join(d.isoformat() for d in skipped),
+                prev=prev_date.isoformat(),
+            )
         body = _carry_body(prev)
         # Before anything reshapes the body: a `## ` heading that names the day
         # we are carrying *from* is about to travel into a file dated something
@@ -287,9 +367,9 @@ def materialize(
         if _signature(compacted) == _signature(body):
             body = "\n" + compacted
         content = f"# Action Items — {_human_date(target_date)}\n{banner}{archived_note}\n{body}"
-        tmp = target.with_suffix(target.suffix + ".tmp")
-        tmp.write_text(content, encoding="utf-8")
-        tmp.replace(target)
+        safe_write.atomic_write_text(target, content)
+        _record_red_carried(data_dir, target_date, content, now)
+        _fit(data_dir, target_date)
         return target
 
     return None

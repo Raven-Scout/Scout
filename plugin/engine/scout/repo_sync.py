@@ -84,7 +84,7 @@ from typing import Any, Protocol
 import yaml
 
 import scout
-from scout import paths
+from scout import paths, safe_write
 from scout.kb.lint_config import glob_match
 from scout.kb.privacy import (
     CEILING_LEVELS,
@@ -97,6 +97,7 @@ from scout.kb.privacy import (
     load_yaml,
     policy_from_overlay,
 )
+from scout.plural import agree, are, count
 
 SCHEMA_VERSION = 1
 STATE_FILE = "repo-sync.json"
@@ -834,7 +835,8 @@ def check_mirror_commits(vault: Path, rules: LocalOnlyRules, revs: Iterable[str]
         if bad:
             raise RepoSyncError(
                 "local_only_path_in_push",
-                f"refused: mirror commit {rev[:12]} would carry {len(bad)} local-only path(s); nothing was pushed",
+                f"refused: mirror commit {rev[:12]} would carry {count(len(bad), 'local-only path')}; "
+                "nothing was pushed",
             )
         if policy is None:
             raise RepoSyncError(
@@ -851,6 +853,9 @@ class HostStatus:
     can_create: bool
     clone_url: str
     local_only_paths: tuple[str, ...] = ()
+    # Commits Agnes made on top of the laptop's last push (A8b: a stop's write-back, say). Above 0, sync pulls
+    # before it pushes even if ls-remote says nothing moved. 0 on an Agnes before A8b, which doesn't report it.
+    pending_server_commits: int = 0
 
 
 class Host(Protocol):
@@ -926,11 +931,13 @@ class AgnesHost:
 
     @staticmethod
     def _status(data: Mapping[str, Any]) -> HostStatus:
+        pending = data.get("pending_server_commits")
         return HostStatus(
             exists=bool(data.get("exists")),
             can_create=bool(data.get("can_create")),
             clone_url=str(data.get("clone_url") or ""),
             local_only_paths=tuple(str(p) for p in data.get("local_only_paths") or ()),
+            pending_server_commits=pending if isinstance(pending, int) and not isinstance(pending, bool) else 0,
         )
 
     def status(self) -> HostStatus:
@@ -1035,9 +1042,7 @@ def load_state(vault: Path) -> LinkState | None:
 def save_state(vault: Path, state: LinkState) -> None:
     p = state_path(vault)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(state.to_json(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp, p)
+    safe_write.atomic_write_text(p, json.dumps(state.to_json(), indent=2, sort_keys=True) + "\n")
 
 
 def pending_path(vault: Path) -> Path:
@@ -1049,9 +1054,7 @@ def save_pending_pushes(vault: Path, pushes: Sequence[tuple[str, str]]) -> None:
     p = pending_path(vault)
     p.parent.mkdir(parents=True, exist_ok=True)
     doc = {"schema_version": SCHEMA_VERSION, "pushes": [{"laptop": c, "mirror": m} for c, m in pushes]}
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp, p)
+    safe_write.atomic_write_text(p, json.dumps(doc, indent=2, sort_keys=True) + "\n")
 
 
 def load_pending_pushes(vault: Path) -> dict[str, str]:
@@ -1088,9 +1091,7 @@ def save_host_cache(vault: Path, entries: Iterable[str], *, agnes_url: str, now:
         "fetched_at": (now or datetime.now(UTC)).isoformat(timespec="seconds"),
         "local_only_paths": list(dict.fromkeys(entries)),
     }
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp, p)
+    safe_write.atomic_write_text(p, json.dumps(doc, indent=2, sort_keys=True) + "\n")
 
 
 def load_host_cache(vault: Path, *, agnes_url: str) -> HostCache | None:
@@ -1139,10 +1140,7 @@ def save_token(vault: Path, token: str) -> None:
     p = token_path(vault)
     p.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(p.parent, 0o700)
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(token.strip() + "\n")
-    os.chmod(p, 0o600)
+    safe_write.atomic_write_text(p, token.strip() + "\n", mode=0o600)
 
 
 def load_token(vault: Path) -> str:
@@ -1326,9 +1324,7 @@ def otlp_content_off(vault: Path) -> bool:
         return False
     data["env"] = {**env, **OTLP_CONTENT_OFF}
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, p)
+    safe_write.atomic_write_text(p, json.dumps(data, indent=2) + "\n")
     return True
 
 
@@ -1345,7 +1341,7 @@ def ensure_ignored(vault: Path) -> list[str]:
     text = gi.read_text(encoding="utf-8") if gi.exists() else ""
     head = text if not text or text.endswith("\n") else text + "\n"
     lines = "".join(f"{rel}\n" for rel in missing)
-    gi.write_text(f"{head}# Agnes sync state (scoutctl repo): this computer's state\n{lines}", "utf-8")
+    safe_write.atomic_write_text(gi, f"{head}# Agnes sync state (scoutctl repo): this computer's state\n{lines}")
     return missing
 
 
@@ -1496,7 +1492,7 @@ def link(
     host_entries = tuple(status.local_only_paths)
     if len(wanted) > len(host_entries):
         host_entries = host.set_local_only(list(wanted))
-        notes.append(f"Agnes now keeps {len(host_entries)} Local-Only Path(s) for this vault")
+        notes.append(f"Agnes now keeps {count(len(host_entries), 'Local-Only Path')} for this vault")
     rules = LocalOnlyRules.build([policy], host_entries, pinned=pin)
     if existing is not None:
         fetch_remote(vault, host, status.clone_url)
@@ -1640,7 +1636,7 @@ def replay_one(
         elif ours is not None and ch.old is not None and ch.new is not None:
             merged, clean = _merge3(vault, ch.old, ours, ch.new)
             if not clean:
-                (vault / f"{ch.path}.proposed-merge").write_bytes(merged)
+                safe_write.atomic_write_bytes(vault / f"{ch.path}.proposed-merge", merged)
                 raise RepoSyncError(
                     "replay_conflict",
                     f"refused: {ch.path} changed both here and on Agnes; the merge is in "
@@ -1752,7 +1748,8 @@ def _sync_under_lease(
     if remote is None:
         raise RepoSyncError("remote_empty", "refused: the repository on Agnes is empty; unlink, then link again")
     replayed_to = state.last_mirror
-    if remote != state.last_mirror:
+    # Agnes says it wrote on top of the last push: pull before pushing, whatever ls-remote answered.
+    if remote != state.last_mirror or status.pending_server_commits > 0:
         remote = fetch_remote(vault, host, status.clone_url)
         if _rev(vault, state.last_mirror) is None or not _is_ancestor(vault, state.last_mirror, remote):
             raise RepoSyncError(
@@ -1783,6 +1780,11 @@ def _sync_under_lease(
             state.last_mirror = rev
             parent = rev
             save_state(vault, state)
+    if status.pending_server_commits > 0:
+        result.notes.append(
+            f"Agnes reported {count(status.pending_server_commits, 'commit')} on top of the last push, so this sync "
+            f"fetched first and replayed {len(result.replayed)} before pushing"
+        )
     if rules.sync_only:
         result.replay_skipped[:0] = _skips_since_last_push(vault, rules, state, replayed_to)
     if result.replay_skipped:
@@ -1832,7 +1834,7 @@ def _sync_under_lease(
             elif not squash:
                 message = meta.message
             elif subjects:
-                message = f"Scout sync: {len(subjects)} commit(s) from the laptop\n\n" + "".join(
+                message = f"Scout sync: {count(len(subjects), 'commit')} from the laptop\n\n" + "".join(
                     f"- {s}\n" for s in subjects
                 )
             else:
@@ -2194,17 +2196,22 @@ def _listed_files(files: Sequence[Mapping[str, str]]) -> str:
 
 
 def _replay_skipped_note(skipped: Sequence[Mapping[str, str]]) -> str:
+    n = len(skipped)
+    they, them = ("it wasn't", "it") if n == 1 else ("they weren't", "them")
     return (
-        f"warning: {len(skipped)} file(s) written in Agnes are outside privacy.sync_only, so they weren't copied to "
-        "this computer and this sync removes them from Agnes's current files. Each one is still in the repository's "
+        f"warning: {count(n, 'file')} written in Agnes {are(n)} outside privacy.sync_only, so {they} copied to "
+        f"this computer and this sync removes {them} from Agnes's current files. Each one is still in the "
+        "repository's "
         "history; to keep one, copy it into the vault:\n" + _listed_files(skipped)
     )
 
 
 def _dropped_note(dropped: Sequence[Mapping[str, str]]) -> str:
+    n = len(dropped)
     return (
-        f"warning: {len(dropped)} file(s) came from commits this vault's history no longer has (a git reset or "
-        "rebase?), so this computer no longer has these versions and this sync removes or replaces them in Agnes's "
+        f"warning: {count(n, 'file')} came from commits this vault's history no longer has (a git reset or "
+        f"rebase?), so this computer no longer has {agree(n, 'this version', 'these versions')} and this sync "
+        f"removes or replaces {agree(n, 'it', 'them')} in Agnes's "
         "current files. Each one is still in the repository's history; to keep one, copy it into the vault:\n"
         + _listed_files(dropped)
     )
@@ -2227,7 +2234,7 @@ def accept_sync_only(vault: Path, *, env: Mapping[str, str] | None = None) -> Re
     result = Result(action="sync-only")
     if policy.sync_only is not None:
         state.sync_only = list(policy.sync_only)
-        result.notes.append(f"pinned privacy.sync_only: {len(policy.sync_only)} entry(ies)")
+        result.notes.append(f"pinned privacy.sync_only: {count(len(policy.sync_only), 'entry', 'entries')}")
     elif state.sync_only is None:
         result.notes.append("no privacy.sync_only is set, and none is pinned; nothing to do")
         return result
@@ -2276,7 +2283,8 @@ class Preview:
         return out
 
     def lines(self) -> list[str]:
-        out = [f"From HEAD {self.head[:12]}, this uploads {self.total} file(s) and keeps {self.kept} on this computer."]
+        uploads = count(self.total, "file")
+        out = [f"From HEAD {self.head[:12]}, this uploads {uploads} and keeps {self.kept} on this computer."]
         if self.sync_only is None:
             out.append("There is no privacy.sync_only, so the whole vault uploads minus Local-Only Paths.")
         else:
@@ -2289,10 +2297,11 @@ class Preview:
                 "lists until you run scoutctl repo sync-only --accept."
             )
         out.append("By folder:")
-        out += [f"  {folder}: {count}" for folder, count in sorted(self.by_folder.items())]
+        out += [f"  {folder}: {files}" for folder, files in sorted(self.by_folder.items())]
         if self.private:
             out.append(
-                f"{self.private} private note(s) are among them. Agnes keeps them from other readers, but whoever "
+                f"{count(self.private, 'private note')} {are(self.private)} among them. "
+                f"Agnes keeps {agree(self.private, 'it', 'them')} from other readers, but whoever "
                 "runs the server can read what is pushed."
             )
         if "scout-config.yaml" in self.paths:

@@ -13,7 +13,7 @@ struct ParserContractTests {
     /// On an intentional corpus change: re-copy the canonical corpus into both
     /// repos, then update this digest to the output of
     /// `shasum -a 256 ScoutTests/Fixtures/parser-corpus.json`.
-    static let canonicalSHA256 = "2e8d56c51f448143d3e59d6a10298ad3251efed03b326d0a21be95e518056d7d"
+    static let canonicalSHA256 = "17c3b75c31d182b2d321a79d05d6230c7ce7afc42f1a8f64e8d970d7dec199fe"
 
     struct Corpus: Decodable {
         let entries: [Entry]
@@ -53,10 +53,16 @@ struct ParserContractTests {
             let fields: Fields?
             let plan: Plan?
             let comment_authors: [String]?
+            let indexed_comments: [IndexedComment]?
+        }
+        struct IndexedComment: Decodable, Equatable {
+            let author: String
+            let index: Int
         }
         let name: String
         let line: String
         let sub_lines: [String]?
+        let task_count: Int?
         let expected: Expected
     }
 
@@ -108,8 +114,9 @@ struct ParserContractTests {
                 continue
             }
             let tasks = doc.sections.flatMap { $0.tasks }.filter { $0.indentLevel == 0 }
-            guard let t = tasks.first, tasks.count == 1 else {
-                Issue.record("\(e.name): expected exactly one top-level task, got \(tasks.count)")
+            let expectedCount = e.task_count ?? 1
+            guard let t = tasks.first, tasks.count == expectedCount else {
+                Issue.record("\(e.name): expected \(expectedCount) top-level task(s), got \(tasks.count)")
                 continue
             }
             #expect(t.shortPrefix == e.expected.short_prefix, "\(e.name): short_prefix")
@@ -124,6 +131,12 @@ struct ParserContractTests {
             }
             if let authors = e.expected.comment_authors {
                 #expect(t.comments.map(\.author) == authors, "\(e.name): comment_authors")
+            }
+            if let expected = e.expected.indexed_comments {
+                let indexed = t.comments.compactMap { c in
+                    c.engineIndex.map { Entry.IndexedComment(author: c.author, index: $0) }
+                }
+                #expect(indexed == expected, "\(e.name): indexed_comments")
             }
         }
     }
