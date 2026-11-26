@@ -158,7 +158,9 @@ SWITCHED = [
     ("f=$(ls scripts | head -1); $f --help", live_run.ASSIGNED_WORD),
     ("f=$(ls scripts | head -1); scripts/$f --help", live_run.ASSIGNED_WORD),
     ("d=$DIR/bin; $d/tool", live_run.ASSIGNED_WORD),
-    ('run(){ "$@"; }; run git status', live_run.WRAPPER_WORD),
+    ("x=echo; . ./lib.sh; $x notes.md", live_run.SOURCED_WORD),
+    (". ./lib.sh; f notes.md", live_run.SOURCED_WORD),
+    ("autoload -U g; g notes.md", live_run.SOURCED_WORD),
 ]
 
 
@@ -305,10 +307,10 @@ def test_a_denied_word_is_audited_by_its_form_never_the_command(vault: Path) -> 
 
 def test_an_allowed_shape_is_recorded_by_its_kind(vault: Path) -> None:  # noqa: F811
     gate._PENDING_AUDIT.clear()
-    assert _decide(vault, 'run(){ "$@"; }; run git status') is None
+    assert _decide(vault, "for p in $(ls scripts); do $p --help; done") is None
     rows = [(kind, payload) for _v, kind, payload in gate._PENDING_AUDIT]
     gate._PENDING_AUDIT.clear()
-    expected = {"kinds": [live_run.WRAPPER_WORD], "mode": "morning-briefing"}
+    expected = {"kinds": [live_run.LOOP_WORD], "mode": "morning-briefing"}
     assert rows == [("kb_read_gate.unresolved_command_word", expected)]
 
 
@@ -414,9 +416,6 @@ REVIEW_DENIED = [
     "x=echo; set -A x cat; $x knowledge-base/people.md",
     "x=echo; for x y in cat a; do $x knowledge-base/people.md; done",
     "x=echo; { x=cat }; $x knowledge-base/people.md",
-    "x=echo; . ./lib.sh; $x knowledge-base/people.md",
-    ". ./lib.sh; f knowledge-base/people.md",
-    "autoload -U g; g knowledge-base/people.md",
     "'f'(){ $1 knowledge-base/people.md; }; f cat",  # (c) definitions the gate can't register
     "f g(){ $1 knowledge-base/people.md; }; f cat",
     "f() $1 knowledge-base/people.md; f cat",
@@ -470,4 +469,83 @@ def test_a_lister_named_at_run_time_still_feeds_the_loop(vault: Path) -> None:  
 )
 def test_their_neighbours_stay_allowed(vault: Path, command: str) -> None:  # noqa: F811
     assert _decide(vault, command) is None
+    gate._PENDING_AUDIT.clear()
+
+
+# ----- the security review of #823, round 2 ----------------------------------------------------------------------
+
+KB = "knowledge-base/people.md"
+ROUND2_DENIED = [
+    # a function's globals reach its caller (zsh shares them unless a name is local)
+    f"x=echo; f(){{ x=cat; }}; f; $x {KB}",
+    f"x=echo; f(){{ typeset -g x=cat; }}; f; $x {KB}",
+    f"x=echo; f(){{ read x; }}; f <<< cat; $x {KB}",
+    f"x=echo; f(){{ eval x=cat; }}; f; $x {KB}",
+    f"x=echo; f(){{ x=$1; }}; f cat; $x {KB}",
+    f"x=echo; f(){{ for x in cat; do :; done; }}; f; $x {KB}",
+    f'x=echo; f(){{ x=cat; }}; g(){{ f; }}; g; "$x" {KB}',
+    "x=echo; f(){ x=read; }; f; $x HOME <<< /tmp",
+    "x=echo; f(){ x=unset; }; f; $x GIT_CONFIG_GLOBAL",
+    # a redirect stuck to `]]` still ends the test
+    "x=read; [[ -n a ]]>/dev/null && $x HOME <<< /tmp",
+    "x=read; [[ -n a ]]>&2 && $x HOME <<< /tmp",
+    "x=read; [[ -n a ]]</dev/null && $x HOME <<< /tmp",
+    f"[[ -n a ]] | $(echo cat) {KB}",
+    # -c in a cluster
+    f'x=cat; zsh -fc "$x {KB}"',
+    f'x=cat; bash -lc "$x {KB}"',
+    f'sh -ec "$(echo cat) {KB}"',
+    # zsh's heads: short for, always, repeat; sandbox-exec; functions without a body the gate reads
+    f"x=cat; for i (1) $x {KB}",
+    f"x=cat; {{ true }} always {{ $x {KB} }}",
+    f"sandbox-exec -n no-network cat {KB}",
+    f"x=cat; sandbox-exec -n no-network $x {KB}",
+    f"repeat 1 cat {KB}",
+    f"f() cat $1; f {KB}",
+    f"f g () {{ cat $1; }}; g {KB}",
+    # an unknown program is judged as git and each program that writes, and by the names it may set
+    "c=$(echo git); $c -c core.hooksPath=/dev/null commit -m m",
+    "c=$(echo git); $c commit --no-verify -m m",
+    "c=$(echo git); $c config --global core.hooksPath /dev/null",
+    "c=$(echo cp); $c x .git/hooks/pre-commit",
+    "c=$(echo ln); $c -sf /dev/null .git/hooks/pre-commit",
+    "c=$(echo tee); echo x | $c ~/.gitconfig",
+    "c=$(echo read); $c ${:-HO}ME <<< /tmp",
+    "c=$(echo read); $c ${(U):-home} <<< /tmp",
+    "c=$(echo unset); $c ${:-GIT_CONF}IG_GLOBAL",
+    "n=$(echo HOME); c=$(echo read); $c $n <<< /tmp",
+]
+
+
+@pytest.mark.parametrize("command", ROUND2_DENIED)
+def test_round_twos_leaks_are_denied(vault: Path, command: str) -> None:  # noqa: F811
+    assert _decide(vault, command) is not None
+    gate._PENDING_AUDIT.clear()
+
+
+ROUND2_ALLOWED = [
+    ". ./venv/bin/activate && echo $HOME",
+    ". ./venv/bin/activate && git commit -m 'fix HOME path'",
+    ". ./venv/bin/activate && python3 -c 'import os; print(os.environ[\"HOME\"])'",
+    ". ./venv/bin/activate && pytest -q .",
+    ". ./venv/bin/activate && git add .",
+    ". ./venv/bin/activate && du -sh .",
+    "PY=python3; . ./venv/bin/activate && $PY -c 'print(1)'",
+    'run(){ "$@" || echo failed; }; run git status',
+    "f(){ local x=cat; }; x=echo; f; $x notes.md",
+]
+
+
+@pytest.mark.parametrize("command", ROUND2_ALLOWED)
+def test_round_twos_false_denies_are_allowed(vault: Path, command: str) -> None:  # noqa: F811
+    assert _decide(vault, command) is None
+    gate._PENDING_AUDIT.clear()
+
+
+def test_a_wrapper_whose_calls_resolve_is_allowed_with_the_switch_on(
+    vault: Path,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gate, "DENY_UNRESOLVED_COMMAND_WORDS", True)
+    assert _decide(vault, 'run(){ "$@" || echo failed; }; run git status') is None
     gate._PENDING_AUDIT.clear()

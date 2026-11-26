@@ -136,8 +136,8 @@ export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
 # pins this account's own ~/.gitconfig for the whole run, the file git reads anyway, so nothing else changes.
 # Left unpinned, and the reason recorded in the run log and run-outcomes.jsonl (git_config_pin), when
 # GIT_CONFIG_GLOBAL is already set (preset), when the account has an XDG git config too (xdg: git reads both,
-# and one pin can't), when ~/.gitconfig includes a file by a `~` path, which follows HOME even when pinned
-# (include), when HOME isn't the account's home (home), or when that can't be told (unknown).
+# and one pin can't), when ~/.gitconfig includes another file, whose own `~` paths follow HOME even when
+# pinned (include), when HOME isn't the account's home (home), or when that can't be told (unknown).
 SCOUT_GIT_CONFIG_PIN=pinned
 _scout_user=$(id -un 2>/dev/null || true)
 _scout_account_home=
@@ -153,8 +153,7 @@ elif [ "${HOME:-}" != "$_scout_account_home" ]; then
     SCOUT_GIT_CONFIG_PIN=home
 elif [ -e "${XDG_CONFIG_HOME:-$HOME/.config}/git/config" ] || [ -e "$HOME/.config/git/config" ]; then
     SCOUT_GIT_CONFIG_PIN=xdg
-elif [ -f "$HOME/.gitconfig" ] && grep -Eiq '^[[:space:]]*\[[[:space:]]*include' "$HOME/.gitconfig" \
-    && grep -Eiq '^[[:space:]]*path[[:space:]]*=[[:space:]]*"?~' "$HOME/.gitconfig"; then
+elif [ -f "$HOME/.gitconfig" ] && grep -Eiq '^[[:space:]]*\[[[:space:]]*include' "$HOME/.gitconfig"; then
     SCOUT_GIT_CONFIG_PIN=include
 else
     export GIT_CONFIG_GLOBAL="$HOME/.gitconfig"

@@ -122,7 +122,7 @@ def _run_at_home(home: Path, env: dict[str, str] | None = None) -> tuple[str, st
 
 
 def test_a_gitconfig_without_includes_is_pinned(tmp_path: Path) -> None:
-    (tmp_path / ".gitconfig").write_text("[user]\n\tname = Alex\n[include]\n\tpath = /etc/shared.gitconfig\n")
+    (tmp_path / ".gitconfig").write_text("[user]\n\tname = Alex\n# [include] in a comment is no include\n")
     assert _run_at_home(tmp_path) == ("pinned", f"{tmp_path}/.gitconfig")
 
 
@@ -132,10 +132,12 @@ def test_a_gitconfig_without_includes_is_pinned(tmp_path: Path) -> None:
         "[include]\n\tpath = ~/.gitconfig.local\n",
         '[includeIf "gitdir:~/work/"]\n\tpath = "~/work/.gitconfig"\n',
         "[INCLUDE]\n  PATH=~/x\n",
+        "[include]\n\tpath = /etc/shared.gitconfig\n",  # which may include a `~` path of its own
     ],
 )
-def test_an_include_by_a_home_path_is_left_alone(tmp_path: Path, config: str) -> None:
-    """git expands `~` in an include's path with HOME, pinned or not: one pin can't keep it on the account's file."""
+def test_an_include_is_left_alone(tmp_path: Path, config: str) -> None:
+    """git expands `~` in an include's path with HOME, pinned or not, in any file it includes: one pin can't keep
+    them on the account's files."""
     (tmp_path / ".gitconfig").write_text("[user]\n\tname = Alex\n" + config)
     assert _run_at_home(tmp_path) == ("include", "unset")
 
