@@ -7,6 +7,7 @@ the stubs, and (for model-backed commands) a logged-in Claude Code.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -274,6 +275,10 @@ def _cmd_compare_arms(args: argparse.Namespace) -> int:
         return 2
     cli_version = args.cli_version or _cli_version(real_claude)
     head_co = head_checkout()
+    if head_co.pythonpath is None and not (REPO_ROOT / "plugin" / ".venv").is_dir():
+        import dataclasses
+
+        head_co = dataclasses.replace(head_co, pythonpath=REPO_ROOT / "plugin" / "engine")
     arm_desc = ", ".join(f"{a.id} ({a.slug}) ×{args.reps}" for a in arm_specs)
     names = ", ".join(s.name for s in scenarios)
     print(f"Will start {sessions} sessions ({names}: {arm_desc}, interleaved) on {model} via your Claude login.")
@@ -371,6 +376,106 @@ def _cmd_track_r_seed(args: argparse.Namespace) -> int:
         return 2
     summary = summarize_golden_set(items)
     print(json.dumps({"written": str(written), **summary}, indent=2))
+    return 0
+
+
+def _cmd_track_r_run(args: argparse.Namespace) -> int:
+    """Run read-only Track R Q&A items interleaved across KB backend arms and evaluate Gate G1."""
+    import json
+
+    from scout import safe_write
+    from scout.errors import ScoutError
+
+    from .plan import DEFAULT_MODEL, MAX_WITHOUT_MANY
+    from .runner import LoginRequired
+    from .track_r_golden import load_golden_set, refuse_public_repo_destination
+    from .track_r_runner import format_track_r_summary, parse_track_r_arms, run_track_r
+
+    try:
+        arm_specs = parse_track_r_arms(args.arms)
+    except ValueError as exc:
+        print(f"eval: {exc}", file=sys.stderr)
+        return 2
+    golden_path = Path(args.golden).expanduser().resolve()
+    vault_repo = Path(args.vault).expanduser().resolve()
+    results_root = Path(args.results).expanduser().resolve()
+    if not golden_path.is_file():
+        print(f"eval: golden file not found: {golden_path}", file=sys.stderr)
+        return 2
+    if not (vault_repo / "knowledge-base").is_dir():
+        print(f"eval: {vault_repo} has no knowledge-base/ directory", file=sys.stderr)
+        return 2
+    try:
+        refuse_public_repo_destination(results_root)
+        if args.report:
+            refuse_public_repo_destination(Path(args.report))
+        preview = load_golden_set(golden_path)
+    except (PermissionError, ValueError) as exc:
+        print(f"eval: {exc}", file=sys.stderr)
+        return 2
+
+    if args.only_audited:
+        preview = [it for it in preview if it.audited]
+    if args.category:
+        cats = set(args.category)
+        preview = [it for it in preview if it.category in cats]
+    if args.limit is not None:
+        preview = preview[: max(0, args.limit)]
+    if not preview:
+        print("eval: no Track R items matched the requested filters", file=sys.stderr)
+        return 2
+
+    real_claude = args.claude or shutil.which("claude")
+    if not real_claude:
+        print("eval: no claude on PATH (or pass --claude PATH)", file=sys.stderr)
+        return 2
+    model = "opus" if args.opus else DEFAULT_MODEL
+    sessions = len(preview) * len(arm_specs)
+    if sessions > MAX_WITHOUT_MANY and not args.many:
+        print(f"eval: {sessions} sessions is more than {MAX_WITHOUT_MANY}; pass --many", file=sys.stderr)
+        return 2
+
+    arm_desc = ", ".join(f"{a.id} ({a.slug})" for a in arm_specs)
+    print(
+        f"Will start {sessions} read-only Track R Q&A sessions "
+        f"({len(preview)} items × [{arm_desc}], interleaved) on {model} via your Claude login."
+    )
+    if not args.yes:
+        input("Press Enter to start, Ctrl-C to cancel: ")
+
+    cli_version = args.cli_version or _cli_version(real_claude)
+    try:
+        report = run_track_r(
+            golden_path,
+            vault_repo=vault_repo,
+            arm_specs=arm_specs,
+            results_root=results_root,
+            real_claude=real_claude,
+            model=model,
+            budget=args.budget,
+            timeout_s=args.timeout,
+            reader=args.reader,
+            limit=args.limit,
+            categories=args.category,
+            only_audited=args.only_audited,
+            dolphin_check=args.dolphin_check,
+            extra_pythonpath=args.extra_pythonpath,
+            cli_version=cli_version,
+        )
+    except (LoginRequired, PermissionError, RuntimeError, ScoutError, ValueError) as exc:
+        print(f"eval: {exc}", file=sys.stderr)
+        return 2
+
+    if args.report:
+        out_report = Path(args.report).expanduser().resolve()
+        out_report.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(out_report.parent, 0o700)
+        safe_write.atomic_write_text(
+            out_report,
+            json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+            mode=0o600,
+        )
+    print("\n" + format_track_r_summary(report))
     return 0
 
 
@@ -651,5 +756,36 @@ def main(argv: list[str] | None = None) -> int:
     tr.add_argument("--out", required=True, help="local output JSONL path outside the public repo")
     tr.add_argument("--max-items", type=int, default=220, help="maximum candidate items to emit (default 220)")
     tr.set_defaults(func=_cmd_track_r_seed)
+    tr_run = sub.add_parser(
+        "track-r-run",
+        help="run read-only Track R Q&A items interleaved across KB backend arms and evaluate Gate G1",
+    )
+    tr_run.add_argument("--golden", required=True, help="local Track R JSONL golden file")
+    tr_run.add_argument("--vault", required=True, help="source Scout vault git repo")
+    tr_run.add_argument("--arms", default="a,b,c", help="comma-separated KB arms (default a,b,c)")
+    tr_run.add_argument(
+        "--results",
+        default=str(Path.home() / ".scout-worktrees" / "relatedb-eval-data" / "runs"),
+        help="owner-only local results root outside any public repo",
+    )
+    tr_run.add_argument("--report", help="optional additional path for track-r-report.json (outside public repo)")
+    tr_run.add_argument("--limit", type=int, help="run only the first N matching items")
+    tr_run.add_argument("--category", action="append", help="filter to specific Track R category (repeatable)")
+    tr_run.add_argument("--only-audited", action="store_true", help="run only items with audited=true")
+    tr_run.add_argument("--dolphin-check", action="store_true", help="run DolphinBench gold-removal check on arm[0]")
+    tr_run.add_argument("--reader", default="autonomous", help="Scout reader identity (default autonomous)")
+    tr_run.add_argument("--budget", default="0.35", help="max USD budget per Q&A session (default 0.35)")
+    tr_run.add_argument("--timeout", type=int, default=180, help="timeout seconds per Q&A session (default 180)")
+    tr_run.add_argument("--opus", action="store_true", help="use Opus instead of the default Sonnet")
+    tr_run.add_argument("--many", action="store_true", help="allow more than 10 sessions")
+    tr_run.add_argument("--yes", action="store_true", help="don't wait for Enter after printing the plan")
+    tr_run.add_argument("--extra-pythonpath", help="extra PYTHONPATH (e.g. relate-db site-packages)")
+    tr_run.add_argument("--claude", help=argparse.SUPPRESS)
+    tr_run.add_argument("--cli-version", help=argparse.SUPPRESS)
+    tr_run.set_defaults(func=_cmd_track_r_run)
     args = parser.parse_args(argv)
     return int(args.func(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

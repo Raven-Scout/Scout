@@ -59,7 +59,15 @@ def build_env(
     py_entries = [str(p) for p in (pythonpath, extra_pythonpath) if p]
     if py_entries:
         env["PYTHONPATH"] = os.pathsep.join(py_entries)
-    path = [str(STUB_BIN), str(ENGINE / ".venv" / "bin"), str(Path(real_claude).parent), *SYSTEM_PATH]
+    path = [
+        str(STUB_BIN),
+        str(ENGINE / "bin"),
+        str(ENGINE / ".venv" / "bin"),
+        str(ENGINE.parent / ".venv" / "bin"),
+        str(Path(sys.executable).parent),
+        str(Path(real_claude).parent),
+        *SYSTEM_PATH,
+    ]
     env.update(
         PATH=":".join(dict.fromkeys(path)),
         RELATE_TELEMETRY="0",

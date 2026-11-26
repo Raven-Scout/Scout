@@ -183,10 +183,9 @@ def seed_candidates_from_vault(vault: Path, *, max_items: int = 220) -> list[Gol
         seq += 1
         return f"{prefix}-{seq:04d}"
 
-    # 1. Project status, multi-hop chains, and source-backlink citations
-    projects = {
-        str(e["name"]): e for e in fb.entities(type="project") if e.get("name") and (e.get("_label") or {}).get("path")
-    }
+    # 1. Project status, multi-hop chains, and project/source citations
+    all_entities = {str(e["name"]): e for e in fb.entities() if e.get("name") and (e.get("_label") or {}).get("path")}
+    projects = {name: ent for name, ent in all_entities.items() if ent.get("type") == "project"}
     for proj_name, proj_ent in sorted(projects.items()):
         proj_path = str((proj_ent.get("_label") or {}).get("path") or "")
         proj_slug = Path(proj_path).parent.name if proj_path else proj_name
@@ -207,29 +206,47 @@ def seed_candidates_from_vault(vault: Path, *, max_items: int = 220) -> list[Gol
             )
 
         backlinks = fb.backlinks(proj_path) if proj_path else []
-        nbs = fb.neighbors(proj_name, depth=2, limit=10)
+        nbs = fb.neighbors(proj_name, depth=2, limit=16)
+        # Group 2-hop endpoints by (mid_rel, end_rel) so questions do not leak mid_node
+        hop_groups: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
         for nb in nbs:
             steps = nb.get("path") or []
             nb_path = str((nb.get("_label") or {}).get("path") or "")
             if len(steps) >= 2 and nb_path and proj_path:
-                mid_rel, mid_node = steps[0]
-                end_rel, end_node = steps[-1]
+                mid_rel, mid_node = str(steps[0][0]), str(steps[0][1])
+                end_rel, end_node = str(steps[-1][0]), str(steps[-1][1])
+                if end_node == proj_name:
+                    continue
+                mid_ent = all_entities.get(mid_node) or {}
+                mid_path = str((mid_ent.get("_label") or {}).get("path") or "")
+                hop_groups.setdefault((mid_rel, end_rel), []).append((mid_path, end_node, nb_path))
+
+        for (mid_rel, end_rel), targets in sorted(hop_groups.items()):
+            seen_ends: dict[str, tuple[str, str]] = {}
+            for mid_path, end_node, nb_path in targets:
+                seen_ends.setdefault(end_node, (mid_path, nb_path))
+            if len(seen_ends) == 1:
+                end_node, (mid_path, nb_path) = next(iter(seen_ends.items()))
+                gpaths = tuple(dict.fromkeys(p for p in (proj_path, mid_path, nb_path) if p))
+                mid_phrase = mid_rel.replace("_", " ")
+                end_phrase = end_rel.replace("_", " ")
                 buckets["multi_hop"].append(
                     GoldenItem(
                         id=next_id("mh"),
                         category="multi_hop",
                         question=(
-                            f"Starting from project '{proj_name}', follow '{mid_rel}' to '{mid_node}' "
-                            f"and identify the entity connected via '{end_rel}'."
+                            f"Starting from project '{proj_name}', follow its '{mid_phrase}' relationship "
+                            f"and identify which entity that neighbor connects to via '{end_phrase}'."
                         ),
-                        gold_answer=str(end_node),
-                        gold_paths=tuple(dict.fromkeys((proj_path, nb_path))),
+                        gold_answer=end_node,
+                        gold_paths=gpaths,
                         as_of_sha=sha,
                         project=proj_slug,
                         source_kind="multi_hop_graph",
-                        expected_tokens=(str(end_node),),
+                        expected_tokens=(end_node,),
                     )
                 )
+
         for bl in backlinks[:4]:
             bsrc = str(bl.get("source") or "")
             if bsrc.startswith("knowledge-base/sources/") and proj_path:
@@ -247,6 +264,31 @@ def seed_candidates_from_vault(vault: Path, *, max_items: int = 220) -> list[Gol
                         expected_tokens=(Path(bsrc).stem,),
                     )
                 )
+
+        # Mine deep-dive knowledge/ notes under each project folder for citation grounding
+        kn_dir = root / "knowledge-base" / "projects" / proj_slug / "knowledge"
+        if kn_dir.is_dir() and proj_path:
+            for kn_file in sorted(kn_dir.glob("*.md"))[:2]:
+                kn_rel = kn_file.relative_to(root).as_posix()
+                kn_lines = kn_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                title = next((ln.lstrip("# ").strip() for ln in kn_lines if ln.startswith("# ")), kn_file.stem)
+                if title:
+                    buckets["citation"].append(
+                        GoldenItem(
+                            id=next_id("cite-kn"),
+                            category="citation",
+                            question=(
+                                f"Which knowledge deep-dive note under project '{proj_name}' "
+                                f"documents '{title}', and cite its vault path?"
+                            ),
+                            gold_answer=kn_rel,
+                            gold_paths=(kn_rel, proj_path),
+                            as_of_sha=sha,
+                            project=proj_slug,
+                            source_kind="project_knowledge_citation",
+                            expected_tokens=(kn_file.stem,),
+                        )
+                    )
 
     # 2. Single-hop & entity disambiguation (aliases)
     for ent in sorted(fb.entities(), key=lambda e: str(e.get("name") or "")):

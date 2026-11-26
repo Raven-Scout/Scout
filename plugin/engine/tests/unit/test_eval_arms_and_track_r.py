@@ -364,3 +364,233 @@ def test_golden_set_public_repo_guard_and_seeding(tmp_path: Path, capsys: pytest
         as_of_sha="abc",
     )
     assert any("exclude_paths" in e for e in bad.validate())
+
+
+# ----- Track R End-to-End Runner & CLI -------------------------------------------
+
+FAKE_TRACK_R_CLAUDE = """#!/usr/bin/env python3
+import json, os, subprocess, sys
+
+prompt = sys.stdin.read()
+mcp_cfg = json.loads(open(os.environ["SCOUT_EVAL_MCP_CONFIG"], encoding="utf-8").read())
+assert mcp_cfg == {"mcpServers": {}}, mcp_cfg
+
+print(json.dumps({
+    "type": "system",
+    "subtype": "init",
+    "model": "claude-sonnet-5",
+    "apiKeySource": "none",
+    "mcp_servers": [],
+}), flush=True)
+
+calls = []
+if "Graph-Backed KB Lookup" in prompt:
+    proc = subprocess.run(
+        ["scripts/scoutctl", "kb", "neighbors", "widgets", "--depth", "2"],
+        capture_output=True, text=True, check=False,
+    )
+    calls.append((
+        "t-graph",
+        "Bash",
+        {"command": 'scripts/scoutctl kb neighbors "widgets" --depth 2'},
+        proc.stdout or "knowledge-base/projects/widgets/widgets.md\\nknowledge-base/people/alex-chen.md",
+    ))
+else:
+    w_path = os.path.join(os.getcwd(), "knowledge-base/projects/widgets/widgets.md")
+    txt = open(w_path, encoding="utf-8").read() if os.path.isfile(w_path) else "missing"
+    calls.append(("t-read", "Read", {"file_path": w_path}, txt))
+
+for tid, name, inp, out_txt in calls:
+    print(json.dumps({"type": "assistant", "message": {"id": f"m-{tid}", "content": [
+        {"type": "tool_use", "id": tid, "name": name, "input": inp},
+    ]}}), flush=True)
+    print(json.dumps({"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": tid, "content": out_txt},
+    ]}}), flush=True)
+
+has_widgets = os.path.isfile("knowledge-base/projects/widgets/widgets.md")
+has_audit = os.path.isfile("knowledge-base/scout-mistake-audit.md")
+
+if "tr-abs" in prompt:
+    assert not has_audit, "mistake-audit file should have been removed by exclude_paths"
+    ans = "Answer: Unverified — cannot confirm from the KB; route to review-queue.\\nCitations: none"
+elif not has_widgets:
+    # DolphinBench gold-removal pass: gold notes were deleted, so abstain
+    ans = "Answer: Cannot confirm from the KB.\\nCitations: none"
+elif "tr-cite" in prompt:
+    ans = (
+        "Answer: Release moved to May 12.\\n"
+        "Citations: knowledge-base/projects/widgets/knowledge/widgets-rollout.md"
+    )
+else:
+    ans = (
+        "Answer: Alex Chen is connected two hops from widgets.\\n"
+        "Citations: knowledge-base/projects/widgets/widgets.md, knowledge-base/people/alex-chen.md"
+    )
+
+print(json.dumps({
+    "type": "result",
+    "subtype": "success",
+    "is_error": False,
+    "num_turns": 2,
+    "duration_ms": 250,
+    "total_cost_usd": 0.01,
+    "result": ans,
+    "usage": {"input_tokens": 120, "output_tokens": 40, "cache_read_input_tokens": 0},
+}), flush=True)
+"""
+
+
+def test_track_r_run_cli_end_to_end_and_dolphin_check(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from tests.eval.harness.build import PLUGIN_ROOT
+    from tests.eval.harness.track_r_runner import parse_track_r_arms
+
+    assert [a.id for a in parse_track_r_arms("a")] == ["a"]
+    with pytest.raises(ValueError, match="at least one"):
+        parse_track_r_arms(" , ")
+
+    # Build a committed anonymized git vault fixture
+    vault = tmp_path / "vault-repo"
+    (vault / "knowledge-base/projects/widgets/knowledge").mkdir(parents=True)
+    (vault / "knowledge-base/people").mkdir(parents=True)
+    (vault / "scout-config.yaml").write_text("schema_version: 1\n", encoding="utf-8")
+    (vault / "SKILL.md").write_text("# Skill\n", encoding="utf-8")
+    (vault / "knowledge-base/projects/widgets/widgets.md").write_text(
+        "---\nname: widgets\ntype: project\nstatus: Active\nrelationships:\n"
+        '  - type: owned_by\n    target: "[[Priya Shah]]"\n---\n# Widgets\nSee [[widgets-rollout]].\n',
+        encoding="utf-8",
+    )
+    (vault / "knowledge-base/projects/widgets/knowledge/widgets-rollout.md").write_text(
+        "---\nname: Widgets Rollout\ntype: topic\n---\n# Widgets Rollout\nRelease moved to May 12.\n",
+        encoding="utf-8",
+    )
+    (vault / "knowledge-base/people/priya-shah.md").write_text(
+        "---\nname: Priya Shah\ntype: person\nrelationships:\n"
+        '  - type: manages\n    target: "[[Alex Chen]]"\n---\n# Priya\n',
+        encoding="utf-8",
+    )
+    (vault / "knowledge-base/people/alex-chen.md").write_text(
+        "---\nname: Alex Chen\ntype: person\nrole: Engineer\n---\n# Alex\n",
+        encoding="utf-8",
+    )
+    (vault / "knowledge-base/scout-mistake-audit.md").write_text(
+        "## Pattern 1: Unconfirmed date\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(vault), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(vault), "config", "user.email", "eval@example.com"], check=True)
+    subprocess.run(["git", "-C", str(vault), "config", "user.name", "Eval"], check=True)
+    subprocess.run(["git", "-C", str(vault), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(vault), "commit", "-q", "-m", "fixture"], check=True)
+    sha = subprocess.run(
+        ["git", "-C", str(vault), "rev-parse", "--short=12", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    golden_file = tmp_path / "private-eval" / "pilot.jsonl"
+    items = [
+        GoldenItem(
+            id="tr-mh-1",
+            category="multi_hop",
+            question="Starting from widgets, follow owned by then manages.",
+            gold_answer="Alex Chen",
+            gold_paths=(
+                "knowledge-base/projects/widgets/widgets.md",
+                "knowledge-base/people/alex-chen.md",
+            ),
+            as_of_sha=sha,
+            project="widgets",
+            expected_tokens=("Alex Chen",),
+            audited=True,
+        ),
+        GoldenItem(
+            id="tr-cite-1",
+            category="citation",
+            question="When did the widgets rollout move, and cite the note?",
+            gold_answer="May 12",
+            gold_paths=("knowledge-base/projects/widgets/knowledge/widgets-rollout.md",),
+            as_of_sha=sha,
+            project="widgets",
+            expected_tokens=("May 12",),
+            audited=True,
+        ),
+        GoldenItem(
+            id="tr-abs-1",
+            category="abstention",
+            question="Is the unconfirmed gateway rumor verified?",
+            gold_answer="",
+            gold_paths=(),
+            as_of_sha=sha,
+            project="widgets",
+            source_kind="mistake_audit",
+            exclude_paths=("knowledge-base/scout-mistake-audit.md",),
+            audited=True,
+        ),
+    ]
+    write_golden_set(golden_file, items)
+
+    fake_claude = tmp_path / "fake-track-r-claude"
+    fake_claude.write_text(FAKE_TRACK_R_CLAUDE, encoding="utf-8")
+    fake_claude.chmod(0o755)
+
+    # Public repo destination is refused before any session starts
+    rc_bad = eval_main(
+        [
+            "track-r-run",
+            "--golden",
+            str(golden_file),
+            "--vault",
+            str(vault),
+            "--arms",
+            "a",
+            "--results",
+            str(PLUGIN_ROOT / ".leaked-results"),
+            "--yes",
+            "--claude",
+            str(fake_claude),
+            "--cli-version",
+            "9.9.9",
+        ]
+    )
+    assert rc_bad == 2
+    assert "Refusing to write Track R" in capsys.readouterr().err
+
+    results_dir = tmp_path / "private-eval" / "runs"
+    report_copy = tmp_path / "private-eval" / "latest-report.json"
+    rc = eval_main(
+        [
+            "track-r-run",
+            "--golden",
+            str(golden_file),
+            "--vault",
+            str(vault),
+            "--arms",
+            "a",
+            "--only-audited",
+            "--dolphin-check",
+            "--results",
+            str(results_dir),
+            "--report",
+            str(report_copy),
+            "--yes",
+            "--claude",
+            str(fake_claude),
+            "--cli-version",
+            "9.9.9",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Track R report (3 items, model=sonnet)" in out
+    assert "acc=100.0% (3/3)" in out
+
+    saved = json.loads(report_copy.read_text(encoding="utf-8"))
+    assert saved["arms"]["a"]["accuracy"] == 1.0
+    assert saved["dolphin"]["checked"] == 2
+    assert saved["dolphin"]["valid"] == 2
+    assert (report_copy.stat().st_mode & 0o777) == 0o600
+    # Detached worktrees were cleaned up
+    run_path = Path(saved["run_dir"])
+    assert not list((run_path / "_worktrees").glob("wt-*"))

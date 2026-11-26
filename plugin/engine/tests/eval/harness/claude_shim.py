@@ -90,9 +90,14 @@ def session_plugin_root(env: dict[str, str]) -> Path:
     return Path(env["SCOUT_EVAL_ENGINE"]).parent
 
 
-def settings(result_dir: str, hooks: dict[str, list[dict[str, Any]]] | None = None) -> dict[str, Any]:
+def settings(
+    result_dir: str,
+    hooks: dict[str, list[dict[str, Any]]] | None = None,
+    extra_allow_write: list[str] | None = None,
+) -> dict[str, Any]:
     """The ``--settings`` JSON. Under ``--setting-sources ""`` it is the only settings source."""
     hook_settings: dict[str, Any] = {"hooks": hooks} if hooks else {"disableAllHooks": True}
+    allow_write = [result_dir, *[p for p in (extra_allow_write or []) if p]]
     return {
         **hook_settings,
         "sandbox": {
@@ -100,7 +105,7 @@ def settings(result_dir: str, hooks: dict[str, list[dict[str, Any]]] | None = No
             "failIfUnavailable": True,  # an unsandboxed eval session must not start
             "autoAllowBashIfSandboxed": False,  # the eval allowlist still decides what runs
             "allowUnsandboxedCommands": False,  # dangerouslyDisableSandbox is ignored
-            "filesystem": {"allowWrite": [result_dir], "denyWrite": _SHARED_TMP_DENY},
+            "filesystem": {"allowWrite": allow_write, "denyWrite": _SHARED_TMP_DENY},
             "network": {"allowedDomains": [], "strictAllowlist": True},
         },
     }
@@ -115,6 +120,7 @@ def build_command(
     allowed_tools: str,
     result_dir: str,
     hooks: dict[str, list[dict[str, Any]]] | None = None,
+    extra_allow_write: list[str] | None = None,
 ) -> tuple[list[str], str]:
     """The isolated claude argv for these runner flags, and the prompt to send on stdin."""
     kept: list[str] = []
@@ -139,7 +145,7 @@ def build_command(
         "--setting-sources",
         "",
         "--settings",
-        json.dumps(settings(result_dir, hooks)),
+        json.dumps(settings(result_dir, hooks, extra_allow_write)),
         "--strict-mcp-config",
         "--mcp-config",
         mcp_config,
@@ -236,7 +242,7 @@ def run(runner_argv: list[str], env: dict[str, str]) -> int:
     passed = _passthrough(runner_argv, env)
     if passed is not None:
         return passed
-    missing = [k for k in REQUIRED_ENV if not env.get(k)]
+    missing = [k for k in REQUIRED_ENV if (k not in env if k == "SCOUT_EVAL_ALLOWED_SERVERS" else not env.get(k))]
     if missing:
         print(f"claude-shim: not an eval run, missing {', '.join(missing)}", file=sys.stderr)
         return EXIT_ENV
@@ -244,6 +250,9 @@ def run(runner_argv: list[str], env: dict[str, str]) -> int:
     result_dir.mkdir(parents=True, exist_ok=True)
     (result_dir / "tmp").mkdir(exist_ok=True)
     allowed = {s for s in env["SCOUT_EVAL_ALLOWED_SERVERS"].split(",") if s}
+    extra_write = [
+        str(Path(p).resolve()) for p in (env.get("SCOUT_EVAL_EXTRA_ALLOW_WRITE") or "").split(os.pathsep) if p.strip()
+    ]
     cmd, prompt = build_command(
         runner_argv,
         real_claude=env["SCOUT_EVAL_REAL_CLAUDE"],
@@ -252,6 +261,7 @@ def run(runner_argv: list[str], env: dict[str, str]) -> int:
         allowed_tools=env["SCOUT_EVAL_ALLOWED_TOOLS"],
         result_dir=str(result_dir),
         hooks=tool_hooks(session_plugin_root(env)),
+        extra_allow_write=extra_write,
     )
     child_env = {k: v for k, v in env.items() if k not in SECRETS and k != "PYTHONPATH"}
     if env.get("SCOUT_EVAL_SESSION_PYTHONPATH"):  # a base arm: the session's scoutctl is the base's

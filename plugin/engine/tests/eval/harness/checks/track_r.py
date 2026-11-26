@@ -25,7 +25,8 @@ TRACK_R_CATEGORIES: tuple[str, ...] = (
 )
 
 _ABSTAIN_RE = re.compile(
-    r"\b(?:unknown|unclear|unverified|not\s+found|no\s+record|insufficient\s+(?:evidence|information)|"
+    r"\b(?:unknown|unclear|unverified|unconfirmed|not\s+established|no\s+kb\s+match|"
+    r"not\s+found|no\s+record|insufficient\s+(?:evidence|information)|"
     r"cannot\s+(?:confirm|determine|verify)|can't\s+(?:confirm|determine|verify)|"
     r"not\s+yet\s+decided|review[- ]queue)\b",
     re.IGNORECASE,
