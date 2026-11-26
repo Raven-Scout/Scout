@@ -1391,22 +1391,13 @@ def lease_findings(rows: list[OutcomeRow], *, vault: Path, cutoff: datetime) -> 
     return findings
 
 
-# A scheduled run's python (or other interpreter) program that edits a KB note: the read gate records it as
-# `kb_edit` and allows it while DENY_INTERPRETER_KB_EDITS is off (#824). `scoutctl kb edit` replaces it; this
-# finding counts the records per run, so the owner can see when runs have stopped and the switch can go on.
+# A scheduled run's python (or other interpreter) program that edits a KB note: the read gate is to record it as
+# a `kb_read_gate.kb_edit` event (once per command, {"mode", "targets"}, no paths) and allow it while
+# DENY_INTERPRETER_KB_EDITS is off (follow-up to #824). `scoutctl kb edit` replaces it; this finding counts the
+# records per run, so the owner can see when runs have stopped and the switch can go on.
 KB_EDIT_EVENT = "kb_read_gate.kb_edit"
-KB_EDIT_CATEGORY = "kb_edit"  # the same record as one of `kb_read_gate.unresolved_read`'s categories
 KB_EDIT_RUNS = 10  # the runs counted
 KB_EDIT_QUIET = timedelta(days=14)  # how long the line stays once the runs have stopped
-
-
-def _is_kb_edit(obj: Mapping[str, object]) -> bool:
-    kind = obj.get("kind")
-    if kind == KB_EDIT_EVENT:
-        return True
-    payload = obj.get("payload")
-    cats = payload.get("categories") if isinstance(payload, dict) else None
-    return kind == "kb_read_gate.unresolved_read" and isinstance(cats, list) and KB_EDIT_CATEGORY in cats
 
 
 def kb_edit_times(vault: Path, *, since: datetime) -> list[datetime]:
@@ -1428,7 +1419,7 @@ def kb_edit_times(vault: Path, *, since: datetime) -> list[datetime]:
             except ValueError:
                 continue
             ts = _parse_ts(obj.get("ts")) if isinstance(obj, dict) else None
-            if ts is not None and ts >= since and _is_kb_edit(obj):
+            if ts is not None and ts >= since and obj.get("kind") == KB_EDIT_EVENT:
                 found.append(ts)
     return sorted(found)
 

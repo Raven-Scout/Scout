@@ -1911,7 +1911,9 @@ def kb_stat(
 
 @kb_app.command("edit")
 def kb_edit(
-    path: str = typer.Argument(..., help="A note under knowledge-base/ or action-items/context/ (any spelling)."),
+    path: str | None = typer.Argument(
+        None, help="A note under knowledge-base/ or action-items/context/; omit it to edit several (below)."
+    ),
     ops: str = typer.Option(
         ...,
         "--ops",
@@ -1925,15 +1927,18 @@ def kb_edit(
 ) -> None:
     """Change a note by rule, in place of a python/sed script. Prints counts, never the note's text.
 
-    --ops is a JSON list, applied in order: {"op": "replace", "old", "new", "count"} (a literal string; count is
-    the matches expected, default 1, or "all"); {"op": "regex", "pattern", "new", "count", "flags"} (re.sub,
-    flags from imsx); {"op": "insert", "heading", "text", "at": "end"|"start", "create"} (under the one heading
-    that matches the line exactly; create adds it at the end); {"op": "append", "text"}; {"op": "frontmatter",
-    "field", "value"} or {"op": "frontmatter", "field", "remove": true}; {"op": "patch", "diff"} (one file's
-    unified diff).
+    --ops is a JSON list, applied in order: {"op": "replace", "old", "new", "count", "first"} (a literal string;
+    count is the matches the note must hold, default 1, or "all"; first: true replaces only the first);
+    {"op": "regex", "pattern", "new", "count", "first", "flags"} (re.sub, flags from imsx); {"op": "insert",
+    "text", "heading", "at": "end"|"start", "create"} (under the one heading that matches the line exactly;
+    create adds it at the end) or {"op": "insert", "text", "after"|"before": "<anchor>"} (as lines next to the
+    one line holding the anchor); {"op": "append", "text"}; {"op": "frontmatter", "field", "value"} or
+    {"op": "frontmatter", "field", "remove": true}; {"op": "patch", "diff"} (one file's unified diff).
+    Without <path>, --ops is {"<path>": [ops], ...}: up to 10 notes in one call.
 
-    All operations apply or nothing is written. Exit 1 = an operation didn't fit (a count, a heading, a hunk);
-    2 = bad --ops or not a note; 3 = refused (the reader, the write gate, or a privacy label it would change).
+    All operations, on every note, apply or nothing is written. Exit 1 = an operation didn't fit (a count, a
+    heading, an anchor, a hunk) or a note changed meanwhile; 2 = bad --ops or not a note; 3 = refused (the reader,
+    the write gate, or a privacy label it would change).
     """
     args = _kb_args("edit", dict(locals()))
 
@@ -1957,7 +1962,7 @@ def kb_edit(
                 raw = Path(ops).read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as e:
                 raise UsageError(f"can't read --ops {ops}: {e}") from e
-        return cmd_edit(vault, who, path, load_ops(raw), check=check)
+        return cmd_edit(vault, who, load_ops(raw, path), check=check)
 
     _kb_run(args, reader, repo, as_json, body)
 

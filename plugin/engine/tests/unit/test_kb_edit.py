@@ -348,6 +348,139 @@ def test_a_bad_diff_fails(diff: str, why: str) -> None:
         apply_ops("a\n", [{"op": "patch", "diff": diff}])
 
 
+# ----- first-only, and an anchor line ----------------------------------------------------
+
+
+def test_first_replaces_only_the_first_match(vault) -> None:
+    result = run_ops(vault, NOTE, [{"op": "replace", "old": "## Log", "new": "## History", "first": True}])
+    assert result.exit_code == 0, result.output
+    assert text(vault).count("## History") == 1 and text(vault).count("## Log") == 1
+    assert "1 replace: 2 matches, first replaced" in result.stdout
+
+
+def test_first_with_a_count_still_checks_the_note(vault) -> None:
+    op = {"op": "replace", "old": "## Log", "new": "## History", "first": True, "count": 1}
+    assert run_ops(vault, NOTE, [op]).exit_code == 1 and text(vault) == BODY
+    assert run_ops(vault, NOTE, [op | {"old": "absent"}]).exit_code == 1
+
+
+def test_regex_first(kb_repo) -> None:
+    kb_repo.write(NOTE, "a1 a2 a3\n")
+    result = run_ops(kb_repo.root, NOTE, [{"op": "regex", "pattern": r"a(\d)", "new": r"b\1", "first": True}])
+    assert result.exit_code == 0 and text(kb_repo.root) == "b1 a2 a3\n"
+
+
+def test_insert_after_and_before_an_anchor_line(vault) -> None:
+    ops = [
+        {"op": "insert", "after": "Sam owns", "text": "- Priya reviews"},
+        {"op": "insert", "before": "# Alpha", "text": "<!-- top -->"},
+    ]
+    result = run_ops(vault, NOTE, ops)
+    assert result.exit_code == 0, result.output
+    assert "- Sam owns the rollout\n- Priya reviews\n- budget" in text(vault)
+    assert "---\n<!-- top -->\n# Alpha\n" in text(vault)
+    assert "1 insert: after 1 line" in result.stdout and "2 insert: before 1 line" in result.stdout
+    assert "Sam" not in result.stdout
+
+
+def test_a_multi_line_anchor(kb_repo) -> None:
+    kb_repo.write(NOTE, "a\nb\nc\nb\n")
+    assert run_ops(kb_repo.root, NOTE, [{"op": "insert", "after": "a\nb", "text": "x"}]).exit_code == 0
+    assert text(kb_repo.root) == "a\nb\nx\nc\nb\n"
+    kb_repo.write(NOTE, "a\nb\nc\n")
+    assert run_ops(kb_repo.root, NOTE, [{"op": "insert", "before": "b\nc\n", "text": "x"}]).exit_code == 0
+    assert text(kb_repo.root) == "a\nx\nb\nc\n"
+
+
+def test_an_anchor_after_a_last_line_without_newline(kb_repo) -> None:
+    kb_repo.write(NOTE, "a\nend")
+    assert run_ops(kb_repo.root, NOTE, [{"op": "insert", "after": "end", "text": "x"}]).exit_code == 0
+    assert text(kb_repo.root) == "a\nend\nx\n"
+
+
+@pytest.mark.parametrize("anchor", ["Sam", "kickoff\n\n", "nowhere"])
+def test_an_anchor_found_twice_or_not_at_all_fails(kb_repo, anchor: str) -> None:
+    kb_repo.write(NOTE, "Sam and Sam\n- kickoff\n\nx\n- kickoff\n\n")
+    result = run_ops(kb_repo.root, NOTE, [{"op": "insert", "after": anchor, "text": "x"}])
+    assert result.exit_code == 1 and "expected the anchor once" in result.stdout
+
+
+# ----- several notes in one call ---------------------------------------------------------
+
+
+def test_several_notes_in_one_call(vault) -> None:
+    doc = {
+        NOTE: [{"op": "replace", "old": "budget is TBD", "new": "budget is 40k"}],
+        CONTEXT: [{"op": "frontmatter", "field": "updated", "value": "2026-11-25"}],
+    }
+    result = kb(vault, "--ops", "-", stdin=json.dumps(doc))
+    assert result.exit_code == 0, result.output
+    assert "budget is 40k" in text(vault) and "updated: 2026-11-25" in text(vault, CONTEXT)
+    assert f"{NOTE}: 1 op applied, +1 -1 lines, written" in result.stdout
+    assert f"{CONTEXT}: 1 op applied, +1 -1 lines, written" in result.stdout
+
+
+def test_one_note_failing_writes_neither(vault) -> None:
+    doc = {
+        NOTE: [{"op": "replace", "old": "budget is TBD", "new": "x"}],
+        CONTEXT: [{"op": "replace", "old": "absent", "new": "y"}],
+    }
+    result = kb(vault, "--ops", "-", "--json", stdin=json.dumps(doc))
+    assert result.exit_code == 1 and text(vault) == BODY
+    rows = json.loads(result.stdout)["files"]
+    assert rows[0]["written"] is False and "failed" in rows[1]
+    plain = kb(vault, "--ops", "-", stdin=json.dumps(doc)).stdout
+    assert "not written: another note's edit didn't apply" in plain
+
+
+def test_one_note_refused_writes_neither(vault) -> None:
+    os.link(vault / CONTEXT, vault / "elsewhere.md")
+    doc = {NOTE: [{"op": "append", "text": "x"}], CONTEXT: [{"op": "append", "text": "y"}]}
+    result = kb(vault, "--ops", "-", stdin=json.dumps(doc))
+    assert result.exit_code == 3 and text(vault) == BODY
+
+
+def test_one_note_changed_meanwhile_writes_neither(vault, monkeypatch) -> None:
+    real = kb_edit.apply_ops
+    calls = []
+
+    def racing(src, ops):
+        calls.append(1)
+        if len(calls) == 2:
+            (vault / CONTEXT).write_text(src + "another run\n", encoding="utf-8")
+        return real(src, ops)
+
+    monkeypatch.setattr(kb_edit, "apply_ops", racing)
+    doc = {NOTE: [{"op": "append", "text": "x"}], CONTEXT: [{"op": "append", "text": "y"}]}
+    result = kb(vault, "--ops", "-", stdin=json.dumps(doc))
+    assert result.exit_code == 1 and text(vault) == BODY and "changed meanwhile" in result.stdout
+
+
+def test_the_same_note_twice_is_a_usage_error(vault) -> None:
+    doc = {NOTE: [{"op": "append", "text": "x"}], "./" + NOTE: [{"op": "append", "text": "y"}]}
+    assert kb(vault, "--ops", "-", stdin=json.dumps(doc)).exit_code == 2 and text(vault) == BODY
+
+
+@pytest.mark.parametrize(
+    ("path", "doc", "why"),
+    [
+        (NOTE, {NOTE: [{"op": "append", "text": "x"}]}, "with a <path>"),
+        (None, [{"op": "append", "text": "x"}], "without a <path>"),
+        (None, {"op": "append", "text": "x"}, "without a <path>"),
+        (None, {}, "without a <path>"),
+        (None, {f"knowledge-base/n{i}.md": [{"op": "append", "text": "x"}] for i in range(11)}, "notes per call"),
+        (
+            None,
+            {"a.md": [{"op": "append", "text": "x"}] * 60, "b.md": [{"op": "append", "text": "x"}] * 60},
+            "operations",
+        ),
+    ],
+)
+def test_the_document_matches_the_path_argument(path, doc, why: str) -> None:
+    with pytest.raises(UsageError, match=why):
+        load_ops(json.dumps(doc), path)
+
+
 # ----- several ops, and all-or-nothing ---------------------------------------------------
 
 
@@ -369,7 +502,7 @@ def test_a_failing_op_writes_none_of_them(vault) -> None:
     result = run_ops(vault, NOTE, ops, "--json")
     assert result.exit_code == 1 and text(vault) == BODY
     data = json.loads(result.stdout)
-    assert data["written"] is False and data["failed"] == {
+    assert data["written"] is False and data["files"][0]["failed"] == {
         "index": 2,
         "op": "replace",
         "reason": "expected 1 match, found 0",
@@ -380,14 +513,10 @@ def test_check_reports_but_writes_nothing(vault) -> None:
     result = run_ops(vault, NOTE, [{"op": "replace", "old": "budget is TBD", "new": "x"}], "--check", "--json")
     assert result.exit_code == 0 and text(vault) == BODY
     data = json.loads(result.stdout)
-    assert (data["written"], data["changed"], data["check"], data["added"], data["removed"]) == (
-        False,
-        True,
-        True,
-        1,
-        1,
-    )
-    assert data["label"]["path"] == NOTE and data["ops"] == [
+    row = data["files"][0]
+    assert (data["written"], data["check"]) == (False, True)
+    assert (row["written"], row["changed"], row["added"], row["removed"]) == (False, True, 1, 1)
+    assert row["label"]["path"] == NOTE and row["ops"] == [
         {"index": 1, "op": "replace", "status": "1 match", "matches": 1}
     ]
     assert "would write" in run_ops(vault, NOTE, [{"op": "replace", "old": "TBD", "new": "x"}], "--check").stdout
@@ -503,6 +632,13 @@ def test_an_edit_that_would_widen_or_relabel_a_note_is_refused(vault, path: str,
         ('[{"op": "insert", "heading": "Status", "text": "b"}]', "markdown heading"),
         ('[{"op": "insert", "heading": "## S", "text": "b", "at": "middle"}]', "at is"),
         ('[{"op": "insert", "heading": "## S", "text": "b", "create": "yes"}]', "create"),
+        ('[{"op": "insert", "text": "b"}]', "one of heading, after or before"),
+        ('[{"op": "insert", "heading": "## S", "after": "x", "text": "b"}]', "one of heading"),
+        ('[{"op": "insert", "after": 1, "text": "b"}]', "after must be a string"),
+        ('[{"op": "insert", "after": "x", "text": "b", "at": "end"}]', "go with heading"),
+        ('[{"op": "insert", "before": " ", "text": "b"}]', "before must not be empty"),
+        ('[{"op": "insert", "heading": 2, "text": "b"}]', "heading must be a string"),
+        ('[{"op": "replace", "old": "a", "new": "b", "first": 1}]', "first must be true or false"),
         ('[{"op": "append", "text": "  "}]', "must not be empty"),
         ('[{"op": "frontmatter", "field": "a b", "value": 1}]', "plain top-level key"),
         ('[{"op": "frontmatter", "field": "a"}]', "give value"),
@@ -514,14 +650,14 @@ def test_an_edit_that_would_widen_or_relabel_a_note_is_refused(vault, path: str,
 )
 def test_a_bad_ops_document_is_a_usage_error(raw: str, why: str) -> None:
     with pytest.raises(UsageError, match=why):
-        load_ops(raw)
+        load_ops(raw, NOTE)
 
 
 def test_ops_limits() -> None:
     with pytest.raises(UsageError, match="at most"):
         check_ops([{"op": "append", "text": "x"}] * (kb_edit.MAX_OPS + 1))
     with pytest.raises(UsageError, match="bytes"):
-        load_ops(" " * (kb_edit.MAX_OPS_BYTES + 1))
+        load_ops(" " * (kb_edit.MAX_OPS_BYTES + 1), NOTE)
 
 
 def test_a_bad_ops_document_exits_2_and_touches_nothing(vault) -> None:

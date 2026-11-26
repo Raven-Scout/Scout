@@ -1,4 +1,4 @@
-"""Run health counts the KB edits runs still make with interpreter scripts (#824's `kb_edit` record), per run,
+"""Run health counts the KB edits runs still make with interpreter scripts (the gate's `kb_edit` record), per run,
 so the owner can see them reach 0 before the read gate's DENY_INTERPRETER_KB_EDITS switch goes on."""
 
 from __future__ import annotations
@@ -68,10 +68,10 @@ def test_counts_per_run_newest_last(tmp_path: Path) -> None:
     assert "DENY_INTERPRETER_KB_EDITS" in found.fix
 
 
-def test_the_record_as_an_unresolved_read_category_counts_too(tmp_path: Path) -> None:
+def test_other_gate_events_dont_count(tmp_path: Path) -> None:
     at = RUNS[2] - timedelta(minutes=1)
     other = _event(at, kind="kb_read_gate.unresolved_read", payload={"categories": ["program_path"]})
-    mine = _event(at, kind="kb_read_gate.unresolved_read", payload={"categories": ["kb_edit", "program_path"]})
+    mine = _event(at, payload={"mode": "dreaming", "targets": 2})
     found = _finding(_vault(tmp_path, [_row(at) for at in RUNS], [(at, other), (at, mine)]))
     assert found is not None and "1 edit in the last 3 runs" in found.summary
 

@@ -2,21 +2,25 @@
 
 Scheduled runs edited notes with python heredocs: read a note, change it (``str.replace``, ``re.sub``, a line put
 under a heading, a frontmatter date), write it back. The read gate can't tell such a program from one that sends
-the note's text somewhere (a file name, an exit code or an exception can carry it), so #824 records each as
-``kb_edit`` behind ``DENY_INTERPRETER_KB_EDITS``. This command does those edits itself:
+the note's text somewhere (a file name, an exit code or an exception can carry it): #824's replay found about one
+such edit per run. This command does those edits itself, so the gate can later refuse the scripts:
 
 - ``replace``: a literal string, ``regex``: a Python regular expression (``re.sub`` template), each with the
-  number of matches expected (``count``, default 1, or ``"all"`` for one or more). Any other number fails.
+  number of matches the note must hold (``count``, default 1, or ``"all"`` for one or more). Any other number
+  fails. ``first: true`` replaces only the first match (``count`` then defaults to ``"all"``), as python's
+  ``str.replace(old, new, 1)`` did.
 - ``insert``: text at the end (``at: "end"``, the default) or the start of the section under a heading. The
   heading must match exactly one line outside the frontmatter and code fences; ``create: true`` adds it at the
-  end of the file when none does.
+  end of the file when none does. Or ``after``/``before``: text as whole lines right after or before the line
+  holding an anchor string, which must occur exactly once.
 - ``append``: text at the end of the file.
 - ``frontmatter``: set (``value``) or ``remove`` one top-level field. The edited block must parse, hold the new
   value, and keep every other field as it was.
 - ``patch``: a one-file unified diff. Each hunk applies where it says, else at the one place its old lines are.
 
-The operations of one call apply in order, to the text the one before left. All of them apply or nothing is
-written (exit 1), and the file must not change while they run. A note's privacy label may only narrow (a note
+The operations apply in order, to the text the one before left. One call may edit up to :data:`MAX_FILES` notes
+(``--ops`` maps each path to its list). All of them apply, on every note, or nothing is written (exit 1), and no
+note may change while they run. A note's privacy label may only narrow (a note
 made private); anything else that would change it is refused (exit 3), as is a reader other than ``owner`` or
 ``autonomous``, a path outside ``knowledge-base/`` and ``action-items/context/``, and a file the write gate
 protects (:func:`scout.kb.hook_paths.protected_write`). Every other rule is the commit's: the pre-commit
@@ -57,11 +61,12 @@ from scout.plural import count
 
 OPS = ("replace", "regex", "insert", "append", "frontmatter", "patch")
 MAX_OPS = 100
+MAX_FILES = 10
 MAX_OPS_BYTES = 1 << 20
 _KEYS: dict[str, tuple[frozenset[str], frozenset[str]]] = {  # op -> (required, optional) keys
-    "replace": (frozenset({"old", "new"}), frozenset({"count"})),
-    "regex": (frozenset({"pattern", "new"}), frozenset({"count", "flags"})),
-    "insert": (frozenset({"heading", "text"}), frozenset({"at", "create"})),
+    "replace": (frozenset({"old", "new"}), frozenset({"count", "first"})),
+    "regex": (frozenset({"pattern", "new"}), frozenset({"count", "flags", "first"})),
+    "insert": (frozenset({"text"}), frozenset({"heading", "after", "before", "at", "create"})),
     "append": (frozenset({"text"}), frozenset()),
     "frontmatter": (frozenset({"field"}), frozenset({"value", "remove"})),
     "patch": (frozenset({"diff"}), frozenset()),
@@ -109,15 +114,27 @@ class Edit:
 # ----- parsing the ops -------------------------------------------------------------------
 
 
-def load_ops(raw: str) -> list[dict[str, Any]]:
-    """The ops of a ``--ops`` document: a JSON list of op objects, or one op object. ``UsageError`` otherwise."""
+def load_ops(raw: str, path: str | None = None) -> list[tuple[str, list[dict[str, Any]]]]:
+    """The ``(path, ops)`` pairs of a ``--ops`` document. With ``path``: a JSON list of op objects, or one op
+    object. Without it: an object mapping each note's path to its list, for one call over several notes."""
     if len(raw.encode("utf-8", errors="replace")) > MAX_OPS_BYTES:
         raise UsageError(f"--ops is over {MAX_OPS_BYTES} bytes")
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:
         raise UsageError(f"--ops is not JSON (line {e.lineno}, column {e.colno})") from None
-    return check_ops([data] if isinstance(data, dict) else data)
+    if path is not None:
+        if isinstance(data, dict) and "op" not in data:
+            raise UsageError("with a <path>, --ops is a list of operations; without one, {path: [operations]}")
+        return [(path, check_ops([data] if isinstance(data, dict) else data))]
+    if not isinstance(data, dict) or "op" in data or not data:
+        raise UsageError("without a <path>, --ops maps each note's path to its operations: {path: [...], ...}")
+    if len(data) > MAX_FILES:
+        raise UsageError(f"at most {MAX_FILES} notes per call")
+    files = [(str(k), check_ops(v)) for k, v in data.items()]
+    if sum(len(ops) for _, ops in files) > MAX_OPS:
+        raise UsageError(f"at most {MAX_OPS} operations per call")
+    return files
 
 
 def check_ops(data: Any) -> list[dict[str, Any]]:
@@ -144,7 +161,7 @@ def _check_types(i: int, name: str, op: Mapping[str, Any]) -> None:
     def bad(why: str) -> UsageError:
         return UsageError(f"op {i} ({name}): {why}")
 
-    for key in ("old", "new", "pattern", "text", "diff", "heading", "field"):
+    for key in ("old", "new", "pattern", "text", "diff", "field"):
         if key in op and not isinstance(op[key], str):
             raise bad(f"{key} must be a string")
     if "count" in op:
@@ -161,9 +178,21 @@ def _check_types(i: int, name: str, op: Mapping[str, Any]) -> None:
             re.compile(op["pattern"], _regex_flags(flags))
         except re.error as e:
             raise bad(f"pattern doesn't compile ({e.msg})") from None
+    if "first" in op and not isinstance(op["first"], bool):
+        raise bad("first must be true or false")
     if name == "insert":
-        if not _HEADING.match(op["heading"].strip()):
+        anchors = [k for k in ("heading", "after", "before") if k in op]
+        if len(anchors) != 1:
+            raise bad("give one of heading, after or before")
+        for key in ("heading", "after", "before"):
+            if key in op and not isinstance(op[key], str):
+                raise bad(f"{key} must be a string")
+        if "heading" not in op and ("at" in op or "create" in op):
+            raise bad("at and create go with heading")
+        if "heading" in op and not _HEADING.match(op["heading"].strip()):
             raise bad('heading must be a markdown heading line, e.g. "## Status"')
+        if anchors[0] != "heading" and not op[anchors[0]].strip():
+            raise bad(f"{anchors[0]} must not be empty")
         if op.get("at", "end") not in ("end", "start"):
             raise bad('at is "end" or "start"')
         if not isinstance(op.get("create", False), bool):
@@ -211,7 +240,8 @@ def apply_ops(text: str, ops: Sequence[Mapping[str, Any]]) -> Edit:
 
 
 def _expect(i: int, name: str, op: Mapping[str, Any], found: int) -> None:
-    want = op.get("count", 1)
+    """``count`` is the number of matches the note must hold (default 1; with ``first``, 1 or more)."""
+    want = op.get("count", "all" if op.get("first") else 1)
     if want == "all":
         if found == 0:
             raise OpFailed(i, name, "expected 1 or more matches, found 0")
@@ -219,10 +249,16 @@ def _expect(i: int, name: str, op: Mapping[str, Any], found: int) -> None:
         raise OpFailed(i, name, f"expected {count(want, 'match', 'matches')}, found {found}")
 
 
+def _done(found: int, op: Mapping[str, Any]) -> str:
+    return (
+        f"{count(found, 'match', 'matches')}, first replaced" if op.get("first") else count(found, "match", "matches")
+    )
+
+
 def _replace(i: int, text: str, op: Mapping[str, Any]) -> tuple[str, str, int | None]:
     found = text.count(op["old"])
     _expect(i, "replace", op, found)
-    return text.replace(op["old"], op["new"]), count(found, "match", "matches"), found
+    return text.replace(op["old"], op["new"], 1 if op.get("first") else -1), _done(found, op), found
 
 
 def _regex(i: int, text: str, op: Mapping[str, Any]) -> tuple[str, str, int | None]:
@@ -230,10 +266,10 @@ def _regex(i: int, text: str, op: Mapping[str, Any]) -> tuple[str, str, int | No
     found = sum(1 for _ in rx.finditer(text))
     _expect(i, "regex", op, found)
     try:
-        new = rx.sub(op["new"], text)
+        new = rx.sub(op["new"], text, count=1 if op.get("first") else 0)
     except (re.error, IndexError) as e:
         raise OpFailed(i, "regex", f"the replacement template doesn't fit the pattern ({e})") from None
-    return new, count(found, "match", "matches"), found
+    return new, _done(found, op), found
 
 
 def _body_start(lines: Sequence[str]) -> int:
@@ -267,6 +303,8 @@ def _with_newline(text: str) -> str:
 
 
 def _insert(i: int, text: str, op: Mapping[str, Any]) -> tuple[str, str, int | None]:
+    if "heading" not in op:
+        return _insert_at_line(i, text, op)
     lines = text.splitlines(keepends=True)
     want = op["heading"].strip()
     heads = _headings(lines)
@@ -294,6 +332,31 @@ def _insert(i: int, text: str, op: Mapping[str, Any]) -> tuple[str, str, int | N
         lines[at - 1] += "\n"
     lines[at:at] = body.splitlines(keepends=True)
     return "".join(lines), "under 1 heading", 1
+
+
+def _insert_at_line(i: int, text: str, op: Mapping[str, Any]) -> tuple[str, str, int | None]:
+    """``text`` as whole lines right after (``after``) or before (``before``) the one line holding the anchor."""
+    where = "after" if "after" in op else "before"
+    anchor = op[where]
+    if "\n" in anchor:
+        found = text.count(anchor)
+        if found != 1:
+            raise OpFailed(i, "insert", f"expected the anchor once, found it {count(found, 'time')}")
+        start = text.index(anchor)
+        first = text.count("\n", 0, start)
+        last = first + anchor.count("\n") - (1 if anchor.endswith("\n") else 0)
+    else:
+        rows = [n for n, ln in enumerate(text.splitlines()) if anchor in ln]
+        hits = sum(ln.count(anchor) for ln in text.splitlines())
+        if hits != 1:
+            raise OpFailed(i, "insert", f"expected the anchor once, found it {count(hits, 'time')}")
+        first = last = rows[0]
+    lines = text.splitlines(keepends=True)
+    at = last + 1 if where == "after" else first
+    if at > 0 and not lines[at - 1].endswith("\n"):
+        lines[at - 1] += "\n"
+    lines[at:at] = _with_newline(op["text"]).splitlines(keepends=True)
+    return "".join(lines), f"{where} 1 line", 1
 
 
 def _append(i: int, text: str, op: Mapping[str, Any]) -> tuple[str, str, int | None]:
@@ -509,77 +572,127 @@ def label_change(before: Label, after: Label) -> bool:
     )
 
 
-def _denied(path: str, why: str) -> Output:
-    data = {"path": path, "written": False, "denied": True, "reason": why}
-    return Output(data=data, lines=[f"{path}: nothing written: {why}"], denied=1, code=3)
+@dataclass
+class _Plan:
+    """One note's edit, worked out before anything is written."""
+
+    asked: str
+    rel: str = ""
+    label: Label | None = None
+    target: Path | None = None
+    data: bytes = b""
+    edit: Edit | None = None
+    denied: str | None = None  # why it is refused (exit 3)
+    failed: OpFailed | None = None  # the op that didn't fit (exit 1)
+    raced: bool = False  # the note changed meanwhile (exit 1)
+
+    @property
+    def changed(self) -> bool:
+        return self.edit is not None and self.edit.text.encode("utf-8") != self.data
+
+
+def _plan(vault: Path, reader: str, path: str, ops: Sequence[Mapping[str, Any]], env: Mapping[str, str]) -> _Plan:
+    from scout.kb.hook_paths import protected_write
+
+    plan = _Plan(asked=path, rel=path)
+    if reader not in FULL_READERS:
+        plan.denied = f"{reader} doesn't edit notes"
+        return plan
+    try:
+        label, data = read_file(vault, reader, path)
+    except Denied:  # pragma: no cover - owner and autonomous see every file; kept so a change there fails closed
+        plan.denied = f"not visible to {reader}"
+        return plan
+    plan.rel, plan.label, plan.data = label.path, label, data
+    if not is_kb_note_path(plan.rel) or not plan.rel.endswith(".md"):
+        raise UsageError(f"kb edit changes notes under knowledge-base/ or action-items/context/: {plan.rel}")
+    plan.target = vault.resolve() / plan.rel
+    form = protected_write(plan.target, vault.resolve(), env, file_tool=True)
+    if form is not None:
+        plan.denied = f"the write gate protects it ({form})"
+        return plan
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise UsageError(f"not UTF-8 text: {plan.rel}") from None
+    try:
+        plan.edit = apply_ops(text, ops)
+    except OpFailed as e:
+        plan.failed = e
+        return plan
+    after = classify(plan.rel, decode_head(plan.edit.text.encode("utf-8")), load_policy(vault.resolve()))
+    if label_change(label, after):
+        plan.denied = "the edit would change the note's privacy label; only a note made private is allowed"
+    return plan
+
+
+def _file_out(plan: _Plan, *, written: bool, blocked: bool) -> tuple[dict[str, Any], list[str]]:
+    row: dict[str, Any] = {"path": plan.rel, "written": written}
+    if plan.label is not None:
+        row["label"] = plan.label.to_json()
+    if plan.denied is not None:
+        return row | {"denied": True, "reason": plan.denied}, [f"{plan.rel}: nothing written: {plan.denied}"]
+    if plan.failed is not None:
+        e = plan.failed
+        return row | {"failed": {"index": e.index, "op": e.op, "reason": e.why}}, [f"{plan.rel}: nothing written: {e}"]
+    if plan.raced:
+        return row | {"failed": {"reason": "the note changed while it was being edited"}}, [
+            f"{plan.rel}: nothing written: the note changed meanwhile; run it again"
+        ]
+    assert plan.edit is not None
+    old = plan.data.decode("utf-8")
+    added, removed = line_counts(old, plan.edit.text)
+    if blocked:
+        state = "not written: another note's edit didn't apply"
+    else:
+        state = "written" if written else ("would write" if plan.changed else "unchanged")
+    head = f"{plan.rel}: {count(len(plan.edit.results), 'op')} applied, +{added} -{removed} lines, {state}"
+    lines = [head, *(f"  {r.index} {r.op}: {r.status}" for r in plan.edit.results)]
+    row |= {
+        "changed": plan.changed,
+        "added": added,
+        "removed": removed,
+        "ops": [r.to_json() for r in plan.edit.results],
+    }
+    return row, lines
 
 
 def cmd_edit(
     vault: Path,
     reader: str,
-    path: str,
-    ops: Sequence[Mapping[str, Any]],
+    files: Sequence[tuple[str, Sequence[Mapping[str, Any]]]],
     *,
     check: bool = False,
     env: Mapping[str, str] | None = None,
 ) -> Output:
-    """Apply ``ops`` to one KB note and write it (``check``: only report). See the module docstring."""
-    from scout.kb.hook_paths import protected_write
+    """Apply each note's ops and write them all, or none (``check``: only report). See the module docstring.
 
+    Every note's edit is worked out, and every note checked unchanged since it was read, before any is
+    written."""
     env = os.environ if env is None else env
-    if reader not in FULL_READERS:
-        return _denied(path, f"{reader} doesn't edit notes")
-    try:
-        label, data = read_file(vault, reader, path)
-    except Denied:  # pragma: no cover - owner and autonomous see every file; kept so a change there fails closed
-        return _denied(path, f"not visible to {reader}")
-    rel = label.path
-    if not is_kb_note_path(rel) or not rel.endswith(".md"):
-        raise UsageError(f"kb edit changes notes under knowledge-base/ or action-items/context/: {rel}")
-    target = vault.resolve() / rel
-    form = protected_write(target, vault.resolve(), env, file_tool=True)
-    if form is not None:
-        return _denied(rel, f"the write gate protects it ({form})")
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        raise UsageError(f"not UTF-8 text: {rel}") from None
-    base: dict[str, Any] = {"path": rel, "label": label.to_json()}
-    try:
-        edit = apply_ops(text, ops)
-    except OpFailed as e:
-        data_out = base | {"written": False, "failed": {"index": e.index, "op": e.op, "reason": e.why}}
-        return Output(data=data_out, lines=[f"{rel}: nothing written: {e}"], labels=[label.to_json()], code=1)
-    new_bytes = edit.text.encode("utf-8")
-    policy = load_policy(vault.resolve())
-    after = classify(rel, decode_head(new_bytes), policy)
-    if label_change(label, after):
-        refused = _denied(rel, "the edit would change the note's privacy label; only a note made private is allowed")
-        refused.labels = [label.to_json()]
-        return refused
-    added, removed = line_counts(text, edit.text)
-    changed = edit.text != text
-    written = False
-    if changed and not check:
-        if target.read_bytes() != data:
-            out = base | {"written": False, "failed": {"reason": "the note changed while it was being edited"}}
-            return Output(
-                data=out,
-                lines=[f"{rel}: nothing written: the note changed meanwhile; run it again"],
-                labels=[label.to_json()],
-                code=1,
-            )
-        safe_write.atomic_write_bytes(target, new_bytes)
-        written = True
-    state = "written" if written else ("would write" if changed else "unchanged")
-    head = f"{rel}: {count(len(edit.results), 'op')} applied, +{added} -{removed} lines, {state}"
-    lines = [head, *(f"  {r.index} {r.op}: {r.status}" for r in edit.results)]
-    out_data = base | {
-        "written": written,
-        "changed": changed,
-        "check": check,
-        "added": added,
-        "removed": removed,
-        "ops": [r.to_json() for r in edit.results],
-    }
-    return Output(data=out_data, lines=lines, labels=[label.to_json()])
+    plans = [_plan(vault, reader, path, ops, env) for path, ops in files]
+    seen: set[str] = set()
+    for plan in plans:
+        if plan.label is not None and plan.rel in seen:
+            raise UsageError(f"a note is named twice: {plan.rel}")
+        seen.add(plan.rel)
+    if not any(p.denied or p.failed for p in plans) and not check:
+        for plan in plans:
+            plan.raced = plan.changed and plan.target is not None and plan.target.read_bytes() != plan.data
+    blocked = any(p.denied or p.failed or p.raced for p in plans)
+    written = not blocked and not check
+    if written:
+        for plan in plans:
+            if plan.changed and plan.target is not None and plan.edit is not None:
+                safe_write.atomic_write_bytes(plan.target, plan.edit.text.encode("utf-8"))
+    rows: list[dict[str, Any]] = []
+    lines: list[str] = []
+    for plan in plans:
+        row, out = _file_out(plan, written=written and plan.changed, blocked=blocked)
+        rows.append(row)
+        lines += out
+    denied = sum(1 for p in plans if p.denied)
+    code = 3 if denied else (1 if blocked else 0)
+    data = {"written": any(r["written"] for r in rows), "check": check, "files": rows}
+    labels: list[Mapping[str, Any]] = [p.label.to_json() for p in plans if p.label is not None]
+    return Output(data=data, lines=lines, labels=labels, denied=denied, code=code)
