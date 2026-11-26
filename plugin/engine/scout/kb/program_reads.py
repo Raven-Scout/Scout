@@ -1,32 +1,36 @@
-"""The files an interpreter's inline program reads: Python, Ruby, Node (and Bun, Deno), PHP, Lua and R.
+"""What an interpreter's inline program reads and writes: Python, Ruby, Node (and Bun, Deno), PHP, Lua and R, with
+a lexer near enough for ipython, groovy, jshell, swift, tclsh and expect.
 
 :mod:`scout.kb.other_reads` asks this module about ``python3 -c``, ``ruby -e``, ``node -e``, ``php -r``,
-``lua -e``, ``Rscript -e`` (and a program read from stdin: ``python3 - <<EOF``), so both of the gate's judges see
-what such a program opens. Perl, sed and awk are other_reads' own.
+``lua -e``, ``Rscript -e``, a program read from stdin (``python3 - <<EOF``), and a script file or a module, so both
+of the gate's judges see what such a program opens. Perl, sed and awk are other_reads' own.
 
 A program's text is read for the calls that open a file (``open()``, ``Path(…).read_text()``, ``File.read``,
 ``fs.readFileSync``, ``file_get_contents``, ``io.open``, ``readLines`` and their kin), each judged by the path
 its arguments spell:
 
-- a string literal, or literals joined by ``+``, ``..``, ``.``, ``os.path.join``, ``Path(a) / b``,
-  ``File.join``, ``path.join``, ``file.path``, ``paste0``, or a variable the program sets to one of those, is a
-  path opened as written (:attr:`OtherReads.literal`);
+- a string literal (its escapes decoded), or literals joined by ``+``, ``..``, ``.``, ``os.path.join``,
+  ``Path(a) / b``, ``File.join``, ``path.join``, ``file.path``, ``paste0``, or a variable the program sets to one
+  of those, is a path opened as written (:attr:`ProgramReads.literal`);
 - a path that starts with a literal and goes on with something built at run time (``"knowledge-base/" + n``,
   ``f"knowledge-base/{n}"``) reads in the folder the literal names (:data:`FOLDER`), and is built too;
-- anything else is built at run time (:attr:`OtherReads.built`), which the gate records as ``program_path``;
+- anything else is built at run time (:attr:`ProgramReads.built`), which the gate records as ``program_path``;
 - ``sys.argv``, ``ARGV``, ``ARGF``, ``process.argv``, ``$argv``, ``arg[n]`` and ``commandArgs()`` read the
-  program's operands, as ``ruby -n``/``-p`` loops do: they are judged as the files the shell hands over.
+  program's operands, as ``ruby -n``/``-p`` loops and a script's or a module's operands do.
 
-A program that lists a folder (``os.walk``, ``glob.glob``, ``Dir.glob``, ``fs.readdirSync``, ``list.files``…)
-and opens a path it builds is taken to read what it listed: the listed root, below it all when the listing is
-recursive (:data:`~scout.kb.other_reads.COVERS`). A write (``open(p, "w")``, ``fs.writeFileSync``) reads
-nothing. A copy or a move (``shutil.copy``, ``os.rename``, ``FileUtils.cp``, ``copy()``, ``file.copy``) reads its
-source unless its target names the KB. The shell commands a program runs (``subprocess.run``, ``os.system``,
-backticks, ``execSync``, ``shell_exec``, ``os.execute``, ``system()``) are commands of their own
-(:attr:`OtherReads.programs`).
+The files it writes (an open with a mode that writes, ``write_text``, ``File.write``, ``fs.writeFileSync``,
+``file_put_contents``, a copy's target, ``ruby -i``'s operands) are :attr:`ProgramReads.writes`: a program that
+reads a KB note and writes only into the KB is an edit, which the gate records rather than denies. A listing
+(``os.walk``, ``glob.glob``, ``fs.readdirSync``…) or a test (``os.path.exists``) gives names only, unless the
+program also opens a path it builds; then what it listed counts as read. The shell commands a program runs
+(``subprocess.run``, ``os.system``, backticks, ``execSync``, ``os.execute``, ``system()``) are commands of their own
+(:attr:`ProgramReads.programs`).
 
-Pure: it judges text and does no I/O. It over-reads where a program is ambiguous; the gate only denies a path
-that resolves into the KB.
+It fails closed: the program's text naming the KB anywhere no judged call spells a path with (an alias, ``exec``,
+code in an f-string or a template, a comment, a literal behind an escape, a lexer the program fools) is
+:attr:`ProgramReads.unaccounted`, which the gate denies.
+
+Pure: it judges text and does no I/O. The gate only denies a path that resolves into the KB.
 """
 
 from __future__ import annotations
@@ -61,9 +65,30 @@ class ProgramReads:
     spelled: list[tuple[str, str, str]] = field(default_factory=list)
     built: bool = False
     programs: list[str] = field(default_factory=list)
+    # The files it writes (a write call's path, a copy's target), exactly as written; ``writes_built`` when one is
+    # a path it builds; ``operand_writes`` when it rewrites its operands in place (``ruby -i -pe``). A program that
+    # reads a KB note and writes only into the KB is an edit (the gate records ``kb_edit``).
+    writes: list[str] = field(default_factory=list)
+    writes_built: bool = False
+    operand_writes: bool = False
+    # Its text names the KB somewhere the scan didn't judge as a path (an alias, code in an f-string, an escape, a
+    # lexer the program fooled): the gate denies it, unless it's an edit.
+    unaccounted: bool = False
+    # Its program is text the shell fills in (``-c "$(…)"``, ``-c "$P"``): the gate denies it when the command
+    # names the KB anywhere, and records it otherwise.
+    opaque: bool = False
 
     def __bool__(self) -> bool:
-        return bool(self.reads or self.literal or self.spelled or self.built or self.programs)
+        return bool(
+            self.reads
+            or self.literal
+            or self.spelled
+            or self.built
+            or self.programs
+            or self.writes
+            or self.writes_built
+            or self.unaccounted
+        )
 
 
 # ----- the interpreters' command lines ---------------------------------------------------------------------
@@ -76,6 +101,10 @@ class _Call:
     operands: list[str]  # the program's argv, as the shell hands it
     loops: bool = False  # ruby -n/-p: the operands are read line by line
     chdir: str | None = None  # ruby -C DIR
+    files: list[str] = field(default_factory=list)  # files the command line itself reads (a script, `-r`, `-l`)
+    operands_read: bool = False  # a script or a module given operands: they are taken as files it reads
+    in_place: bool = False  # ruby -i: the operands are rewritten
+    piped: str | None = None  # its program comes down a pipe from a command the gate can't read: that text
 
 
 _PYTHON_VALUES = {"-W", "-X", "--check-hash-based-pycs"}
@@ -85,15 +114,37 @@ _NODE_VALUES = {"-r", "--require", "--import", "--loader", "--experimental-loade
 _PHP_VALUES = {"-d", "-c", "-z", "--define", "-B", "-R", "-E", "-F", "-f", "--file"}
 _LUA_VALUES = {"-l"}
 _R_VALUES = {"--encoding", "--file", "-f", "--default-packages", "--args"}
+_OTHER_VALUES = {"-f", "--startup", "-R", "-J", "-cp", "--class-path", "-classpath"}
+# Option values that are files the interpreter reads: a library it requires, a script, an ini or env file.
+_FILE_VALUES = {"ruby": {"-r"}, "js": {"-r", "--require", "--import", "--loader", "--experimental-loader",
+                                       "--env-file"},
+                "lua": {"-l"}, "php": {"-c", "-F", "-f", "--file", "-z"}, "r": {"--file", "-f"},
+                "other": {"-f", "--startup"}}  # fmt: skip
+# php.ini settings that name a file php runs before or after the script.
+_PHP_FILE_SETTINGS = re.compile(r"\s*(?:auto_prepend_file|auto_append_file|error_log|include_path)\s*=\s*(.*)")
 
 # Matched against a name raw_read.program_name has folded: `PYTHON3`, `Rscript` and `ｒｕｂｙ` run them too.
 INTERPRETER = re.compile(
-    r"(?:python[0-9.]*|pypy[0-9.]*|ruby[0-9.]*|node|nodejs|bun|deno|php[0-9.]*|lua[0-9.]*|luajit|rscript|r)"
+    r"(?:python[0-9.]*|pypy[0-9.]*|ipython[0-9.]*|ruby[0-9.]*|node|nodejs|bun|deno|php[0-9.]*|lua[0-9.]*|luajit"
+    r"|rscript|r|tclsh[0-9.]*|wish|expect|jshell|groovy|swift)"
 )
+# What a piped-in program came from when it wasn't `echo`/`printf` (live_run marks it): the gate can't read it.
+PIPED = "\x00scout-piped\x00"
+# Running code the program builds or reads at run time: what that code reads, the gate can't see.
+_RUNS_CODE = {
+    "python": r"(?<![\w.])(?:exec|eval|compile|__import__)\s*\(|\bimportlib\.|\brunpy\.",
+    "ruby": r"(?<![\w.])(?:eval|instance_eval|class_eval|module_eval|send|public_send)\b|\bBinding\b",
+    "js": r"(?<![\w$.])(?:eval|Function)\s*\(|\bnew\s+Function\b|\bvm\.run|\bimport\s*\(",
+    "php": r"(?<![\w$>:])(?:eval|create_function|assert|call_user_func\w*)\s*\(",
+    "lua": r"(?<![\w.])(?:load|loadstring|loadfile|dofile)\s*\(",
+    "r": r"(?<![\w.])(?:eval|parse|source|do\.call|get)\s*\(",
+}
 
 
 def _lang(name: str) -> str:
-    if name.startswith(("python", "pypy")):
+    """The language whose scan reads ``name``'s program. tclsh, expect, jshell, groovy and swift get a lexer
+    near enough (their reads aren't modelled: what they name of the KB is judged by the text alone)."""
+    if name.startswith(("python", "pypy", "ipython")):
         return "python"
     if name.startswith("ruby"):
         return "ruby"
@@ -103,36 +154,60 @@ def _lang(name: str) -> str:
         return "php"
     if name.startswith("lua"):
         return "lua"
-    return "r"
+    if name in ("rscript", "r"):
+        return "r"
+    return "other"
 
 
-def _call(name: str, args: list[str], stdin: Sequence[str]) -> _Call | None:
-    """The programs ``name args`` runs from the command itself (its ``-c``/``-e`` values, or its stdin when it
-    reads its program there), and their operands; None for a script file or a module."""
+def _lexer(lang: str, name: str) -> str:
+    if lang != "other":
+        return lang
+    return "ruby" if name.startswith(("tclsh", "wish", "expect")) else "js"
+
+
+def _call(name: str, args: list[str], stdin: Sequence[str]) -> _Call | None:  # noqa: C901 - one flag at a time
+    """What ``name args`` runs: its ``-c``/``-e`` programs (or its stdin when it reads its program there), their
+    operands, and the files the command line reads itself (a script file, ``-m MOD``'s operands, ``-r LIB``,
+    ``-l LIB``, php's ``-d auto_prepend_file=``). None for a command that runs no program (``bun install``)."""
     lang = _lang(name)
-    if lang == "js" and name == "deno":
+    lexer = _lexer(lang, name)
+    if name == "deno":
         if args[:1] == ["eval"]:
             rest = [a for a in args[1:] if not a.startswith("-")]
-            return _Call(lang, rest[:1], rest[1:]) if rest else None
-        return None  # deno run FILE, deno task…: a file
-    if lang == "js" and name == "bun" and args[:1] and not args[0].startswith("-"):
-        return None  # bun run FILE, bun install…
-    letters = {"python": "c", "ruby": "e", "js": "eEp", "php": "r", "lua": "e", "r": "e"}[lang]
+            return _Call(lexer, rest[:1], rest[1:]) if rest else None
+        if args[:1] == ["run"]:
+            rest = [a for a in args[1:] if not a.startswith("-")]
+            return _Call(lexer, [], rest[1:], files=rest[:1], operands_read=True) if rest else None
+        return None  # deno task, deno fmt…
+    if name == "bun" and args[:1] and not args[0].startswith("-"):
+        rest = args[1:] if args[0] == "run" else args if re.search(r"\.[cm]?[jt]sx?$", args[0]) else []
+        return _Call(lexer, [], rest[1:], files=rest[:1], operands_read=True) if rest else None
+    letters = {"python": "c", "ruby": "e", "js": "eEp", "php": "rBRE", "lua": "e", "r": "e", "other": "ce"}[lang]
     takes = {"python": _PYTHON_VALUES, "ruby": _RUBY_VALUES, "js": _NODE_VALUES, "php": _PHP_VALUES,
-             "lua": _LUA_VALUES, "r": _R_VALUES}[lang]  # fmt: skip
+             "lua": _LUA_VALUES, "r": _R_VALUES, "other": _OTHER_VALUES}[lang]  # fmt: skip
+    file_values = _FILE_VALUES.get(lang, set())
+    if any(a in ("-V", "-v", "-h", "--help", "--version") for a in args[:1]):
+        return None  # a version or a help text: no program runs
     programs: list[str] = []
-    loops, chdir, from_stdin = False, None, False
+    files: list[str] = []
+    loops = in_place = from_stdin = False
+    chdir: str | None = None
     i = 0
     while i < len(args):
         a = args[i]
         i += 1
         if lang == "python" and programs:
-            return _Call(lang, programs, args[i - 1 :])  # python -c PROG: the rest is its argv
+            return _Call(lexer, programs, args[i - 1 :], files=files)  # python -c PROG: the rest is its argv
         if a == "--":
             break
         if a == "-":
             from_stdin = True
             break
+        if lang == "python" and a.startswith("-m"):  # a module: what it reads isn't here, but its operands are
+            module, rest = (a[2:], args[i:]) if a[2:] else (args[i] if i < len(args) else "", args[i + 1 :])
+            if module.split(".")[0] == "scout":
+                return None  # Scout's own engine, as scoutctl: the gate judges its commands elsewhere
+            return _Call(lexer, [], rest, files=files, operands_read=True)
         if lang == "js" and a in ("--eval", "--print"):
             programs += args[i : i + 1]
             i += 1
@@ -140,35 +215,42 @@ def _call(name: str, args: list[str], stdin: Sequence[str]) -> _Call | None:
         if lang == "js" and a.startswith(("--eval=", "--print=")):
             programs.append(a.split("=", 1)[1])
             continue
-        if lang == "r" and a.startswith("--file="):
-            return None
-        if lang == "php" and a in ("-f", "--file"):
-            return None
         if not a.startswith("-"):
-            if not programs:
-                return None  # a script file, or a subcommand (`R CMD BATCH x.R`)
-            i -= 1
-            break
+            if programs:
+                i -= 1
+                break
+            if lang == "r" and a == "CMD":
+                return _Call(lexer, [], args[i + 1 :], files=args[i : i + 1], operands_read=True)  # R CMD BATCH x.R
+            return _Call(lexer, [], args[i:], files=[*files, a], operands_read=True)  # a script file and its argv
         if a.startswith("--"):
-            flag = a.split("=", 1)[0]
-            if flag in takes and "=" not in a:
+            flag, eq, value = a.partition("=")
+            if flag in takes and not eq and i < len(args):
                 if lang == "r" and flag == "--args":
+                    from_stdin = True  # the rest is the program's argv; R reads its program from stdin
+                    i -= 1
                     break
-                i += 1
-            if lang == "r" and flag == "--file":
-                return None
+                value, i = args[i], i + 1
+            if flag in file_values and value:
+                files.append(value)
+            if lang == "php" and flag == "--define" and value and (m := _PHP_FILE_SETTINGS.match(value)):
+                files.append(m[1].strip("'\""))
             continue
         flag = a[:2]
         if lang == "ruby":
             for j, ch in enumerate(a[1:], 1):
                 if ch in "np":
                     loops = True
+                if ch == "i":
+                    in_place = True
+                    break  # `-i.bak`: the rest is a suffix
                 if "-" + ch in _RUBY_VALUES:
                     value = a[j + 1 :] or (args[i] if i < len(args) else "")
                     if not a[j + 1 :]:
                         i += 1
                     if ch == "C":
                         chdir = value
+                    if ch == "r" and value:
+                        files.append(value)
                     break
                 if ch == "e":
                     if a[j + 1 :]:
@@ -179,34 +261,52 @@ def _call(name: str, args: list[str], stdin: Sequence[str]) -> _Call | None:
                     break
             continue
         last = a[-1]
-        if len(a) >= 2 and last in letters and all(c.isalpha() for c in a[1:]) and flag not in takes:
+        if (
+            len(a) >= 2
+            and last in letters
+            and all(c.isalpha() for c in a[1:])
+            and flag not in takes - {"-B", "-R", "-E"}
+        ):
             if i < len(args):
                 programs.append(args[i])
                 i += 1
             continue
+        if lang == "php" and flag in ("-B", "-R", "-E"):  # php code run before, per line, after
+            programs.append(a[2:] or (args[i] if i < len(args) else ""))
+            i += 0 if a[2:] else 1
+            continue
         if flag[1:] in letters and len(a) > 2 and lang != "js":
             programs.append(a[2:])  # -cPROG, -ePROG
             continue
-        if flag in takes and len(a) == 2:
-            i += 1
-        if lang == "r" and flag == "-f":
-            return None
+        if flag in takes:
+            value = a[2:]
+            if not value and i < len(args):
+                value, i = args[i], i + 1
+            if flag in file_values and value:
+                files.append(value)
+            if lang == "php" and flag == "-d" and (m := _PHP_FILE_SETTINGS.match(value)):
+                files.append(m[1].strip("'\""))
+            if lang in ("php", "r", "other") and flag == "-f" and value:
+                return _Call(lexer, [], args[i:], files=files, operands_read=True)  # php -f x.php, R -f x.R
     operands = args[i:]
     if lang == "python" and programs:
-        return _Call(lang, programs, operands)
+        return _Call(lexer, programs, operands, files=files)
     if not programs:
         if not (from_stdin or not operands):
-            return None  # a script file
-        if not stdin:
-            return None
-        return _Call(lang, [_printed(t) for t in stdin], operands, loops, chdir)
-    return _Call(lang, programs, operands, loops, chdir)
+            return _Call(lexer, [], operands[1:], files=[*files, operands[0]], operands_read=True)
+        if not stdin:  # `python3 < file`, a terminal: a program the gate can't see
+            return _Call(lexer, [], operands, files=files, piped="")
+        texts = [_printed(t) for t in stdin]
+        piped = next((t[len(PIPED) :] for t in texts if t.startswith(PIPED)), None)
+        texts = [t for t in texts if not t.startswith(PIPED)]
+        return _Call(lexer, texts, operands, loops, chdir, files, in_place=in_place, piped=piped)
+    return _Call(lexer, programs, operands, loops, chdir, files, in_place=in_place)
 
 
 def program_reads(name: str, args: list[str], stdin: Sequence[str] = ()) -> ProgramReads | None:
-    """What ``name args`` reads when ``name`` is one of this module's interpreters (see the module's docstring),
-    with ``stdin`` the programs it would get there (here-documents, here-strings, a pipe's text); None for
-    another command, or a program that reads nothing."""
+    """What ``name args`` reads and writes when ``name`` is one of this module's interpreters (see the module's
+    docstring), with ``stdin`` the programs it would get there (here-documents, here-strings, a pipe's text); None
+    for another command, or a program that does neither."""
     from scout.kb.raw_read import program_name
 
     name = program_name(name)  # on a case-insensitive disk `PYTHON3` runs python3
@@ -218,18 +318,38 @@ def program_reads(name: str, args: list[str], stdin: Sequence[str] = ()) -> Prog
     out = ProgramReads()
     text = "\n".join(call.programs)
     scan = _Scan(text, call.lang)
-    reads_operands = call.loops or scan.reads_operands()
+    reads_operands = call.loops or call.operands_read or scan.reads_operands()
     scan.judge(out)
     if reads_operands or scan.argv_read:
         out.reads += [(o, FILE) for o in call.operands if o not in ("-", "--")]
+    out.reads += [(f, FILE) for f in call.files]
+    out.operand_writes = call.in_place and bool(call.operands)
+    if call.piped is not None:  # `cmd | python3`, `python3 < f`: a program the gate can't read
+        out.built = True
+        out.unaccounted = out.unaccounted or bool(_KB_NAME.search(call.piped))
+    if call.operands_read and not call.programs:  # a script, a module: what it reads isn't in the command
+        out.built = True
+    if re.search(r"\$__scout_\w+__", text):  # live_run's placeholder for what the shell fills in
+        out.built = out.opaque = True
+    if re.search(_RUNS_CODE.get(call.lang, r"(?!)"), scan.masked):  # code it builds or reads, then runs
+        out.built = True
     if call.chdir:
-        out.literal = [p if p.startswith(("/", "~")) else posixpath.join(call.chdir, p) for p in out.literal]
+
+        def into(p: str) -> str:
+            return p if p.startswith(("/", "~")) else posixpath.join(call.chdir or "", p)
+
+        out.literal = [into(p) for p in out.literal]
+        out.writes = [into(p) for p in out.writes]
+    out.literal = list(dict.fromkeys(out.literal))
+    out.spelled = list(dict.fromkeys(out.spelled))
+    out.writes = list(dict.fromkeys(out.writes))
     return out or None
 
 
 def _printed(text: str) -> str:
-    """A program piped in by ``echo`` or ``printf`` (``echo 'print(1)' | python3``): what it prints."""
-    if not re.match(r"\s*(?:echo|printf)\s", text):
+    """A program piped in by ``echo`` or ``printf`` (``echo 'print(1)' | python3``): what it prints. Text from any
+    other command is marked :data:`PIPED` (live_run's), and stays so."""
+    if text.startswith(PIPED) or not re.match(r"\s*(?:echo|printf)\s", text):
         return text
     try:
         words = shlex.split(text)
@@ -241,6 +361,37 @@ def _printed(text: str) -> str:
 # ----- reading a program's text ----------------------------------------------------------------------------
 
 _COMMENT = {"python": "#", "ruby": "#", "r": "#", "php": "#|//", "js": "//", "lua": "--"}
+
+
+_ESCAPE = re.compile(
+    r"\\(?:x([0-9A-Fa-f]{2})|u\{([0-9A-Fa-f]{1,6})\}|u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8})|([0-9]{1,3})|(.))", re.S
+)
+
+
+def _unescape(text: str, lang: str) -> str | None:
+    r"""A string literal's escapes decoded as ``lang`` reads them (``\x6b``, ``\u006b``, ``\u{6b}``, ``\153``;
+    Lua's ``\107`` is decimal); None for one it can't decode (Python's ``\N{…}``)."""
+
+    def one(m: re.Match[str]) -> str:
+        hex2, brace, u4, u8, digits, other = m.groups()
+        code = hex2 or brace or u4 or u8
+        if code is not None:
+            return chr(int(code, 16))
+        if digits is not None:
+            if lang == "lua":
+                return chr(int(digits) % 256)
+            octal = re.match(r"[0-7]+", digits)
+            if octal is None:
+                return "\\" + digits
+            return chr(int(octal[0], 8)) + digits[octal.end() :]
+        if other == "N" and lang == "python":
+            raise ValueError("a named escape")
+        return {"n": "\n", "t": "\t", "r": "\r"}.get(other, other)
+
+    try:
+        return _ESCAPE.sub(one, text)
+    except (ValueError, OverflowError):
+        return None
 
 
 def _spans(text: str, lang: str) -> tuple[list[tuple[int, int]], str]:
@@ -517,6 +668,36 @@ _LISTS: dict[str, list[tuple[str, int, bool | None]]] = {
     "lua": [(r"\blfs\.dir", 0, False)],
     "r": [(r"(?<![\w.])(?:list\.files|dir|list\.dirs)", 0, False), (r"(?<![\w.])Sys\.glob", 0, None)],
 }
+# Writes: (call head, path argument). A read call with a mode that writes (``open(p, "w")``) is one too.
+_WRITES: dict[str, list[tuple[str, int]]] = {
+    "python": [(r"\b(?:json|yaml|pickle|toml|tomli_w)\.(?:safe_)?dump_?file", 0)],
+    "ruby": [(r"\b(?:File|IO)\.(?:write|binwrite)|\bFileUtils\.(?:touch|mkdir_p)", 0)],
+    "js": [(r"(?<![\w$])(?:[\w$]+\.)*(?:writeFileSync|writeFile|appendFileSync|appendFile|createWriteStream"
+            r"|writeTextFileSync|writeTextFile|truncateSync)|\bBun\.write", 0)],
+    "php": [(r"(?<![\w$>:])(?:file_put_contents|touch|tempnam)", 0)],
+    "lua": [(r"\bio\.output", 0)],
+    "r": [(r"(?<![\w.:])(?:writeLines|saveRDS|write\.(?:csv2?|table)|write_(?:csv|tsv|lines|file|rds)|write)", 1),
+          (r"(?<![\w.:])sink", 0), (r"(?<![\w.:])(?:cat|save)", 99)],  # cat(…, file=p): only by name
+}  # fmt: skip
+# Methods whose receiver is the path written: Path(p).write_text(…).
+_WRITE_METHODS = r"\.(?:write_text|write_bytes|touch|binwrite)\s*\("
+# Calls that use a path's name only (a listing's, a test, a size): judged as names, never as reads.
+_NAMES: dict[str, list[tuple[str, int]]] = {
+    "python": [(r"\bos\.(?:path\.(?:exists|isfile|isdir|islink|getsize|getmtime|getctime|lexists|basename"
+                r"|dirname|split|splitext)|stat|lstat|access|makedirs|mkdir)|\bshutil\.disk_usage", 0)],
+    "ruby": [(r"\b(?:File|Dir|FileTest)\.(?:exist\?|exists\?|file\?|directory\?|size\??|mtime|basename|dirname"
+              r"|extname|stat|mkdir)|\bFileUtils\.mkdir", 0)],
+    "js": [(r"(?<![\w$])(?:[\w$]+\.)*(?:existsSync|statSync|lstatSync|accessSync|mkdirSync|basename|dirname"
+            r"|extname)", 0)],
+    "php": [(r"(?<![\w$>:])(?:file_exists|is_file|is_dir|filesize|filemtime|basename|dirname|pathinfo|mkdir"
+             r"|realpath)", 0)],
+    "lua": [],
+    "r": [(r"(?<![\w.:])(?:file\.exists|dir\.exists|file\.info|file\.size|basename|dirname|dir\.create)", 0)],
+}  # fmt: skip
+# Methods whose receiver is a path tested or named only: Path(p).exists().
+_NAME_METHODS = r"\.(?:exists|is_file|is_dir|is_symlink|stat|lstat|mkdir|name|stem|suffix|parent)\b"
+
+
 # Shell commands: (call head, kind) — "shell": its first argument is a command line; "argv": a program and its
 # arguments (a list, or the rest of the call's arguments).
 _RUNS: dict[str, list[tuple[str, str]]] = {
@@ -547,6 +728,8 @@ class _Scan:
         self.spans, self.masked = _spans(text, lang)
         self.starts = {a: b for a, b in self.spans}
         self.argv_read = False
+        self.chdirs: list[_Value] = []
+        self.used: set[tuple[int, int]] = set()  # the literals a judged call's path arguments spell
 
     # -- what an expression spells ------------------------------------------------------------------------
 
@@ -574,10 +757,27 @@ class _Scan:
         if self.lang in ("ruby", "php") and quote == "'":
             text = re.sub(r"\\([\\'])", r"\1", text)  # only \\ and \' escape there
         elif "r" not in prefix:
-            text = re.sub(r"\\(.)", lambda m: {"n": "\n", "t": "\t"}.get(m[1], m[1]), text)
+            decoded = _unescape(text, self.lang)
+            if decoded is None:
+                return _BUILT  # an escape the scan can't decode (`\N{…}` in Python): a path it can't read
+            text = decoded
         if cut:
             return _Value("pre", text) if text else _BUILT
         return _Value("lit", text)
+
+    def static_end(self, a: int, b: int) -> int:
+        """Where literal ``text[a:b]`` stops being text: its first interpolation (``{``, ``${``, ``#{``, ``$x``),
+        else its end."""
+        token = self.text[a:b]
+        prefix = self.text[max(0, a - 2) : a].lower() if self.lang == "python" else ""
+        pattern = {
+            "python": r"(?<!\{)\{(?!\{)" if "f" in prefix else None,
+            "js": r"\$\{" if token[:1] == "`" else None,
+            "ruby": r"#\{|#[@$]" if token[:1] in '"`' else None,
+            "php": r"\$[A-Za-z_{]|\{\$" if token[:1] in '"`' else None,
+        }.get(self.lang)
+        m = re.search(pattern, token) if pattern else None
+        return a + m.start() if m else b
 
     def values(self, a: int, b: int, depth: int = 0) -> list[_Value]:
         """What ``text[a:b]`` can spell as a path: each value it can take (a variable set more than once has
@@ -594,10 +794,12 @@ class _Scan:
         if expr[0] == "(" and _close(self.masked, a) == b:
             return self.values(a + 1, b - 1, depth)
         if a in self.starts and self.starts[a] == b:
+            self.used.add((a, b))
             return [self._literal(a, b)]
         if self.lang == "python" and re.match(r"[rRbBuUfF]{1,2}['\"]", self.text[a:b]):
             q = a + len(re.match(r"[rRbBuUfF]{1,2}", self.text[a:b])[0])  # type: ignore[index]
             if q in self.starts and self.starts[q] == b:
+                self.used.add((q, b))
                 return [self._literal(q, b)]
         # Concatenation: `a + b`, `a .. b`, `a . b`.
         op = _CONCAT[self.lang]
@@ -648,8 +850,12 @@ class _Scan:
             for m in re.finditer(pattern, self.masked):
                 end = _statement_end(self.masked, m.end(), self.lang)
                 found += self.values(m.end(), end, depth + 1)
-            if re.search(rf"\bfor\s+{re.escape(name)}\s+in\b", self.masked):  # a loop variable: built
-                found.append(_BUILT)
+            for m in re.finditer(rf"\bfor\s+{re.escape(name)}\s+in\s+", self.masked):  # a loop variable
+                if m.end() < len(self.masked) and self.masked[m.end()] in "[(":  # over a list it spells
+                    items = _split_top(self.masked, m.end() + 1, _close(self.masked, m.end()) - 1, ",")
+                    found += [v for x, y in items for v in self.values(x, y, depth + 1)] or [_BUILT]
+                else:
+                    found.append(_BUILT)
             return found or [_BUILT]
         return [_BUILT]
 
@@ -760,26 +966,65 @@ class _Scan:
                     for v in self.values(*p)]  # fmt: skip
         return self.values(x, y)
 
-    def judge(self, out: ProgramReads) -> None:
-        """Every read, copy, listing and command in the program, into ``out``."""
+    def _mode(self, args: list[tuple[int, int]], index: int | None, keyword: str | None) -> tuple[bool, bool]:
+        """``(reads, writes)`` of an open call by its mode: ``"w"``, ``"a"``, ``"x"`` only write; ``"r+"``,
+        ``"w+"``, ``"a+"`` do both; ``"r"``, none or one the program builds read."""
+        if self._mode_writes(args, index, keyword):
+            return False, True
+        mode: tuple[int, int] | None = None
+        positional = [(x, y) for x, y in args if not re.match(r"\s*:?\w+\s*(?:=(?!=)|:(?!:))", self.masked[x:y])]
+        if keyword is not None:
+            for x, y in args:
+                m = re.match(rf"\s*:?{keyword}\s*(?:=|:)\s*", self.masked[x:y])
+                if m is not None:
+                    mode = (x + m.end(), y)
+        if mode is None and index is not None and index < len(positional):
+            mode = positional[index]
+        values = self.values(*mode) if mode is not None else []
+        return True, any(v.kind == "lit" and "+" in v.text for v in values)
+
+    def _os_open_writes(self, args: list[tuple[int, int]]) -> tuple[bool, bool]:
+        """``(reads, writes)`` of ``os.open(p, flags)``: it only writes when its flags are a plain ``|`` join of
+        names with ``O_WRONLY`` in it and no ``O_RDWR``; anything else (an expression, ``O_RDWR``) reads."""
+        flags = self.masked[args[1][0] : args[1][1]] if len(args) > 1 else ""
+        names = re.fullmatch(r"\s*(?:os\.)?O_[A-Z]+(?:\s*\|\s*(?:os\.)?O_[A-Z]+)*\s*", flags)
+        if names is not None and "O_WRONLY" in flags and "O_RDWR" not in flags:
+            return False, True
+        return True, "O_RDWR" in flags
+
+    def judge(self, out: ProgramReads) -> None:  # noqa: C901 - every kind of call a program reads files with
+        """Every read, write, copy, listing and command in the program, into ``out``, and whether its text names
+        the KB anywhere none of them spells a path (:attr:`ProgramReads.unaccounted`)."""
         paths: list[_Value] = []
+        writes: list[_Value] = []
         for head, index, mode_index, keyword in _READS[self.lang]:
             for _start, end in self._heads(head):
                 args = self._call_args(end)
                 if args is None:
                     continue
                 if "os\\.open" in head:
-                    flags = self.masked[args[1][0] : args[1][1]] if len(args) > 1 else ""
-                    if "O_WRONLY" in flags:
-                        continue
-                elif mode_index is not None and self._mode_writes(args, mode_index, keyword):
-                    continue
+                    reading, writing = self._os_open_writes(args)
+                elif mode_index is not None:
+                    reading, writing = self._mode(args, mode_index, keyword)
+                else:
+                    reading, writing = True, False
                 found = self._path_args(args, index)
                 if "require|" in head and self.lang == "js":  # a module by name is no file
                     found = [v for v in found if v.kind != "lit" or v.text.startswith((".", "/"))]
                 if "fileinput" in head and not args:
                     self.argv_read = True
-                paths += found
+                paths += found if reading else []
+                writes += found if writing else []
+        for head, index in _WRITES[self.lang]:
+            for _start, end in self._heads(head):
+                args = self._call_args(end)
+                if args is not None:
+                    writes += self._path_args(args, index) or ([_BUILT] if index != 99 else [])
+        for head, index in _NAMES[self.lang]:  # names only: what they spell is no read
+            for _start, end in self._heads(head):
+                args = self._call_args(end)
+                if args is not None:
+                    self._path_args(args, index)
         # Path(…).read_text() and kin: the receiver is the path.
         if self.lang in ("python", "ruby"):
             paren = r"\s*\(" if self.lang == "python" else r"\b\s*\(?"
@@ -788,22 +1033,31 @@ class _Scan:
                 receiver = self._receiver(m.start())
                 if receiver is None:
                     continue
-                called = m[0].endswith("(")
-                if m[0].startswith(".open") and called and self._mode_writes(self.args(m.end() - 1), 0, "mode"):
-                    continue
+                reading, writing = True, False
+                if m[0].startswith(".open") and self._is_module(*receiver):
+                    continue  # `gzip.open(p)`, `Kernel.open(p)`: a function, judged by its heads (or the KB rule)
+                if m[0].startswith(".open") and m[0].endswith("("):
+                    reading, writing = self._mode(self.args(m.end() - 1), 0, "mode")
                 values = self.values(*receiver)
-                if not m[0].startswith((".read_text", ".read_bytes")):
-                    values = [v for v in values if v.kind != "built"]  # `f.read()` on a file object: no new path
-                paths += values
+                if not m[0].startswith((".read_text", ".read_bytes", ".open")):
+                    # `f.read()` on a file object: no new path, unless the receiver is a call naming one
+                    values = [v for v in values if v.kind != "built" or self._names_kb(*receiver)]
+                paths += values if reading else []
+                writes += values if writing else []
+            for m in re.finditer(_WRITE_METHODS, self.masked):
+                receiver = self._receiver(m.start())
+                writes += self.values(*receiver) if receiver is not None else [_BUILT]
+            for m in re.finditer(_NAME_METHODS, self.masked):
+                receiver = self._receiver(m.start())
+                if receiver is not None:
+                    self.values(*receiver)
         copied: list[_Value] = []
         for head, src, dst in _COPIES[self.lang]:
             for _start, end in self._heads(head):
                 args = self._call_args(end)
                 if args is None:
                     continue
-                target = self._path_args(args, dst)
-                if any(v.kind in ("lit", "pre") and _KB_NAME.search(v.text) for v in target):
-                    continue  # into the KB: a write there
+                writes += self._path_args(args, dst) or [_BUILT]  # judged where it lands (live_run, raw_read)
                 copied += self._path_args(args, src)
         listed: list[tuple[str, str]] = []
         for head, index, recursive in _LISTS[self.lang]:
@@ -830,6 +1084,7 @@ class _Scan:
         for _start, end in self._heads(_CHDIR[self.lang]):
             args = self._call_args(end)
             chdirs += self._path_args(args, 0) if args else [_BUILT]
+        self.chdirs = chdirs
         self._runs(out)
         for value in copied:  # a copy reads all of a folder it's given
             if value.kind == "argv":
@@ -851,6 +1106,11 @@ class _Scan:
                 out.spelled.append(((folder.rstrip("/") or "."), FOLDER, AS_IS))
             else:
                 out.built = True
+        for value in writes:
+            if value.kind == "lit":
+                out.writes.append(value.text)
+            else:
+                out.writes_built = True
         if out.built:  # it opens what it builds: what it listed, it reads
             for root, how in listed:
                 pattern = bool(_GLOB.search(root))
@@ -858,26 +1118,64 @@ class _Scan:
         self._chdirs(chdirs, out)
         if _EXPANDS_HOME.search(self.text):  # Path("~/x").expanduser(): the `~` is the home folder
             out.spelled += [(p, FILE, TILDE) for p in out.literal if p.startswith("~")]
+        out.unaccounted = self._unaccounted()
+
+    def _is_module(self, a: int, b: int) -> bool:
+        """Whether ``text[a:b]`` names a module or a class, not a value: a dotted name the program never assigns
+        (``gzip``, ``os.path``), or a constant (``Kernel``, ``Zlib::GzipWriter``)."""
+        expr = self.masked[a:b].strip()
+        if not re.fullmatch(r"[A-Za-z_][\w.:]*", expr):
+            return False
+        if expr[0].isupper() and self.lang in ("ruby", "js", "php"):
+            return True
+        root = re.split(r"[.:]", expr)[0]
+        return not re.search(
+            _ASSIGN[self.lang].format(name=re.escape(root.lstrip("$"))), self.masked
+        ) and not re.search(rf"\bfor\s+{re.escape(root)}\b|\bas\s+{re.escape(root)}\b", self.masked)
+
+    def _names_kb(self, a: int, b: int) -> bool:
+        return bool(_KB_NAME.search(self.text[a:b]))
+
+    def _unaccounted(self) -> bool:
+        """Whether the program names the KB anywhere but in a literal a judged call spells a path with: in code
+        (an alias, `getattr`, a name), a comment, a literal no judged call takes (``exec("…")``), the code inside
+        an f-string or a template, or behind an escape (``"\x6bnowledge-base"``). That covers what the scan can't
+        follow, a lexer the program fools included: fail closed."""
+        inside = sorted(self.spans)
+        for m in _KB_NAME.finditer(self.text):
+            span = next(((a, b) for a, b in inside if a <= m.start() < b), None)
+            if span is None or span not in self.used or m.start() >= self.static_end(*span):
+                return True
+        for a, b in self.spans:  # what an escape spells: `"\x6bnowledge-base"`, `"\153nowledge"`
+            token = self.text[a:b]
+            if (a, b) in self.used or "\\" not in token:
+                continue
+            decoded = _unescape(token, self.lang)
+            if decoded is None or _KB_NAME.search(decoded):
+                return True  # one that spells the KB, or one the scan can't decode
+        return False
 
     @staticmethod
     def _chdirs(chdirs: list[_Value], out: ProgramReads) -> None:
-        """A program that changes its folder (``os.chdir``, ``Dir.chdir``, ``setwd``) is judged as perl's ``chdir``
-        is (scout.kb.other_reads): a literal folder is a folder read (one in the KB is denied, read or not), and
-        each relative path the program names is judged from it as well as from where the command runs; a folder the
-        program builds is a path built at run time."""
+        """A program that changes its folder (``os.chdir``, ``Dir.chdir``, ``setwd``) reads its relative paths
+        from there too: each is judged from both folders. A literal folder is a folder read when the program reads
+        a file's content (``os.chdir("knowledge-base")`` then ``open(…)``); listing it gives names only, as ``ls``
+        does. A folder the program builds is a path built at run time."""
+        reads = bool(out.literal or out.built or out.spelled)
         for chdir in chdirs:
             if chdir.kind != "lit":
                 out.built = True
                 continue
             here = chdir.text.rstrip("/") or "/"
-            relative = [p for p in out.literal if not p.startswith(("/", "~"))]
-            out.literal += [posixpath.join(here, p) for p in relative]
+            out.literal += [posixpath.join(here, p) for p in out.literal if not p.startswith(("/", "~"))]
+            out.writes += [posixpath.join(here, p) for p in out.writes if not p.startswith(("/", "~"))]
             out.spelled += [
                 (posixpath.join(here, p), how, live)
                 for p, how, live in list(out.spelled)
                 if live != TILDE and not p.startswith(("/", "~"))
             ]
-            out.spelled.append((here, FOLDER, AS_IS))
+            if reads:
+                out.spelled.append((here, FOLDER, AS_IS))
 
     def _receiver(self, dot: int) -> tuple[int, int] | None:
         """The expression a method call at ``dot`` (``.read_text``) is called on: a call (``Path("x")``), a

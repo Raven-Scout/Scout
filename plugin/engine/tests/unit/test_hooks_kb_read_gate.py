@@ -395,7 +395,7 @@ def test_env_and_detach_denies_keep_their_messages_and_record_no_hook_skip(vault
         "scripts/git-safe-commit.sh 'x' notes/a.md",
         "cat .git/hooks/pre-commit",
         "cat < .git/config",
-        "python3 x.py < .git/hooks/pre-commit",
+        "python3 -c 'import sys; print(len(sys.stdin.read()))' < .git/hooks/pre-commit",  # a script file is recorded
         'grep core <<< ".git/config"',
     ],
 )

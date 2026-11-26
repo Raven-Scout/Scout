@@ -55,6 +55,18 @@ class OtherReads:
     piped: bool = False
     # Paths a program takes from the environment (awk's `ENVIRON["F"]`): the variable's name, judged as `$F`.
     environ: list[str] = field(default_factory=list)
+    # What a program writes (scout.kb.program_reads.ProgramReads.writes, writes_built, operand_writes), so the gate
+    # can tell an edit of KB notes (read there, written only there: recorded as kb_edit) from a copy out of the KB.
+    writes: list[str] = field(default_factory=list)
+    writes_built: bool = False
+    operand_writes: bool = False
+    # Its text names the KB where no judged call spells a path (scout.kb.program_reads): denied, unless an edit.
+    unaccounted: bool = False
+    opaque: bool = False  # its program is text the shell fills in (`-c "$(…)"`): denied when the command names the KB
+
+    @property
+    def writes_something(self) -> bool:
+        return bool(self.writes or self.writes_built or self.operand_writes)
 
 
 def into_kb_counts(other: OtherReads) -> bool:
@@ -1138,8 +1150,43 @@ def _interpreter(name: str, args: list[str], stdin: Sequence[str]) -> OtherReads
     if found is None:
         return None
     return OtherReads(
-        reads=found.reads, literal=found.literal, spelled=found.spelled, built=found.built, programs=found.programs
+        reads=found.reads,
+        literal=found.literal,
+        spelled=found.spelled,
+        built=found.built,
+        programs=found.programs,
+        writes=found.writes,
+        writes_built=found.writes_built,
+        operand_writes=found.operand_writes,
+        unaccounted=found.unaccounted,
+        opaque=found.opaque,
     )
+
+
+_SQLITE_VALUES = {"-cmd", "-init", "-separator", "-newline", "-nullvalue", "-vfs", "-mmap", "-pagecache",
+                  "-heap", "-lookaside", "-maxsize"}  # fmt: skip
+
+
+def _sqlite(args: list[str]) -> OtherReads:
+    """sqlite3 DB [SQL…]: the database it opens, the files its SQL reads (``readfile('…')``, ``.read F``,
+    ``.import F T``, ``.open F``, ``-init F``), and any other KB name in its SQL, which the gate denies."""
+    opts, plain = _getopt(args, _SQLITE_VALUES)
+    out = OtherReads(reads=[(d, FILE) for d in plain[:1] if d not in ("", ":memory:")])
+    out.reads += [(f, FILE) for f in _values(opts, "-init")]
+    sql = "\n".join([*plain[1:], *_values(opts, "-cmd")])
+    for m in re.finditer(r"\breadfile\s*\(\s*(?:'((?:[^']|'')*)'\s*\)|)", sql, re.I):
+        if m[1] is None:
+            out.built = True
+        else:
+            out.literal.append(m[1].replace("''", "'"))
+    for m in re.finditer(r"^\s*\.(?:read|import|open|restore|load)\s+(\S+)", sql, re.M | re.I):
+        out.literal.append(m[1].strip("'\""))
+    named = " ".join([*out.literal, *(w for w, _ in out.reads)])
+    out.unaccounted = bool(re.search(r"knowledge[-_]base|action-items/context", sql)) and not re.search(
+        r"knowledge[-_]base|action-items/context", named
+    )
+    out.writes += [f for f in (m[1] for m in re.finditer(r"\bwritefile\s*\(\s*'([^']*)'", sql, re.I))]
+    return out
 
 
 # ----- the table -------------------------------------------------------------------------------------------
@@ -1150,6 +1197,7 @@ NAMES = _COPIES | _TARS | _COMPRESSORS | {"zip", "pax", "cpio", "split", "gsplit
                                           "gdiff", "dd", "gdd", "source", ".", "sed", "gsed", "awk", "gawk", "mawk",
                                           "nawk", "perl", "look"}  # fmt: skip
 _MOVES = {"mv", "gmv", "ln", "gln", "link", "glink"}
+_PERL_IN_PLACE = re.compile(r"-[aplnswT0-9]*i")  # -i, -pi, -pi.bak; not -Mlib or -I
 
 
 def other_reads(name: str, args: list[str], stdin: Sequence[str] = ()) -> OtherReads | None:
@@ -1164,6 +1212,8 @@ def other_reads(name: str, args: list[str], stdin: Sequence[str] = ()) -> OtherR
     folded = program_name(name)  # `MV`, `Ln` and `PYTHON3` run them on a case-insensitive disk
     if folded in _MOVES:
         return _move(folded.removeprefix("g"), args)
+    if folded in ("sqlite3", "sqlite"):
+        return _sqlite(args)
     if INTERPRETER.fullmatch(folded):
         return _interpreter(folded, args, stdin)
     if name not in NAMES and not re.fullmatch(r"perl[0-9.]*", name):
@@ -1197,4 +1247,7 @@ def other_reads(name: str, args: list[str], stdin: Sequence[str] = ()) -> OtherR
         return _sed(args)
     if name in ("awk", "gawk", "mawk", "nawk"):
         return _awk(args)
-    return _with_stdin(name, args, stdin) or _perl(args)  # a program on stdin is judged as `perl -e`
+    found = _with_stdin(name, args, stdin) or _perl(args)  # a program on stdin is judged as `perl -e`
+    if found is not None and found.reads and any(_PERL_IN_PLACE.match(a) for a in args if not a.startswith("--")):
+        found.operand_writes = True  # `perl -pi -e …`: it rewrites its operands, an edit when they're KB notes
+    return found

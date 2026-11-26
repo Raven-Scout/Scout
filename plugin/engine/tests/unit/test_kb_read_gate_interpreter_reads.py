@@ -82,7 +82,6 @@ MORE_FORMS = [
     """python3 -c 'print(open(r"knowledge-base/a.md").read())'""",
     """python3 -c 'print(open("knowledge-base/a.md", "r").read())'""",
     """python3 -c 'print(open("knowledge-base/a.md", mode="rb").read())'""",
-    """python3 -c 'print(open("knowledge-base/a.md", "a+").read())'""",
     """python3 -c 'import sys; print(open(sys.argv[1]).read())' knowledge-base/a.md""",
     """python3 -c 'import fileinput; [print(l) for l in fileinput.input()]' knowledge-base/a.md""",
     """python3 -c 'import fileinput; [print(l) for l in fileinput.input(["knowledge-base/a.md"])]'""",
@@ -162,7 +161,6 @@ MORE_FORMS = [
     """node -e 'const n="a"; console.log(require("fs").readFileSync(`knowledge-base/${n}.md`,"utf8"))'""",
     """node -e 'const f="knowledge-base/a.md"; console.log(require("fs").readFileSync(f,"utf8"))'""",
     """node -e 'const fd=require("fs").openSync("knowledge-base/a.md"); console.log(fd)'""",
-    """node -e 'const fd=require("fs").openSync("knowledge-base/a.md", "r+"); console.log(fd)'""",
     """node -e 'console.log(require("child_process").execSync("cat knowledge-base/a.md").toString())'""",
     """node -e 'require("child_process").spawnSync("cat", ["knowledge-base/a.md"], {stdio: "inherit"})'""",
     """node -e 'require("child_process").execFileSync("cat", ["knowledge-base/a.md"], {stdio: "inherit"})'""",
@@ -252,6 +250,52 @@ MORE_FORMS = [
     "cd docs && ln -s ../knowledge-base/a.md",
     "gmv knowledge-base/a.md docs/y.md",
     "gln knowledge-base/a.md docs/y.md",
+    # a KB name the scan can't judge as a path: fail closed (an alias, a string, a comment, code in an f-string)
+    """python3 -c 'print("knowledge-base/a.md")'""",
+    """python3 -c '# open("knowledge-base/a.md")\nprint(1)'""",
+    "python3 <<'EOF'\nprint('knowledge-base is the KB')\nEOF",
+    """node -e 'console.log(require("path").join("knowledge-base", "a.md"))'""",
+    """python3 -c 'o = open; print(o("knowledge-base/a.md").read())'""",
+    """python3 -c 'import io; print(io.FileIO("knowledge-base/a.md").read())'""",
+    """python3 -c 'from subprocess import run; run(["cat", "knowledge-base/a.md"])'""",
+    """python3 -c 'exec("print(open(\\x27knowledge-base/a.md\\x27).read())")'""",
+    """python3 -c 'print(f"{open("knowledge-base/a.md").read()}")'""",
+    """python3 -c 'print(open("\\x6bnowledge-base/a.md").read())'""",
+    """python3 -c 'print(open("\\153nowledge-base/a.md").read())'""",
+    """python3 -c 'print(open("\\u006bnowledge-base/a.md").read())'""",
+    """node -e 'console.log(require("fs")["readFileSync"]("knowledge-base/a.md", "utf8"))'""",
+    """ruby -e 'puts Kernel.open("knowledge-base/a.md").read'""",
+    """ruby -e 'puts File.send(:read, "knowledge-base/a.md")'""",
+    """php -r 'echo FILE_GET_CONTENTS("knowledge-base/a.md");'""",
+    """Rscript -e 'cat(base::readLines("knowledge-base/a.md"))'""",
+    """python3 -c 'import shutil; shutil.copy("knowledge-base/a.md", "knowledge-base/../docs/y.md")'""",
+    """python3 -c 'import shutil; shutil.copy("knowledge-base/a.md", "/tmp/knowledge-base-x.md")'""",
+    """python3 -c 'import os; os.read(os.open("knowledge-base/a.md", os.O_WRONLY if 0 else os.O_RDONLY), 9)'""",
+    # a script or a module given a KB path, a file the command line reads, a program the shell builds
+    """python3 scripts/tool.py knowledge-base/a.md""",
+    """python3 knowledge-base/projects/a/a.md""",
+    """python3 -m json.tool knowledge-base/a.md""",
+    """node script.js knowledge-base/a.md""",
+    """node -r ./knowledge-base/a.md -e 1""",
+    """Rscript analysis.R knowledge-base/a.md""",
+    """php -d auto_prepend_file=knowledge-base/a.md -r 'echo 1;'""",
+    """php -B 'readfile("knowledge-base/a.md");' -r 'echo 1;'""",
+    """uv run python3 -c 'print(open("knowledge-base/a.md").read())'""",
+    """poetry run python -c 'print(open("knowledge-base/a.md").read())'""",
+    'python3 -c "$(echo \'print(open("knowledge-base/a.md").read())\')"',
+    """{ echo 'print(open("knowledge-base/a.md").read())'; } | python3""",
+    """echo 'print(open("knowledge-base/a.md").read())' | tee /dev/null | python3""",
+    """ipython -c 'print(open("knowledge-base/a.md").read())'""",
+    """groovy -e 'println new File("knowledge-base/a.md").text'""",
+    """expect -c 'puts [read [open knowledge-base/a.md]]'""",
+    "sqlite3 :memory: \"select readfile('knowledge-base/a.md')\"",
+    "sqlite3 knowledge-base/x.db .dump",
+    # a move or a copy whose words the shell expands, or xargs feeds
+    "mv {knowledge-base/a.md,docs/}",
+    "cp knowledge-base/{a.md,../docs/y.md}",
+    "echo knowledge-base/a.md | xargs -I{} mv {} docs/",
+    "echo knowledge-base/a.md | xargs -J % mv % docs/",
+    "echo knowledge-base/a.md docs/ | xargs mv",
     # a name in another letter case runs the same program on a case-insensitive disk
     """PYTHON3 -c 'print(open("knowledge-base/a.md").read())'""",
     """Ruby -e 'puts File.read("knowledge-base/a.md")'""",
@@ -264,8 +308,6 @@ MORE_FORMS = [
     """python3 -c 'import os, glob; os.chdir("knowledge-base"); [print(open(f).read()) for f in glob.glob("*.md")]'""",
     """ruby -e 'Dir.chdir("knowledge-base"); Dir.glob("*.md").each { |f| puts File.read(f) }'""",
     """node -e 'process.chdir("knowledge-base"); console.log(require("fs").readFileSync("a.md", "utf8"))'""",
-    """python3 -c 'import os; os.chdir("knowledge-base"); print(1)'""",  # as perl's chdir: a folder read
-    """Rscript -e 'setwd("action-items/context")'""",
 ]
 
 
@@ -336,14 +378,9 @@ ALLOWED = [
     """python3 -c 'import os; print(len(list(os.walk("."))))'""",
     """python3 -c 'import datetime; print(datetime.date.today())'""",
     """python3 -c 'import sys; print(sys.argv[1])' knowledge""",
-    """python3 -c 'print("knowledge-base/a.md")'""",
-    """python3 -c '# open("knowledge-base/a.md")\nprint(1)'""",
     """python3 -c 'import webbrowser; webbrowser.open("https://example.com")'""",
     """python3 -c 'import sys; print(sys.stdin.read().upper())' < docs/a.md""",
-    """python3 -m json.tool docs/a.md""",
-    """python3 scripts/tool.py knowledge-base/a.md""",
     "python3 - <<'EOF'\nprint(open('docs/a.md').read())\nEOF",
-    "python3 <<'EOF'\nprint('knowledge-base is the KB')\nEOF",
     """ruby -e 'puts File.read("docs/a.md")'""",
     """ruby -ne 'print' docs/a.md""",
     """ruby -e 'File.write("knowledge-base/new.md", "x")'""",
@@ -354,9 +391,7 @@ ALLOWED = [
     """node -e 'require("fs").writeFileSync("knowledge-base/new.md","x")'""",
     """node -e 'require("fs").openSync("knowledge-base/new.md", "w")'""",
     """node -e 'console.log(1+1)'""",
-    """node -e 'console.log(require("path").join("knowledge-base", "a.md"))'""",
     """node -e 'require("child_process").execSync("git status", {stdio: "inherit"})'""",
-    """node script.js knowledge-base/a.md""",
     """php -r 'echo 1+1;'""",
     """php -r 'file_put_contents("knowledge-base/new.md", "x");'""",
     """php -r '$f = fopen("knowledge-base/new.md", "w"); fwrite($f, "x");'""",
@@ -364,8 +399,6 @@ ALLOWED = [
     """lua -e 'io.open("knowledge-base/new.md", "w"):write("x")'""",
     """Rscript -e 'cat(1+1)'""",
     """Rscript -e 'writeLines("x", "knowledge-base/new.md")'""",
-    """Rscript analysis.R knowledge-base/a.md""",
-    "R CMD BATCH analysis.R",
     "mv docs/a.md docs/c.md",
     "mv -t docs/sub docs/a.md",
     "ln -s docs/a.md b",
@@ -381,6 +414,12 @@ ALLOWED = [
     "mv --help",
     "ln --version",
     """python3 -c 'import os; os.chdir("docs"); print(open("a.md").read())'""",
+    """python3 -c 'import os; os.chdir("knowledge-base"); print(1)'""",  # a folder change alone reads nothing
+    """python3 -c 'import os; os.chdir("knowledge-base"); print(sorted(os.listdir(".")))'""",  # names only
+    """Rscript -e 'setwd("action-items/context")'""",
+    """python3 -c 'import os; print(os.path.exists("knowledge-base/a.md"))'""",
+    """python3 -c 'open("knowledge-base/new.md", "w").write("x")'""",
+    """python3 --version""",
     "scripts/scoutctl kb read knowledge-base/a.md | python3 -c 'import sys; print(len(sys.stdin.read()))'",
 ]
 
@@ -394,6 +433,12 @@ def test_an_ordinary_one_liner_or_move_is_allowed(home: Path, command: str) -> N
 # ----- a path a program builds at run time ----------------------------------------------------------------
 
 BUILT = [
+    """python3 -m json.tool docs/a.md""",  # a module: what it reads isn't in the command
+    """python3 scripts/tool.py docs/a.md""",
+    "R CMD BATCH analysis.R",
+    """python3 < scripts/a.md""",
+    """cat scripts/a.md | python3""",
+    """python3 -c 'exec(open("scripts/a.md").read())'""",
     """python3 -c 'import os; os.chdir(os.environ["D"]); print(1)'""",
     """python3 -c 'import sys; print(open(sys.stdin.readline().strip()).read())'""",
     """python3 -c 'import os; print(open(os.environ["X"]).read())'""",
@@ -456,7 +501,7 @@ def test_with_the_switch_on_a_built_path_is_denied(home: Path, monkeypatch: pyte
             ["python3", "-c", "import os; os.chdir('d/'); open('e/' + x)"],
             {"spelled": [("e", FOLDER, "as-is"), ("d/e", FOLDER, "as-is"), ("d", FOLDER, "as-is")]},
         ),
-        (["python3", "-c", "import os; os.chdir('d'); print(1)"], {"spelled": [("d", FOLDER, "as-is")]}),
+        (["python3", "-c", "import os; os.chdir('d'); print(1)"], None),  # names only: no read
         (["python3", "-c", "import os; os.chdir(x); print(1)"], {"built": True}),
         (["RUBY", "-e", "File.read('a')"], {"literal": ["a"]}),
         (["Python3.12", "-c", "open('a')"], {"literal": ["a"]}),
@@ -464,15 +509,20 @@ def test_with_the_switch_on_a_built_path_is_denied(home: Path, monkeypatch: pyte
         (["python3", "-c", "import subprocess; subprocess.run(['cat', x])"], {"built": True}),
         (["python3", "-c", "import subprocess; subprocess.run(['ls', '-l'])"], {"programs": ["ls -l"]}),
         (["python3", "-c", "import os; os.system(cmd)"], {"built": True}),
-        (["python3", "-c", "import shutil; shutil.copy(a, 'knowledge-base/x')"], None),
+        (
+            ["python3", "-c", "import shutil; shutil.copy(a, 'knowledge-base/x')"],
+            {"writes": ["knowledge-base/x"], "built": True},
+        ),
         (["python3", "-c", "import shutil; shutil.copy(a, 'd/x')"], {"built": True}),
         (["python3", "-c", "x = Path('a') / 'b' / 'c'\nx.read_text()"], {"literal": ["a/b/c"]}),
         (["python3", "-c", "Path('/a', 'b').read_text()"], {"literal": ["/a/b"]}),
         (["python3", "-c", "Path(x).read_text()"], {"built": True}),
-        (["python3", "-m", "http.server"], None),
-        (["python3", "script.py", "a"], None),
-        (["python3", "-"], None),  # stdin, but nothing given for it
-        (["python3", "-c"], None),
+        (["python3", "-m", "http.server"], {"built": True}),  # a module: what it reads isn't in the command
+        (["python3", "-m", "scout.cli", "kb", "read", "x"], None),  # Scout's engine, as scoutctl
+        (["python3", "script.py", "a"], {"reads": [("a", FILE), ("script.py", FILE)], "built": True}),
+        (["python3", "-"], {"built": True}),  # stdin, but nothing the gate can see
+        (["python3", "-c"], {"built": True}),
+        (["python3", "--version"], None),
         (["ruby", "-e", "File.read 'a' if true"], {"literal": ["a"]}),
         (["ruby", "-e", "File.read('a\\'b')"], {"literal": ["a'b"]}),
         (["ruby", "-e", "puts %x(ls #{d})"], {"built": True}),
@@ -482,18 +532,20 @@ def test_with_the_switch_on_a_built_path_is_denied(home: Path, monkeypatch: pyte
         (["ruby", "-Cd", "-e", "File.read('a')"], {"literal": ["d/a"]}),
         (["ruby", "-I", "lib", "-e", "File.read('a')"], {"literal": ["a"]}),
         (["ruby", "-eFile.read('a')"], {"literal": ["a"]}),
-        (["ruby", "x.rb"], None),
+        (["ruby", "x.rb"], {"reads": [("x.rb", FILE)], "built": True}),
         (["node", "-e", "require('fs')"], None),
-        (["node", "-e", "fs.openSync('a', {flag: 'w'})"], None),
+        (["node", "-e", "fs.openSync('a', {flag: 'w'})"], {"writes": ["a"], "literal": []}),
         (["node", "-e", "fs.openSync('a', {mode: 0o644})"], {"literal": ["a"]}),
         (["node", "-e", "$`ls ${d}`"], {"built": True}),
         (["node", "-e", "$`ls -l`"], {"programs": ["ls -l"]}),
         (["node", "-r", "x", "-e", "fs.readFileSync('a')"], {"literal": ["a"]}),
         (["node", "--input-type=module", "-e", "fs.readFileSync('a')"], {"literal": ["a"]}),
-        (["deno", "run", "x.ts"], None),
+        (["deno", "run", "x.ts"], {"reads": [("x.ts", FILE)], "built": True}),
+        (["deno", "fmt"], None),
         (["deno", "eval"], None),
-        (["bun", "run", "x.ts"], None),
-        (["php", "-f", "x.php"], None),
+        (["bun", "run", "x.ts"], {"reads": [("x.ts", FILE)], "built": True}),
+        (["bun", "install"], None),
+        (["php", "-f", "x.php"], {"reads": [("x.php", FILE)], "built": True}),
         (["php", "-d", "a=b", "-r", "readfile('a');"], {"literal": ["a"]}),
         (["php", "-r", "echo hash_file('md5', 'a');"], {"literal": ["a"]}),
         (["php", "-r", "echo `ls $d`;"], {"built": True}),
@@ -503,10 +555,10 @@ def test_with_the_switch_on_a_built_path_is_denied(home: Path, monkeypatch: pyte
         (["Rscript", "-e", "readLines(paste('a', x))"], {"built": True}),
         (["Rscript", "-e", "readLines(paste('a', 'b'))"], {"literal": ["a b"]}),  # paste's sep is a space
         (["Rscript", "-e", "readLines(file='a')"], {"literal": ["a"]}),
-        (["Rscript", "-e", "file('a', open='w')"], None),
-        (["Rscript", "--file=x.R"], None),
-        (["Rscript", "-f", "x.R"], None),
-        (["R", "--args", "x"], None),
+        (["Rscript", "-e", "file('a', open='w')"], {"writes": ["a"], "literal": []}),
+        (["Rscript", "--file=x.R"], {"reads": [("x.R", FILE)], "built": True}),
+        (["Rscript", "-f", "x.R"], {"reads": [("x.R", FILE)], "built": True}),
+        (["R", "--args", "x"], {"reads": [], "built": True}),
         (["cat", "x"], None),
     ],
 )
@@ -523,10 +575,10 @@ def test_program_reads_finds_what_a_program_reads(words: list[str], expected: di
     ("words", "expected"),
     [
         # command lines: `--`, a long option's value, R's --file, a bare -e
-        (["ruby", "--", "x.rb"], None),
+        (["ruby", "--", "x.rb"], {"reads": [("x.rb", FILE)], "built": True}),
         (["node", "--require", "x", "-e", "fs.readFileSync('a')"], {"literal": ["a"]}),
-        (["Rscript", "--file", "x.R"], None),
-        (["ruby", "-e"], None),
+        (["Rscript", "--file", "x.R"], {"reads": [("x.R", FILE)], "built": True}),
+        (["ruby", "-e"], {"built": True}),
         # expressions: an operand first in a join, an absolute part, a part that's built after a literal one
         (["python3", "-c", "n = sys.argv[1]\nopen(n + '.md')", "f"], {"reads": [("f", FILE)]}),
         (["python3", "-c", "open(name_of('a'))"], {"built": True}),
@@ -542,7 +594,7 @@ def test_program_reads_finds_what_a_program_reads(words: list[str], expected: di
         (["node", "-e", "fs.readFileSync(__dirname)"], {"built": True}),
         (["php", "-r", "echo file_get_contents($d.$e);"], {"built": True}),
         # calls with no arguments, or none the gate can read
-        (["python3", "-c", "x = open\nprint(x)"], None),
+        (["python3", "-c", "x = open\nprint(x)"], None),  # no KB name, no read: nothing to judge
         (["python3", "-c", "x = glob.glob\nprint(x)"], None),
         (["python3", "-c", "import os; os.system()"], None),
         (["python3", "-c", "import subprocess; subprocess.run([])"], None),
@@ -570,7 +622,8 @@ def test_a_program_on_stdin_and_an_echoed_one() -> None:
     assert found is not None and found.literal == ["a"]
     found = program_reads("python3", [], ["echo 'unbalanced"])  # not one shlex reads: the text as it is
     assert found is None
-    assert program_reads("python3", ["script.py"], ["open('a')"]) is None
+    found = program_reads("python3", ["script.py"], ["open('a')"])  # a script file: stdin is its data
+    assert found is not None and found.reads == [("script.py", FILE)] and found.literal == [] and found.built
 
 
 @pytest.mark.parametrize(

@@ -250,6 +250,16 @@ def _deny_unresolved(form: str) -> str:
 # allowed and recorded as a `kb_read_gate.unresolved_read` event with its categories (UNRESOLVED_CATEGORIES)
 # until there's data to decide on. The KB reads the gate can work out are denied either way.
 DENY_UNRESOLVED_READS = False
+# A run's interpreter program (python, ruby, node, php, perl…) that reads a KB note and writes only into the KB: an
+# edit in place (read the note, change it, write it back; `ruby -i -pe`, `perl -pi -e`). True denies it as the read
+# it also is. Off for now (Jordan's call, #824's review): a replay of real runs found about one per run, keeping the
+# KB up to date, and runs have no sanctioned edit path yet. So each is allowed and recorded as a
+# `kb_read_gate.kb_edit` event, once per command: {"mode": <SCOUT_MODE>, "targets": <how many KB files it
+# writes>}, no paths. What the program does with what it read isn't followed: a file name, an exit code or an
+# exception carries data, so the record is the safety net until runs get a sanctioned edit command. Neither switch
+# touches the other's reads. Every other interpreter read of a KB note is denied either way: read-only, or read
+# there and written outside the KB (a copy out).
+DENY_INTERPRETER_KB_EDITS = False
 # What made a read unresolved, by the placeholder live_run left in its word.
 # program_path: a file a program's text opens by a path it builds at run time (awk, perl; scout.kb.other_reads).
 UNRESOLVED_CATEGORIES = ("xargs_input", "command_output", "unset_variable", "program_path")
@@ -371,6 +381,12 @@ def _record_unresolved_read(vault: Path, categories: list[str], mode: str | None
     _PENDING_AUDIT.append((vault, "kb_read_gate.unresolved_read", {"categories": categories, "mode": mode}))
 
 
+def _record_kb_edit(vault: Path, targets: int, mode: str | None) -> None:
+    """Queue an allowed interpreter edit of KB notes (see :data:`DENY_INTERPRETER_KB_EDITS`): how many KB files the
+    command writes and the run's mode, never the command or a path."""
+    _PENDING_AUDIT.append((vault, "kb_read_gate.kb_edit", {"mode": mode, "targets": targets}))
+
+
 def flush_audit() -> None:
     """Write the queued rows, best effort: the event writer refuses anything but a regular file (scout.events)."""
     from scout.events import append_event
@@ -488,6 +504,11 @@ def decide(
                     return None
                 rels = (_vault_rel(vault, paths.resolve_path(one)) for one in globs(target) or [target])
                 return KB_READ if any(rel is not None and rel != "." and is_kb_path(rel) for rel in rels) else None
+            if how == "kb_edit":  # an interpreter's edit of KB notes (live_run.KB_EDIT); ``raw``: how many it writes
+                if DENY_INTERPRETER_KB_EDITS:
+                    return KB_READ
+                edits.append(int(raw) if raw.isdigit() else 1)
+                return None
             if target is None:
                 if DENY_UNRESOLVED_READS:
                     return UNRESOLVED_READ
@@ -513,6 +534,7 @@ def decide(
 
         memo: dict[str, list[str] | None] = {}
         unresolved: set[str] = set()
+        edits: list[int] = []  # each interpreter edit of KB notes the command runs: how many files it writes
 
         def globs(target: str) -> list[str] | None:
             if target not in memo:
@@ -544,6 +566,8 @@ def decide(
             return _deny_bash()
         if unresolved:
             _record_unresolved_read(vault, sorted(unresolved), mode)
+        if edits:
+            _record_kb_edit(vault, sum(edits), mode)
         return None
     if tool in ("Grep", "Glob"):
         raw = tool_input.get("path")

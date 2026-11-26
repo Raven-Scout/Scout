@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from scout.kb.other_reads import OtherReads
     from scout.kb.raw_read import _Stripped
 
 LOCK_NAME = ".scout-session.lock"
@@ -539,6 +540,9 @@ UNSEEN_INPUT = "$__scout_input__"
 # A file a program's text opens by a path it builds at run time (awk's `getline < ("kn" x)`, perl's
 # `open(F, $f)`): unresolved too (scout.kb.other_reads, OtherReads.built).
 PROGRAM_PATH = "$__scout_program__"
+# How _other_targets marks an interpreter program that reads KB notes and writes only into the KB: the gate records
+# it as a `kb_read_gate.kb_edit` (kb_read_gate.DENY_INTERPRETER_KB_EDITS). Its word is how many files it writes.
+KB_EDIT = "kb_edit"
 # What a lister prints (`$(find .)`, `rg --files | while read f`): paths under the folders it lists, so a reader
 # handed one reads below them. `$__scout_list_N__` names entry N of _STATE["lists"] (those folders); anything but
 # a reader's judge (a write, a secret check) sees an unknown variable, as for SUBST.
@@ -1538,6 +1542,20 @@ def _program_flags(interpreter: str, args: list[str]) -> tuple[list[str], bool]:
     return programs, not programs
 
 
+def _stdin_for_reads(segment: str, herestrings: list[str], fed: str | None, command: str) -> list[str]:
+    """:func:`_stdin_programs` for the KB judge: a program piped in by anything but ``echo``/``printf`` (``tee``,
+    ``{ …; }``, a file) is one the gate can't read, marked :data:`scout.kb.program_reads.PIPED` with the whole
+    command's text (a KB name anywhere in it denies)."""
+    from scout.kb.program_reads import PIPED
+
+    bodies = _segment_bodies(segment)
+    if bodies or herestrings or fed is None:
+        return [*bodies, *herestrings]
+    if re.match(r"\s*(?:echo|printf)\s", fed) and not re.search(r"[|;&`]|\$\(", fed):
+        return [fed]
+    return [PIPED + command]
+
+
 def _stdin_programs(segment: str, herestrings: list[str], fed: str | None) -> list[str]:
     """What a program reading its program from stdin gets: this segment's here-documents and here-strings, else
     the segment piped into it (``fed``: its text, and its own here-documents)."""
@@ -1666,6 +1684,7 @@ def _kb_read(
     fed: str | None,
     oldpwd: str | None = None,
     stdin: list[str] | None = None,
+    segment: str = "",
 ) -> str | None:
     """Ask _KB_READ about each file a reading command reads (scout.kb.raw_read's readers, past their prefixes),
     and each input redirect, as the shell hands them over: brace lists expanded, the command's own variables put
@@ -1700,16 +1719,25 @@ def _kb_read(
                     if listed and any(marker in o and o != marker for o in stripped.words[1:]):
                         operands.append(UNSEEN_INPUT)  # a listed path inside a longer word: not one the gate can judge
             targets += [(word, where, how) for word in operands]
-        targets += _other_targets(name, stripped, cwd, fed, oldpwd, stdin or [])
+        targets += _other_targets(name, stripped, cwd, fed, oldpwd, stdin or [], words, segment)
     for word, where, how in [*targets, *roots]:
-        found = _judge_read(word, where, how, oldpwd)
+        if how == "deny":
+            return KB_READ  # a program naming the KB where the scan can't judge it (_other_targets)
+        found = _KB_READ(word, "kb_edit") if how == "kb_edit" else _judge_read(word, where, how, oldpwd)
         if found is not None:
             return found
     return None
 
 
 def _other_targets(
-    name: str, stripped: _Stripped, cwd: str, fed: str | None, oldpwd: str | None, stdin: list[str]
+    name: str,
+    stripped: _Stripped,
+    cwd: str,
+    fed: str | None,
+    oldpwd: str | None,
+    stdin: list[str],
+    words: list[str] | None = None,
+    segment: str = "",
 ) -> list[tuple[str, str, str]]:
     """What :mod:`scout.kb.other_reads` says the command reads beyond its operands, as ``_kb_read`` targets: a
     copy's sources (none when it copies into the KB), the files a stdin list names, the paths a program opens
@@ -1717,9 +1745,13 @@ def _other_targets(
     ``sed "r $(…)"``), the environment variables a program opens (awk's ``ENVIRON["F"]``, from a ``F=…`` the
     command sets or the run's own), and :data:`PROGRAM_PATH` for a path it builds at run time.
     ``stdin``: the programs an interpreter reading its program from stdin gets (``python3 - <<EOF``)."""
+    from scout.kb import raw_read
     from scout.kb.other_reads import into_kb_counts, other_reads
+    from scout.kb.program_reads import INTERPRETER
 
     args = stripped.words[1:]
+    if not INTERPRETER.fullmatch(raw_read.program_name(name)):  # a program's text keeps its braces
+        args = _fed_operands(_brace_words(args), stripped, fed, words or [])
     other = other_reads(name, args, stdin)  # the words as quoted: a quoted `*` in a copy's source is no glob
     if other is None:
         return []
@@ -1755,7 +1787,54 @@ def _other_targets(
     out += [(_shield_spelled(path, live), where, how) for path, how, live in program.spelled]
     if program.built:
         out.append((PROGRAM_PATH, where, "file"))
+    if program.writes_something and _writes_only_kb(program, other, where, oldpwd):
+        if any(_judge_read(word, at, how, oldpwd) == KB_READ for word, at, how in out):
+            count = len(program.writes) + (len(other.reads) if program.operand_writes else 0)
+            return [(str(count or 1), where, "kb_edit")]  # an edit of KB notes: recorded, not judged as a read
+    if program.unaccounted or other.unaccounted:
+        out.append(("", where, "deny"))
+    elif program.opaque and re.search(r"knowledge[-_]base|action-items/context", _STATE.get("command", segment)):
+        out.append(("", where, "deny"))  # `python3 -c "$(…knowledge-base…)"`: a program the shell builds
     return out
+
+
+def _brace_words(args: list[str]) -> list[str]:
+    """``args`` after the shell's brace expansion (``mv {knowledge-base/a.md,docs/}``: two words, a source and a
+    target). A quoted brace is shielded, so stays."""
+    from scout.kb import raw_read
+
+    out: list[str] = []
+    for word in args:
+        out += raw_read.brace_expand(word) or [word]
+    return out
+
+
+def _fed_operands(args: list[str], stripped: _Stripped, fed: str | None, words: list[str]) -> list[str]:
+    """``args`` with what ``xargs`` feeds the command put in: the paths an ``echo``/``printf`` prints, the folders a
+    lister lists, after the words (``xargs mv -t docs``) or where ``-I``'s marker is (``xargs -I{} mv {} docs``);
+    input from a command the gate can't follow is :data:`UNSEEN_INPUT`."""
+    if not stripped.fed:
+        return args
+    names, listed = _fed_sources(fed)
+    given = names or listed or [UNSEEN_INPUT]
+    marker = _replace_string([_unshield(w) for w in words])
+    if marker is not None and not any(marker in a for a in args):
+        marker = "".join(_SHIELD.get(c, c) for c in marker)
+    if marker is None or not any(marker in a for a in args):
+        return [*args, *given]
+    return [a.replace(marker, n) for a in args for n in (given if marker in a else [""])]
+
+
+def _writes_only_kb(program: OtherReads, other: OtherReads, where: str, oldpwd: str | None) -> bool:
+    """Whether every file a program writes is in the KB, each judged where it lands (``..``, a symlink): the paths
+    its text writes, and its operands when it rewrites them in place. One it builds is nowhere the gate can tell."""
+    if program.writes_built:
+        return False
+    if not all(_judge_read(_shield_single(w), where, "dest", oldpwd) == KB_READ for w in program.writes):
+        return False
+    return not program.operand_writes or all(
+        _judge_read(word, where, "dest", oldpwd) == KB_READ for word, _how in other.reads
+    )
 
 
 def _prefix_assignments(stripped: _Stripped) -> dict[str, str]:
@@ -1779,7 +1858,7 @@ def _other_programs(words: list[str], stdin: list[str] | None = None) -> list[st
 # How a reader takes a path it's handed: "file" opens files (a folder only prints an error), "folder" also reads a
 # folder (``ls``, ``grep -r``), "covers" reads every file below it (the root an xargs lister lists). "dest" is no
 # read: it asks whether a copy's target is in the KB (KB_READ), and a path the gate can't work out is not.
-KB_READ_HOW = ("file", "folder", "covers", "dest")
+KB_READ_HOW = ("file", "folder", "covers", "dest", KB_EDIT)
 
 
 def _judge_read(word: str, where: str, how: str, oldpwd: str | None = None) -> str | None:
@@ -2430,6 +2509,7 @@ def run_escape(
             parsing=False,
             expanded=set(),
             lists=[],
+            command=command,  # as written: a program the shell builds is judged by it (_other_targets)
         )
     try:
         found = _run_escape(command, depth)
@@ -2591,9 +2671,9 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
                 kb_clean, _writes, literal_reads, _strings = _redirects(shielded)
                 literal_words = _tokens(kb_clean)
             found = _secret_read(literal_words, literal_reads, cwd)
-            stdin = _stdin_programs(segment, strings, fed) if _KB_READ is not None else []
+            stdin = _stdin_for_reads(segment, strings, fed, command) if _KB_READ is not None else []
             if found is None and _KB_READ is not None:
-                found = _kb_read(literal_words, literal_reads, cwd, fed, oldpwd, stdin)
+                found = _kb_read(literal_words, literal_reads, cwd, fed, oldpwd, stdin, segment)
             if found is None and _KB_READ is not None:
                 for program in _other_programs(words, stdin):  # awk's system("…"), perl's backticks: commands too
                     # It runs in this segment's folder: `cd action-items; awk 'BEGIN{system("cat context/x")}'`.
