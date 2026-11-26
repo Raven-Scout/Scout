@@ -1286,9 +1286,31 @@ def cmd_name_lookup(graph: KnowledgeGraph, token: str, threshold: float, lookup_
     return Output(data=rows, lines=lines, labels=[r["label"] for r in rows if r["label"]])
 
 
-def cmd_export(graph: KnowledgeGraph) -> Output:
-    text = graph.export_json()
-    return Output(data=json.loads(text), lines=[text], labels=_node_labels(graph, list(graph.entities)))
+def cmd_export(
+    graph: KnowledgeGraph,
+    vault: Path | None = None,
+    fmt: str = "json",
+    include_body: bool = True,
+    body_scope: str = "knowledge-base/",
+) -> Output:
+    if fmt == "json":
+        text = graph.export_json()
+        return Output(data=json.loads(text), lines=[text], labels=_node_labels(graph, list(graph.entities)))
+    if fmt != "jsonl":
+        raise UsageError(f"--format takes json or jsonl, not {fmt!r}")
+    from scout.kb.export_jsonl import build_property_graph, format_jsonl
+
+    root = vault if vault is not None else (graph.vault if graph.vault is not None else find_vault(graph.kb_root))
+    pg = build_property_graph(
+        root,
+        graph.reader,
+        graph=graph,
+        include_body=include_body,
+        body_scope=body_scope,
+    )
+    raw_jsonl = format_jsonl(pg)
+    rows = [json.loads(line) for line in raw_jsonl.splitlines()] if raw_jsonl else []
+    return Output(data=rows, raw=raw_jsonl + "\n", labels=pg.labels)
 
 
 def cmd_stats(graph: KnowledgeGraph) -> Output:
