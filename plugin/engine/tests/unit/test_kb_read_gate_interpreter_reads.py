@@ -308,6 +308,25 @@ MORE_FORMS = [
     """python3 -c 'import os, glob; os.chdir("knowledge-base"); [print(open(f).read()) for f in glob.glob("*.md")]'""",
     """ruby -e 'Dir.chdir("knowledge-base"); Dir.glob("*.md").each { |f| puts File.read(f) }'""",
     """node -e 'process.chdir("knowledge-base"); console.log(require("fs").readFileSync("a.md", "utf8"))'""",
+    # a listing of a KB folder gives its notes' names, as `ls knowledge-base` does (hidden notes' names too)
+    """python3 -c 'import os; print(os.listdir("knowledge-base"))'""",
+    """python3 -c 'import os; print([e.name for e in os.scandir("knowledge-base/projects")])'""",
+    """python3 -c 'import glob; print(glob.glob("knowledge-base/*.md"))'""",
+    """python3 -c 'import pathlib; print(list(pathlib.Path("knowledge-base").iterdir()))'""",
+    """python3 -c 'import os; print(len(list(os.walk("."))))'""",
+    """python3 -c 'import glob; print(glob.glob("**/*.md", recursive=True))'""",
+    """ruby -e 'p Dir.glob("knowledge-base/*")'""",
+    """node -e 'console.log(require("fs").readdirSync("knowledge-base"))'""",
+    """Rscript -e 'print(list.files("knowledge-base"))'""",
+    # …and so does a folder change into one, then a listing there, as `cd knowledge-base && ls` does
+    """python3 -c 'import os; os.chdir("knowledge-base"); print(sorted(os.listdir(".")))'""",
+    """python3 -c 'import os; os.chdir("knowledge-base"); print(list(os.scandir()))'""",
+    """python3 -c 'import os, glob; os.chdir("knowledge-base"); print(glob.glob("*"))'""",
+    """python3 -c 'import os, pathlib; os.chdir("knowledge-base"); print(list(pathlib.Path(".").iterdir()))'""",
+    """ruby -e 'Dir.chdir("knowledge-base"); p Dir.glob("*")'""",
+    """node -e 'process.chdir("knowledge-base"); console.log(require("fs").readdirSync("."))'""",
+    """Rscript -e 'setwd("knowledge-base"); print(list.files())'""",
+    """ruby -Cknowledge-base -e 'p Dir.glob("*")'""",
 ]
 
 
@@ -374,8 +393,9 @@ ALLOWED = [
     """python3 -c 'import subprocess; subprocess.run(["git", "status"])'""",
     """python3 -c 'import subprocess; print(subprocess.check_output("date", shell=True))'""",
     """python3 -c 'import os; print(os.listdir("docs"))'""",
-    """python3 -c 'import os; print(os.listdir("knowledge-base"))'""",
-    """python3 -c 'import os; print(len(list(os.walk("."))))'""",
+    """python3 -c 'import os; print(os.listdir("."))'""",  # the vault's top folder, as `ls` is
+    """python3 -c 'import glob; print(glob.glob("*.md"))'""",
+    """python3 -c 'import os; print(len(list(os.walk("docs"))))'""",
     """python3 -c 'import datetime; print(datetime.date.today())'""",
     """python3 -c 'import sys; print(sys.argv[1])' knowledge""",
     """python3 -c 'import webbrowser; webbrowser.open("https://example.com")'""",
@@ -415,7 +435,8 @@ ALLOWED = [
     "ln --version",
     """python3 -c 'import os; os.chdir("docs"); print(open("a.md").read())'""",
     """python3 -c 'import os; os.chdir("knowledge-base"); print(1)'""",  # a folder change alone reads nothing
-    """python3 -c 'import os; os.chdir("knowledge-base"); print(sorted(os.listdir(".")))'""",  # names only
+    """python3 -c 'import os; os.chdir("docs"); print(sorted(os.listdir(".")))'""",
+    """python3 -c 'import os; os.chdir("knowledge-base"); print(os.path.exists("a.md"))'""",  # as `test -e`
     """Rscript -e 'setwd("action-items/context")'""",
     """python3 -c 'import os; print(os.path.exists("knowledge-base/a.md"))'""",
     """python3 -c 'open("knowledge-base/new.md", "w").write("x")'""",
@@ -505,7 +526,12 @@ def test_with_the_switch_on_a_built_path_is_denied(home: Path, monkeypatch: pyte
         (["python3", "-c", "import os; os.chdir(x); print(1)"], {"built": True}),
         (["RUBY", "-e", "File.read('a')"], {"literal": ["a"]}),
         (["Python3.12", "-c", "open('a')"], {"literal": ["a"]}),
-        (["python3", "-c", "import os; print(os.listdir('d'))"], None),
+        (["python3", "-c", "import os; print(os.listdir('d'))"], {"spelled": [("d", FOLDER, "as-is")]}),  # as `ls d`
+        (
+            ["python3", "-c", "import os; os.chdir('d'); print(os.listdir())"],
+            {"spelled": [(".", FOLDER, "as-is"), ("d", FOLDER, "as-is")]},  # as `cd d && ls`
+        ),
+        (["python3", "-c", "import os; os.chdir('d'); print(os.path.exists('a'))"], None),  # as `test -e`
         (["python3", "-c", "import subprocess; subprocess.run(['cat', x])"], {"built": True}),
         (["python3", "-c", "import subprocess; subprocess.run(['ls', '-l'])"], {"programs": ["ls -l"]}),
         (["python3", "-c", "import os; os.system(cmd)"], {"built": True}),
@@ -530,6 +556,10 @@ def test_with_the_switch_on_a_built_path_is_denied(home: Path, monkeypatch: pyte
         (["ruby", "-e", "puts 1", "f"], None),
         (["ruby", "-ne", "print", "f"], {"reads": [("f", FILE)]}),
         (["ruby", "-Cd", "-e", "File.read('a')"], {"literal": ["d/a"]}),
+        (
+            ["ruby", "-Cd", "-e", "File.read('/a'); p Dir.children('.')"],
+            {"literal": ["/a"], "spelled": [("d", FOLDER, "as-is")]},
+        ),
         (["ruby", "-I", "lib", "-e", "File.read('a')"], {"literal": ["a"]}),
         (["ruby", "-eFile.read('a')"], {"literal": ["a"]}),
         (["ruby", "x.rb"], {"reads": [("x.rb", FILE)], "built": True}),

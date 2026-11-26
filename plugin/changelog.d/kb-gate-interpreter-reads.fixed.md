@@ -13,8 +13,9 @@
 - A program that reads a KB note and writes only into the KB (an edit in place, `ruby -i -pe`, `perl -pi -e`
   included) is allowed and recorded as a `kb_read_gate.kb_edit` event (`{"mode", "targets"}`, no paths).
   `DENY_INTERPRETER_KB_EDITS` in `scout/hooks/kb_read_gate.py`, off for now, denies them. A program that reads a
-  note and writes outside the KB is denied as the copy it is. Listing or testing a KB folder (`os.listdir`,
-  `os.path.exists`, a `chdir` with no read after it) gives names only and is allowed.
+  note and writes outside the KB is denied as the copy it is. Listing a KB folder (`os.listdir`, `os.scandir`,
+  `glob`, `Path.iterdir`, `os.walk`, `Dir.glob`, `fs.readdirSync`, `list.files`), there or after a `chdir` into it,
+  is denied as `ls knowledge-base` is; testing a name (`os.path.exists`) is allowed, as `test -e` is.
 - `mv`, `ln` (hard or symbolic) and `link` with a KB source and a target outside the KB are denied in a run, through
   brace lists and `xargs` input too. A hard link is the note's own file under another name, so no later read of it
   could be caught.

@@ -21,8 +21,9 @@ its arguments spell:
 The files it writes (an open with a mode that writes, ``write_text``, ``File.write``, ``fs.writeFileSync``,
 ``file_put_contents``, a copy's target, ``ruby -i``'s operands) are :attr:`ProgramReads.writes`: a program that
 reads a KB note and writes only into the KB is an edit, which the gate records rather than denies. A listing
-(``os.walk``, ``glob.glob``, ``fs.readdirSync``…) or a test (``os.path.exists``) gives names only, unless the
-program also opens a path it builds; then what it listed counts as read. The shell commands a program runs
+(``os.listdir``, ``os.walk``, ``glob.glob``, ``fs.readdirSync``…) reads the folder it lists, as ``ls`` does, so
+listing a KB folder is a KB read. A test (``os.path.exists``) gives a name only, as ``test -e`` does, and is no
+read. The shell commands a program runs
 (``subprocess.run``, ``os.system``, backticks, ``execSync``, ``os.execute``, ``system()``) are commands of their own
 (:attr:`ProgramReads.programs`).
 
@@ -336,10 +337,13 @@ def program_reads(name: str, args: list[str], stdin: Sequence[str] = ()) -> Prog
     if call.chdir:
 
         def into(p: str) -> str:
-            return p if p.startswith(("/", "~")) else posixpath.join(call.chdir or "", p)
+            if p.startswith(("/", "~")):
+                return p
+            return (call.chdir or "") if p == "." else posixpath.join(call.chdir or "", p)
 
         out.literal = [into(p) for p in out.literal]
         out.writes = [into(p) for p in out.writes]
+        out.spelled = [(p if live == TILDE else into(p), how, live) for p, how, live in out.spelled]
     out.literal = list(dict.fromkeys(out.literal))
     out.spelled = list(dict.fromkeys(out.spelled))
     out.writes = list(dict.fromkeys(out.writes))
@@ -1111,10 +1115,9 @@ class _Scan:
                 out.writes.append(value.text)
             else:
                 out.writes_built = True
-        if out.built:  # it opens what it builds: what it listed, it reads
-            for root, how in listed:
-                pattern = bool(_GLOB.search(root))
-                out.spelled.append((root, FILE if pattern and how == FOLDER else how, GLOB if pattern else AS_IS))
+        for root, how in listed:  # a listing reads the names in a folder, as `ls` does
+            pattern = bool(_GLOB.search(root))
+            out.spelled.append((root, FILE if pattern and how == FOLDER else how, GLOB if pattern else AS_IS))
         self._chdirs(chdirs, out)
         if _EXPANDS_HOME.search(self.text):  # Path("~/x").expanduser(): the `~` is the home folder
             out.spelled += [(p, FILE, TILDE) for p in out.literal if p.startswith("~")]
@@ -1159,8 +1162,9 @@ class _Scan:
     def _chdirs(chdirs: list[_Value], out: ProgramReads) -> None:
         """A program that changes its folder (``os.chdir``, ``Dir.chdir``, ``setwd``) reads its relative paths
         from there too: each is judged from both folders. A literal folder is a folder read when the program reads
-        a file's content (``os.chdir("knowledge-base")`` then ``open(…)``); listing it gives names only, as ``ls``
-        does. A folder the program builds is a path built at run time."""
+        or lists anything after it (``os.chdir("knowledge-base")`` then ``open(…)`` or ``os.listdir(".")``, as
+        ``cd knowledge-base && ls`` is); testing a name there (``os.path.exists``) is no read. A folder the program
+        builds is a path built at run time."""
         reads = bool(out.literal or out.built or out.spelled)
         for chdir in chdirs:
             if chdir.kind != "lit":
@@ -1170,7 +1174,7 @@ class _Scan:
             out.literal += [posixpath.join(here, p) for p in out.literal if not p.startswith(("/", "~"))]
             out.writes += [posixpath.join(here, p) for p in out.writes if not p.startswith(("/", "~"))]
             out.spelled += [
-                (posixpath.join(here, p), how, live)
+                (here if p == "." else posixpath.join(here, p), how, live)
                 for p, how, live in list(out.spelled)
                 if live != TILDE and not p.startswith(("/", "~"))
             ]
