@@ -13,11 +13,16 @@ it.
 from __future__ import annotations
 
 import fnmatch
+import os
 import posixpath
 import re
 import shlex
+import unicodedata
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
+
+from scout.kb import shell_prefixes
 
 KB_PATH = re.compile(r"(?:^|[\s'\"=:/<{,])(?:knowledge-base|knowledge_base|action-items/context)(?:/|\b|$)")
 KB_DIRS = ("knowledge-base", "knowledge_base", "action-items/context")
@@ -26,21 +31,43 @@ _READ_COMMANDS = {
     "mawk", "wc", "tree", "bat", "nl", "strings", "stat", "du", "file", "cut", "sort", "uniq", "diff", "cmp",
     "comm", "od", "xxd", "hexdump", "tac", "rev", "paste", "column", "fold", "fmt", "pr", "zcat", "base64",
     "iconv", "jq", "yq", "view", "vi", "vim", "nano", "most", "pg", "ag", "ack", "fd", "ugrep",
+    "ug", "ug+", "ugrep+", "fdfind", "ack-grep",  # aliases: _command_name reads them as ugrep, fd, ack
 }  # fmt: skip
-_PREFIX_WORDS = {
-    "xargs", "sudo", "command", "builtin", "env", "nice", "time", "exec", "timeout", "gtimeout", "stdbuf",
-    "caffeinate", "unbuffer", "parallel", "sh", "bash", "zsh", "dash", "ksh", "eval",
+# More plain readers from the BSD and GNU text utilities: each prints what is in the files it is given (or their
+# lines, shuffled, joined, side by side, converted). The readers that take files another way (copies, archives,
+# sed's `r`, awk's `getline <`, perl, dd, source) are scout.kb.other_reads'.
+_READ_COMMANDS |= {
+    "join", "expand", "unexpand", "shuf", "tsort", "ptx", "nawk", "sdiff", "diff3", "lam", "ul", "vis", "hd",
+    "base32", "basenc", "uuencode", "zless", "zmore", "zgrep", "zegrep", "zfgrep", "gzcat", "bzcat", "bzgrep",
+    "bzless", "bzmore", "xzcat", "xzgrep", "xzless", "zstdcat", "lz4cat", "ed", "ex", "nvim", "textutil", "glow",
+    "mdcat", "pandoc",
 }  # fmt: skip
+# Readers of what a compressed file holds, readers too. (`zgrep`, `xzegrep` and the like are grep with
+# decompression on: _command_name reads them as grep, see _DECOMPRESSING.)
+_DECOMPRESSING_READERS = {
+    "zcat", "gzcat", "bzcat", "xzcat", "lzcat", "lz4cat", "zstdcat", "zless", "zmore", "bzless", "bzmore", "xzless",
+    "xzmore", "zdiff", "zcmp", "bzdiff", "bzcmp", "xzdiff", "xzcmp",
+}  # fmt: skip
+_READ_COMMANDS |= _DECOMPRESSING_READERS
+# What runs the word after it (scout.kb.shell_prefixes, the one table both run gates build theirs from):
+# zsh's precommand modifiers, launchers, env, nohup, the shells and eval. `noglob grep -r TODO .` is
+# `grep -r TODO .` to the shell; `-` is a stray flag to _strip.
+_PREFIX_WORDS = set(shell_prefixes.ALL)
 # Prefix flags that take a separate value (`xargs -n 1 wc`, `nice -n 10 cat`): the value is not the command.
 _PREFIX_VALUE_FLAGS = {
     "xargs": {"-n", "-I", "-L", "-P", "-s", "-d", "-E", "-a", "--max-args", "--max-procs", "--delimiter"},
     "parallel": {"-j", "-n", "-N", "-I", "--jobs"},
     "nice": {"-n"},
     "sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-U"},
-    "env": {"-u", "-C", "-S", "--unset", "--chdir"},
+    "env": {"-u", "-C", "-S", "-P", "--unset", "--chdir", "--split-string"},
     "timeout": {"-s", "-k", "--signal", "--kill-after"},
     "gtimeout": {"-s", "-k", "--signal", "--kill-after"},
     "stdbuf": {"-i", "-o", "-e"},
+    "gstdbuf": {"-i", "-o", "-e"},
+    "exec": {"-a"},  # `exec -a NAME cmd`: NAME is the command's argv[0], not the command
+    "caffeinate": {"-t", "-w"},
+    "xcrun": {"--sdk", "-sdk", "--toolchain", "-toolchain"},
+    "arch": {"-arch", "-e", "-d"},  # `arch -arm64 cmd` is a flag; `arch -arch arm64 cmd` takes one
     **dict.fromkeys(("sh", "bash", "zsh", "dash", "ksh"), {"-o", "-O", "+o", "+O"}),
 }
 # A positional the prefix takes before the command (`timeout 10 cat …`).
@@ -50,7 +77,9 @@ _KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}"
 _SEGMENTS = re.compile(r"&&|\|\||[;&|\n`]|\$\(|\(|\)")
 _MESSAGE_ARG = re.compile(r"(\s(?:-m|--message|-F|--body|--title))(?:\s+|=)(\"(?:[^\"\\]|\\.)*\"|'[^']*')")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-_GIT_READ = re.compile(r"^(?:-C\s+\S+\s+)?(?:show|diff|grep|blame|annotate|cat-file|log\b.*\s(?:-p|--patch|-u)\b)")
+_GIT_READ = re.compile(
+    r"^(?:-C\s+\S+\s+)?(?:(?i:show|diff|grep|blame|annotate|cat-file)|(?i:log)\b.*\s(?:-p|--patch|-u)\b)"
+)
 # An input redirection from a KB path (`wc -c <knowledge-base/x.md`, `done < knowledge-base/list`,
 # `$(<knowledge-base/x.md)`), not a here-document (`<<`), a here-string (`<<<`) or `<(…)`.
 _KB_REDIRECT = re.compile(
@@ -72,10 +101,8 @@ _READ_VALUE_FLAGS = {
 # (`kb read` prints a note's labelled text: reading that through a pipe or a variable is fine.)
 _KB_SOURCE = re.compile(
     r"(?:knowledge-base|knowledge_base|action-items/context)"
-    r"|\bscoutctl\s+kb\s+(?:files|search|resolve|name-lookup|delta|structure|query|related|traverse|path|stat)\b"
+    r"|\b(?i:scoutctl)\s+kb\s+(?:files|search|resolve|name-lookup|delta|structure|query|related|traverse|path|stat)\b"
 )
-# A recursive read: what it reads under a folder it doesn't name.
-_RECURSIVE_FLAG = re.compile(r"^-(?:[A-Za-z]*[rR][A-Za-z]*|-recursive|-dereference-recursive|d=?recurse)$")
 # knowledge-base/ontology/schema.yaml and parser.py are tooling, not notes: reading them is fine.
 ONTOLOGY_TOOLING = re.compile(r"(?:^|/)(?:knowledge-base|knowledge_base)/ontology/(?:schema\.ya?ml|parser\.py)$")
 WHOLE_VAULT_GLOBS = {"*", "**", "**/*", "*.md", "**/*.md", "**/*.*"}
@@ -91,10 +118,13 @@ _KB_RG_TYPES = {"all", "md", "markdown", "yaml", "csv", "json", "txt", "html"}
 class _Stripped:
     """A segment's command words after its prefixes, and what the prefixes said."""
 
-    def __init__(self, words: list[str], fed: bool, chdir: str | None) -> None:
+    def __init__(
+        self, words: list[str], fed: bool, chdir: str | None, assignments: list[tuple[str, str]] | None = None
+    ) -> None:
         self.words = words
         self.fed = fed  # `xargs`/`parallel` gives the command its arguments from stdin
         self.chdir = chdir  # `env -C <dir>` runs it in another folder
+        self.assignments = assignments or []  # `F=x cmd`, `env F=x cmd`: what it puts in the command's environment
 
 
 def _strip(words: list[str]) -> _Stripped:
@@ -103,13 +133,14 @@ def _strip(words: list[str]) -> _Stripped:
     keywords (``do``, ``then``, ``!``). ``command -v x`` runs nothing."""
     fed = False
     chdir: str | None = None
+    assignments: list[tuple[str, str]] = []
     words = list(words)
     prefix: str | None = None
     pending = 0  # positionals the prefix still takes before the command (`timeout 10 …`)
     while words:
         word = words[0]
         base = _command_name(word)  # `/usr/bin/env`, `/usr/bin/xargs` are prefixes too
-        if base in _PREFIX_WORDS and (word == base or "/" in word):
+        if base in _PREFIX_WORDS and (fold(_unquoted(word)) == base or "/" in word):
             if base == "command" and len(words) > 1 and words[1] in ("-v", "-V") and not _names_kb(" ".join(words[2:])):
                 return _Stripped([], fed, chdir)  # a lookup: nothing runs (main denied one naming a KB path)
             word = base
@@ -119,22 +150,53 @@ def _strip(words: list[str]) -> _Stripped:
             words.pop(0)
         elif word.startswith("-") and prefix is not None:
             words.pop(0)
-            if prefix == "env" and word.startswith("--chdir="):
-                chdir = word.split("=", 1)[1]
-            elif word in _PREFIX_VALUE_FLAGS.get(prefix, ()) and words:
-                value = words.pop(0)
-                if prefix == "env" and word in ("-C", "--chdir"):
-                    chdir = value
+            flag, value = _prefix_option(prefix, word, words)
+            if prefix == "env" and flag in ("-C", "--chdir"):
+                chdir = value
+            elif prefix == "env" and flag in ("-S", "--split-string") and value is not None:
+                # `env -S 'cat x'` runs the words of its value, then the rest: judged as the command, as `sh -c` is.
+                words = _split_words(value) + words
+                prefix = None
         elif word.startswith("-"):
             words.pop(0)  # a stray flag with no prefix before it
         elif pending and prefix is not None:
             pending -= 1
             words.pop(0)
         elif _ASSIGNMENT.match(word) or word in _KEYWORDS:
+            if word not in _KEYWORDS:
+                name, _eq, value = word.partition("=")
+                assignments.append((name, value))
             words.pop(0)
         else:
             break
-    return _Stripped(words, fed, chdir)
+    return _Stripped(words, fed, chdir, assignments)
+
+
+def _prefix_option(prefix: str, word: str, words: list[str]) -> tuple[str | None, str | None]:
+    """The value-taking option ``word`` gives a prefix, and its value (taken off ``words`` when it is the next word),
+    read getopt-style: ``-la x`` is ``-l`` then ``-a x``, ``-oL`` is ``-o L``, ``-Scat`` is ``-S cat``. A long or
+    exact multi-letter option (``--chdir=x``, ``--sdk x``, ``-arch x``) is matched whole. ``(None, None)`` for a flag
+    that takes nothing."""
+    values = _PREFIX_VALUE_FLAGS.get(prefix, set())
+    if word.startswith("--") or word in values:
+        flag, eq, attached = word.partition("=")
+        if eq:
+            return flag, attached
+        if flag in values:
+            return flag, words.pop(0) if words else None
+        return None, None
+    for j, ch in enumerate(word[1:], 1):
+        if f"-{ch}" in values:
+            attached = word[j + 1 :]
+            return f"-{ch}", attached if attached else (words.pop(0) if words else None)
+    return None, None
+
+
+def _split_words(text: str) -> list[str]:
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return text.split()
 
 
 def _unquoted(text: str) -> str:
@@ -186,7 +248,7 @@ def _with_kb_paths(command: str) -> str:
     return "".join(out) + command[last:] if out else command
 
 
-_SCOUTCTL_KB = re.compile(r"\bscoutctl\s+kb\b")
+_SCOUTCTL_KB = re.compile(r"\b(?i:scoutctl)\s+kb\b")
 
 
 def _kb_variables(command: str) -> set[str]:
@@ -253,27 +315,47 @@ _RG_VALUES = {"-A", "-B", "-C", "-e", "-f", "-g", "-j", "-m", "-M", "-t", "-T", 
 _FIND_VALUES = {"-name", "-iname", "-path", "-ipath", "-wholename", "-regex", "-iregex", "-type", "-size",
                 "-mtime", "-mmin", "-atime", "-amin", "-ctime", "-cmin", "-newer", "-user", "-group", "-perm",
                 "-maxdepth", "-mindepth", "-printf", "-fprint", "-links", "-inum", "-samefile"}  # fmt: skip
-_AG_VALUES = {"-A", "-B", "-C", "-G", "-g", "-m", "-p", "--after", "--before", "--context", "--depth",
-              "--file-search-regex", "--ignore", "--ignore-dir", "--max-count", "--pager", "--path-to-ignore",
-              "--workers"}  # fmt: skip
-_ACK_VALUES = {"-A", "-B", "-C", "-g", "-m", "--after-context", "--before-context", "--context", "--ignore-dir",
-               "--ignore-file", "--match", "--max-count", "--output", "--pager", "--type", "--type-add",
-               "--type-del", "--type-set"}  # fmt: skip
-_FD_VALUES = {"-d", "-e", "-E", "-t", "-S", "-o", "-j", "-c", "--max-depth", "--min-depth", "--exact-depth",
-              "--extension", "--exclude", "--type", "--size", "--changed-within", "--changed-before", "--owner",
-              "--base-directory", "--search-path", "--path-separator", "--threads", "--max-results", "--color",
-              "--ignore-file", "--format", "--and"}  # fmt: skip
-# fd's flags that run a command on what it finds: everything after them is that command.
+# ag's `-A`/`-B`/`-C` take a count only when the next word is a number (`ag -A x` searches for `x`),
+# and its `--after`/`--before`/`--context` take one only attached (`--context=3`).
+_AG_VALUES = {"-A", "-B", "-C", "-G", "-g", "-m", "-p", "-W", "--depth", "--file-search-regex", "--ignore",
+              "--ignore-dir", "--max-count", "--pager", "--path-to-ignore", "--workers", "--width",
+              "--color-path", "--color-match", "--color-line-number"}  # fmt: skip
+_AG_COUNTS = {"-A", "-B", "-C"}
+_ACK_VALUES = {"-A", "-B", "-C", "-g", "-m", "-t", "-T", "--after-context", "--before-context", "--context",
+               "--ignore-dir", "--ignore-file", "--match", "--max-count", "--output", "--pager", "--type",
+               "--type-add", "--type-del", "--type-set", "--and", "--or", "--not", "--range-start", "--range-end",
+               "--files-from"}  # fmt: skip
+_UGREP_VALUES = _GREP_VALUES | {"-g", "--glob", "-t", "-O", "-M", "-N", "-J", "-K", "--and", "--andnot", "--not",
+                                 "--depth", "--jobs", "--range"}  # fmt: skip
+_FD_VALUES = {"-d", "-e", "-E", "-t", "-S", "-o", "-j", "-c", "-C", "--max-depth", "--min-depth",
+              "--exact-depth", "--extension", "--exclude", "--type", "--size", "--changed-within",
+              "--changed-before", "--newer", "--older", "--changed-after", "--change-newer-than",
+              "--change-older-than", "--owner", "--base-directory", "--search-path", "--path-separator",
+              "--threads", "--max-results", "--color", "--ignore-file", "--ignore-contain", "--format", "--and",
+              "--batch-size"}  # fmt: skip
+# fd's flags that run a command on what it finds: the words after them are that command, up to a `;`.
 _FD_EXEC = {"-x", "--exec", "-X", "--exec-batch"}
+# Other names the search tools are installed under (Debian's `fdfind`, `ack-grep`; ugrep's `ug`).
+_ALIASES = {"ug": "ugrep", "ug+": "ugrep", "ugrep+": "ugrep", "fdfind": "fd", "ack-grep": "ack"}
+# The greps that decompress what they read (macOS's zgrep is BSD grep with -Z), read as the grep they wrap.
+_DECOMPRESSING = {f"{z}{g}": g for z in ("z", "bz", "xz", "lz", "lz4", "zstd") for g in ("grep", "egrep", "fgrep")}
+_ALIASES.update(_DECOMPRESSING)
+# What a decompressing read opens (BSD grep's -Z and ugrep's -z): compressed files, whose member is the name
+# without the suffix (`x.md.gz` holds `x.md`), and archives, whose members the gate can't name.
+_COMPRESSED_SUFFIXES = ("gz", "z", "bz2", "bz", "xz", "lzma", "lz", "lz4", "zst", "zstd", "br")
+_ARCHIVE_SUFFIXES = ("tar", "tgz", "taz", "tbz", "tbz2", "tb2", "txz", "tlz", "tzst", "zip", "jar", "war", "7z",
+                     "cpio", "pax", "zipx", "apk", "ipa", "xpi", "epub", "docx", "xlsx", "pptx", "odt")  # fmt: skip
+# The type names for the formats the KB keeps, in ack's and ugrep's `-t` (ugrep's `+` adds shebangs).
+_KB_TOOL_TYPES = {"markdown", "md", "yaml", "yml", "json", "csv", "tsv", "html", "htm", "xml", "text", "txt"}
 _VALUE_FLAGS: dict[str, set[str]] = {
     "head": {"-n", "-c", "--lines", "--bytes"},
     "tail": {"-n", "-c", "--lines", "--bytes"},
     "grep": _GREP_VALUES, "egrep": _GREP_VALUES, "fgrep": _GREP_VALUES,
-    "ugrep": _GREP_VALUES | {"-g", "--glob"},
+    "ugrep": _UGREP_VALUES,
     "rg": _RG_VALUES,
     "ag": _AG_VALUES, "ack": _ACK_VALUES, "fd": _FD_VALUES,
-    "sed": {"-e", "-f", "-l"},
-    "awk": {"-v", "-f", "-F"}, "gawk": {"-v", "-f", "-F"}, "mawk": {"-v", "-f", "-F"},
+    "sed": {"-e", "-f", "-l", "--expression", "--file"},
+    "awk": {"-v", "-f", "-F", "--file"}, "gawk": {"-v", "-f", "-F", "--file"}, "mawk": {"-v", "-f", "-F", "--file"},
     "cut": {"-d", "-f", "-c", "-b"},
     "sort": {"-k", "-t", "-o", "-S", "-T"},
     "uniq": {"-f", "-s", "-w"},
@@ -284,21 +366,73 @@ _VALUE_FLAGS: dict[str, set[str]] = {
 }  # fmt: skip
 
 
+def _scan(name: str, args: list[str]) -> tuple[list[tuple[str, str | None]], list[str]]:
+    """``args`` read getopt-style: each option given with its value (``-t md``, ``-tmd``, ``-rt md``,
+    ``--type md``, ``--type=md``), and the words that are not a value (flags included)."""
+    takes = _VALUE_FLAGS.get(name, set())
+    opts: list[tuple[str, str | None]] = []
+    words: list[str] = []
+    i, ended = 0, False
+    while i < len(args):
+        a = args[i]
+        i += 1
+        if ended or a == "-" or not a.startswith("-"):
+            words.append(a)
+            continue
+        words.append(a)
+        if a == "--":
+            ended = True  # kept in `words`, so _split_args still reads what follows as positionals
+        elif a.startswith("--"):
+            flag, eq, value = a.partition("=")
+            if eq:
+                opts.append((flag, value))
+            elif flag in takes and i < len(args):
+                opts.append((flag, args[i]))
+                i += 1
+            else:
+                opts.append((flag, None))
+        else:
+            for j, ch in enumerate(a[1:], 1):
+                if not ch.isalnum():
+                    break  # not a flag letter: the rest is a value we don't know (`sed -i.bak`)
+                flag = "-" + ch
+                if flag not in takes:
+                    opts.append((flag, None))
+                    continue
+                if j < len(a) - 1:
+                    opts.append((flag, a[j + 1 :]))  # attached: `-tpy`, `-rO md` → `-O` takes `md`
+                elif i < len(args) and not (name == "ag" and flag in _AG_COUNTS and not args[i].isdigit()):
+                    opts.append((flag, args[i]))
+                    i += 1
+                else:
+                    opts.append((flag, None))
+                break
+    return opts, words
+
+
+def _options(name: str, args: list[str]) -> list[tuple[str, str | None]]:
+    return _scan(name, args)[0]
+
+
 def _operands(name: str, args: list[str]) -> list[str]:
     """``args`` without the values of the reader's value-taking flags."""
-    takes = _VALUE_FLAGS.get(name, set())
-    out, skip, ended = [], False, False
-    for a in args:
-        if skip:
-            skip = False
-        elif not ended and a == "--":
-            ended = True
-            out.append(a)  # kept, so _split_args still reads what follows as positionals
-        elif not ended and a in takes:
-            skip = True
-        else:
-            out.append(a)
-    return out
+    return _scan(name, args)[1]
+
+
+def _values(name: str, args: list[str], flags: set[str]) -> list[str]:
+    """The values given to any of ``flags``, quotes gone."""
+    return [v.strip("\"'") for f, v in _options(name, args) if f in flags and v is not None]
+
+
+def _split_list(value: str) -> list[str]:
+    """A comma-separated list of globs or names, keeping a ``{a,b}`` together."""
+    out, depth, start = [], 0, 0
+    for i, c in enumerate(value):
+        depth += {"{": 1, "}": -1}.get(c, 0)
+        if c == "," and depth <= 0:
+            out.append(value[start:i])
+            start = i + 1
+    return [p for p in [*out, value[start:]] if p]
 
 
 def _uses_operand(name: str, args: list[str], names: set[str]) -> bool:
@@ -306,6 +440,17 @@ def _uses_operand(name: str, args: list[str], names: set[str]) -> bool:
 
 
 _NOT_A_READ = {"--version", "--help", "-version", "-help", "--type-list"}
+# Per tool: the flags that print a version, help or a type list and read no file.
+_TOOL_NOT_A_READ = {
+    "rg": {"-V"}, "grep": {"-V"}, "egrep": {"-V"}, "fgrep": {"-V"}, "ugrep": {"-V"},
+    "ag": {"-V", "--list-file-types"}, "fd": {"-V", "-h"}, "ack": {"--help-types", "--dump"},
+}  # fmt: skip
+
+
+def _not_a_read(name: str, args: list[str]) -> bool:
+    return any(a in _NOT_A_READ or a in _TOOL_NOT_A_READ.get(name, ()) for a in args)
+
+
 # Readers whose first operand is a pattern or a program, not a file, unless a flag gives it (`grep -e x f`).
 _PROGRAM_FIRST: dict[str, set[str]] = {
     **dict.fromkeys(("grep", "egrep", "fgrep"), {"-e", "-f", "--regexp", "--file"}),
@@ -313,6 +458,10 @@ _PROGRAM_FIRST: dict[str, set[str]] = {
     "sed": {"-e", "-f", "--expression", "--file"},
     **dict.fromkeys(("awk", "gawk", "mawk"), {"-f", "--file"}),
     "jq": {"-f", "--from-file"},
+    "ugrep": {"-e", "-f", "--regexp", "--file"},
+    "ag": {"-g"},  # `ag -g PATTERN dir`: -g's value is the pattern
+    "ack": {"--match", "-f", "-g"},  # `ack -f dir` lists files: no pattern
+    "fd": set(),  # `fd [pattern] [path...]`
 }
 # Readers that read a folder they're given (its names, or the files below it); the rest only open files.
 _FOLDER_READERS = {"tree", "du", "find", "rg", "ag", "ack", "fd", "ugrep", "diff"}  # `diff -N dir empty/` prints it
@@ -326,18 +475,32 @@ def reads_folders(name: str, args: list[str]) -> bool:
     if name in _FOLDER_READERS:
         return True
     if name in ("grep", "egrep", "fgrep"):
-        pairs = zip(args, [*args[1:], ""], strict=True)
-        return any(_RECURSIVE_FLAG.match(a) for a in args) or any(
-            a == "--directories=recurse" or (a in ("-d", "--directories") and b == "recurse") for a, b in pairs
-        )
+        return _grep_recursive(name, args)
     return False
+
+
+# The flags whose value is a file the reader opens: a pattern file, a script, a file list.
+_FILE_FLAGS: dict[str, set[str]] = {
+    **dict.fromkeys(("grep", "egrep", "fgrep", "ugrep", "rg"), {"-f", "--file"}),
+    "sed": {"-f", "--file"},
+    **dict.fromkeys(("awk", "gawk", "mawk"), {"-f", "--file"}),
+    "jq": {"-f", "--from-file"},
+    "ack": {"--files-from"},
+}
+
+
+def _program_given(name: str, args: list[str]) -> bool:
+    """A flag gives the pattern or program (``grep -e x``, ``sed -ne p``, ``rg --regexp=x``), so every
+    positional is a file. Read with :func:`_scan`, so a cluster ending in ``-e`` counts too."""
+    given = _PROGRAM_FIRST.get(name, set())
+    return any(flag in given for flag, _value in _options(name, args))
 
 
 def read_operands(name: str, args: list[str]) -> list[str] | None:
     """The files a reading command (:data:`_READ_COMMANDS`) reads, as written: its positionals without its
     flags' values, a pattern or program it takes first (``grep x f``, ``sed 1p f``, ``awk '{…}' f``, ``jq . f``),
     or ``find``'s expression (its roots only). None for a call that reads no file (``--version``, ``du -s``)."""
-    if any(a in _NOT_A_READ for a in args) or (name == "du" and _du_summary(args)):
+    if _not_a_read(name, args) or (name == "du" and _du_summary(args)):
         return None
     if name == "find":
         roots: list[str] = []
@@ -349,10 +512,34 @@ def read_operands(name: str, args: list[str]) -> list[str] | None:
     if name == "sed":  # BSD `sed -i '' …` / `sed -i .bak …`: the backup suffix is -i's own word
         args = [a for i, a in enumerate(args) if not (i and args[i - 1] == "-i" and (not a or a.startswith(".")))]
     _flags, plain = _split_args(_operands(name, args))
-    given = _PROGRAM_FIRST.get(name)
-    if given is not None and plain and not any(a in given or a.split("=", 1)[0] in given for a in args):
+    if name in _PROGRAM_FIRST and plain and not _program_given(name, args):
         plain = plain[1:]
-    return [p for p in plain if p and p != "-"]
+    given = [v for f, v in _options(name, args) if f in _FILE_FLAGS.get(name, ()) and v]  # `grep -f pats f`
+    return [p for p in [*given, *plain] if p and p != "-"]
+
+
+# The search tools' flags that make them print file paths: names that match, or that hold a match.
+_LISTS_FILES = {
+    "ag": {"-g", "-l", "-L", "--files-with-matches", "--files-without-matches"},
+    "ack": {"-f", "-g", "-l", "-L", "--files-with-matches", "--files-without-matches"},
+    "ugrep": {"-l", "-L", "--files-with-matches", "--files-without-match"},
+}
+
+
+def listed_roots(name: str, args: list[str]) -> list[str] | None:
+    """For ``fd``, and ``ag``/``ack``/``ugrep`` when they print file paths (``ag -g``, ``ack -f``,
+    ``ugrep -l``): the folders whose file paths they print, for ``… | xargs cat`` to read. None for any other
+    call. Their other names (``fdfind``, ``ack-grep``, ``ug``) count too. [] when a file filter keeps every
+    KB note out of the listing (``fd -e py``)."""
+    name = _ALIASES.get(name, name)
+    if name == "fd":
+        if _fd_without_exec(args)[1] or _not_a_read(name, args):
+            return None  # it prints what the command it runs prints
+        rec = _recursive("fd", args)
+        return [] if rec is None else rec.roots or ["."]
+    if name not in _LISTS_FILES or not any(f in _LISTS_FILES[name] for f, _v in _options(name, args)):
+        return None
+    return read_operands(name, args) or ["."]
 
 
 _BRACE_SEQUENCE = re.compile(r"^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.(-?\d+))?$")
@@ -485,47 +672,53 @@ def _exclusions(args: list[str]) -> tuple[str, ...]:
     return tuple(out)
 
 
-def _recursive(name: str, args: list[str]) -> _Recursive | None:
+def _recursive(name: str, args: list[str], word: str | None = None) -> _Recursive | None:
     """Where a recursive read starts, or None for a command that isn't one, or one whose file
     filter stays out of the KB (``--glob 'action-items/*.md'``, ``--include=*.py``), as for the
-    Grep tool."""
-    if any(a in _NOT_A_READ for a in args) or (name in ("rg", "grep", "egrep", "fgrep", "ugrep") and "-V" in args):
+    Grep tool. ``word`` is the command word as written (``zgrep`` is grep that decompresses)."""
+    if _not_a_read(name, args):
         return None
     runs = False  # fd -x/-X: it runs a command on each file it finds
     if name == "fd":
-        cut = next((i for i, a in enumerate(args) if a in _FD_EXEC or a.startswith(("--exec=", "--exec-batch="))), None)
-        if cut is not None:
-            args, runs = args[:cut], True
+        args, runs = _fd_without_exec(args)
     flags, plain = _split_args(_operands(name, args) if name != "find" else args)
     filters: list[str] = []
     if name in ("grep", "egrep", "fgrep", "ugrep"):
-        recursive = any(_RECURSIVE_FLAG.match(f) for f in flags) or any(
-            a in ("-d", "--directories") and i + 1 < len(args) and args[i + 1] == "recurse" for i, a in enumerate(args)
-        )
-        if not recursive:
+        if not _grep_recursive(name, args):
             return None
-        pattern_given = _pattern_flag(args)
+        pattern_given = _program_given(name, args)
         roots = plain if pattern_given else plain[1:]
         filters = [a.split("=", 1)[1] for a in args if a.startswith("--include=")] + _flag_values(args, {"--include"})
-        if name == "ugrep":  # ugrep also filters with `-g GLOB`, `!` negating
-            globs = _flag_values(args, {"-g", "--glob"}) + [a.split("=", 1)[1] for a in args if a.startswith("--glob=")]
-            filters += [g for g in globs if not g.strip("\"'").startswith("!")]
-        return _filtered(_Recursive(roots, True, None, _exclusions(args)), filters)
+        types: list[str] = []
+        if name == "ugrep":  # ugrep also filters with `-g GLOBS`, `-O EXTS` and `-t TYPES`
+            filters += _ugrep_includes(name, args, {"-g", "--glob"})
+            filters += ["*." + e.lstrip(".") for e in _ugrep_includes(name, args, {"-O"})]
+            types = _ugrep_includes(name, args, {"-t"})
+        rec = _Recursive(roots, True, None, _exclusions(args))
+        if _decompresses(word or name, name, args) and any(_may_match_compressed(f) for f in filters):
+            return rec  # `--include='*.gz'` reads what each archive holds: notes, perhaps
+        return _either_filter(rec, filters, types, prefix=name == "ugrep")
     if name in ("ag", "ack"):  # recursive by default; the first positional is the pattern
         lists = "-g" in args or (name == "ack" and "-f" in args)  # file names only, no pattern
         pattern_given = name == "ack" and any(a == "--match" or a.startswith("--match=") for a in args)
-        return _Recursive(plain if lists or pattern_given else plain[1:], not lists)
+        rec = _Recursive(plain if lists or pattern_given else plain[1:], not lists)
+        if name == "ack" and not any(f in ("--type-set", "--type-add") for f, _v in _options(name, args)):
+            # `-T TYPE` and `--type=noTYPE` exclude a type: they widen the search, never bound it.
+            types = [t for t in _values(name, args, {"-t", "--type"}) if not t.lower().startswith("no")]
+            return _either_filter(rec, [], types)
+        return rec
     if name == "fd":  # `fd [pattern] [path...]`: names, or contents when it runs a command on them
-        roots = plain[1:] + _flag_values(args, {"--search-path", "--base-directory"})
-        exts = _flag_values(args, {"-e", "--extension"}) + [
-            a.split("=", 1)[1] for a in args if a.startswith("--extension=")
-        ]
-        globs = ["*." + e.strip("\"'").lstrip(".") for e in exts]
-        return _filtered(_Recursive(roots, runs, _int(_flag_value(args, {"-d", "--max-depth"}))), globs)
+        paths = plain[1:] + _values(name, args, {"--search-path"})
+        base = _values(name, args, {"-C", "--base-directory"})
+        if base:  # the paths are under the base directory, which is the search itself when none is given
+            paths = [p if p.startswith(("/", "~", "$")) else posixpath.join(base[-1], p) for p in paths] or base[-1:]
+        globs = ["*." + e.lstrip(".") for e in _values(name, args, {"-e", "--extension"})]
+        depth = _int(next(iter(_values(name, args, {"-d", "--max-depth"})[-1:]), None))
+        return _filtered(_Recursive(paths, runs, depth), globs)
     if name == "rg":
         if "--files" in args:  # lists the files it would search: names, no pattern
             return _Recursive(plain, False, _int(_flag_value(args, {"--max-depth", "--maxdepth", "-d"})))
-        pattern_given = _pattern_flag(args)
+        pattern_given = _program_given(name, args)
         roots = plain if pattern_given else plain[1:]
         globs = _flag_values(args, {"-g", "--glob", "--iglob"})
         globs += [a.split("=", 1)[1] for a in args if a.startswith(("--glob=", "--iglob="))]
@@ -557,9 +750,437 @@ def _recursive(name: str, args: list[str]) -> _Recursive | None:
     return None
 
 
-def _pattern_flag(args: list[str]) -> bool:
-    """The pattern comes from ``-e``/``-f``, so every positional is a path."""
-    return any(a in ("-e", "-f", "--regexp", "--file") or a.startswith(("--regexp=", "--file=")) for a in args)
+def _fd_without_exec(args: list[str]) -> tuple[list[str], bool]:
+    """fd's own words, and whether it runs a command: ``-x``/``-X`` take the words after them up to a
+    ``;``, and fd reads options and paths again after it (``fd x scripts -X cat ';' .``)."""
+    out: list[str] = []
+    runs = skipping = False
+    for a in args:
+        if skipping:
+            skipping = a not in (";", "\\;")
+        elif _fd_exec_starts(a):
+            runs = skipping = True
+        else:
+            out.append(a)
+    return out, runs
+
+
+def _fd_exec_starts(word: str) -> bool:
+    """``word`` starts fd's exec command: ``-x``, ``--exec=cat``, or a cluster reaching ``x``/``X`` before
+    any flag that takes a value (``-Hx``, ``-xcat``, ``-x=cat``, ``-HX``; ``-ex`` is ``-e x``)."""
+    if word in _FD_EXEC or word.startswith(("--exec=", "--exec-batch=")):
+        return True
+    if not word.startswith("-") or word.startswith("--"):
+        return False
+    for ch in word[1:]:
+        if ch in "xX":
+            return True
+        if not ch.isalnum() or "-" + ch in _FD_VALUES:
+            return False
+    return False
+
+
+def _kb_filter(glob: str) -> bool:
+    """A file filter that may let a KB file through."""
+    return _names_kb(glob) or glob.strip("\"'") in WHOLE_VAULT_GLOBS or _may_match_kb(glob)
+
+
+def _either_filter(rec: _Recursive, filters: list[str], types: list[str], prefix: bool = False) -> _Recursive | None:
+    """For ugrep and ack, where a file passes if it matches any one of the filters (a glob, an
+    extension or a ``-t`` type): None when there are filters and none of them can match a KB file.
+    ugrep takes a type by its first letters (``-t mark`` is markdown): ``prefix`` matches that way."""
+    if not filters and not types:
+        return rec
+
+    def kb_type(t: str) -> bool:
+        t = t.lower().rstrip("+")
+        return any(k.startswith(t) for k in _KB_TOOL_TYPES) if prefix else t in _KB_TOOL_TYPES
+
+    if any(_kb_filter(f) for f in filters) or any(kb_type(t) for t in types):
+        return rec
+    return None
+
+
+def _ugrep_includes(name: str, args: list[str], flags: set[str]) -> list[str]:
+    """The entries of ugrep's comma-separated ``flags`` lists that include files. An entry that starts
+    with ``!`` or ``^`` excludes instead (``-O '^py'``, ``-g '^*.py'``), so it never bounds a search."""
+    entries = [e for v in _values(name, args, flags) for e in _split_list(v)]
+    return [e for e in entries if not e.startswith(("!", "^"))]
+
+
+_GREP_RECURSE = {"-r", "-R", "--recursive", "--dereference-recursive"}
+
+
+def _grep_recursive(name: str, args: list[str]) -> bool:
+    """grep's recursion, read with :func:`_scan` so a cluster counts (``-rnA3``, ``-rC2``, ``-r3``):
+    ``-r``/``-R``, ``-d recurse``; for ugrep also ``-NUM`` and ``--depth``."""
+    for flag, value in _options(name, args):
+        if flag in _GREP_RECURSE or (flag in ("-d", "--directories") and value == "recurse"):
+            return True
+        if name == "ugrep" and (flag == "--depth" or re.fullmatch(r"-\d", flag)):
+            return True
+    return False
+
+
+_GREPS = ("grep", "egrep", "fgrep", "ugrep")
+
+
+def _decompresses(word: str, name: str, args: list[str]) -> bool:
+    """A reader of what compressed files and archives hold: ``zcat``, ``zgrep`` and their kin; a grep with ``-Z``
+    (BSD grep's ``--decompress``; GNU's ``--null``, judged the BSD way), ``-z`` (ugrep's ``--decompress``, which a
+    run's bare ``grep`` is; GNU's and BSD's ``--null-data``) or ``--decompress``."""
+    if _bare(word) in _DECOMPRESSING or name in _DECOMPRESSING_READERS:
+        return True
+    if name == "rg":  # `rg -z`/`--search-zip` searches inside compressed files
+        return any(f in ("-z", "--search-zip") for f, _v in _options(name, args))
+    return name in _GREPS and any(f in ("-z", "-Z", "--decompress") for f, _v in _options(name, args))
+
+
+def _searches_folders(name: str, args: list[str]) -> bool:
+    """A recursive search (``rg``, ``grep -r``): its operands are roots, judged by the recursive rule with its file
+    filters (``zgrep -r --include='*.py' x .`` opens no archive)."""
+    return name == "rg" or (name in _GREPS and _grep_recursive(name, args))
+
+
+def _may_hold_archive(word: str, always: bool, env: Mapping[str, str], local: Mapping[str, str]) -> bool:
+    """Whether a file a decompressing read opens may be an archive. For a reader that always decompresses
+    (``zcat``, ``zgrep``), anything but ``<stem>.<ext>.<compression>`` (:func:`_one_file`) may: ``kb.gz``, a tarball
+    named ``kbdump``, a glob, a variable. A grep's ``-z``/``-Z`` (``--null`` for GNU grep) also leaves a plainly named
+    file (``file.py``, ``docs/a.md``) alone."""
+    expanded = _expand(word, env, local)
+    if expanded == _UNKNOWN or _GLOB_CHARS.search(expanded):
+        return True
+    if _one_file(expanded):
+        return False
+    if always or _archive(expanded):
+        return True
+    name = posixpath.basename(expanded).lower()
+    return any(name.endswith("." + c) for c in _COMPRESSED_SUFFIXES) or "." not in name
+
+
+def _archive(path: str) -> bool:
+    """A file whose members a decompressing read reads and the gate can't name: an archive (``kb.tgz``,
+    ``notes.zip``), or a compressed one (``kb.tar.gz``). ``x.md.gz`` holds one file, ``x.md``, which its own
+    name tells."""
+    name = posixpath.basename(_unquoted(path)).lower()
+    for suffix in _COMPRESSED_SUFFIXES:
+        if name.endswith("." + suffix):
+            name = name[: -len(suffix) - 1]
+            break
+    return name.rsplit(".", 1)[-1] in _ARCHIVE_SUFFIXES if "." in name else False
+
+
+def _may_match_compressed(glob: str) -> bool:
+    """Whether a file filter could let through a compressed file or an archive (``*.gz``, ``*.tgz``, ``*.md.*``):
+    under decompression its members are read, and they may be notes. Tried on the glob's last part, since an
+    archive can sit in any folder."""
+    g = glob.strip("\"'").removeprefix("!").rsplit("/", 1)[-1]
+    words = {w for w in re.findall(r"[A-Za-z0-9_-]+", g)}
+    stems = {"x", *(s for w in words for s in (w, f"{w}x", f"x{w}", f"x{w}x"))}
+    exts = [*_ARCHIVE_SUFFIXES, *(f"{k}.{c}" for k in (*KB_FILE_EXTENSIONS, "tar") for c in _COMPRESSED_SUFFIXES)]
+    rx = _glob_regex(g)
+    return any(rx.fullmatch(f"{stem}.{ext}") for stem in stems for ext in exts)
+
+
+# ----- archive tools: what reads an archive's members, and what an archive is made of -------------
+# Programs that read an archive's members (extract, to stdout or to disk, list or test) or write one from files, and
+# the single-file (de)compressors. Any of them naming a KB path reads a note. One that reads an archive in the vault,
+# or one whose path the gate can't place, may read notes no file name shows; one that writes an archive reads its
+# inputs, which are judged as a recursive read's roots (`tar -cf - .` prints every note).
+_ARCHIVERS = {"unzip", "funzip", "zipinfo", "zipgrep", "zip", "tar", "bsdtar", "gtar", "7z", "7za", "7zz", "7zr",
+              "ditto", "cpio", "bsdcpio", "pax"}  # fmt: skip
+_COMPRESSORS = {"gzip", "gunzip", "bzip2", "bunzip2", "xz", "unxz", "lzma", "unlzma", "zstd", "unzstd", "lz4",
+                "unlz4", "brotli", "lzip", "lunzip", "compress", "uncompress", "pigz", "unpigz", "pbzip2",
+                "lbzip2"}  # fmt: skip
+# The ones that always decompress.
+_DECOMPRESSORS = {"gunzip", "bunzip2", "unxz", "unlzma", "unzstd", "unlz4", "lunzip", "uncompress", "unpigz"}
+_STDIN = None  # an archive read from stdin, or from a path the command doesn't show
+_UNSEEN = "\0unknown"  # (_UNKNOWN) an input the gate can't see (`tar -T list`): a recursive root it can't place
+# tar's short options that take a value (old-style keys take theirs from the words after the keys, in order).
+_TAR_KEY_VALUES = "bfCTX"
+_TAR_READS = {"x", "t", "d"}
+_TAR_WRITES = {"c", "r", "u"}
+_TAR_READ_LONG = {"--extract", "--get", "--list", "--diff", "--compare"}
+_TAR_WRITE_LONG = {"--create", "--append", "--update"}
+_TAR_LONG_VALUES = {"--file", "--directory", "--files-from", "--exclude", "--exclude-from", "--format", "--newer",
+                    "--use-compress-program", "--label", "--transform", "--strip-components", "--owner", "--group",
+                    "--mode", "--mtime", "--blocking-factor", "--record-size", "--options", "--to-command",
+                    "--newer-mtime", "--after-date", "--suffix", "--index-file", "--null"}  # fmt: skip
+_REDIRECT_IN = re.compile(r"(?<![<\d])\d?<(?![<(&])\s*(\S+)")
+
+
+def _plain_args(args: list[str]) -> list[str]:
+    """``args`` unquoted, without redirections and their targets (``< kb.cpio``, ``2>/dev/null``)."""
+    out: list[str] = []
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+        elif _REDIRECT.match(a):
+            skip = _REDIRECT.sub("", a) == ""
+        else:
+            out.append(_unquoted(a))
+    return out
+
+
+class _Tar:
+    """A ``tar``/``bsdtar`` call read: its mode, its ``-f`` archive, the files it archives (each after the ``-C``
+    folder before it), the ``@archive`` operands bsdtar copies, and the ``-T`` file lists."""
+
+    def __init__(self, args: list[str]) -> None:
+        self.reads = self.writes = False
+        self.archive: str | None = None
+        self.found = False  # an -f was given
+        self.inputs: list[str] = []
+        self.copied: list[str] = [a[1:] for a in args if a.startswith("@") and len(a) > 1]
+        self.lists: list[str] = []  # -T/--files-from values ("-": stdin)
+        chdir: str | None = None
+        i = 0
+        if args and not args[0].startswith("-") and re.fullmatch(r"[A-Za-z]+", args[0]):  # old style: `tar xOf kb`
+            keys, values = args[0], args[1:]
+            self._modes(keys)
+            for k in [k for k in keys if k in _TAR_KEY_VALUES][: len(values)]:
+                chdir = self._value(k, values[i], chdir)
+                i += 1
+            i += 1
+        ended = False
+        while i < len(args):
+            a = args[i]
+            i += 1
+            if ended or not a.startswith("-") or a == "-":
+                if not a.startswith("@") or ended:
+                    self.inputs.append(a if chdir is None or a.startswith("/") else posixpath.join(chdir, a))
+                continue
+            if a == "--":
+                ended = True
+            elif a.startswith("--"):
+                flag, eq, value = a.partition("=")
+                self.reads = self.reads or flag in _TAR_READ_LONG
+                self.writes = self.writes or flag in _TAR_WRITE_LONG
+                if flag in _TAR_LONG_VALUES and flag != "--null":
+                    if not eq and i < len(args):
+                        value, i = args[i], i + 1
+                    chdir = self._value({"--file": "f", "--directory": "C", "--files-from": "T"}.get(flag, "-"), value,
+                                        chdir)  # fmt: skip
+            else:
+                for j, ch in enumerate(a[1:], 1):
+                    self._modes(ch)
+                    if ch in _TAR_KEY_VALUES:
+                        value = a[j + 1 :]
+                        if not value and i < len(args):
+                            value, i = args[i], i + 1
+                        chdir = self._value(ch, value, chdir)
+                        break
+
+    def _modes(self, keys: str) -> None:
+        self.reads = self.reads or any(k in _TAR_READS for k in keys)
+        self.writes = self.writes or any(k in _TAR_WRITES for k in keys)
+
+    def _value(self, key: str, value: str, chdir: str | None) -> str | None:
+        if key == "f":
+            self.archive, self.found = value, True
+        elif key == "C":
+            return value if chdir is None or value.startswith("/") else posixpath.join(chdir, value)
+        elif key == "T":
+            self.lists.append(value)
+        return chdir
+
+
+def _other_models(name: str) -> bool:
+    """Whether :mod:`scout.kb.other_reads` judges what this archive or copy tool writes from (its sources, a stdin
+    list, a recursive root) and into (a copy into the KB reads nothing out of it)."""
+    from scout.kb.other_reads import NAMES
+
+    return name in NAMES
+
+
+def _archive_reads(name: str, args: list[str]) -> list[str | None]:
+    """The archives (or compressed files that may hold one) whose members this command reads; :data:`_STDIN` for one
+    it reads from stdin or from where it doesn't say. Empty for a call that reads no archive (``tar -czf out docs``,
+    ``7z a``, ``gzip x.log``)."""
+    words = _plain_args(args)
+    flags, plain = _split_args(words)
+    if name in ("unzip", "zipinfo"):
+        archive, skip = None, False
+        for w in words:
+            if skip:
+                skip = False
+            elif w in ("-d", "-P"):
+                skip = True
+            elif w == "-x":
+                break
+            elif not w.startswith("-"):
+                archive = w
+                break
+        return [archive] if archive else []
+    if name == "zipgrep":  # `zipgrep [egrep options] PATTERN FILE [members]`
+        return [plain[1] if len(plain) > 1 else _STDIN]
+    if name == "funzip":
+        return [plain[0] if plain else _STDIN]
+    if name in ("tar", "bsdtar", "gtar"):
+        tar = _Tar(words)
+        out: list[str | None] = list(tar.copied)
+        if tar.reads:
+            out.append(tar.archive if tar.found and tar.archive != "-" else _STDIN)
+        return out
+    if name in ("7z", "7za", "7zz", "7zr"):
+        if not plain or plain[0] not in ("x", "e", "l", "t", "h"):
+            return []
+        archives: list[str | None] = [p for p in plain[1:] if not p.startswith("-")]
+        return archives[:1] or [_STDIN]
+    if name == "ditto":
+        if not _ditto_extracts(flags):
+            return []
+        sources: list[str | None] = list(plain[:-1])
+        return sources or [_STDIN]
+    if name in ("cpio", "bsdcpio"):
+        if not any(re.fullmatch(r"-[A-Za-z]*[it][A-Za-z]*", f) or f in ("--extract", "--list") for f in flags):
+            return []
+        archive = _flag_value(words, {"-F", "-I", "--file"})
+        return [archive or _STDIN]
+    if name == "pax":
+        if "w" in _pax_modes(flags):
+            return []  # -w writes an archive from files, -rw copies them: see _archive_inputs
+        return [_flag_value(words, {"-f"}) or _STDIN]  # -r extracts (`-s` can send members anywhere), none lists
+    if name in _COMPRESSORS:
+        if not _compressor_decompresses(name, flags):
+            return []
+        files: list[str | None] = [p for p in plain if p != "-" and not _one_file(p)]
+        return files if any(p != "-" for p in plain) else [_STDIN]  # `kb.tgz` holds an archive; `x.log.gz` x.log
+    return []
+
+
+def _ditto_extracts(flags: list[str]) -> bool:
+    return any(re.fullmatch(r"-[A-Za-z]*x[A-Za-z]*", f) for f in flags)
+
+
+def _pax_modes(flags: list[str]) -> str:
+    return "".join(f[1:] for f in flags if re.fullmatch(r"-[A-Za-z]+", f))
+
+
+def _compressor_decompresses(name: str, flags: list[str]) -> bool:
+    return name in _DECOMPRESSORS or any(
+        re.fullmatch(r"-[A-Za-z0-9]*[dtl][A-Za-z0-9]*", f) or f in ("--decompress", "--uncompress", "--test", "--list")
+        for f in flags
+    )
+
+
+_ZIP_VALUES = {"-b", "-n", "-t", "-tt", "-P", "-Z", "-O", "--out", "-s", "-sp", "-ll", "--temp-path", "--suffixes",
+               "--password", "--compression-method"}  # fmt: skip
+_PAX_VALUES = {"-f", "-s", "-x", "-b", "-o", "-p", "-U", "-G", "-T", "-B", "-E"}
+
+
+def _archive_inputs(name: str, args: list[str]) -> tuple[list[str], bool]:
+    """The files a command reads to write an archive or compress, judged as a recursive read's roots, and whether it
+    takes a list of files on stdin (``| cpio -o``, ``| pax -w``, ``tar -T -``, ``zip -@``): fed, as by xargs. A
+    file list the gate can't see (``tar -T list``) is :data:`_UNSEEN`. ``([], False)`` for a call that writes none."""
+    words = _plain_args(args)
+    flags, plain = _split_args(words)
+    if name in ("tar", "bsdtar", "gtar"):
+        tar = _Tar(words)
+        if not tar.writes:
+            return [], False
+        unseen = [_UNSEEN for t in tar.lists if t != "-"]
+        return [i for i in tar.inputs if i != "-"] + unseen, "-" in tar.lists
+    if name == "zip":
+        out, skip, archive_seen = [], False, False
+        for w in words:
+            if skip:
+                skip = False
+            elif w in _ZIP_VALUES:
+                skip = True
+            elif w in ("-x", "-i", "--exclude", "--include"):
+                break  # the patterns that follow only narrow what is added
+            elif w.startswith("-"):
+                continue
+            elif not archive_seen:
+                archive_seen = True  # the archive it writes
+            else:
+                out.append(w)
+        return out, "-@" in flags or any(re.fullmatch(r"-[A-Za-z]*@[A-Za-z]*", f) for f in flags)
+    if name in ("7z", "7za", "7zz", "7zr"):
+        if not plain or plain[0] not in ("a", "u"):
+            return [], False
+        return [p for p in plain[2:] if not p.startswith("@")] + [_UNSEEN for p in plain[2:] if p.startswith("@")], \
+            False  # fmt: skip
+    if name == "ditto":  # `ditto [-c -k] src… dst`: copies or archives its sources
+        return ([] if _ditto_extracts(flags) else plain[:-1]), False
+    if name in ("cpio", "bsdcpio"):
+        lists = any(re.fullmatch(r"-[A-Za-z]*[op][A-Za-z]*", f) or f in ("--create", "--pass-through") for f in flags)
+        return [], lists
+    if name == "pax":
+        modes = _pax_modes(flags)
+        if "w" not in modes:
+            return [], False
+        operands, skip = [], False
+        for w in words:
+            if skip:
+                skip = False
+            elif w in _PAX_VALUES:
+                skip = True
+            elif not w.startswith("-"):
+                operands.append(w)
+        if "r" in modes:
+            operands = operands[:-1]  # -rw: the last is the folder it copies into
+        return operands, not operands
+    if name in _COMPRESSORS:
+        return [p for p in plain if p != "-"], False
+    return [], False
+
+
+def _one_file(path: str) -> bool:
+    """A compressed file that holds one plain file, by its name: ``<stem>.<ext>.<compression>`` with ``ext`` no
+    archive's (``x.log.gz``, ``notes.md.bz2``). Anything else a decompressing read opens (``kb.tgz``, ``kb.gz``, a
+    tarball named ``backup/kbdump``, a glob) may be an archive."""
+    name = posixpath.basename(_unquoted(path)).lower()
+    if _GLOB_CHARS.search(name) or "$" in name or "`" in name:
+        return False
+    suffix = next((c for c in _COMPRESSED_SUFFIXES if name.endswith("." + c)), None)
+    if suffix is None:
+        return False
+    stem, dot, ext = name[: -len(suffix) - 1].rpartition(".")
+    return bool(dot and stem and ext) and ext not in _ARCHIVE_SUFFIXES and ext not in _COMPRESSED_SUFFIXES
+
+
+def _archive_in_vault(path: str | None, here: str | None, vault: str | None, env: Mapping[str, str],
+                      local: Mapping[str, str]) -> bool:  # fmt: skip
+    """Whether an archive may hold notes: it is in the vault, or the gate can't place it (stdin, ``$VAR``, a
+    relative path from an unknown folder, no vault known, a path that won't resolve). Placed as the gate places a
+    ``cat`` operand: by its real path and by file identity, so a link into the vault spelled from outside it
+    (``~/link.zip`` → ``Vault/kb.zip``) and another letter case of the vault's name count as in it. A glob is
+    placed by the folder it expands in, and counts when the vault is below that folder."""
+    if path is None or vault is None:
+        return True
+    word = _expand(path, env, local)
+    if word == _UNKNOWN:
+        return True
+    folder = _root_folder(word) if _GLOB_CHARS.search(word) else word
+    if not folder.startswith("/"):
+        if here is None:
+            return True
+        folder = posixpath.join(here, folder)
+    folder = posixpath.normpath(folder)
+    norm = posixpath.normpath(vault)
+    if folder == norm or folder.startswith(norm.rstrip("/") + "/") or norm.startswith(folder.rstrip("/") + "/"):
+        return True
+    try:
+        target, root = Path(folder).resolve(), Path(vault).resolve()
+        if target == root or root in target.parents or target in root.parents:
+            return True
+        return any(anc.exists() and os.path.samefile(anc, root) for anc in (target, *target.parents))
+    except (OSError, RuntimeError):  # a link loop, a folder it may not look in: can't place it
+        return True
+
+
+def _bare(word: str) -> str:
+    """A command word's own program name, folded but not read through an alias (``zgrep`` stays ``zgrep``)."""
+    return program_name(posixpath.basename(_unquoted(word)))
+
+
+def _stdin_source(segment: str) -> str | None:
+    """The file a segment's ``< file`` reads stdin from, unquoted; None when there is none."""
+    m = _REDIRECT_IN.search(segment)
+    return _unquoted(m.group(1)) if m else None
 
 
 def _filtered(rec: _Recursive, filters: list[str], types: list[str] | None = None) -> _Recursive | None:
@@ -568,7 +1189,7 @@ def _filtered(rec: _Recursive, filters: list[str], types: list[str] | None = Non
     match a KB file (``*people*``, ``*.m?``, ``*.{md,txt}``, ``*.MD`` and ``*.yaml`` all can).
     ripgrep ignores ``-t`` when an include glob is given (``rg -t py -g '*.md'`` searches notes), so
     the types bound the search only when there is no include glob."""
-    if filters and not any(_names_kb(f) or f.strip("\"'") in WHOLE_VAULT_GLOBS or _may_match_kb(f) for f in filters):
+    if filters and not any(_kb_filter(f) for f in filters):
         return None
     if types and not filters and not any(t.strip("\"'") in _KB_RG_TYPES for t in types):
         return None
@@ -731,7 +1352,8 @@ _GIT_READS = {"show", "diff", "grep", "blame", "annotate", "cat-file", "whatchan
 
 def _git(args: list[str]) -> tuple[str | None, list[str], list[str]]:
     """``(subcommand, its args, -C folders)`` of a ``git`` call, past git's own options
-    (``--no-pager``, ``-P``, ``-c k=v``, ``-C dir``, ``--git-dir=…``)."""
+    (``--no-pager``, ``-P``, ``-c k=v``, ``-C dir``, ``--git-dir=…``). The subcommand is folded to lower case:
+    git itself refuses ``git SHOW``, so a gate that reads it as ``show`` only ever over-denies."""
     chdirs: list[str] = []
     i = 0
     while i < len(args):
@@ -743,7 +1365,7 @@ def _git(args: list[str]) -> tuple[str | None, list[str], list[str]]:
         elif a.startswith("-"):
             i += 1
         else:
-            return a, args[i + 1 :], chdirs
+            return fold(a), args[i + 1 :], chdirs
     return None, [], chdirs
 
 
@@ -772,23 +1394,130 @@ def raw_kb_read(
     runs it (``cat $(scoutctl kb files)``); one ``xargs`` feeds from a pipe that carries KB paths;
     ``git show|diff|grep|blame|log -p`` with a KB path, past git's own options; an input
     redirection from a KB path (``wc -c <knowledge-base/x``); ``sh -c``/``eval`` of a program
-    that does any of this. With ``cwd`` and ``vault`` (absolute, as the gate knows them), a
-    recursive read that gets to a KB note (``rg x``, ``grep -r x action-items``, ``git grep x``,
-    ``find .``) counts too; ``env`` puts in ``~`` and ``$VAR``. ``scoutctl …`` segments and
-    quoted commit messages never count.
+    that does any of this; and the readers :mod:`scout.kb.other_reads` knows (a copy or an archive out
+    of the KB, ``diff -r``, ``dd if=``, ``source``, sed's ``r``, awk's ``getline <``, perl's ``open``).
+    With ``cwd`` and ``vault`` (absolute, as the gate knows them), a recursive read that gets to a KB
+    note (``rg x``, ``grep -r x action-items``, ``git grep x``, ``find .``, ``tar cf - .``) counts too;
+    ``env`` puts in ``~`` and ``$VAR``. ``scoutctl …`` segments and quoted commit messages never count.
 
     Known gaps, none of which main denied: ``xargs`` fed by a command that prints no KB path
     (``ls | xargs rg x`` from the vault); ``cd action-items && cat context/x.md`` (the shell
     pre-filter sees no KB word); and a vault reached through a symlink, spelled with ``~``.
     """
-    command = _MESSAGE_ARG.sub(r"\1 ''", command)
     env = env or {}
+    # The command as written, with each `\<newline>` joined as zsh joins it (`ca\<NL>t knowledge-base/a.md` is
+    # `cat`), and with `$'…'` decoded (`$'gr\x65p' -r TODO .` is grep): a read any of them makes counts. The
+    # written form stays judged, since a join inside a comment or a quoted here-document would hide what follows.
+    joined = join_continuations(command)
+    for text in dict.fromkeys((command, joined, _decode_ansi_c(joined))):
+        if _raw_kb_read(text, in_kb, cwd, vault, env):
+            return True
+    return False
+
+
+def _raw_kb_read(command: str, in_kb: bool, cwd: str | None, vault: str | None, env: Mapping[str, str]) -> bool:
+    command = _MESSAGE_ARG.sub(r"\1 ''", command)
     if _judge(command, in_kb, cwd, vault, env):
         return True
     expanded = _with_kb_paths(command)
     if expanded != command and _judge(expanded, in_kb, cwd, vault, env):
         return True
-    return _judge_recursive(command, in_kb, cwd, vault, env)
+    return _judge_recursive(command, in_kb, cwd, vault, env) or _judge_other(command, in_kb, cwd, vault, env)
+
+
+_COMMENT_STARTS = ("", " ", "\t", "\n", ";", "&", "|", "(")  # what may come before a `#` that starts a word
+
+
+def join_continuations(command: str) -> str:
+    """``command`` with each backslash-newline outside single quotes (and ``$'…'``) removed, as zsh reads a line
+    continuation: ``gr\\<NL>ep`` is ``grep``. A ``#`` comment is left as written up to its raw newline (a backslash
+    in it is literal). Here-documents are not told apart, so callers judge the written command too."""
+    if "\\\n" not in command:
+        return command
+    out: list[str] = []
+    i, n = 0, len(command)
+    quote: str | None = None
+    while i < n:
+        c = command[i]
+        if quote == "'":
+            out.append(c)
+            quote = None if c == "'" else quote
+            i += 1
+        elif quote == "$'":
+            if c == "\\" and i + 1 < n:
+                out.append(command[i : i + 2])
+                i += 2
+                continue
+            out.append(c)
+            quote = None if c == "'" else quote
+            i += 1
+        elif c == "\\" and i + 1 < n:
+            if command[i + 1] != "\n":
+                out.append(command[i : i + 2])
+            i += 2  # `\<newline>`: both go, in double quotes too
+        else:
+            if quote is None and c == "#" and (not out or out[-1][-1:] in _COMMENT_STARTS):
+                # A comment ends at the next raw newline, a backslash before it and all: zsh's lexer cuts it
+                # before any continuation, so `true # \<NL>cat x` runs cat.
+                end = command.find("\n", i)
+                end = n if end < 0 else end
+                out.append(command[i:end])
+                i = end
+                continue
+            if quote == '"':
+                quote = None if c == '"' else quote
+            elif command.startswith("$'", i):
+                quote = "$'"
+                out.append("$")
+                i += 1
+                c = "'"
+            elif c in "'\"":
+                quote = c
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _decode_ansi_c(command: str) -> str:
+    """``command`` with each ``$'…'`` outside other quotes decoded into a plain single-quoted word (``$'gr\\x65p'``
+    → ``'grep'``), as live_run reads them. An even run of ``$`` before it (bash's ``$$``) is left as written."""
+    if "$'" not in command:
+        return command
+    from scout.kb.live_run import _unescape  # live_run imports this module
+
+    out: list[str] = []
+    i, n = 0, len(command)
+    quote: str | None = None
+    while i < n:
+        c = command[i]
+        if quote is not None:
+            if c == "\\" and quote == '"' and i + 1 < n:
+                out.append(command[i : i + 2])
+                i += 2
+                continue
+            out.append(c)
+            quote = None if c == quote else quote
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            out.append(command[i : i + 2])
+            i += 2
+            continue
+        if command.startswith("$'", i):
+            run = len(command[: i + 1]) - len(command[: i + 1].rstrip("$"))
+            if run % 2 == 1:
+                j = i + 2
+                while j < n and command[j] != "'":
+                    j += 2 if command[j] == "\\" else 1
+                decoded = _unescape(command[i + 2 : j])
+                out.append("'" + decoded.replace("'", "'\\''") + "'")
+                i = j + 1
+                continue
+        if c in "'\"":
+            quote = c
+        out.append(c)
+        i += 1
+    return "".join(out)
 
 
 def _judge(command: str, in_kb: bool, cwd: str | None, vault: str | None, env: Mapping[str, str]) -> bool:
@@ -825,8 +1554,35 @@ def _judge(command: str, in_kb: bool, cwd: str | None, vault: str | None, env: M
                         return True
                     if any(_glob_names_kb(a) for a in _operands(name, args)):
                         return True
+                    if _decompresses(words[0], name, args) and not _searches_folders(name, args):
+                        # An archive's members, which the gate can't name (`grep -Z x kb.tgz`, `zcat kb.tgz`).
+                        files = read_operands(name, _plain_args(args)) or []  # `< file` is stdin, not a file
+                        if not files and (name in _DECOMPRESSING_READERS or _bare(words[0]) in _DECOMPRESSING):
+                            files = [_stdin_source(segment) or "\0stdin"]  # `zcat < kb.tgz`, `… | zcat`
+                        always = name in _DECOMPRESSING_READERS or _bare(words[0]) in _DECOMPRESSING
+                        for f in files:
+                            if f == "\0stdin" or _may_hold_archive(f, always, env, local):
+                                if _archive_in_vault(None if f == "\0stdin" else f, here, vault, env, local):
+                                    return True
                     if stripped.fed and upstream_kb:
                         return True
+                elif name in _ARCHIVERS or name in _COMPRESSORS:
+                    # What a copy or archive tool writes from, and into, is scout.kb.other_reads' (`tar -czf
+                    # knowledge-base/b.tgz knowledge-base/a.md` writes into the KB and reads nothing out of it). A
+                    # tool it doesn't model naming the KB reads a note (`unzip -p knowledge-base/x.zip`, `7z a`).
+                    if not _other_models(name) and (seg_in_kb or _names_kb(rest) or _uses_operand(name, args, tainted)):
+                        return True
+                    if any(_glob_names_kb(a) for a in _operands(name, args)) or stripped.fed:
+                        return True  # fed by xargs: an archive, or files, the gate can't see (`… | xargs unzip -p`)
+                    _inputs, lists = _archive_inputs(name, args)
+                    if lists and upstream_kb:
+                        return True  # a file list on stdin that names notes (`echo knowledge-base/a.md | cpio -o`)
+                    for archive in _archive_reads(name, args):
+                        source = archive if archive is not _STDIN else _stdin_source(segment)
+                        if name in _COMPRESSORS and source is not None and _one_file(source):
+                            continue  # `gunzip -c < x.log.gz` holds x.log, which is no note
+                        if _archive_in_vault(source and source.removeprefix("@"), here, vault, env, local):
+                            return True  # `unzip -p kb.zip`, `tar -xOf kb.tgz`, `7z e -so kb.7z`, `cpio -i < kb.cpio`
                 elif name == "git":
                     sub, sub_args, _chdirs = _git(args)
                     names_kb = _names_kb(rest) or _uses(rest, tainted)
@@ -839,9 +1595,40 @@ def _judge(command: str, in_kb: bool, cwd: str | None, vault: str | None, env: M
 
 
 def _command_name(word: str) -> str:
-    """A command word's program: quotes a shell removes (`bash -c 'cat …'`) and a leading backslash
-    (`\rg`, which only skips an alias) gone, and its folder (`/usr/bin/grep`) dropped."""
-    return word.strip("\"'").lstrip("\\").rsplit("/", 1)[-1]
+    """A command word's program: quotes and backslashes a shell removes (`bash -c 'cat …'`, `\rg`, `NO''HUP`,
+    `gr''ep`, `"gr"ep`, `g\rep`) gone, its folder (`/usr/bin/grep`) dropped, its letters folded to lower case
+    (:func:`program_name`), and an alias (`ug`, `fdfind`, `ack-grep`, `zgrep`) read as the program it names."""
+    name = program_name(_unquoted(word).rsplit("/", 1)[-1])
+    return _ALIASES.get(name, name)
+
+
+# Builtins and keywords a shell knows only as spelled. `EXEC rg x` is "command not found", and `CD x` runs
+# /usr/bin/cd in a child shell, which leaves this one where it was: neither is the builtin.
+SHELL_ONLY = frozenset({
+    "cd", "pushd", "popd", "exec", "eval", "builtin", "source", ".", "export", "unset", "local", "declare",
+    "typeset", "readonly", "read", "mapfile", "readarray", "set", "shift", "return", "exit", "trap", "alias",
+    "unalias", "let", "shopt", "setopt", "unsetopt", "disown", "for", "select", "while", "until", "if", "then",
+    "elif", "else", "fi", "do", "done", "case", "esac", "function",
+})  # fmt: skip
+
+
+def program_name(name: str) -> str:
+    """The program a command name runs, in lower case. On a case-insensitive disk (macOS's default) the shell
+    finds a program in any letter case: `FIND`, `Rg`, `NOHUP` and `XARGS` run find, rg, nohup and xargs. So a
+    gate compares program names folded, always (an odd-cased name in a run may be over-denied, never let
+    through). A builtin or keyword in :data:`SHELL_ONLY` keeps its spelling. `command` and `time` are not
+    there: /usr/bin/command and /usr/bin/time run the word after them, as the builtins do."""
+    folded = fold(name)
+    return name if folded in SHELL_ONLY else folded
+
+
+def fold(text: str) -> str:
+    """``text`` as a case-insensitive disk compares a name: Unicode-normalised and fully case-folded. APFS folds
+    with full Unicode case folding, so ``ﬁnd`` (the ﬁ ligature), ``xargſ`` and ``ſh`` (long s) and ``ßh`` run
+    find, xargs, sh and ssh, which ``str.lower()`` leaves alone. NFKC before and after ``casefold()`` also makes
+    an NFD spelling and a compatibility form (``ｆｉｎｄ``) read the same; one that folds where the disk wouldn't
+    is only over-denied."""
+    return unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", text).casefold())
 
 
 def _du_summary(args: list[str]) -> bool:
@@ -918,8 +1705,13 @@ def _shell_split(command: str) -> tuple[list[list[str]], list[str]]:
             i += 1
             continue
         if c == "\\" and i + 1 < n:
-            buf.append(command[i : i + 2])
+            if command[i + 1] != "\n":  # `\<newline>` joins the words around it (`gr\<NL>ep`)
+                buf.append(command[i : i + 2])
             i += 2
+            continue
+        if quote is None and c == "#" and (not buf or buf[-1][-1:] in _COMMENT_STARTS):
+            end = command.find("\n", i)  # a comment, to the raw newline: a backslash in it continues nothing
+            i = n if end < 0 else end
             continue
         if command.startswith("$(", i) or c == "`":
             end = _substitution_end(command, i)
@@ -1067,11 +1859,19 @@ def _judge_recursive(
                 here = _cd(here, args[0] if args else "~", env, local)  # a bare `cd` goes home
                 continue
             if name in _READ_COMMANDS:
-                rec = _recursive(name, args)
+                rec = _recursive(name, args, words[0])
                 if rec is None or (stripped.fed and not rec.roots):
                     continue  # not recursive, or xargs hands it the files to read
                 if reaches(rec, where):
                     return True
+                if _decompresses(words[0], name, args) and any(
+                    _archive_in_vault(r, where, vault, env, local) for r in rec.roots or ["."]
+                ):
+                    return True  # opens every archive below a vault folder (`grep -rZ -a TODO backup`, `rg -za x .`)
+            elif (name in _ARCHIVERS or name in _COMPRESSORS) and not _other_models(name):
+                inputs, _lists = _archive_inputs(name, args)  # (tar, zip, pax, cpio, gzip: _judge_other's)
+                if inputs and reaches(_Recursive(inputs, True), where):
+                    return True  # `tar -cf - .`, `zip -qr ~/x.zip .`, `pax -w context` from action-items/
             elif name == "git":
                 sub, sub_args, chdirs = _git(args)
                 if sub != "grep":
@@ -1082,6 +1882,100 @@ def _judge_recursive(
                 paths = plain if any(a in ("-e", "-f") for a in sub_args) else plain[1:]
                 if not (stripped.fed and not paths) and reaches(_Recursive(paths, True), where):
                     return True
+    return False
+
+
+def _judge_other(
+    command: str, in_kb: bool, cwd: str | None, vault: str | None, env: Mapping[str, str], depth: int = 0
+) -> bool:
+    """The readers :mod:`scout.kb.other_reads` knows (copies and archives, ``diff -r``, ``dd``, ``source``, the
+    files a sed, awk or perl program names), on the split that keeps quotes whole: a path they read that spells
+    the KB, or any relative one run from inside it; a recursive one rooted where it reaches a KB note (``cwd``
+    and ``vault`` given); a stdin list from a pipe that carries KB paths (``find knowledge-base | cpio -o``); and
+    the shell commands such a program runs. A copy into the KB reads nothing out of it."""
+    from scout.kb.other_reads import into_kb_counts, other_reads
+
+    if depth > 4:
+        return False
+    statements, substitutions = _shell_split(command)
+    if any(_judge_other(s, in_kb, cwd, vault, env, depth + 1) for s in substitutions):
+        return True
+    local = _local_values(command)
+    here = posixpath.normpath(cwd) if cwd else None
+    for pieces in statements:
+        previous = ""
+        for piece in pieces:
+            stripped = _strip(_shell_words(piece))
+            words, upstream, previous = stripped.words, previous, piece
+            if not words:
+                continue
+            if any(c.isspace() for c in words[0]):  # a program a shell prefix runs: `bash -c 'tar cf - .'`
+                if _judge_other(" ".join(words), in_kb, here, vault, env, depth + 1):
+                    return True
+                continue
+            name, args = _command_name(words[0]), words[1:]
+            if name in ("cd", "pushd"):
+                in_kb = _names_kb(" ".join(args))
+                here = _cd(here, args[0] if args else "~", env, local)
+                continue
+            other = other_reads(name, args)
+            if other is None:
+                continue
+            seg_in_kb = in_kb if stripped.chdir is None else _names_kb(stripped.chdir)
+            where = here if stripped.chdir is None else _cd(here, stripped.chdir, env, local)
+            dests = [*other.dests, *compressor_stdout_dests(name, args, _stdout_targets(piece))]
+            relative = [d for d in dests if not d.startswith(("/", "~"))]
+            into_kb = into_kb_counts(other) and (any(_names_kb(d) for d in dests) or (seg_in_kb and bool(relative)))
+            reads = [] if into_kb else other.reads
+            if any(_names_kb(w) or _glob_names_kb(w) for w, _how in reads) or any(
+                _names_kb(p) for p in [*other.literal, *other.folders]
+            ):
+                return True
+            if seg_in_kb and any(not w.startswith(("/", "~")) for w in [*(w for w, _ in reads), *other.literal]):
+                return True
+            if other.stdin_list and not into_kb and _KB_SOURCE.search(upstream):
+                return True
+            if vault is not None and where is not None and _covers(reads, where, vault, env, local):
+                return True
+            for program in other.programs:
+                if raw_kb_read(program, in_kb=seg_in_kb, cwd=where, vault=vault, env=env):
+                    return True
+    return False
+
+
+_STDOUT_TO = re.compile(r"(?:^|(?<=\s))(?:1|&)?>>?\|?\s*([^\s;&|<>]+)")
+
+
+def _stdout_targets(piece: str) -> list[str]:
+    """The files a piece's standard output goes to (``> f``, ``>> f``, ``1> f``, ``&> f``), unquoted."""
+    return [_unquoted(m.group(1)) for m in _STDOUT_TO.finditer(piece)]
+
+
+def compressor_stdout_dests(name: str, args: list[str], stdout: list[str]) -> list[str]:
+    """Where a compressor writing to stdout (``gzip -c``, ``--stdout``) puts its copy: the files stdout goes to, so
+    ``gzip -c knowledge-base/a.md > knowledge-base/a.md.gz`` is a copy into the KB, as tar's and zip's are."""
+    if name not in _COMPRESSORS:
+        return []
+    to_stdout = any(re.fullmatch(r"-[A-Za-z0-9]*c[A-Za-z0-9]*", a) or a in ("--stdout", "--to-stdout") for a in args)
+    return stdout if to_stdout else []
+
+
+def _covers(
+    reads: list[tuple[str, str]], where: str, vault: str, env: Mapping[str, str], local: Mapping[str, str]
+) -> bool:
+    """Whether a recursive copy or ``diff -r`` rooted at one of ``reads`` gets to a KB note, as a recursive search
+    does (:func:`_reaches_kb`). A root the gate can't place is the path judge's to record, not a deny here."""
+    from scout.kb.other_reads import COVERS
+
+    for word, how in reads:
+        root = _expand(word, env, local)
+        if how != COVERS or root == _UNKNOWN or _SUBST in root:
+            continue
+        folder = _root_folder(root)
+        if _reaches_kb(
+            folder if folder.startswith("/") else posixpath.join(where, folder), vault, _Recursive([], True)
+        ):
+            return True
     return False
 
 

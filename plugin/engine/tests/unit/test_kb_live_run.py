@@ -901,6 +901,305 @@ def test_commands_that_change_the_run_env_are_flagged(command: str) -> None:
 @pytest.mark.parametrize(
     "command",
     [
+        "HOME=/a ls",
+        "FOO=1 HOME=/a git commit -m x",
+        "HOME=/a; echo x > ~/f",
+        "export HOME=/a",
+        "declare -x HOME=/a",
+        "local HOME=/a",
+        "readonly HOME=/a",
+        "export -n HOME",
+        "declare -n ref=HOME; ref=/a",
+        "env HOME=/a ls",
+        "env -u HOME ls",
+        "env --unset=HOME ls",
+        "env -uHOME ls",
+        "unset HOME",
+        "unset -v HOME && ls",
+        "for HOME in /a /b; do ls; done",
+        "read HOME < f",
+        "mapfile HOME < f",
+        "printf -v HOME %s /a",
+        "bash -c 'HOME=/a ls'",
+        "eval 'export HOME=/a'",
+        "sudo HOME=/a ls",
+        "HOME=$OTHER ls",
+        "HOME=~other ls",
+        "HOME=~/.claude; echo x >> ~/settings.json",
+        "HOME=$HOME/.claude ls",
+        # review of #800: forms that change `~` without a plain `HOME=` at the start of a command
+        "HOME+=/.claude; echo x >> ~/settings.json",
+        "HOME[1,-1]=/x; echo x >> ~/settings.json",
+        "HOME[1]=x",
+        "(( HOME=0 ))",
+        "let HOME=0",
+        'let "HOME+=1"',
+        "integer HOME=0",
+        "IFS= read -r HOME <<< /x; echo x >> ~/settings.json",
+        "read -A HOME",
+        "readarray HOME < f",
+        "vared HOME",
+        "getopts x HOME",
+        "select HOME in /x; do break; done <<< 1",
+        "local HOME",
+        "typeset -T HOME home",
+        "typeset -l HOME",
+        "nocorrect export HOME=/x",
+        "noglob HOME=/x true",
+        "noglob export HOME=/x",
+        "- export HOME=/x",
+        "builtin export HOME=/x",
+        "command export HOME=/x",
+        "exec env HOME=/x ls",
+        # a quoted or escaped name is the same name to the shell
+        "export HO''ME=/x",
+        "typeset H\\OME=/x",
+        "HO\\ME=/x git commit -m m",
+        "printf -v HO''ME /x",
+        "read HO''ME <<< /x",
+        "unset HO''ME",
+        "for HO''ME in /x; do :; done",
+        'eval "HO""ME=x"',
+        # a name built at run time may be HOME
+        "v=HOME; export $v=/x",
+        'v=HOME; typeset "$v=/x"',
+        'v=HO; v+=ME; eval "$v=/x"; git commit -m m',
+        "v=HOME; read $v <<< /x",
+        'read "$v" <<< /x',
+        'printf -v "$v" /x',
+        "unset $v",
+        "export ${v}=/x",
+        "let $v=1",
+        # review 2 of #800: a name built only in part, or by a glob (`HOM?` with a file named HOME), and the
+        # targets behind read's option values
+        'v=OME; eval "H${v}=/x"',
+        "v=OME; export H$v=/x",
+        "v=OME; read H$v <<< /x",
+        "v=OME; printf -v H$v /x",
+        'v=OME; typeset "H${v}=/x"',
+        "read HOM? <<< /x",
+        "export HOM?=.claude",
+        "export HOM[E]=.claude",
+        "for H$v in /x; do :; done",
+        "let H$v=1",
+        "(( HOME = 0 ))",
+        "(( H$v = 1 ))",
+        "read -d '' HOME <<< /x",
+        "read -t 5 HOME",
+        "read -rp prompt HOME",
+        "read -k HOME",
+        "mapfile -t HOME < f",
+        'unset "$var"',
+        'export "$@"',
+        "eval ${v}=x",
+        "getopts -- ab HOM?",
+        '"read" HOM? <<< /x',
+        "\\export HOM?=x",
+        # review 3 of #800: zsh's own setters, `repeat`, and typeset's number options
+        "print -v HOM? /x",
+        "print -v HOME /x",
+        "print -rv HOME /x",
+        "print -vHOME /x",
+        "zstyle -s :x y HOM?",
+        "zstyle -s :x y HOME",
+        "zstyle -a :x y HOME",
+        "zstyle -g HOME",
+        "zformat -f HOM? /x",
+        "zformat -f HOME /x",
+        "strftime -s HOM? %s",
+        "strftime -s HOME %s",
+        "getln HOME",
+        "zparseopts -A HOM? a",
+        "zparseopts -D h=HOME",
+        "zstat -A HOME file",
+        "sysread HOME",
+        "sysopen -u HOME -w f",
+        "repeat 1 read HOM? <<< /x",
+        "repeat 3 export HOME=/x",
+        "typeset -i 10 HOM?",
+        "typeset -Z 3 HOM?",
+        "typeset -L 5 HOME",
+        "typeset -A HOME",
+        "vared -c HOME",
+        "read -q HOM?",
+        "HOME=x; export HOME",
+        # a $'…' string's escapes, decoded as zsh does (round 4 of #800's review)
+        "eval $'\\x72ead HOM? <<< h'; git commit -qm m",
+        "eval $'\\162ead HOM? <<< h'; git commit -qm m",
+        "eval $'\\u0072ead HOME <<< /x'",
+        "eval $'read HOM? <<< h'",
+        "eval $'export HO\\x4dE=/x'",
+        "eval x$'\\x3b read HOME'",
+        "$'\\x72ead' HOM? <<< h",
+        "export $'HO\\x4dE'=/x",
+        # print's option built at run time: it may be -v, or -vHOME
+        "x=v; print -$x HOM? /p/h; git commit -qm m",
+        "x=vHOME; print -$x /p/h",
+        "print -r$x HOME h",
+        "printf -`echo v` HOME x",
+        "print -${o} HOM? x",
+    ],
+)
+def test_commands_that_point_home_elsewhere_are_named(command: str) -> None:
+    assert run_escape(command) == live_run.HOME_FORM
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "HOME=$HOME ls",
+        "HOME=${HOME} ls",
+        'HOME="$HOME" ls',
+        "HOME=~ ls",
+        "HOME=$HOME/ ls",
+        "FOO=bar HOME=$HOME ls",
+        "echo $HOME ~",
+        "export HOME",
+        "printenv HOME",
+        "cd ~",
+        'echo "HOME is $HOME"',
+        "read -r HOME_DIR <<< x",
+        "export PATH=$HOME/bin:$PATH",
+        "unset HOMEBREW_PREFIX",
+        "for d in $HOME/a $HOME/b; do ls $d; done",
+        'while IFS= read -r line; do echo "$line"; done < notes.txt',
+        "v=x; read -r v <<< y",
+        "printf '%s\\n' \"$HOME\"",
+        "HOME=${HOME}/ ls",
+        "HOME=~/ ls",
+        "HOME+= ls",
+        "read -t $T ans",
+        'read -p "$prompt" ans',
+        "read -r -d '' body <<< x",
+        "local x=$1",
+        "printf -v out '%s' \"$x\"",
+        "mapfile -t lines < notes.txt",
+        'declare -a arr=("$@")',
+        'getopts "ab:" opt',
+        "let i=$i+1",
+        "export -p",
+        "(( i++ ))",
+        "(( n = n + 1 ))",
+        "for i in 1 2 3; do echo $i; done",
+        "typeset -i 10 count",
+        "typeset -Z 3 n=7",
+        'print -r -- "$HOME"',
+        "print hello",
+        "zstyle ':completion:*' menu select",
+        "strftime %Y-%m-%d",
+        "zformat -f out '%a' a:1",
+        "coproc read HOM?",
+        "printf -- -v HOM? x",
+        "typeset -a arr; arr=(a b)",
+        "printf $'%s\\n' a b",
+        "echo $'a\\tb'",
+        "eval $'echo hi'",
+        "git commit -m $'line1\\nline2'",
+        "echo '$'\"'\"'\\x72ead'",  # no $'…' here: a quoted `$`, then a quoted quote
+        "echo \"$'\\x72ead'\"",  # inside double quotes, $'…' is plain text
+        "print -n $msg",
+        "print -r -- $x",
+    ],
+)
+def test_keeping_or_reading_home_is_not_flagged(command: str) -> None:
+    assert run_escape(command) is None
+
+
+@pytest.mark.parametrize(
+    ("command", "form"),
+    [
+        ("eval $'git commit --no-veri\\x66y -m x'", "--no-verify"),
+        ("eval $'unset SCOUT_\\x4dODE'", "env"),
+        ("$'\\x6eohup' sleep 9", "detach"),
+    ],
+)
+def test_a_dollar_quote_is_read_as_the_text_it_spells(command: str, form: str) -> None:
+    assert run_escape(command) == form
+
+
+@pytest.mark.parametrize(
+    ("command", "form"),
+    [
+        (": ${HOME:=/x}", "HOME"),
+        (": ${HOME=/x}", "HOME"),
+        (": ${HOME::=/x}; echo x >> ~/f", "HOME"),
+        ("echo ${HOME::=/x}", "HOME"),
+        ("v=HOME; : ${(P)v::=/x}", "HOME"),
+        ("v=HOME; : ${(P)${v}::=/x}", "HOME"),
+        (": ${(P)$(echo HOME)::=/x}", "HOME"),
+        (": ${!v:=/x}", "HOME"),
+        (": ${XDG_CONFIG_HOME:=/x}; git commit -m m", "XDG_CONFIG_HOME"),
+        (": ${SCOUT_MODE::=}", "env"),
+        ("exec {HOME}>/dev/null", "HOME"),
+        ("exec {XDG_CONFIG_HOME}< f", "XDG_CONFIG_HOME"),
+    ],
+)
+def test_an_expansion_that_assigns_a_name_that_matters_or_a_built_one_is_named(command: str, form: str) -> None:
+    assert live_run.expansion_escape(command) == form
+
+
+@pytest.mark.parametrize(
+    ("command", "form"),
+    [
+        ("eval $$'; \\x72ead HOME <<< /x'", "HOME"),  # zsh reads a `$`, then $'…'; bash a pid and a plain quote
+        ("echo $$'a\\tb'", "HOME"),  # either reading: not worth telling apart
+        ("echo \\$$'a\\tb'", None),  # `\$`: a character, then one `$` and $'…', read the same by both shells
+        ("echo $$ 'a\\tb'", None),
+        ("echo $'a\\tb'", None),
+    ],
+)
+def test_an_even_dollar_run_before_an_escaped_quote_is_denied(command: str, form: str | None) -> None:
+    assert live_run.even_dollar_escape(command) == form
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo ${HOME}",
+        "echo ${HOME:-/x}",
+        "ls ${HOME}/notes",
+        "echo ${(P)v}",
+        'echo "${HOME=}"',
+        "echo ${(j:,:)arr}",
+        "echo ${(s:=:)line}",
+        "echo ${(Pj:,:)name}",
+        ": ${OTHER:=x}",
+    ],
+)
+def test_an_expansion_that_only_reads_or_sets_another_name_is_not(command: str) -> None:
+    assert live_run.expansion_escape(command) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "XDG_CONFIG_HOME=./x git commit -m m",
+        "export XDG_CONFIG_HOME=./x; git commit -m m",
+        "env XDG_CONFIG_HOME=./x git commit -m m",
+        "declare -x XDG_CONFIG_HOME=./x",
+        "XDG_CONFIG_HOME+=/x; git commit -m m",
+        "IFS= read -r XDG_CONFIG_HOME <<< /x; git commit -m m",
+        "export XDG_CONFIG_HO''ME=/x",
+        "local XDG_CONFIG_HOME",
+    ],
+)
+def test_pointing_git_at_another_global_config_dir_is_named(command: str) -> None:
+    """git reads ``$XDG_CONFIG_HOME/git/config`` as its global config, which can set core.hooksPath."""
+    assert run_escape(command) == live_run.XDG_CONFIG_FORM
+
+
+@pytest.mark.parametrize("command", ["read SCOUT_MODE <<< x", "local SCOUT_READER", "SCOUT_MODE+=x git commit -m m"])
+def test_the_run_env_goes_through_the_same_name_checks(command: str) -> None:
+    assert run_escape(command) == "env"
+
+
+def test_a_run_env_change_still_wins_over_home() -> None:
+    assert run_escape("SCOUT_MODE= HOME=/a git commit -m x") == "env"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         "env SCOUT_MODE=x git commit -m y",
         "env -u OTHER -u SCOUT_MODE git commit",
         "env -C notes -u SCOUT_MODE git commit",

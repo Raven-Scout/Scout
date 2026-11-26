@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Arrow-key movement through a list drawn as a stack of rows (Action Items,
@@ -46,10 +47,24 @@ nonisolated enum KeyboardListNavigation {
     }
 }
 
+/// Says a list's new current item aloud while VoiceOver runs. A list takes
+/// the keys through a focus sink hidden from accessibility and its items are
+/// no Tab stops, so a cursor the arrow keys move is otherwise silent (review
+/// of #767).
+enum ListCursorAnnouncement {
+    static func post(_ label: String?) {
+        guard let label, !label.isEmpty, NSWorkspace.shared.isVoiceOverEnabled else { return }
+        NSAccessibility.post(
+            element: NSApp as Any, notification: .announcementRequested,
+            userInfo: [.announcement: label, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+    }
+}
+
 extension View {
     /// Moves `selection` through `ids` with ↑ ↓ Home End while this view or a
     /// row inside it has keyboard focus, then calls `onMove` with the new
-    /// item (to scroll it into view, say). Pass `when:` the list's own focus
+    /// item (to scroll it into view, say). VoiceOver hears `announce`'s name
+    /// for the new item. Pass `when:` the list's own focus
     /// (`dsFocusContainer`): an arrow a focused button inside didn't use
     /// reaches this handler too, and must not move a cursor whose ring isn't
     /// drawn (UI audit T4).
@@ -57,6 +72,7 @@ extension View {
         when active: Bool = true,
         ids: @escaping () -> [ID],
         selection: Binding<ID?>,
+        announce: @escaping (ID) -> String? = { _ in nil },
         onMove: @escaping (ID) -> Void = { _ in }
     ) -> some View {
         onKeyPress(keys: [.upArrow, .downArrow, .home, .end], phases: [.down, .repeat]) { press in
@@ -64,6 +80,7 @@ extension View {
                   let next = KeyboardListNavigation.target(from: selection.wrappedValue, in: ids(), move: move)
             else { return .ignored }
             selection.wrappedValue = next
+            ListCursorAnnouncement.post(announce(next))
             onMove(next)
             return .handled
         }

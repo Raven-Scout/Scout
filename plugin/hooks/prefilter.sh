@@ -80,6 +80,21 @@ find_vault() {
     fi
 }
 
+# Sets $n to the length of $1 in bytes, whatever the locale (in a UTF-8 one, ${#x} counts characters).
+# LC_ALL is put back as it was, set or unset, so nothing started later sees a different locale.
+bytes() {
+    if [ -n "${LC_ALL+set}" ]; then
+        ol=$LC_ALL
+        LC_ALL=C
+        n=${#1}
+        LC_ALL=$ol
+    else
+        LC_ALL=C
+        n=${#1}
+        unset LC_ALL
+    fi
+}
+
 # Adds one alternative to $re.
 alt() { re="${re:+$re|}$1"; }
 
@@ -109,7 +124,7 @@ bash_pattern() {
     alt '(for [A-Za-z_][A-Za-z0-9_]* in |mapfile|readarray).*scoutctl kb '
 
     # -- Recursive reads, which reach the KB from any directory above it.
-    alt "$word"'(rg|find|tree|du|ag|ack|fd|ugrep)([^A-Za-z0-9_./-]|$)'
+    alt "$word"'(rg|find|tree|du|ag|ack|ack-grep|fd|fdfind|ugrep|ug)([^A-Za-z0-9_./-]|$)'
     alt "$word"'[ef]?grep[^;&|]* (-[A-Za-z]*[rR]|--(dereference-)?recursive|-d *recurse|--directories=recurse)'
     alt 'git[^;&|]* grep'
 
@@ -172,6 +187,95 @@ bash_pattern() {
     alt 'git[^;&|]* -c '
     alt 'git[^;&|]*(commit|am).*([^A-Za-z0-9_-]|\\[nt])-[A-Za-z]*n' # -n as --no-verify
     alt 'git +(\\")?\$'                                             # git "$var": the subcommand is hidden
+
+    # -- A word the shell rewrites before the program sees it, so its text need not spell the path it
+    #    becomes: `cat k*/a/a.md`, `cat ${K}-base/x.md`, `cat "$(printf …)"`, `less $HOME/Vault/kn*`,
+    #    `cat kn{o,}wledge-base/a.md`. Quotes are not parsed here (a quote-aware scan in sh could be
+    #    fooled into calling a glob quoted); each test below over-matches instead. In order: a `*`; a `?`
+    #    that is not `$?`; a `[` that can open a bracket expression (not `[ ` or `[[ `, the test
+    #    commands); a `$` that is not `$?`, `$#`, `$!` or `$$`; a backtick; a brace list or range; a
+    #    leading `~`; an absolute path (it can name the vault, or a link into it, from anywhere).
+    alt '\*'
+    alt '(^|[^$])\?'
+    alt '(^|[^[])\[[^ []'
+    alt '\[\[[^ ]'
+    # shellcheck disable=SC2016 # a literal $: the pattern is for grep, not the shell
+    alt '\$([^?#!$]|$)'
+    alt '`'
+    alt '\{[^}]*(,|\.\.)'
+    alt '(^|[^A-Za-z0-9_.}^@/~-]|\\[nt])~'
+    alt '(^|[^A-Za-z0-9_.~-]|\\[nt])/'
+    # -- A program that takes its paths from another program's output, and a change of directory into
+    #    action-items/ (then `context/x.md` names a KB note without the KB's name in it).
+    alt "$word"'(xargs|parallel)([^A-Za-z0-9_.-]|$)'
+    alt '(cd|pushd|-C|--directory|--git-dir|--work-tree)[^;&|]*action-items'
+    # -- Any `(`: zsh reads a group glued to a word as alternation, so `cat kn(o|)wledge-base/a.md` and
+    #    `cat (a|b)(c|d)/x.md` name a note with no glob character in them.
+    alt '\('
+    # -- HOME. The gates expand `~` and `$HOME` with the run's own HOME, so a command that points HOME
+    #    elsewhere first (`HOME=x cmd`, `unset HOME`, `export HOME=…`) names files they never check.
+    #    Every mention goes to Python, which denies a change and lets `HOME=$HOME` or a read through.
+    #    A quoted or escaped name (`HO''ME=x`, `H\OME=x`) is matched below, once quotes are removed;
+    #    arithmetic (`(( H$v = 1 ))`) and zsh's `${(P)v::=…}` are the `(` and `$` alternatives above.
+    alt 'HOME'
+    # -- A quote or backslash inside a word (`gr''ep`, `"gr"ep`, `g\rep`, `fi''nd`): the shell runs the word
+    #    without them, so a program the rules above look for by name need not spell it. Python judges the word
+    #    unquoted. A quote at a word's edge (`'grep'`, `\grep`) leaves the name whole for the rules above. In
+    #    JSON a double quote is \" and a backslash \\ (so a \n or \t in the command does not count). The single
+    #    quote is `[^ -&(-~]`, every printable ASCII character but it (the pattern itself holds no quote); a
+    #    non-ASCII letter between two word characters matches too, and Python judges it.
+    alt '[A-Za-z0-9_]([^ -&(-~]|\\"|\\\\)+[A-Za-z0-9_]'
+    # -- A read that decompresses (zgrep and the like, zcat's kin, a grep with -z, -Z or --decompress): an
+    #    archive's members are notes it reads that no file name shows.
+    alt "$word"'((z|bz|xz|lz|lz4|zstd)[ef]?grep|(z|gz|bz|xz|lz|lz4|zstd)cat|(z|bz|xz)(less|more|diff|cmp))([^A-Za-z0-9_./-]|$)'
+    alt "$word"'[ef]?grep[^;&|]* (-[A-Za-z]*[zZ]|--decompress)'
+    # -- A program that reads an archive's members (unzip -p, bsdtar -xO, 7z e -so, cpio -i, ditto -x) or a
+    #    file whole (gzip and kin). tar is the write rule's above.
+    alt "$word"'(unzip|funzip|zipinfo|zipgrep|zip|bsdtar|gtar|7z|7za|7zz|7zr|ditto|cpio|bsdcpio|pax|gzip|gunzip|bzip2|bunzip2|xz|unxz|lzma|unlzma|zstd|unzstd|lz4|unlz4|brotli|lzip|lunzip|compress|uncompress|pigz|unpigz|pbzip2|lbzip2)([^A-Za-z0-9_./-]|$)'
+    # -- A launcher that runs the word after it (xcrun, arch, gstdbuf, caffeinate): Python strips it.
+    alt "$word_or_path"'(gstdbuf|xcrun|arch|caffeinate)([^A-Za-z0-9_./-]|$)'
+    # -- A backslash-newline (JSON \\\n): zsh joins the words around it (`gr\<NL>ep`), so no rule above need
+    #    match the program or path it spells. Python judges the joined command.
+    alt '\\\\\\n'
+
+    # -- A recursive copy, archive or compare from a folder that holds the KB, spelling no path that names
+    #    it: `diff -rN . e`, `pax -w .`, `zip -qr - .`, `ditto . x`, `gzip -rc .`. (cp, rsync, tar, find,
+    #    sed, perl and dd are matched above; any other reader needs a KB name, a glob, a `$` or a cd.)
+    alt "$word"'(pax|zip|cpio|ditto|scp|gzip|zstd|lz4)([^A-Za-z0-9_.-]|$)'
+    alt "$word"'g?diff[^;&|]* (-[A-Za-z]*r|--recursive)'
+}
+
+# Sets $re: the rules bash_needs_python also applies ignoring letter case (grep -i). On a case-insensitive
+# disk, macOS's default, the shell finds a program in any letter case (FIND, Rg, NOHUP, XARGS and GIT run
+# find, rg, nohup, xargs and git) and ACTION-ITEMS is the folder. So: a program fed paths by another, a cd
+# into action-items/, and each bash_pattern rule that names a program. Every program word keeps its word
+# boundary in front, so ignoring case cannot turn an argument's letters into a program.
+case_pattern() {
+    re=
+    word='(^|[^A-Za-z0-9_.-]|\\[nt])'
+    word_or_path='(^|[^A-Za-z0-9_./-]|\\[nt])'
+    alt "$word"'(xargs|parallel)([^A-Za-z0-9_.-]|$)'
+    alt '(cd|pushd|-C|--directory|--git-dir|--work-tree)[^;&|]*action-items'
+    alt "$word"'scoutctl kb .*(xargs|while |mapfile|readarray)'
+    alt '(for [A-Za-z_][A-Za-z0-9_]* in |mapfile|readarray).*scoutctl kb '
+    alt "$word"'(rg|find|tree|du|ag|ack|ack-grep|fd|fdfind|ugrep|ug)([^A-Za-z0-9_./-]|$)'
+    alt "$word"'[ef]?grep[^;&|]* (-[A-Za-z]*[rR]|--(dereference-)?recursive|-d *recurse|--directories=recurse)'
+    alt "$word"'ls[^;&|]* -[A-Za-z]*R'
+    alt "$word_or_path"'(env|nohup|setsid|disown|launchctl|osascript|open|tmux|screen|script|at|batch|ssh|mosh|systemd-run)([^A-Za-z0-9_./-]|$)'
+    alt "$word"'(tee|rm|rmdir|unlink|mv|cp|ln|install|rsync|touch|truncate|chmod|chown|chflags|shred|dd|sed|perl|curl|wget|tar|python[0-9.]*|pypy[0-9.]*|node|nodejs|ruby|php|deno|bun)([^A-Za-z0-9_.-]|$)'
+    alt "$word"'((ba|z|da|k)?sh)([^A-Za-z0-9_.-]|$)'
+    alt "$word"'git[^;&|]* (grep|-c )'
+    alt "$word"'git[^;&|]*(commit|am).*([^A-Za-z0-9_-]|\\[nt])-[A-Za-z]*n'
+    alt "$word"'((z|bz|xz|lz|lz4|zstd)[ef]?grep|(z|gz|bz|xz|lz|lz4|zstd)cat|(z|bz|xz)(less|more|diff|cmp))([^A-Za-z0-9_./-]|$)'
+    alt "$word"'[ef]?grep[^;&|]* (-[A-Za-z]*[zZ]|--decompress)'
+    alt "$word"'(unzip|funzip|zipinfo|zipgrep|zip|bsdtar|gtar|7z|7za|7zz|7zr|ditto|cpio|bsdcpio|pax|gzip|gunzip|bzip2|bunzip2|xz|unxz|lzma|unlzma|zstd|unzstd|lz4|unlz4|brotli|lzip|lunzip|compress|uncompress|pigz|unpigz|pbzip2|lbzip2)([^A-Za-z0-9_./-]|$)'
+    alt "$word_or_path"'(gstdbuf|xcrun|arch|caffeinate)([^A-Za-z0-9_./-]|$)'
+    alt "$word"'(pax|zip|cpio|ditto|scp|gzip|zstd|lz4)([^A-Za-z0-9_.-]|$)'
+    alt "$word"'g?diff[^;&|]* (-[A-Za-z]*r|--recursive)'
+    # -- Any byte outside printable ASCII, or a JSON \u escape. The disk folds case the Unicode way, and grep
+    #    cannot: ﬁnd (the ﬁ ligature), xargſ and ſh (long s) and ßh run find, xargs, sh and ssh. Python folds them.
+    alt '[^ -~]'
+    alt '\\u[0-9A-Fa-f]{4}'
 }
 
 # Sets $t to program $1 by absolute path: /usr/bin or /bin first, else the first in the (filtered,
@@ -188,16 +292,27 @@ tool() {
 # that $(...) opens would take fd 0 and cat would read its own output pipe forever, so a closed
 # stdin is refused first. Duplicating fd 0 to fd 9 fails when it is closed (`<&0` onto itself is a
 # no-op that always succeeds); `true`, not `:`, since a redirection error on a special builtin ends
-# the shell.
+# the shell. With a byte count $1, only that many bytes are read (head -c), so a huge payload costs no
+# more than a long one.
 read_payload() {
     { true 9<&0; } 2>/dev/null || return 1
-    tool cat
-    p=$("$t")
+    if [ -n "${1-}" ]; then
+        tool head
+        p=$("$t" -c "$1")
+    else
+        tool cat
+        p=$("$t")
+    fi
 }
 
 # Exit status of `grep -qE -e <pattern>` over $v: 0 match, 1 no match, anything else an error.
 matches() {
     printf '%s' "$v" | "$GREP" -qE -e "$1"
+}
+
+# The same, ignoring letter case.
+matches_i() {
+    printf '%s' "$v" | LC_ALL=C "$GREP" -qiE -e "$1"
 }
 
 # Sets $v to the payload's command value, as JSON spells it (quotes and escapes kept). Returns grep's
@@ -215,13 +330,40 @@ bash_needs_python() {
     bash_pattern
     matches "$re"
     [ "$?" -ne 1 ] && return 0
+    # case_pattern's rules in any letter case, and below with quotes and backslashes gone (`cd
+    # 'action'-items`, `x\args`, `NO''HUP`), where a KB folder's name counts too.
+    case_pattern
+    late=$re
+    matches_i "$late"
+    [ "$?" -ne 1 ] && return 0
     if [ -n "$SCOUT_SECRETS_DIR" ]; then
         case "$p" in *"$SCOUT_SECRETS_DIR"*) return 0 ;; esac
     fi
     tool tr
+    tr=$t
+    raw=$v
     # shellcheck disable=SC1003 # the set is ', " and \ (one backslash after the shell's escaping)
-    v=$(printf '%s' "$v" | "$t" -d "'\"\\\\") || return 0
-    matches 'knowledge-base|knowledge_base|action-items/context'
+    v=$(printf '%s' "$raw" | "$tr" -d "'\"\\\\") || return 0
+    matches_i "knowledge[-_]base|action-items/context|$late"
+    [ "$?" -ne 1 ] && return 0
+    # The names a run may not set, and the builtins that set what they name, read again from the raw
+    # value: JSON's \n and \t become spaces first, so a word after them still starts a word once \ is
+    # gone, and an escaped backslash (\\, as in `\\typeset`) goes before that, so its second half doesn't
+    # read as \t. Case matters for both (`home` is another variable, `READ` no builtin).
+    tool sed
+    # shellcheck disable=SC1003 # the set is ', " and \ (one backslash after the shell's escaping)
+    v=$(printf '%s' "$raw" | "$t" -e 's/\\\\//g' -e 's/\\[nt]/ /g' | "$tr" -d "'\"\\\\") || return 0
+    # HOME, SCOUT_MODE and SCOUT_READER spelled with quotes or backslashes (`HO''ME=x`,
+    # `export SCOUT_MO\DE=x`).
+    matches 'HOME|SCOUT_(MODE|READER)'
+    [ "$?" -ne 1 ] && return 0
+    # A builtin that sets or unsets the variables it names, anywhere in the command, its own name perhaps
+    # quoted or escaped (`"read" HOM?`, `\export`, `r''ead`): its target need not spell HOME (`export
+    # $v=…`, `read H$v`, `read HOM?` with a file named HOME), so Python reads every one, and denies a
+    # target it can't read for certain. zsh's own setters too (`print -v`, `zstyle -s`, `zformat -f`,
+    # `strftime -s`, `getln`, the module builtins), and `repeat N`, a keyword the command follows.
+    # print's option may be built too (`print -$x NAME`), so a $ or backtick in it counts as -v.
+    matches '(^|[^A-Za-z0-9_.-])(export|declare|typeset|local|readonly|integer|float|unset|read|select|getopts|vared|mapfile|readarray|let|for|repeat|zstyle|zformat|strftime|getln|zparseopts|zstat|sysread|sysopen|zselect|zpty|zregexparse)([^A-Za-z0-9_.-]|$)|print(f)?[^;&|]* -[A-Za-z]*[v$`]'
     [ "$?" -ne 1 ]
 }
 
@@ -432,14 +574,29 @@ outbound-gate)
 #   1. its command value matches bash_pattern;
 #   2. the payload names $SCOUT_SECRETS_DIR;
 #   3. its command value spells a KB path once quotes and backslashes are removed.
+# A payload over $max_payload bytes is blocked without either stage: the patterns above backtrack, and on
+# a 200 KB command this filter alone ran about 40 s, past the entry's 15 s timeout, and a hook Claude Code
+# kills is a call it allows. Only the first max+1 bytes are read, so a huge payload costs no more.
 kb-read-gate)
     is_run || verdict 0
-    if ! read_payload; then
+    max_payload=32768
+    if ! read_payload "$((max_payload + 1))"; then
         echo "[scout:kb-read-gate] Scout's KB read gate could not read this call, so it is blocked in a scheduled run." >&2
         verdict 2
     fi
+    bytes "$p"
+    if [ "$n" -gt "$max_payload" ]; then
+        echo "[scout:kb-read-gate] This call is over $max_payload bytes, too long for Scout's KB read gate to check in time, so it is blocked in a scheduled run. Split the command, or write long text with the Write tool and pass the file." >&2
+        verdict 2
+    fi
+    # Python also for a KB name in any letter case (a case-insensitive disk), and for a cwd in or under
+    # action-items/, where `cat context/x.md` or `cat ../context/x.md` reads a note without naming it.
     case "$p" in
-    *'"Grep"'* | *'"Glob"'* | *knowledge-base* | *knowledge_base* | *action-items/context*) ;;
+    *'"Grep"'* | *'"Glob"'*) ;;
+    *[Kk][Nn][Oo][Ww][Ll][Ee][Dd][Gg][Ee][-_][Bb][Aa][Ss][Ee]*) ;;
+    *[Aa][Cc][Tt][Ii][Oo][Nn]-[Ii][Tt][Ee][Mm][Ss]/[Cc][Oo][Nn][Tt][Ee][Xx][Tt]*) ;;
+    *'"cwd":'*/[Aa][Cc][Tt][Ii][Oo][Nn]-[Ii][Tt][Ee][Mm][Ss]'"'*) ;;
+    *'"cwd":'*/[Aa][Cc][Tt][Ii][Oo][Nn]-[Ii][Tt][Ee][Mm][Ss]/*) ;;
     *) bash_needs_python || verdict 0 ;;
     esac
     printf '%s' "$p" | "$@" && verdict 0
@@ -524,9 +681,9 @@ front-page-reads)
     verdict 0
     ;;
 
-# For the tests: the assembled Bash pattern, one line.
+# For the tests: the assembled Bash pattern, one line (`print-bash-pattern case`: case_pattern's).
 print-bash-pattern)
-    bash_pattern
+    if [ "${1-}" = case ]; then case_pattern; else bash_pattern; fi
     printf '%s\n' "$re"
     ;;
 

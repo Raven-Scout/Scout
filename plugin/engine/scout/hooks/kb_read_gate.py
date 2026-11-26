@@ -20,7 +20,9 @@ all of that, and the phase rule saying so lost in 30 of 34 privacy eval runs
     a git call that skips or redirects the commit hooks, which the hook can't
     see because it never runs (``--no-verify``, ``-c core.hooksPath``,
     ``commit-tree``, a write into ``.git/hooks``, #607): that deny names the
-    form and records the event ``kb_read_gate.hook_skip``.
+    form and records the event ``kb_read_gate.hook_skip``. A command that names an
+    ``ANTIGRAVITY_*`` variable (agy's local server, ``hook_paths.AGY_SERVER_ENV``) is denied
+    before any of that, whatever runtime the run is on.
   - **Grep / Glob**: a search inside ``knowledge-base/`` or
     ``action-items/context/``, or over the whole vault (no path, or the vault
     root, with no file filter or one that reaches the KB), is denied.
@@ -148,6 +150,21 @@ def _deny_run_env() -> str:
     )
 
 
+def _deny_home() -> str:
+    return (
+        f"{MARK} A scheduled run doesn't set, unset or export HOME, or set a variable whose name it builds at run "
+        "time (`export $v=…`, `read $v`): what `~` and `$HOME` name decides which files this gate protects. Use the "
+        "paths as they are, and name the variables you set; Scout's commands find their own folders."
+    )
+
+
+def _deny_agy_server() -> str:
+    return (
+        f"{MARK} A scheduled run doesn't use the ANTIGRAVITY_* variables (the agent CLI's local server address, "
+        "token and helpers): that server isn't proven to go through Scout's checks. Use the session's own tools."
+    )
+
+
 def _deny_detach() -> str:
     return (
         f"{MARK} A scheduled run runs its commands in the foreground: it doesn't background them (a trailing &) or "
@@ -234,14 +251,17 @@ def _deny_unresolved(form: str) -> str:
 # until there's data to decide on. The KB reads the gate can work out are denied either way.
 DENY_UNRESOLVED_READS = False
 # What made a read unresolved, by the placeholder live_run left in its word.
-UNRESOLVED_CATEGORIES = ("xargs_input", "command_output", "unset_variable")
+# program_path: a file a program's text opens by a path it builds at run time (awk, perl; scout.kb.other_reads).
+UNRESOLVED_CATEGORIES = ("xargs_input", "command_output", "unset_variable", "program_path")
 
 
 def _unresolved_category(raw: str) -> str:
-    from scout.kb.live_run import SUBST, UNSEEN_INPUT
+    from scout.kb.live_run import PROGRAM_PATH, SUBST, UNSEEN_INPUT
 
     if UNSEEN_INPUT in raw:
         return "xargs_input"
+    if PROGRAM_PATH in raw:
+        return "program_path"
     if SUBST in raw or "`" in raw:
         return "command_output"  # a substitution, a backtick, `read`/`mapfile`, `$OLDPWD`
     return "unset_variable"
@@ -401,7 +421,18 @@ def decide(
         if not isinstance(command, str):
             raise ValueError("Bash call without a command")
         from scout.kb import hook_paths
-        from scout.kb.live_run import DELEGATE_FORM, KB_READ, UNRESOLVED_READ, run_escape
+        from scout.kb.live_run import (
+            DELEGATE_FORM,
+            HOME_FORM,
+            KB_READ,
+            UNRESOLVED_READ,
+            even_dollar_escape,
+            expansion_escape,
+            run_escape,
+        )
+
+        if hook_paths.names_agy_server_env(command):
+            return _deny_agy_server()  # before the path checks (runtime-agnostic Phase 2A.3)
 
         def resolve(raw: str) -> str | None:
             """The path a word names, with the environment's variables put in; None when the shell fills in
@@ -449,8 +480,14 @@ def decide(
             the gate can't work out (a substitution, a variable the command doesn't set, unseen xargs input).
             ``how`` (live_run.KB_READ_HOW): a "file" reader never reads a KB folder it's given (``cat action-items/*``
             only prints an error for ``context/``), a "folder" reader does, and for "covers" (an xargs lister's root)
-            a folder holding the KB counts too."""
+            a folder holding the KB counts too. "dest" is no read: KB_READ when a copy's target is in the KB, and
+            None for one outside it or one the gate can't work out (nothing is recorded)."""
             target = resolve(raw)
+            if how == "dest":
+                if target is None:
+                    return None
+                rels = (_vault_rel(vault, paths.resolve_path(one)) for one in globs(target) or [target])
+                return KB_READ if any(rel is not None and rel != "." and is_kb_path(rel) for rel in rels) else None
             if target is None:
                 if DENY_UNRESOLVED_READS:
                     return UNRESOLVED_READ
@@ -482,9 +519,15 @@ def decide(
                 memo[target] = _literal_globs(target)
             return memo[target]
 
-        escape = run_escape(command, protect=protect, secret=secret, kb_read=kb_read)
+        escape = (
+            expansion_escape(command)
+            or run_escape(command, protect=protect, secret=secret, kb_read=kb_read)
+            or even_dollar_escape(command)
+        )
         if escape == "env":
             return _deny_run_env()
+        if escape == HOME_FORM:
+            return _deny_home()
         if escape == KB_READ:
             return _deny_bash()
         if escape == UNRESOLVED_READ:

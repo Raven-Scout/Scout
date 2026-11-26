@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The Action Items List's keyboard model (UI audit #50). One card at a time
@@ -17,10 +18,11 @@ struct ActionItemsKeyboardContext: Equatable {
     var commitKeyFree = true
     /// The last Return or Space; the card it names opens or closes.
     var toggleRequest: ToggleRequest?
-    /// Makes a card current (a click anywhere on it).
-    var setCursor: StableAction<UUID>?
     /// Makes a card current and gives the list keyboard focus, so the arrows
-    /// work next: a click on the card's header, which holds no text field.
+    /// work next: a click anywhere on the card, unless the click left the keys
+    /// with text (`CardClickFocus`, `clickTakesListFocus`). A click that only made the card
+    /// current left the list without focus when it came from elsewhere, the
+    /// sidebar say: gold, no ring, and ↓ did nothing (UI audit T4).
     var focusCard: StableAction<UUID>?
 
     struct ToggleRequest: Equatable {
@@ -41,6 +43,58 @@ struct ActionItemsKeyboardContext: Equatable {
     /// into a comment would otherwise collapse its card and lose the draft.
     static func listOwnsKeys(listFocused: Bool, commentEditorFocused: Bool) -> Bool {
         listFocused && !commentEditorFocused
+    }
+
+    /// What holds the keys at one moment of a click, as far as the click rule
+    /// needs: who, and the text it has selected.
+    struct KeyHolder: Equatable {
+        let responder: ObjectIdentifier?
+        let selection: NSRange?
+        /// A comment editor (an editable text view, not a field's shared
+        /// editor, which is the search field's) or text with a selection,
+        /// which ⌘C must still copy. Nothing else: the sidebar, a list or a
+        /// button gives the keys up to the clicked list (review of #767).
+        let holdsText: Bool
+        /// Whether the click landed inside it (set at mouse-down only).
+        var clickInside = false
+
+        /// The roles of a view other than a text view that can hold selected
+        /// text. A list or outline (the sidebar) has a selection of rows, not text.
+        static let textRoles: Set<NSAccessibility.Role?> = [.textArea, .textField, .staticText]
+
+        init(responder: NSResponder?, hit: NSView? = nil) {
+            self.responder = responder.map(ObjectIdentifier.init)
+            if let text = responder as? NSTextView {
+                selection = text.selectedRange()
+                holdsText = (text.isEditable && !text.isFieldEditor) || text.selectedRange().length > 0
+            } else if let view = responder as? NSView, Self.textRoles.contains(view.accessibilityRole()) {
+                let range = view.accessibilitySelectedTextRange()
+                selection = range
+                holdsText = range.location != NSNotFound && range.length > 0
+            } else {
+                selection = nil
+                holdsText = false
+            }
+            if let hit, let view = responder as? NSView {
+                clickInside = hit === view || hit.isDescendant(of: view)
+            }
+        }
+    }
+
+    /// Whether a click on a card may take the list's keyboard focus, from what
+    /// held the keys when it began (`atMouseDown`) and once it ended (`now`).
+    /// Not when a control the click hit opens an editor (`claimed`), and not
+    /// from text this click left the keys with: one it clicked into, inside,
+    /// or selected. Text that already had the keys before the click, in
+    /// another card's comment editor say, gives way: the click was on the
+    /// list (review of #767). So does a field elsewhere, the search.
+    static func clickTakesListFocus(atMouseDown: KeyHolder?, now: KeyHolder, claimed: Bool) -> Bool {
+        if claimed { return false }
+        guard now.holdsText else { return true }
+        // No mouse-down seen: keep the keys where they are, a draft is safer.
+        guard let before = atMouseDown else { return false }
+        if before.clickInside { return false }
+        return before.responder == now.responder && before.selection == now.selection
     }
 
     /// A card the arrow keys walk, with what identifies its task across a
@@ -100,13 +154,78 @@ struct ActionItemsKeyboardContext: Equatable {
     }
 }
 
+/// Gives a click on a card the list's keys (`ActionItemsKeyboardContext.focusCard`).
+/// It notes what held the keys at mouse-down and decides in the card's tap,
+/// while the click is still being handled: a focus set a turn later is
+/// dropped when the keys are in the sidebar, so the list never got them
+/// (review of #767). A control that opens an editor (Add comment, Edit
+/// comment) claims the keys; if its action runs before the card's tap, the
+/// list leaves them alone, and if after, the editor takes them from the list
+/// a turn later. Either way the editor ends up with them.
+@MainActor
+final class CardClickFocus {
+    private var monitor: Any?
+    private var atMouseDown: ActionItemsKeyboardContext.KeyHolder?
+    private weak var window: NSWindow?
+    private var claimed = false
+
+    /// Watches this app's mouse-downs while the list is on screen. Returns
+    /// every event untouched.
+    func start() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            self?.mouseDown(in: event.window, at: event.locationInWindow)
+            return event
+        }
+    }
+
+    func stop() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
+
+    /// What holds the keys as a click begins at `point` (window coordinates).
+    func mouseDown(in window: NSWindow?, at point: NSPoint) {
+        self.window = window
+        claimed = false
+        let hit = window?.contentView.flatMap { view in view.hitTest(view.convert(point, from: nil)) }
+        atMouseDown = .init(responder: window?.firstResponder, hit: hit)
+    }
+
+    /// A control the click hit is opening an editor: the keys go there.
+    func claimKeys() { claimed = true }
+
+    /// Makes `id` current and gives the list the keys, now, unless the click
+    /// left them with text or a control claimed them for an editor.
+    func clicked(_ id: UUID, setCursor: (UUID) -> Void, focusList: () -> Void) {
+        setCursor(id)
+        let now = ActionItemsKeyboardContext.KeyHolder(responder: (window ?? NSApp.keyWindow)?.firstResponder)
+        let takes = ActionItemsKeyboardContext.clickTakesListFocus(atMouseDown: atMouseDown, now: now,
+                                                                   claimed: claimed)
+        claimed = false
+        atMouseDown = nil
+        if takes { focusList() }
+    }
+}
+
 private struct ActionItemsKeyboardKey: EnvironmentKey {
     static let defaultValue = ActionItemsKeyboardContext()
+}
+
+private struct CardClickFocusKey: EnvironmentKey {
+    static var defaultValue: CardClickFocus? { nil }
 }
 
 extension EnvironmentValues {
     var actionItemsKeyboard: ActionItemsKeyboardContext {
         get { self[ActionItemsKeyboardKey.self] }
         set { self[ActionItemsKeyboardKey.self] = newValue }
+    }
+
+    /// The Action Items list's click-to-focus helper, for a control inside a
+    /// card that opens an editor to claim the keys (`claimKeys`).
+    var cardClickFocus: CardClickFocus? {
+        get { self[CardClickFocusKey.self] }
+        set { self[CardClickFocusKey.self] = newValue }
     }
 }
