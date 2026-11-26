@@ -20,9 +20,12 @@ import shlex
 import unicodedata
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from scout.kb import shell_prefixes
+
+if TYPE_CHECKING:
+    from scout.kb.other_reads import OtherReads
 
 KB_PATH = re.compile(r"(?:^|[\s'\"=:/<{,])(?:knowledge-base|knowledge_base|action-items/context)(?:/|\b|$)")
 KB_DIRS = ("knowledge-base", "knowledge_base", "action-items/context")
@@ -1917,6 +1920,38 @@ def _judge_recursive(
     return False
 
 
+def _edits(other: OtherReads, kb: Callable[[str], bool], where: str | None) -> bool:
+    """Whether what a program writes is an edit, as live_run's ``_kb_edit_count`` has it: every file in the KB, or
+    one it reads and writes back when all it reads is spelled out and each KB file it reads it writes back too."""
+    if other.writes_built:
+        return False
+    if other.operand_writes:
+        return all(kb(w) for w, _how in other.reads)
+    if all(kb(w) for w in other.writes):
+        return True
+    if other.built or other.spelled or other.reads or other.unaccounted:
+        return False
+
+    def at(path: str) -> str:
+        return posixpath.normpath(path if path.startswith("/") or where is None else posixpath.join(where, path))
+
+    read, written = {at(p) for p in other.literal}, {at(w) for w in other.writes}
+    return all(kb(w) or at(w) in read for w in other.writes) and all(at(p) in written for p in other.literal if kb(p))
+
+
+def _scouts_own(
+    script: str, where: str | None, vault: str | None, env: Mapping[str, str], local: Mapping[str, str]
+) -> bool:
+    """Whether the script file an interpreter runs, spelled ``script`` from ``where``, is Scout's own
+    (:func:`scout.kb.trusted_scripts.trusted_script`); False for one whose path the text can't settle."""
+    from scout.kb.trusted_scripts import trusted_script
+
+    if vault is None or where is None or re.search(r"[$`*?\[]", script):
+        return False
+    path = _cd(where, script, env, local)
+    return path is not None and trusted_script(path, Path(vault), env)
+
+
 def _judge_other(
     command: str, in_kb: bool, cwd: str | None, vault: str | None, env: Mapping[str, str], depth: int = 0
 ) -> bool:
@@ -1960,13 +1995,10 @@ def _judge_other(
                 continue
             seg_in_kb = in_kb if stripped.chdir is None else _names_kb(stripped.chdir)
             where = here if stripped.chdir is None else _cd(here, stripped.chdir, env, local)
+            if other.script is not None and _scouts_own(other.script, where, vault, env, local):
+                continue  # Scout's own script, as scoutctl (scout.kb.trusted_scripts)
             kb = _lands_in_kb(seg_in_kb)
-            if (
-                other.writes_something
-                and not other.writes_built
-                and all(kb(w) for w in other.writes)
-                and (not other.operand_writes or all(kb(w) for w, _how in other.reads))
-            ):
+            if other.writes_something and _edits(other, kb, where):
                 # Writes only into the KB: an edit when it reads there (the gate records it), else no read at all.
                 if any(raw_kb_read(p, in_kb=seg_in_kb, cwd=where, vault=vault, env=env) for p in other.programs):
                     return True

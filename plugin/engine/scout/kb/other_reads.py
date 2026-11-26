@@ -63,6 +63,9 @@ class OtherReads:
     # Its text names the KB where no judged call spells a path (scout.kb.program_reads): denied, unless an edit.
     unaccounted: bool = False
     opaque: bool = False  # its program is text the shell fills in (`-c "$(…)"`): denied when the command names the KB
+    # The script file an interpreter runs (`python3 x.py`, `perl x.pl`), as the shell hands it: what it reads isn't in
+    # the command, so the gate judges the file itself (Scout's own scripts are trusted, any other recorded).
+    script: str | None = None
 
     @property
     def writes_something(self) -> bool:
@@ -950,6 +953,8 @@ def _perl(args: list[str]) -> OtherReads | None:
             return None  # `perl -v`, `perl -V`: no program runs
         # A program from a file (`perl x.pl`, `-x`) or from stdin: what it reads isn't in the command.
         reads = [(script, FILE)] if script not in (None, "-") else []
+        if reads and not embedded:
+            return OtherReads(reads=reads, folders=inc, script=script)
         return OtherReads(reads=reads, folders=inc, built=True)
     out = OtherReads(folders=list(inc))
     text = "\n".join(programs)
@@ -1160,6 +1165,7 @@ def _interpreter(name: str, args: list[str], stdin: Sequence[str]) -> OtherReads
         operand_writes=found.operand_writes,
         unaccounted=found.unaccounted,
         opaque=found.opaque,
+        script=found.script,
     )
 
 

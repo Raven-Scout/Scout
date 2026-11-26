@@ -250,10 +250,9 @@ MORE_FORMS = [
     "cd docs && ln -s ../knowledge-base/a.md",
     "gmv knowledge-base/a.md docs/y.md",
     "gln knowledge-base/a.md docs/y.md",
-    # a KB name the scan can't judge as a path: fail closed (an alias, a string, a comment, code in an f-string)
-    """python3 -c 'print("knowledge-base/a.md")'""",
+    # a KB name the scan can't judge as a path: fail closed (an alias, a comment, code in an f-string, a literal
+    # that reaches a call the scan doesn't model)
     """python3 -c '# open("knowledge-base/a.md")\nprint(1)'""",
-    "python3 <<'EOF'\nprint('knowledge-base is the KB')\nEOF",
     """node -e 'console.log(require("path").join("knowledge-base", "a.md"))'""",
     """python3 -c 'o = open; print(o("knowledge-base/a.md").read())'""",
     """python3 -c 'import io; print(io.FileIO("knowledge-base/a.md").read())'""",
@@ -379,6 +378,9 @@ def test_the_evals_judge_counts_them_by_spelling_too(command: str) -> None:
 
 ALLOWED = [
     "python3 -c 'print(1+1)'",
+    # a KB name in text the program only prints (scout.kb.python_text): no read
+    """python3 -c 'print("knowledge-base/a.md")'""",
+    "python3 <<'EOF'\nprint('knowledge-base is the KB')\nEOF",
     """python3 -c 'print(open("docs/a.md").read())'""",
     """python3 -c 'from pathlib import Path; print(Path("docs/a.md").read_text())'""",
     """python3 -c 'import json,sys; print(json.load(sys.stdin))'""",
@@ -455,7 +457,6 @@ def test_an_ordinary_one_liner_or_move_is_allowed(home: Path, command: str) -> N
 
 BUILT = [
     """python3 -m json.tool docs/a.md""",  # a module: what it reads isn't in the command
-    """python3 scripts/tool.py docs/a.md""",
     "R CMD BATCH analysis.R",
     """python3 < scripts/a.md""",
     """cat scripts/a.md | python3""",
@@ -545,7 +546,10 @@ def test_with_the_switch_on_a_built_path_is_denied(home: Path, monkeypatch: pyte
         (["python3", "-c", "Path(x).read_text()"], {"built": True}),
         (["python3", "-m", "http.server"], {"built": True}),  # a module: what it reads isn't in the command
         (["python3", "-m", "scout.cli", "kb", "read", "x"], None),  # Scout's engine, as scoutctl
-        (["python3", "script.py", "a"], {"reads": [("a", FILE), ("script.py", FILE)], "built": True}),
+        (
+            ["python3", "script.py", "a"],
+            {"reads": [("a", FILE), ("script.py", FILE)], "script": "script.py", "built": False},
+        ),
         (["python3", "-"], {"built": True}),  # stdin, but nothing the gate can see
         (["python3", "-c"], {"built": True}),
         (["python3", "--version"], None),
@@ -562,7 +566,7 @@ def test_with_the_switch_on_a_built_path_is_denied(home: Path, monkeypatch: pyte
         ),
         (["ruby", "-I", "lib", "-e", "File.read('a')"], {"literal": ["a"]}),
         (["ruby", "-eFile.read('a')"], {"literal": ["a"]}),
-        (["ruby", "x.rb"], {"reads": [("x.rb", FILE)], "built": True}),
+        (["ruby", "x.rb"], {"reads": [("x.rb", FILE)], "script": "x.rb"}),
         (["node", "-e", "require('fs')"], None),
         (["node", "-e", "fs.openSync('a', {flag: 'w'})"], {"writes": ["a"], "literal": []}),
         (["node", "-e", "fs.openSync('a', {mode: 0o644})"], {"literal": ["a"]}),
@@ -570,12 +574,12 @@ def test_with_the_switch_on_a_built_path_is_denied(home: Path, monkeypatch: pyte
         (["node", "-e", "$`ls -l`"], {"programs": ["ls -l"]}),
         (["node", "-r", "x", "-e", "fs.readFileSync('a')"], {"literal": ["a"]}),
         (["node", "--input-type=module", "-e", "fs.readFileSync('a')"], {"literal": ["a"]}),
-        (["deno", "run", "x.ts"], {"reads": [("x.ts", FILE)], "built": True}),
+        (["deno", "run", "x.ts"], {"reads": [("x.ts", FILE)], "script": "x.ts"}),
         (["deno", "fmt"], None),
         (["deno", "eval"], None),
-        (["bun", "run", "x.ts"], {"reads": [("x.ts", FILE)], "built": True}),
+        (["bun", "run", "x.ts"], {"reads": [("x.ts", FILE)], "script": "x.ts"}),
         (["bun", "install"], None),
-        (["php", "-f", "x.php"], {"reads": [("x.php", FILE)], "built": True}),
+        (["php", "-f", "x.php"], {"reads": [("x.php", FILE)], "script": "x.php"}),
         (["php", "-d", "a=b", "-r", "readfile('a');"], {"literal": ["a"]}),
         (["php", "-r", "echo hash_file('md5', 'a');"], {"literal": ["a"]}),
         (["php", "-r", "echo `ls $d`;"], {"built": True}),
@@ -587,7 +591,7 @@ def test_with_the_switch_on_a_built_path_is_denied(home: Path, monkeypatch: pyte
         (["Rscript", "-e", "readLines(file='a')"], {"literal": ["a"]}),
         (["Rscript", "-e", "file('a', open='w')"], {"writes": ["a"], "literal": []}),
         (["Rscript", "--file=x.R"], {"reads": [("x.R", FILE)], "built": True}),
-        (["Rscript", "-f", "x.R"], {"reads": [("x.R", FILE)], "built": True}),
+        (["Rscript", "-f", "x.R"], {"reads": [("x.R", FILE)], "script": "x.R"}),
         (["R", "--args", "x"], {"reads": [], "built": True}),
         (["cat", "x"], None),
     ],
@@ -605,7 +609,7 @@ def test_program_reads_finds_what_a_program_reads(words: list[str], expected: di
     ("words", "expected"),
     [
         # command lines: `--`, a long option's value, R's --file, a bare -e
-        (["ruby", "--", "x.rb"], {"reads": [("x.rb", FILE)], "built": True}),
+        (["ruby", "--", "x.rb"], {"reads": [("x.rb", FILE)], "script": "x.rb"}),
         (["node", "--require", "x", "-e", "fs.readFileSync('a')"], {"literal": ["a"]}),
         (["Rscript", "--file", "x.R"], {"reads": [("x.R", FILE)], "built": True}),
         (["ruby", "-e"], {"built": True}),
@@ -653,7 +657,8 @@ def test_a_program_on_stdin_and_an_echoed_one() -> None:
     found = program_reads("python3", [], ["echo 'unbalanced"])  # not one shlex reads: the text as it is
     assert found is None
     found = program_reads("python3", ["script.py"], ["open('a')"])  # a script file: stdin is its data
-    assert found is not None and found.reads == [("script.py", FILE)] and found.literal == [] and found.built
+    assert found is not None and found.reads == [("script.py", FILE)] and found.literal == []
+    assert found.script == "script.py" and not found.built  # the gate judges the file (scout.kb.trusted_scripts)
 
 
 @pytest.mark.parametrize(

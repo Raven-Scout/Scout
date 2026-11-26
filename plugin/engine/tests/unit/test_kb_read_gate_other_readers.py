@@ -453,9 +453,10 @@ def test_other_reads_edges(words: list[str], expected: dict) -> None:
     assert {key: getattr(found, key) for key in expected} == expected
 
 
-def test_perl_with_its_program_in_a_file_or_on_stdin_is_built() -> None:
+def test_perl_with_its_program_on_stdin_is_built_and_a_script_file_is_judged_as_one() -> None:
     assert other_reads("perl", ["-w"]) == OtherReads(built=True)
-    assert other_reads("perl", ["-w", "x.pl", "a"]) == OtherReads(reads=[("x.pl", FILE)], built=True)
+    # a script file: the gate judges the file (scout.kb.trusted_scripts), as python3's
+    assert other_reads("perl", ["-w", "x.pl", "a"]) == OtherReads(reads=[("x.pl", FILE)], script="x.pl")
 
 
 # ----- the rule: a construct that opens, lists, reads or runs is never silent over what it can't resolve ----
@@ -647,13 +648,20 @@ def test_an_open_after_a_chdir_it_cant_resolve_is_never_silent(home: Path, chang
 
 
 @pytest.mark.parametrize(
-    "command",
-    ["perl x.pl", "perl ./x.pl docs/a.md", "perl -- x.pl", "perl -w x.pl", "perl -x ../doc.txt", "perl < ../prog.pl"],
+    ("command", "category"),
+    [
+        ("perl x.pl", "program_path:vault_script"),  # a script in the vault that isn't Scout's own
+        ("perl ./x.pl docs/a.md", "program_path:vault_script"),
+        ("perl -- x.pl", "program_path:vault_script"),
+        ("perl -w x.pl", "program_path:vault_script"),
+        ("perl -x ../doc.txt", "program_path"),  # a program embedded in a file outside the vault
+        ("perl < ../prog.pl", "program_path"),  # stdin
+    ],
 )
-def test_a_perl_program_from_a_file_or_stdin_is_recorded(home: Path, command: str) -> None:
+def test_a_perl_program_from_a_file_or_stdin_is_recorded(home: Path, command: str, category: str) -> None:
     assert _run(home, command) is None
     (row,) = [r for r in _events(home) if r["kind"] == "kb_read_gate.unresolved_read"]
-    assert row["payload"]["categories"] == ["program_path"]
+    assert row["payload"]["categories"] == [category]
 
 
 @pytest.mark.parametrize(

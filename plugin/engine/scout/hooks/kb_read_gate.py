@@ -261,8 +261,14 @@ DENY_UNRESOLVED_READS = False
 # there and written outside the KB (a copy out).
 DENY_INTERPRETER_KB_EDITS = False
 # What made a read unresolved, by the placeholder live_run left in its word.
-# program_path: a file a program's text opens by a path it builds at run time (awk, perl; scout.kb.other_reads).
-UNRESOLVED_CATEGORIES = ("xargs_input", "command_output", "unset_variable", "program_path")
+# program_path: a file a program's text opens by a path it builds at run time (awk, perl; scout.kb.other_reads), or a
+# script or module run from outside the vault that isn't Scout's own. program_path:vault_script: a script in the vault
+# that isn't Scout's own (scout.kb.trusted_scripts; a run may have written it), recorded once per script per run.
+VAULT_SCRIPT = "program_path:vault_script"
+UNRESOLVED_CATEGORIES = ("xargs_input", "command_output", "unset_variable", "program_path", VAULT_SCRIPT)
+# Which vault scripts each recent run has had recorded (hashed): `program_path:vault_script` is once per run.
+_SCRIPTS_SEEN = ".kb-read-gate-scripts.json"
+_SCRIPTS_SEEN_RUNS = 64
 
 
 def _unresolved_category(raw: str) -> str:
@@ -381,6 +387,39 @@ def _record_unresolved_read(vault: Path, categories: list[str], mode: str | None
     _PENDING_AUDIT.append((vault, "kb_read_gate.unresolved_read", {"categories": categories, "mode": mode}))
 
 
+def _first_in_run(vault: Path, run: object, scripts: set[str]) -> bool:
+    """Whether a vault script in ``scripts`` has not been recorded in this run yet; marks them all recorded. Kept
+    as hashes in the vault's logs folder, for the last :data:`_SCRIPTS_SEEN_RUNS` runs. Without a run id, or when
+    the file can't be read or written, every call is recorded (best effort, never a deny)."""
+    import hashlib
+
+    if not isinstance(run, str) or not run:
+        return True
+    keys = {hashlib.sha256(rel.encode("utf-8", "surrogateescape")).hexdigest()[:16] for rel in scripts}
+    path = paths.logs_dir(vault) / _SCRIPTS_SEEN
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8")) if path.is_file() and not path.is_symlink() else {}
+    except (OSError, ValueError):
+        loaded = {}
+    runs: dict[str, list[str]] = loaded.get("runs", {}) if isinstance(loaded, dict) else {}
+    if not isinstance(runs, dict):
+        runs = {}
+    seen = set(runs.get(run) or [])
+    if keys <= seen:
+        return False
+    runs.pop(run, None)
+    runs[run] = sorted(seen | keys)
+    runs = dict(list(runs.items())[-_SCRIPTS_SEEN_RUNS:])
+    try:
+        from scout import safe_write
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        safe_write.atomic_write_text(path, json.dumps({"runs": runs}, sort_keys=True) + "\n", fsync=False)
+    except Exception:  # noqa: BLE001, S110 - the record goes out either way
+        pass
+    return True
+
+
 def _record_kb_edit(vault: Path, targets: int, mode: str | None) -> None:
     """Queue an allowed interpreter edit of KB notes (see :data:`DENY_INTERPRETER_KB_EDITS`): how many KB files the
     command writes and the run's mode, never the command or a path."""
@@ -441,6 +480,8 @@ def decide(
             DELEGATE_FORM,
             HOME_FORM,
             KB_READ,
+            SCRIPT,
+            TRUSTED_SCRIPT,
             UNRESOLVED_READ,
             even_dollar_escape,
             expansion_escape,
@@ -504,6 +545,8 @@ def decide(
                     return None
                 rels = (_vault_rel(vault, paths.resolve_path(one)) for one in globs(target) or [target])
                 return KB_READ if any(rel is not None and rel != "." and is_kb_path(rel) for rel in rels) else None
+            if how == SCRIPT:  # the script file an interpreter runs (live_run.SCRIPT)
+                return _judge_script(target)
             if how == "kb_edit":  # an interpreter's edit of KB notes (live_run.KB_EDIT); ``raw``: how many it writes
                 if DENY_INTERPRETER_KB_EDITS:
                     return KB_READ
@@ -532,8 +575,26 @@ def decide(
                     return KB_READ
             return None
 
+        def _judge_script(target: str | None) -> str | None:
+            """TRUSTED_SCRIPT for Scout's own script (scout.kb.trusted_scripts); else None, noting the run of it:
+            one in the vault (not a KB file: that one's read is judged as a file) once per run, any other as a
+            program_path. DENY_UNRESOLVED_READS denies one that isn't Scout's own."""
+            from scout.kb.trusted_scripts import trusted_script
+
+            if target is not None and trusted_script(target, vault, env):
+                return TRUSTED_SCRIPT
+            if DENY_UNRESOLVED_READS:
+                return UNRESOLVED_READ
+            rel = None if target is None else _vault_rel(vault, paths.resolve_path(target))
+            if rel is None:
+                unresolved.add("program_path")
+            elif rel != "." and not is_kb_path(rel):
+                scripts.add(rel)
+            return None
+
         memo: dict[str, list[str] | None] = {}
         unresolved: set[str] = set()
+        scripts: set[str] = set()  # the vault scripts it runs that aren't Scout's own (vault-relative)
         edits: list[int] = []  # each interpreter edit of KB notes the command runs: how many files it writes
 
         def globs(target: str) -> list[str] | None:
@@ -564,6 +625,8 @@ def decide(
         flagged = raw_kb_read(command, in_kb=_in_kb(cwd, vault), cwd=str(cwd), vault=str(vault), env=env)
         if flagged:
             return _deny_bash()
+        if scripts and _first_in_run(vault, payload.get("session_id"), scripts):
+            unresolved.add(VAULT_SCRIPT)
         if unresolved:
             _record_unresolved_read(vault, sorted(unresolved), mode)
         if edits:

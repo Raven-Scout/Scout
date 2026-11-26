@@ -42,6 +42,7 @@ a live PID with a marker naming the same PID counts as the run's (fail closed).
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 import shlex
 import subprocess
@@ -546,6 +547,11 @@ PROGRAM_PATH = "$__scout_program__"
 # How _other_targets marks an interpreter program that reads KB notes and writes only into the KB: the gate records
 # it as a `kb_read_gate.kb_edit` (kb_read_gate.DENY_INTERPRETER_KB_EDITS). Its word is how many files it writes.
 KB_EDIT = "kb_edit"
+# How _other_targets asks the gate about the script file an interpreter runs (`python3 x.py`): TRUSTED_SCRIPT when it
+# is Scout's own (scout.kb.trusted_scripts), and nothing of the command is judged; else None, and the gate records
+# the run of it (kb_read_gate: `program_path:vault_script` once per run for a vault script, else `program_path`).
+SCRIPT = "script"
+TRUSTED_SCRIPT = "trusted_script"
 # What a lister prints (`$(find .)`, `rg --files | while read f`): paths under the folders it lists, so a reader
 # handed one reads below them. `$__scout_list_N__` names entry N of _STATE["lists"] (those folders); anything but
 # a reader's judge (a write, a secret check) sees an unknown variable, as for SUBST.
@@ -1767,6 +1773,12 @@ def _other_targets(
         return []
     program = other_reads(name, [_unshield(w) for w in args], stdin) or other  # a program's text as the shell passes it
     where = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
+    if other.script is not None:
+        verdict = _judge_read(other.script, where, SCRIPT, oldpwd)
+        if verdict == TRUSTED_SCRIPT:
+            return []  # Scout's own script, as scoutctl: what it reads is Scout's business
+        if verdict is not None:
+            return [(other.script, where, SCRIPT)]  # denied (DENY_UNRESOLVED_READS): _kb_read hands that on
     out: list[tuple[str, str, str]] = []
     from scout.kb.raw_read import compressor_stdout_dests
 
@@ -1800,10 +1812,9 @@ def _other_targets(
     out += [(_shield_spelled(path, live), where, how) for path, how, live in program.spelled]
     if program.built:
         out.append((PROGRAM_PATH, where, "file"))
-    if program.writes_something and _writes_only_kb(program, other, where, oldpwd):
-        if any(_judge_read(word, at, how, oldpwd) == KB_READ for word, at, how in out):
-            count = len(program.writes) + (len(other.reads) if program.operand_writes else 0)
-            return [(str(count or 1), where, "kb_edit")]  # an edit of KB notes: recorded, not judged as a read
+    count = _kb_edit_count(program, other, where, oldpwd) if program.writes_something else None
+    if count is not None and any(_judge_read(word, at, how, oldpwd) == KB_READ for word, at, how in out):
+        return [(str(count or 1), where, "kb_edit")]  # an edit of KB notes: recorded, not judged as a read
     if program.unaccounted or other.unaccounted:
         out.append(("", where, "deny"))
     elif program.opaque and re.search(r"knowledge[-_]base|action-items/context", _STATE.get("command", segment)):
@@ -1838,16 +1849,36 @@ def _fed_operands(args: list[str], stripped: _Stripped, fed: str | None, words: 
     return [a.replace(marker, n) for a in args for n in (given if marker in a else [""])]
 
 
-def _writes_only_kb(program: OtherReads, other: OtherReads, where: str, oldpwd: str | None) -> bool:
-    """Whether every file a program writes is in the KB, each judged where it lands (``..``, a symlink): the paths
-    its text writes, and its operands when it rewrites them in place. One it builds is nowhere the gate can tell."""
+def _kb_edit_count(program: OtherReads, other: OtherReads, where: str, oldpwd: str | None) -> int | None:
+    """How many KB files a program that edits files writes, or None when it writes outside the KB in a way an edit
+    doesn't. Each file is judged where it lands (``..``, a symlink): the paths its text writes, and its operands when
+    it rewrites them in place. Every one must be in the KB, or be a file it reads and writes back (an edit in place,
+    ``s = open(p).read(); open(p, "w").write(s.replace(…))``) when all it reads is spelled out and each KB file it
+    reads it writes back too: one it reads in the KB and doesn't write is a copy out. One it builds is nowhere the
+    gate can tell."""
     if program.writes_built:
-        return False
-    if not all(_judge_read(_shield_single(w), where, "dest", oldpwd) == KB_READ for w in program.writes):
-        return False
-    return not program.operand_writes or all(
-        _judge_read(word, where, "dest", oldpwd) == KB_READ for word, _how in other.reads
-    )
+        return None
+    if program.operand_writes:
+        if not all(_judge_read(word, where, "dest", oldpwd) == KB_READ for word, _how in other.reads):
+            return None
+        return len(program.writes) + len(other.reads)
+    in_kb = [_judge_read(_shield_single(w), where, "dest", oldpwd) == KB_READ for w in program.writes]
+    if all(in_kb):
+        return len(in_kb)
+    if program.built or program.spelled or other.reads or program.unaccounted:
+        return None  # reads it doesn't spell out: what it writes outside the KB may be what it read there
+
+    def at(path: str) -> str:
+        return posixpath.normpath(path if path.startswith("/") else posixpath.join(where, path))
+
+    read = {at(p) for p in program.literal}
+    written = {at(w) for w in program.writes}
+    if any(not kb and at(w) not in read for w, kb in zip(program.writes, in_kb, strict=True)):
+        return None  # a write outside the KB of a file it doesn't read
+    kb_reads = [p for p in program.literal if _judge_read(_shield_single(p), where, "file", oldpwd) == KB_READ]
+    if any(at(p) not in written for p in kb_reads):
+        return None  # a KB file it reads and doesn't write back: a copy out
+    return sum(in_kb)
 
 
 def _prefix_assignments(stripped: _Stripped) -> dict[str, str]:
@@ -1871,7 +1902,7 @@ def _other_programs(words: list[str], stdin: list[str] | None = None) -> list[st
 # How a reader takes a path it's handed: "file" opens files (a folder only prints an error), "folder" also reads a
 # folder (``ls``, ``grep -r``), "covers" reads every file below it (the root an xargs lister lists). "dest" is no
 # read: it asks whether a copy's target is in the KB (KB_READ), and a path the gate can't work out is not.
-KB_READ_HOW = ("file", "folder", "covers", "dest", KB_EDIT)
+KB_READ_HOW = ("file", "folder", "covers", "dest", KB_EDIT, SCRIPT)
 
 
 def _judge_read(word: str, where: str, how: str, oldpwd: str | None = None) -> str | None:

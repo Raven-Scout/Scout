@@ -41,12 +41,23 @@ import re
 import shlex
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from scout.kb.python_text import PythonText
 
 # How a path is read (scout.kb.live_run.KB_READ_HOW): "folder" reads in a folder (a KB folder counts, a folder
 # holding one doesn't). other_reads has FILE and COVERS.
 FILE, FOLDER, COVERS = "file", "folder", "covers"
 # What of a spelled path is live (scout.kb.live_run shields the rest): nothing, a glob's `*?[`, a leading `~`.
 AS_IS, GLOB, TILDE = "as-is", "glob", "tilde"
+# Python that names a module which starts programs or runs code: a text literal it writes may be run.
+# A `for` loop's names (one, or a tuple of them), up to its `in`.
+_FOR_TARGETS = r"\bfor\s+\(?\s*((?:[A-Za-z_]\w*\s*,\s*)*[A-Za-z_]\w*)\s*,?\s*\)?\s+in\s+"
+_SPAWNS = (
+    r"\b(?:subprocess|_posixsubprocess|pty|pexpect|multiprocessing|asyncio|concurrent|ctypes|cffi|posix|runpy"
+    r"|importlib|webbrowser|code|codeop)\b|\bos\.(?:system|popen|spawn\w*|exec\w*|posix_spawn\w*|fork\w*|startfile)"
+)
 _EXPANDS_HOME = re.compile(r"expanduser|expand_path|path\.expand|homedir|os\.getenv\(\s*['\"]HOME")
 _KB_NAME = re.compile(r"knowledge[-_]base|action-items/context")
 _GLOB = re.compile(r"[*?\[]")
@@ -78,6 +89,9 @@ class ProgramReads:
     # Its program is text the shell fills in (``-c "$(…)"``, ``-c "$P"``): the gate denies it when the command
     # names the KB anywhere, and records it otherwise.
     opaque: bool = False
+    # The script file it runs (``python3 x.py``), as the shell hands it: what that reads isn't in the command, so
+    # the gate judges the file (Scout's own scripts are trusted; any other is recorded). Also in ``reads``.
+    script: str | None = None
 
     def __bool__(self) -> bool:
         return bool(
@@ -85,6 +99,7 @@ class ProgramReads:
             or self.literal
             or self.spelled
             or self.built
+            or self.script
             or self.programs
             or self.writes
             or self.writes_built
@@ -106,6 +121,7 @@ class _Call:
     operands_read: bool = False  # a script or a module given operands: they are taken as files it reads
     in_place: bool = False  # ruby -i: the operands are rewritten
     piped: str | None = None  # its program comes down a pipe from a command the gate can't read: that text
+    script: str | None = None  # the script file it runs (also in ``files``), as the shell hands it
 
 
 _PYTHON_VALUES = {"-W", "-X", "--check-hash-based-pycs"}
@@ -178,11 +194,11 @@ def _call(name: str, args: list[str], stdin: Sequence[str]) -> _Call | None:  # 
             return _Call(lexer, rest[:1], rest[1:]) if rest else None
         if args[:1] == ["run"]:
             rest = [a for a in args[1:] if not a.startswith("-")]
-            return _Call(lexer, [], rest[1:], files=rest[:1], operands_read=True) if rest else None
+            return _Call(lexer, [], rest[1:], files=rest[:1], operands_read=True, script=rest[0]) if rest else None
         return None  # deno task, deno fmt…
     if name == "bun" and args[:1] and not args[0].startswith("-"):
         rest = args[1:] if args[0] == "run" else args if re.search(r"\.[cm]?[jt]sx?$", args[0]) else []
-        return _Call(lexer, [], rest[1:], files=rest[:1], operands_read=True) if rest else None
+        return _Call(lexer, [], rest[1:], files=rest[:1], operands_read=True, script=rest[0]) if rest else None
     letters = {"python": "c", "ruby": "e", "js": "eEp", "php": "rBRE", "lua": "e", "r": "e", "other": "ce"}[lang]
     takes = {"python": _PYTHON_VALUES, "ruby": _RUBY_VALUES, "js": _NODE_VALUES, "php": _PHP_VALUES,
              "lua": _LUA_VALUES, "r": _R_VALUES, "other": _OTHER_VALUES}[lang]  # fmt: skip
@@ -222,7 +238,7 @@ def _call(name: str, args: list[str], stdin: Sequence[str]) -> _Call | None:  # 
                 break
             if lang == "r" and a == "CMD":
                 return _Call(lexer, [], args[i + 1 :], files=args[i : i + 1], operands_read=True)  # R CMD BATCH x.R
-            return _Call(lexer, [], args[i:], files=[*files, a], operands_read=True)  # a script file and its argv
+            return _Call(lexer, [], args[i:], files=[*files, a], operands_read=True, script=a)  # a script and its argv
         if a.startswith("--"):
             flag, eq, value = a.partition("=")
             if flag in takes and not eq and i < len(args):
@@ -288,13 +304,13 @@ def _call(name: str, args: list[str], stdin: Sequence[str]) -> _Call | None:  # 
             if lang == "php" and flag == "-d" and (m := _PHP_FILE_SETTINGS.match(value)):
                 files.append(m[1].strip("'\""))
             if lang in ("php", "r", "other") and flag == "-f" and value:
-                return _Call(lexer, [], args[i:], files=files, operands_read=True)  # php -f x.php, R -f x.R
+                return _Call(lexer, [], args[i:], files=files, operands_read=True, script=value)  # php -f, R -f
     operands = args[i:]
     if lang == "python" and programs:
         return _Call(lexer, programs, operands, files=files)
     if not programs:
         if not (from_stdin or not operands):
-            return _Call(lexer, [], operands[1:], files=[*files, operands[0]], operands_read=True)
+            return _Call(lexer, [], operands[1:], files=[*files, operands[0]], operands_read=True, script=operands[0])
         if not stdin:  # `python3 < file`, a terminal: a program the gate can't see
             return _Call(lexer, [], operands, files=files, piped="")
         texts = [_printed(t) for t in stdin]
@@ -329,7 +345,10 @@ def program_reads(name: str, args: list[str], stdin: Sequence[str] = ()) -> Prog
         out.built = True
         out.unaccounted = out.unaccounted or bool(_KB_NAME.search(call.piped))
     if call.operands_read and not call.programs:  # a script, a module: what it reads isn't in the command
-        out.built = True
+        if call.script is not None:
+            out.script = call.script  # the gate judges the file: Scout's own, or one it records
+        else:
+            out.built = True
     if re.search(r"\$__scout_\w+__", text):  # live_run's placeholder for what the shell fills in
         out.built = out.opaque = True
     if re.search(_RUNS_CODE.get(call.lang, r"(?!)"), scan.masked):  # code it builds or reads, then runs
@@ -407,8 +426,15 @@ def _spans(text: str, lang: str) -> tuple[list[tuple[int, int]], str]:
     while i < n:
         c = text[i]
         if lang == "python" and text.startswith(('"""', "'''"), i):
-            end = text.find(text[i : i + 3], i + 3)
-            end = n if end < 0 else end + 3
+            quote, j, end = text[i : i + 3], i + 3, n
+            while j < n:  # a backslash keeps the next character in the string, a raw string's too (`\"""`)
+                if text[j] == "\\":
+                    j += 2
+                elif text.startswith(quote, j):
+                    end = j + 3
+                    break
+                else:
+                    j += 1
         elif lang == "lua" and (m := re.match(r"\[(=*)\[", text[i:])):
             close = "]" + m[1] + "]"
             end = text.find(close, i + len(m[0]))
@@ -722,6 +748,20 @@ _CHDIR = {
     "lua": r"\blfs\.chdir",
     "r": r"(?<![\w.])setwd",
 }
+# Python's calls that open, list, copy, change folder or run (the heads above, Path's read methods, exec and kin):
+# in an f-string's code they make the program build what it opens (_Scan.judge).
+_PY_HEADS = "|".join(
+    [
+        *(head for head, *_ in _READS["python"]),
+        *(head for head, *_ in _LISTS["python"]),
+        *(head for head, *_ in _COPIES["python"]),
+        *(head for head, _kind in _RUNS["python"]),
+        _CHDIR["python"],
+        r"\bPath",
+    ]
+)
+_PY_METHODS = r"\.(?:read_text|read_bytes|open|read|readlines|iterdir|glob|rglob)"
+_ACTS = rf"(?:{_PY_HEADS}|{_PY_METHODS})\s*\(|{_RUNS_CODE['python']}"
 
 
 class _Scan:
@@ -854,14 +894,87 @@ class _Scan:
             for m in re.finditer(pattern, self.masked):
                 end = _statement_end(self.masked, m.end(), self.lang)
                 found += self.values(m.end(), end, depth + 1)
-            for m in re.finditer(rf"\bfor\s+{re.escape(name)}\s+in\s+", self.masked):  # a loop variable
-                if m.end() < len(self.masked) and self.masked[m.end()] in "[(":  # over a list it spells
-                    items = _split_top(self.masked, m.end() + 1, _close(self.masked, m.end()) - 1, ",")
-                    found += [v for x, y in items for v in self.values(x, y, depth + 1)] or [_BUILT]
-                else:
-                    found.append(_BUILT)
+            for m in re.finditer(_FOR_TARGETS, self.masked):
+                targets = [t.strip() for t in m[1].split(",")]
+                if name not in targets:
+                    continue  # a loop variable: what it takes, from what the loop goes over
+                items = self._items(m.end(), self._iter_end(m.end()), depth + 1)
+                k = targets.index(name)
+                for item in items if items is not None else [None]:
+                    if item is None or (len(targets) > 1 and len(item) != len(targets)):
+                        found.append(_BUILT)
+                    elif len(targets) > 1:
+                        found += self.values(*item[k], depth + 1)
+                    else:
+                        found += self.values(item[0][0], item[-1][1], depth + 1)
             return found or [_BUILT]
         return [_BUILT]
+
+    def _iter_end(self, j: int) -> int:
+        """Where the expression a ``for … in`` loop goes over, from ``j``, ends: a ``:`` (a statement), an ``if`` or
+        ``for`` (a comprehension), the bracket closing a comprehension, or the end of the line."""
+        depth = 0
+        while j < len(self.masked):
+            if j in self.starts:
+                j = self.starts[j]
+                continue
+            c = self.masked[j]
+            if c in "([{":
+                depth += 1
+            elif c in ")]}":
+                if depth == 0:
+                    return j
+                depth -= 1
+            elif depth == 0 and (c in ":\n" or re.match(r"\s(?:if|for)\b", self.masked[j:])):
+                return j
+            j += 1
+        return j
+
+    def _items(self, a: int, b: int, depth: int, part: str = "") -> list[list[tuple[int, int]]] | None:
+        """What a loop over ``text[a:b]`` takes, each item as its elements (one, or a tuple's): a list, tuple or
+        set it spells, a dict's keys (``part`` "values", "items": its values, its pairs), ``.keys()``,
+        ``.values()``, ``.items()``, ``sorted(…)``/``list(…)`` of one, or a variable the program sets to one.
+        None for anything else."""
+        while a < b and self.masked[a].isspace():
+            a += 1
+        while b > a and self.masked[b - 1].isspace():
+            b -= 1
+        if a >= b or depth > _MAX_DEPTH:
+            return None
+        expr = self.masked[a:b]
+        method = re.search(r"\.(keys|values|items)\(\s*\)$", expr)
+        if method is not None:
+            return self._items(a, a + method.start(), depth + 1, "" if method[1] == "keys" else method[1])
+        call = re.match(r"(?:sorted|list|tuple|set|reversed|iter)\s*\(", expr)
+        if call is not None and _close(self.masked, a + call.end() - 1) == b:
+            args = self.args(a + call.end() - 1)
+            return self._items(*args[0], depth + 1, part) if len(args) == 1 else None
+        if expr[0] in "[({" and _close(self.masked, a) == b:
+            out: list[list[tuple[int, int]]] = []
+            for x, y in _split_top(self.masked, a + 1, b - 1, ","):
+                while x < y and self.masked[x].isspace():
+                    x += 1
+                y = x + len(self.masked[x:y].rstrip())
+                if x >= y:
+                    continue
+                pair = _split_top(self.masked, x, y, ":") if expr[0] == "{" else [(x, y)]
+                if len(pair) == 2:  # a dict's entry
+                    out.append({"values": [pair[1]], "items": pair}.get(part, [pair[0]]))
+                elif self.masked[x] in "([" and _close(self.masked, x) == y:  # a tuple: its elements
+                    out.append(_split_top(self.masked, x + 1, y - 1, ","))
+                else:
+                    out.append([(x, y)])
+            return out
+        if re.fullmatch(_IDENT[self.lang], expr):
+            found: list[list[tuple[int, int]]] = []
+            for m in re.finditer(_ASSIGN[self.lang].format(name=re.escape(expr)), self.masked):
+                end = _statement_end(self.masked, m.end(), self.lang)
+                items = self._items(m.end(), end, depth + 1, part)
+                if items is None:
+                    return None
+                found += items
+            return found or None
+        return None
 
     def _split_op(self, a: int, b: int, op: str) -> list[tuple[int, int]]:
         """``text[a:b]`` split at a top-level binary ``op`` (``.`` in PHP only between spaces or quotes)."""
@@ -1121,7 +1234,9 @@ class _Scan:
         self._chdirs(chdirs, out)
         if _EXPANDS_HOME.search(self.text):  # Path("~/x").expanduser(): the `~` is the home folder
             out.spelled += [(p, FILE, TILDE) for p in out.literal if p.startswith("~")]
-        out.unaccounted = self._unaccounted()
+        if self.lang == "python" and re.search(_ACTS, self._fstring_code()):
+            out.built = True  # an f-string's `{…}` opens or runs something: code the scan doesn't follow
+        out.unaccounted = self._unaccounted(self._data_literals(out))
 
     def _is_module(self, a: int, b: int) -> bool:
         """Whether ``text[a:b]`` names a module or a class, not a value: a dotted name the program never assigns
@@ -1136,22 +1251,72 @@ class _Scan:
             _ASSIGN[self.lang].format(name=re.escape(root.lstrip("$"))), self.masked
         ) and not re.search(rf"\bfor\s+{re.escape(root)}\b|\bas\s+{re.escape(root)}\b", self.masked)
 
+    def _data_literals(self, out: ProgramReads) -> PythonText | None:
+        """The judge of whether a literal no judged call takes is only text (:mod:`scout.kb.python_text`): Python
+        only, and only for a program that opens no path it builds (it could have written the KB path to a file and
+        read it back), runs no shell command, and names no module that starts programs or runs code. None when
+        none of the program's literals may count as text."""
+        if self.lang != "python" or out.built or out.programs:
+            return None
+        if re.search(_RUNS_CODE["python"], self.masked) or re.search(_SPAWNS, self.masked):
+            return None
+        from scout.kb.python_text import text_checker
+
+        return text_checker(self.text)
+
+    def _fstring_code(self) -> str:
+        """The code in the program's f-strings' ``{…}``, which the scan doesn't read (Python)."""
+        return "\n".join(self.text[x:y] for a, b in self.spans for x, y in self._interpolations(a, b))
+
+    def _interpolations(self, a: int, b: int) -> list[tuple[int, int]]:
+        """Where a Python f-string token ``text[a:b]`` has code (``{…}``, not ``{{``); none for another literal."""
+        prefix = re.search(r"[rRbBuUfF]{0,2}$", self.text[max(0, a - 2) : a])
+        if self.lang != "python" or prefix is None or "f" not in prefix[0].lower():
+            return []
+        quote = 3 if self.text.startswith(('"""', "'''"), a) else 1
+        body_start, body_end = a + quote, max(a + quote, b - quote)
+        out, i = [], body_start
+        while i < body_end:
+            if self.text.startswith(("{{", "}}"), i):
+                i += 2
+            elif self.text[i] == "{":
+                depth, j = 1, i + 1
+                while j < body_end and depth:
+                    depth += {"{": 1, "}": -1}.get(self.text[j], 0)
+                    j += 1
+                out.append((i, j))
+                i = j
+            else:
+                i += 1
+        return out
+
+    def _interpolated(self, a: int, b: int, at: int) -> bool:
+        return any(x <= at < y for x, y in self._interpolations(a, b))
+
     def _names_kb(self, a: int, b: int) -> bool:
         return bool(_KB_NAME.search(self.text[a:b]))
 
-    def _unaccounted(self) -> bool:
+    def _unaccounted(self, data: PythonText | None = None) -> bool:
         """Whether the program names the KB anywhere but in a literal a judged call spells a path with: in code
         (an alias, `getattr`, a name), a comment, a literal no judged call takes (``exec("…")``), the code inside
         an f-string or a template, or behind an escape (``"\x6bnowledge-base"``). That covers what the scan can't
-        follow, a lexer the program fools included: fail closed."""
+        follow, a lexer the program fools included: fail closed. With ``data`` (:meth:`_data_literals`), a literal
+        no judged call takes that ``data`` shows is only ever text names no read (a KB name in an f-string's code
+        still does)."""
         inside = sorted(self.spans)
         for m in _KB_NAME.finditer(self.text):
             span = next(((a, b) for a, b in inside if a <= m.start() < b), None)
-            if span is None or span not in self.used or m.start() >= self.static_end(*span):
+            if span is None:
+                return True
+            if span not in self.used:
+                if data is not None and not self._interpolated(*span, m.start()) and data.is_text(span[0]):
+                    continue
+                return True
+            if m.start() >= self.static_end(*span):
                 return True
         for a, b in self.spans:  # what an escape spells: `"\x6bnowledge-base"`, `"\153nowledge"`
             token = self.text[a:b]
-            if (a, b) in self.used or "\\" not in token:
+            if (a, b) in self.used or "\\" not in token or (data is not None and data.is_text(a)):
                 continue
             decoded = _unescape(token, self.lang)
             if decoded is None or _KB_NAME.search(decoded):
