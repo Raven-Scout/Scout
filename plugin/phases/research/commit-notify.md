@@ -16,7 +16,7 @@ Explicit paths through the helper, **never `git add -A`**: a concurrent session 
 {{SCOUT_DIR}}/scripts/git-safe-commit.sh "research [HH:MM]: <threads worked and what moved>" <only the paths THIS run touched>
 ```
 
-The paths include the lab files this run wrote under `knowledge-base/lab/` (front pages, `<slug>-timeline.md`, experiment notes). Exit 4: nothing changed. Exit 3 or 5: report it in the notification; never fall back to `-A`. Timestamp: `scripts/scout-tz.sh date '+%H:%M'`.
+The paths include the lab files this run wrote under `knowledge-base/lab/` (front pages, timelines, experiment notes). Exit 4: nothing changed. Exit 3 or 5: report it in the notification; never fall back to `-A`. Timestamp: `scripts/scout-tz.sh date '+%H:%M'`.
 
 ## Step 4b: Session Entry
 
@@ -43,14 +43,14 @@ requires: slack
 
 ## Step 4d: Slack Notification
 
-**Send this DM even when this file also has a Step 4d: Telegram Notification:** the wrap then goes to both. The vault's `notify.wrap_channels` in `scout-config.yaml` decides which channels get a step, so if this step is here, send it.
+**Send this DM even when this file also has a Step 4d: Telegram Notification:** the wrap goes to both. `notify.wrap_channels` in `scout-config.yaml` chose the channels, so if this step is here, send it.
 
 Run `scripts/scoutctl lab list --json` at wrap time, then DM {{USER_NAME}} (Slack ID: `{{USER_SLACK_ID}}`) in 5–8 lines:
 - **Threads:** one line per touched thread ("Q3 now has a planned experiment; Q1 answered").
-- **Approvals:** the `needs_you.proposals` proposals awaiting your approval.
-- **Comments:** N comments still waiting, the sum of `unanswered_comments` over `active` and `paused` threads.
-- **Experiments:** each one run, any left `not run`, each detached one still running with its elapsed time, and the sum of `checkpoint_bytes` across the lab.
-- Insights to act on, and any refusal or mandate date to report.
+- **Approvals:** N proposals awaiting your approval (`needs_you.proposals`).
+- **Comments:** N comments still waiting (`unanswered_comments` over `active` and `paused` threads).
+- **Experiments:** each run, any left `not run`, each detached one still running (elapsed), and `checkpoint_bytes` summed across the lab.
+- Insights to act on; any refusal or mandate date.
 
 Name only normal-visibility threads: "N private threads also moved" is allowed. Send it through the privacy phase's outbound-draft step (`.scout-cache/outbound-draft.md`, `scripts/scoutctl kb check-outbound` with `--surface slack`, send only on exit 0).
 
@@ -65,7 +65,7 @@ requires: telegram
 
 ## Step 4d: Telegram Notification
 
-Send the research wrap to {{USER_NAME}}'s Telegram chat, **alongside** any Slack DM in this file (send both). This is the owner's private chat, an owner-only surface: it may name `[private]` items and private threads by their exact title, which the Slack DM never does. Run `scripts/scoutctl lab list --json` at wrap time for: `needs_you.proposals`; `unanswered_comments` over `active` and `paused` threads; experiments run, left `not run`, or detached and still running (elapsed); `checkpoint_bytes` summed across the lab.
+Send the research wrap to {{USER_NAME}}'s Telegram chat, **alongside** any Slack DM in this file. It is an owner-only surface: it may name `[private]` items and private threads by their exact title, which the Slack DM never does. Run `scripts/scoutctl lab list --json` at wrap time for: `needs_you.proposals`; `unanswered_comments` over `active` and `paused` threads; experiments run, left `not run`, or detached and still running (elapsed); `checkpoint_bytes` summed across the lab.
 
 ```bash
 scoutctl notify telegram --tier info --parse-mode html --body-file - <<'SCOUT_WRAP'

@@ -73,11 +73,13 @@ PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent
 # (Measured after review trims: base phases at 4efb64a5 assemble to 8,055, 2 under the old pin; the parts sum to it.)
 # 2026-11-25 (Lab plan 2, task 11): RESEARCH re-pinned by this task's added text only (+423, measured 9,982 →
 # 10,405). knowledge-integration.md's Step 3d, updating each thread worked (understanding, questions, evidence, one
-# timeline entry), and Step 3c's research→Scout route (+~187, net of a tighter 3a/3b); commit-notify.md's lab wrap in
+# timeline entry), and Step 3c's research→Scout route (+~185, net of a tighter 3a/3b); commit-notify.md's lab wrap in
 # both Step 4d sections (threads, approvals, comments still waiting, experiments, checkpoint bytes, the Slack privacy
-# rule) and the lab paths in Step 4a (+~201, net of the old entity list and a shorter timestamp line);
-# deep-research.md's thread targets (+~13); research-targets.md's `[for research]` inbox source (+~25). Spec §7 and
-# §11 require all of it. SKILL (+~59, inbox-processing.md's route into the lab) stays inside its headroom.
+# rule) and the lab paths in Step 4a (+~169, net of the old entity list and a shorter timestamp line);
+# deep-research.md's thread targets (+~17); research-targets.md's `[for research]` inbox source and its exits (+~56,
+# net of two trimmed lines). Spec §7 and §11 require all of it. The review fixes after it (the rendered
+# `{{USER_HANDLE}}`, the `[for research]` exits) were trimmed to fit: RESEARCH measures 10,406. SKILL (+~60,
+# inbox-processing.md's route into the lab) stays inside its headroom.
 PINS = {"SKILL": 48_138, "DREAMING": 23_954, "RESEARCH": 10_406, "RESPOND": 6_147}
 GROWTH = 0.05
 SHRINK = 0.10

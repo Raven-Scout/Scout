@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from scout.lab.cli import app as lab_app
@@ -280,6 +281,7 @@ def test_deep_research_targets_a_threads_open_question() -> None:
     assert "A research target is a thread's open question" in text.split("## Step 2a", 1)[0]
     step = text.split("## Step 2a", 1)[1].split("## Step 2b", 1)[0]
     assert "front page" in step and "Evidence" in step
+    assert "`scripts/scoutctl lab show <slug> --json`" in step
     assert "scripts/scoutctl kb read" in step
 
 
@@ -293,11 +295,15 @@ def test_integration_and_wrap_pin_the_thread_updates() -> None:
         assert "comments still waiting" in wrap
         assert "awaiting your approval" in wrap
     assert "only normal-visibility threads" in slack
+    assert "N proposals awaiting your approval (`needs_you.proposals`)" in slack
 
 
 def test_step_3d_updates_the_thread_after_the_topic_notes() -> None:
     text = _flat(INTEGRATION)
     step = text.split("## Step 3d: Update the thread", 1)[1]
+    # Phase 1's "`lab <verb>` means scripts/scoutctl lab" comes later in the assembled file.
+    assert step.split("`", 2)[1].startswith("scripts/scoutctl lab understanding set <slug> --file")
+    assert "per touched thread" not in text and text.count("per thread worked") >= 2
     for phrase in (
         "lab understanding set <slug> --file",
         "under 2 KB",
@@ -310,7 +316,6 @@ def test_step_3d_updates_the_thread_after_the_topic_notes() -> None:
         "--found",
         "--questions",
         "[--steers",
-        "per touched thread",
         "never a commit subject or a file list",
     ):
         assert phrase in step, phrase
@@ -318,6 +323,7 @@ def test_step_3d_updates_the_thread_after_the_topic_notes() -> None:
     step_3c = text.split("## Step 3c", 1)[1].split("## Step 3d", 1)[0]
     assert "Do NOT create action items" in step_3c
     assert "research→Scout findings path" in step_3c
+    assert "otherwise, its insights line in the wrap" in step_3c
 
 
 def test_commit_names_threads_and_lists_lab_files() -> None:
@@ -380,14 +386,81 @@ def test_inbox_research_entries_go_to_the_lab() -> None:
     route = text.split("**Research/idea**", 1)[1].split("4. **Project-specific**", 1)[0]
     for phrase in (
         "`active` or `paused`",
-        'scripts/scoutctl lab comment <slug> --text "Q: <entry>" --author',
-        "{{USER_NAME}}",
+        "scripts/scoutctl lab comment <slug> --text 'Q: <entry>' --author {{USER_HANDLE}}",
+        "without its `idea:`/`research:`/`explore:` prefix",
+        "`'\\''`",  # an embedded single quote, escaped inside the single-quoted text
+        "if `lab comment` exits non-zero, append ` [for research]` to the line instead",
+        "knowledge-base/lab/<slug>/<slug>.md",
         "[for research]",
     ):
         assert phrase in route, phrase
+    # The run never folds a name into a handle itself: the install renders it.
+    assert "{{USER_NAME}} with spaces" not in text and "dropped (as the app" not in text
     proposals = _flat(TARGETS).split("## Step 1f", 1)[1].split("## Step 1g", 1)[0]
     assert "`[for research]`" in proposals and "inbox.md" in proposals
     assert "once its proposal is made" in proposals
+
+
+def test_for_research_lines_have_an_exit() -> None:
+    """A marked inbox line never sits forever: it joins a thread, becomes a proposal, or is removed and named."""
+    proposals = _flat(TARGETS).split("## Step 1f", 1)[1].split("## Step 1g", 1)[0]
+    line = proposals.split("`[for research]`", 1)[1].split("- an empty lab", 1)[0]
+    assert "scripts/scoutctl lab comment <slug> --text 'Q: <entry>' --author {{USER_HANDLE}}" in line
+    assert "not worth a thread" in line and "named in the wrap" in line
+
+
+# --- the owner's comment handle (review of 41c527a2): rendered at install, never folded by a run ---------
+
+# `apps/macos/ScoutTests/ActionItems/CommentAuthorTests.swift`'s table, but for "李雷": the app transliterates other
+# scripts through ICU, which the engine doesn't carry, so the port gives the fallback there (still a valid handle).
+SWIFT_HANDLES = [
+    ("alex", "alex"),
+    ("  priya  ", "priya"),
+    ("Alex Rivera", "Alex-Rivera"),
+    ("Zoë", "Zoe"),
+    ("o'priya", "opriya"),
+    ("42sam", "sam"),
+    ("sam.dev_2", "sam.dev_2"),
+    ("", "user"),
+    ("!!!", "user"),
+    ("Priya Łaz", "Priya-Laz"),
+    ("Sam Øby", "Sam-Oby"),
+    ("Straße", "Strasse"),
+    ("Ælex", "AElex"),
+    ("😀", "user"),
+    ("Alex - Rivera", "Alex-Rivera"),
+    ("José Núñez", "Jose-Nunez"),
+]
+
+
+@pytest.mark.parametrize(("name", "expected"), SWIFT_HANDLES)
+def test_owner_handle_matches_the_apps_fold(name: str, expected: str) -> None:
+    from scout.lab.model import owner_handle
+
+    assert owner_handle(name) == expected
+
+
+@pytest.mark.parametrize(
+    "name", ["  -Ał  ", "李雷", "Đorđe Þór", "Ｆｕｌｌ", "-- --", "Scout", "scöut", " SCOUT ", "Ø", "Zoë\tAnn"]
+)
+def test_owner_handle_is_always_a_valid_handle_and_never_scout(name: str) -> None:
+    from scout.lab.cli import _handle
+    from scout.lab.model import HANDLE_RE, owner_handle
+
+    handle = owner_handle(name)
+    assert HANDLE_RE.fullmatch(handle) and handle.isascii(), (name, handle)
+    assert handle.lower() != "scout", name
+    assert _handle(handle) == handle  # `lab comment --author` accepts it
+
+
+def test_user_handle_is_a_template_var() -> None:
+    from scout.scripts.bootstrap import _assemble, _template_vars
+    from tests.unit.test_briefing_mode_layer import _config
+
+    cfg = _config()
+    assert _template_vars(cfg)["USER_HANDLE"] == "Test-User"
+    skill = _assemble(cfg, "SKILL")
+    assert "{{USER_HANDLE}}" not in skill and "--author Test-User" in skill
 
 
 def test_run_sandbox_allows_lab_writes(tmp_path: Path) -> None:

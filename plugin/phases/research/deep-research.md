@@ -12,7 +12,7 @@ A research target is a thread's open question (Step 1d). Run a focused cycle for
 
 ## Step 2a: Gather Current KB State
 
-Read the thread's front page (`lab show <slug> --json`) and the notes in its Evidence (`scripts/scoutctl kb read`). Note:
+Read the thread's front page (`scripts/scoutctl lab show <slug> --json`) and the notes in its Evidence (`scripts/scoutctl kb read`). Note:
 - What {{INSTANCE_NAME}} already knows (don't re-research known facts)
 - What's thin or missing (focus research here)
 - `last_verified:` / `last_updated:` dates

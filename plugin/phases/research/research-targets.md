@@ -8,7 +8,7 @@ requires: null
 
 # PHASE 1: THE LAB — CHOOSE THIS RUN'S WORK
 
-The **Lab** is a set of research *threads*, each a folder `knowledge-base/lab/<slug>/` (the slug is its short ID) whose front page holds one Question, numbered questions (`Q1`, `Q2` …: the QIDs), experiments (`E1` …: the EIDs), evidence, owner comments and a timeline. Its status is `proposed`, `active`, `paused`, `closed` or `rejected`; only the owner changes it. Work goes: owner comments, due experiments, 1–2 threads, proposals.
+The **Lab** is a set of research *threads*, each a folder `knowledge-base/lab/<slug>/` (the slug is its short ID) whose front page holds one Question, numbered questions (`Q1`, `Q2` …: the QIDs), experiments (`E1` …: the EIDs), evidence, owner comments and a timeline. Its status is `proposed`, `active`, `paused`, `closed` or `rejected`; only the owner changes it.
 
 ## Step 1a: Read the lab block
 
@@ -34,7 +34,7 @@ First, answer every unanswered owner comment in each `active` or `paused` thread
 - A thread-level comment starting `Q:` raises a question: `lab question add <slug> --text "…" --by <author>`. It prints the new QID; the reply names it.
 - A paused thread's comments are answered; the thread is not researched.
 - Dropping a question the owner raised or commented on needs that comment: `lab question drop <slug> <QID> --reason "…" --owner-comment <n>`.
-- If the budget ends first, the rest wait; the wrap says how many.
+- If the budget ends first, the rest wait.
 
 ## Step 1c: Due experiments
 
@@ -45,7 +45,7 @@ Run due experiments next, per PHASE 2E: EXPERIMENTS.
 Work 1–2 threads in depth. Only `active` threads are worked. Pick in order:
 
 1. **Owner-prioritised:** a thread with a thread-level owner comment asking for focus, until Scout's reply says it was handled.
-2. **Coverage mandates:** an optional local `scripts/coverage-mandates.py` the plugin doesn't ship. If it is absent, skip this; that is not an error:
+2. **Coverage mandates:** an optional local `scripts/coverage-mandates.py` the plugin doesn't ship; if absent, skip this (not an error):
 
    ```bash
    [ -f scripts/coverage-mandates.py ] && python3 scripts/coverage-mandates.py --session research
@@ -76,7 +76,7 @@ A proposal holds one Question and 2–5 starting questions (`--open`, repeated),
 **Sources:**
 - a question in an active thread big enough to stand alone;
 - a coverage mandate with no thread;
-- an `inbox.md` line marked `[for research]`: remove it from `inbox.md` once its proposal is made;
+- an `inbox.md` line marked `[for research]`, removed from `inbox.md` once its proposal is made. One now matching an active thread becomes a comment instead (`scripts/scoutctl lab comment <slug> --text 'Q: <entry>' --author {{USER_HANDLE}}`, prefix dropped, `'` as `'\''`); one not worth a thread is removed and named in the wrap;
 - an empty lab (`lab list --json` gives no threads, as on a vault with no lab folder yet): use entity scoring, in this priority order:
   1. entities {{USER_NAME}} interacted with this week (from dreaming session logs);
   2. 🔴 HIGH priority project entities;

@@ -10,13 +10,13 @@ working directory > ``~/Scout``.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
 import typer
 
 from scout.errors import LabError
+from scout.lab.model import HANDLE_RE, RESERVED_HANDLE
 
 app = typer.Typer(help="The Lab: research threads, questions and experiments.", no_args_is_help=True)
 question_app = typer.Typer(help="Questions on a thread.", no_args_is_help=True)
@@ -30,8 +30,8 @@ app.add_typer(evidence_app, name="evidence")
 app.add_typer(timeline_app, name="timeline")
 app.add_typer(experiment_app, name="experiment")
 
-_HANDLE_RE = re.compile(r"[A-Za-z][A-Za-z0-9._-]*")
-_RESERVED_HANDLE = "scout"
+_HANDLE_RE = HANDLE_RE
+_RESERVED_HANDLE = RESERVED_HANDLE
 
 _AuthorOpt = typer.Option(..., "--author", help="Handle of the person acting ([A-Za-z][A-Za-z0-9._-]*; not 'scout').")
 _ReasonOpt = typer.Option(None, "--reason", help="Why (recorded on the timeline).")

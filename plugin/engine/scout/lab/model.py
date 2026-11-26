@@ -4,8 +4,51 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
+
+# A comment author's handle, as `scoutctl lab --author` takes it; `scout` is Scout's own.
+HANDLE_RE = re.compile(r"[A-Za-z][A-Za-z0-9._-]*")
+RESERVED_HANDLE = "scout"
+_HANDLE_FALLBACK = "user"
+# Latin letters NFKD leaves whole; the app's ICU `Latin-ASCII` transform spells them out.
+_LATIN_ASCII = str.maketrans(
+    {
+        "ß": "ss", "ẞ": "SS", "Ł": "L", "ł": "l", "Ø": "O", "ø": "o", "Æ": "AE", "æ": "ae", "Œ": "OE",
+        "œ": "oe", "Đ": "D", "đ": "d", "Þ": "Th", "þ": "th", "Ð": "D", "ð": "d", "ı": "i", "Ħ": "H", "ħ": "h",
+    }
+)  # fmt: skip
+
+
+def owner_handle(name: str) -> str:
+    """The handle the app signs the owner's comments with (``CommentAuthor.handle`` in the macOS app).
+
+    Spell letters out as ASCII, then keep letters, digits, ``.`` and ``_``: a run of whitespace and dashes is one
+    ``-``, and anything before the first letter is dropped. An empty result is ``user``. Other scripts, which the app
+    transliterates through ICU, fall back to ``user`` here. The result always matches :data:`HANDLE_RE` and is never
+    ``scout`` (that would be refused, so it falls back too).
+    """
+    decomposed = unicodedata.normalize("NFKD", name.translate(_LATIN_ASCII))
+    folded = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    out: list[str] = []
+    pending_dash = False
+    for ch in folded:
+        if ch.isspace() or ch == "-":
+            pending_dash = bool(out)
+            continue
+        is_letter = ch.isascii() and ch.isalpha()
+        if not (is_letter or (ch.isascii() and ch.isdigit()) or ch in "._"):
+            continue
+        if not out and not is_letter:
+            continue
+        if pending_dash:
+            out.append("-")
+            pending_dash = False
+        out.append(ch)
+    handle = "".join(out)
+    return _HANDLE_FALLBACK if not handle or handle.lower() == RESERVED_HANDLE else handle
+
 
 THREAD_STATUSES = ("proposed", "active", "paused", "closed", "rejected")
 QUESTION_STATUSES = ("open", "answered", "dropped")
