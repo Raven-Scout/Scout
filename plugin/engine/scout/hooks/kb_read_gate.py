@@ -450,6 +450,7 @@ def decide(
             DELEGATE_FORM,
             HOME_FORM,
             KB_READ,
+            RESOLVED,
             UNRESOLVED_READ,
             denied_word,
             even_dollar_escape,
@@ -575,7 +576,10 @@ def decide(
         if escape is not None:
             _record_hook_skip(vault, escape, mode)
             return _deny_skip_form(escape)
-        flagged = raw_kb_read(command, in_kb=_in_kb(cwd, vault), cwd=str(cwd), vault=str(vault), env=env)
+        flagged = raw_kb_read(command, in_kb=_in_kb(cwd, vault), cwd=str(cwd), vault=str(vault), env=env) or any(
+            raw_kb_read(text, in_kb=_in_kb(cwd, vault), cwd=str(cwd), vault=str(vault), env=env)
+            for text in list(RESOLVED)  # a program named at run time, as the gate filled it in
+        )
         if flagged:
             return _deny_bash()
         if unresolved:

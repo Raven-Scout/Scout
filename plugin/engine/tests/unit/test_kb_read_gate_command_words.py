@@ -34,7 +34,7 @@ NEVER_RESOLVED = [
     ("c=read; c=x; $c HOME", "computed"),
     ("read -r c <<< read; $c HOME", "computed"),
     ("typeset -l c=READ; $c HOME", "computed"),
-    ("c=(read); $c HOME", "computed"),
+    ("c+=(read); $c HOME", "computed"),
     ("c='rea?'; $c HOME", "computed"),
     ("c=re; c+=ad; d=$c; $d HOME", "computed"),
     ("for c in rea?; do $c HOME; done", "computed"),
@@ -80,6 +80,8 @@ def test_a_command_word_the_gate_cant_resolve_is_denied(command: str, kind: str 
 
 # A word the command sets to a plain word, or a function the command defines: judged as the program it is.
 RESOLVED = [
+    ("c=(read); $c HOME", live_run.HOME_FORM),
+    ('c=(read x); "${c[@]}" HOME', live_run.HOME_FORM),
     ("c=read; $c HOME", live_run.HOME_FORM),
     ('c=read; "$c" HOME', live_run.HOME_FORM),
     ("c=read; ${c} HOME", live_run.HOME_FORM),
@@ -373,3 +375,99 @@ def test_a_loop_over_the_arguments_is_left_to_the_switch() -> None:
     kinds: list[str] = []
     assert judged("for c; do $c --help; done", kinds) is None
     assert kinds == [live_run.LOOP_WORD]
+
+
+# ----- the security review of #823 ------------------------------------------------------------------------------
+
+# Idioms main allows, which a first cut denied: a function walked as its definition and again per call kept one set
+# of variables, and an array's words weren't read.
+REVIEW_ALLOWED = [
+    'cmd=(git status); "${cmd[@]}"',
+    "fn(){ local t=$1; $t --version; }; fn git",
+    'do_it(){ local cmd=$1; shift; "$cmd" "$@"; }; do_it echo hi',
+    "x=git; for a in status 'log -1'; do $x $a; done",
+    'local -a parts; parts=(git log -1); "${parts[@]}"',
+]
+
+
+@pytest.mark.parametrize("command", REVIEW_ALLOWED)
+def test_the_reviews_idioms_are_allowed(command: str) -> None:
+    assert live_run.run_escape(command, kb_read=lambda raw, how: None, command_word=lambda kind: None) is None
+
+
+# Each read a KB note under real zsh, or set HOME, through a word the first cut got wrong.
+REVIEW_DENIED = [
+    'set -- cat knowledge-base/people.md; "$@"',  # (b) a positional at the top level
+    "argv=(cat knowledge-base/people.md); $argv",
+    'x=cat; eval "\\$x knowledge-base/people.md"',  # (d) eval and sh -c lose a double quote's escapes
+    'sh -c "\\$(echo cat) knowledge-base/people.md"',
+    'x=read; eval "\\$x HOME" <<< /tmp',
+    '"case"; $(echo cat) knowledge-base/people.md',  # (e) a quoted keyword is a program's name
+    "\\case; $(echo cat) knowledge-base/people.md",
+    '"[[" x; $(echo cat) knowledge-base/people.md',
+    "[[ -n x; $(echo cat) knowledge-base/people.md",
+    ": ${x:=cat}; $x knowledge-base/people.md",  # (f) assignments the walk missed
+    "x=echo; : ${x::=cat}; $x knowledge-base/people.md",
+    "x=echo; IFS=: read x <<< cat; $x knowledge-base/people.md",
+    "x=echo; FOO=1 typeset -l x=CAT; $x knowledge-base/people.md",
+    "x=echo; FOO=1 typeset x=cat; $x knowledge-base/people.md",
+    "x=echo; set -A x cat; $x knowledge-base/people.md",
+    "x=echo; for x y in cat a; do $x knowledge-base/people.md; done",
+    "x=echo; { x=cat }; $x knowledge-base/people.md",
+    "x=echo; . ./lib.sh; $x knowledge-base/people.md",
+    ". ./lib.sh; f knowledge-base/people.md",
+    "autoload -U g; g knowledge-base/people.md",
+    "'f'(){ $1 knowledge-base/people.md; }; f cat",  # (c) definitions the gate can't register
+    "f g(){ $1 knowledge-base/people.md; }; f cat",
+    "f() $1 knowledge-base/people.md; f cat",
+    'f(){ shift 6; "$@"; }; f a b c d e f cat knowledge-base/people.md',
+    'f(){ set -- cat knowledge-base/people.md; "$@"; }; f',
+    "command_not_found_handler(){ $1 knowledge-base/people.md; }; nosuchcmd",
+    "TRAPEXIT(){ $1 HOME; }",
+    "hash c=/bin/cat; c knowledge-base/people.md",  # (g) names made programs
+    "alias c=cat\nc knowledge-base/people.md",
+    "commands[c]=/bin/cat; c knowledge-base/people.md",
+    "functions -c cat g; g knowledge-base/people.md",
+    "for p in $(ls); do $p HOME; done",  # (a) an unknown program: a name it may set, a folder it may walk
+    "for p in $(ls); do $p GIT_CONFIG_GLOBAL; done",
+    "for p in $(ls); do $p -r knowledge-base; done",
+    "for p in $(ls); do $p --file=knowledge-base/people.md; done",
+    # #822's re-check: each still read a KB note on main
+    "x=cat; $x knowledge-base/people.md",
+    "x=grep; $x -r TODO .",
+    "x=c; ${x}at knowledge-base/people.md",
+    "x=at; c${x} knowledge-base/people.md",
+    "c$()at knowledge-base/people.md",
+    "`echo cat` knowledge-base/people.md",
+    '"$(echo cat)" knowledge-base/people.md',
+    "${:-cat} knowledge-base/people.md",
+    "cd action-items && ${:-cat} context/x.md",
+    "cd action-items && x=cat; $x context/x.md",
+]
+
+
+@pytest.mark.parametrize("command", REVIEW_DENIED)
+def test_the_reviews_leaks_are_denied(vault: Path, command: str) -> None:  # noqa: F811
+    assert _decide(vault, command) is not None
+    gate._PENDING_AUDIT.clear()
+
+
+def test_a_lister_named_at_run_time_still_feeds_the_loop(vault: Path) -> None:  # noqa: F811
+    command = "c=printf; $c '%s\\n' */* | while read f; do cat \"$f\"; done"
+    assert _decide(vault, command) is not None
+    assert _decide(vault, "printf '%s\\n' */* | while read f; do cat \"$f\"; done") is not None
+    gate._PENDING_AUDIT.clear()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "x=git; x=git; $x status",
+        ". .venv/bin/activate && python3 -m pytest -q",
+        "for p in $(ls scripts); do $p --help; done",
+        "hash -r; git status",
+    ],
+)
+def test_their_neighbours_stay_allowed(vault: Path, command: str) -> None:  # noqa: F811
+    assert _decide(vault, command) is None
+    gate._PENDING_AUDIT.clear()

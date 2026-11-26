@@ -273,10 +273,10 @@ integrity = os.environ.get("SCOUT_INTEGRITY", "")
 if integrity in ("clean", "restored", "unrestored", "error", "unchecked"):
     row["integrity"] = integrity
 # Whether the runner pinned git's global config to the account's own ~/.gitconfig (pinned), or why not: preset
-# (GIT_CONFIG_GLOBAL was set already), xdg (the account has an XDG git config too), home (HOME isn't the account's
-# home) or unknown; left out for rows from older runners.
+# (GIT_CONFIG_GLOBAL was set already), xdg (the account has an XDG git config too), include (~/.gitconfig includes
+# a file by a `~` path), home (HOME isn't the account's home) or unknown; left out for rows from older runners.
 git_config_pin = os.environ.get("SCOUT_GIT_CONFIG_PIN", "")
-if git_config_pin in ("pinned", "preset", "xdg", "home", "unknown"):
+if git_config_pin in ("pinned", "preset", "xdg", "include", "home", "unknown"):
     row["git_config_pin"] = git_config_pin
 # The model the runner passed to claude (scoutctl model resolve), so health and
 # eval can attribute a run's cost; left out for rows from older runners.

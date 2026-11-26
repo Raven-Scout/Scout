@@ -6,6 +6,8 @@
   - `preset`: GIT_CONFIG_GLOBAL is already set (the eval harness's `/dev/null`, or your own);
   - `xdg`: your account also has an XDG git config (`$XDG_CONFIG_HOME/git/config` or `~/.config/git/config`),
     which git reads as well;
+  - `include`: your `~/.gitconfig` includes another file by a `~` path (`[include] path = ~/…`), which git
+    resolves with HOME even when pinned;
   - `home`: HOME at launch isn't your account's home;
   - `unknown`: the runner couldn't look your home up.
 

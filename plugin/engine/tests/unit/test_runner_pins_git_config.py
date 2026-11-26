@@ -101,7 +101,46 @@ def test_git_reads_the_pinned_file_whatever_home_says(tmp_path: Path) -> None:
     assert subprocess.run(read, env=pinned, capture_output=True, text=True).stdout == "hooks\n"
 
 
+def _run_at_home(home: Path, env: dict[str, str] | None = None) -> tuple[str, str]:
+    """The block with ``home`` as the account's home (only the password-database lookup is replaced), so a
+    `.gitconfig` can be written for it."""
+    block = _block(RUNNERS[0])
+    lookup = 'eval "_scout_account_home=~$_scout_user"'
+    assert block.count(lookup) == 1
+    shown = 'printf "%s|%s" "$SCOUT_GIT_CONFIG_PIN" "${GIT_CONFIG_GLOBAL-unset}"\n'
+    script = "set -euo pipefail\n" + block.replace(lookup, f"_scout_account_home={home}") + shown
+    out = subprocess.run(
+        ["/bin/bash", "-c", script],
+        env={"PATH": "/usr/bin:/bin", "LOG_FILE": str(home / "run.log"), "HOME": str(home), **(env or {})},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    pin, value = out.stdout.split("|")
+    return pin, value
+
+
+def test_a_gitconfig_without_includes_is_pinned(tmp_path: Path) -> None:
+    (tmp_path / ".gitconfig").write_text("[user]\n\tname = Alex\n[include]\n\tpath = /etc/shared.gitconfig\n")
+    assert _run_at_home(tmp_path) == ("pinned", f"{tmp_path}/.gitconfig")
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        "[include]\n\tpath = ~/.gitconfig.local\n",
+        '[includeIf "gitdir:~/work/"]\n\tpath = "~/work/.gitconfig"\n',
+        "[INCLUDE]\n  PATH=~/x\n",
+    ],
+)
+def test_an_include_by_a_home_path_is_left_alone(tmp_path: Path, config: str) -> None:
+    """git expands `~` in an include's path with HOME, pinned or not: one pin can't keep it on the account's file."""
+    (tmp_path / ".gitconfig").write_text("[user]\n\tname = Alex\n" + config)
+    assert _run_at_home(tmp_path) == ("include", "unset")
+
+
 def test_the_run_outcome_row_keeps_the_pin() -> None:
     text = (TEMPLATES / "scripts" / "run-outcome.sh.tmpl").read_text(encoding="utf-8")
     assert 'os.environ.get("SCOUT_GIT_CONFIG_PIN", "")' in text
-    assert '("pinned", "preset", "xdg", "home", "unknown")' in text
+    assert '("pinned", "preset", "xdg", "include", "home", "unknown")' in text

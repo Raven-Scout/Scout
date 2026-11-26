@@ -1350,8 +1350,8 @@ MAX_LITERAL_READS = 4096
 MAX_DEPTH = 6
 _STATE: dict[str, Any] = {
     "checked": 0, "secrets": 0, "reads": 0, "literal": 0, "vars": {}, "bodies": [], "unparsed": False, "capped": False,
-    "parsing": False, "expanded": set(), "lists": [], "words": {}, "functions": {}, "anonymous": False, "calls": 0,
-    "literals": 0,
+    "parsing": False, "expanded": set(), "lists": [], "words": {}, "functions": {}, "calls": 0, "literals": 0,
+    "defining": False, "aliased": set(), "sourced": False,
 }  # fmt: skip
 _VAR = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 # An interpreter given its program inline or on stdin.
@@ -2360,10 +2360,14 @@ LOOP_WORD = "loop_variable"
 ASSIGNED_WORD = "assigned_expansion"
 WRAPPER_WORD = "wrapper_function"
 COMMAND_WORD_KINDS = (LOOP_WORD, ASSIGNED_WORD, WRAPPER_WORD)
+# Each segment of the last run_escape whose command word the gate filled in, as it then reads (`x=grep; $x -r a .`
+# is `grep -r a .`), for the gate's text check (scout.kb.raw_read), which reads programs by name too.
+RESOLVED: list[str] = []
 # Set by run_escape: what a run's gate makes of a COMMAND_WORD_KINDS word (a form to deny it, or None to let it be).
 _COMMAND_WORD: Callable[[str], str | None] | None = None
-# What a COMMAND_WORD_KINDS word let be is judged as: a reader of every operand (one that names a KB note is a read).
-_UNKNOWN_READER = "cat"
+# What a COMMAND_WORD_KINDS word let be stands for: a program that may read every operand, recursively, and set a
+# variable it names (see _unknown_reader_escape). No real word is spelled so.
+_UNKNOWN_READER = "\ue010"
 # What `$HOME` and `$PWD` stand for in a command word: only its last part names the program.
 _PLACES = {"HOME": "/__scout_home__", "PWD": "/__scout_pwd__"}
 # A reference in a word: `${…}` (1), `$NAME` (2), `$` and one more character (3), or a lone `$` at the end.
@@ -2388,6 +2392,18 @@ _POSITIONAL_REF = re.compile(r'"\$(?:\{([0-9@*#])\}|([0-9@*#]))"|\$(?:\{([0-9@*#
 _SHIFTS = re.compile(r"(?<![\w$])(?:shift|set|argv)(?!\w)")
 # How many function calls (each shift of the arguments counts) one command may have judged.
 MAX_CALLS = 32
+# zsh calls these itself (an unknown command, each prompt, a signal, the shell's exit): a body no call explains.
+_HOOK_FUNCTIONS = re.compile(
+    r"(?:command_not_found_handler|precmd|preexec|chpwd|periodic|zshexit|zshaddhistory|TRAP\w+)"
+)
+# A body that sets its own arguments (`set -- a b`, `set a b`, zsh's `argv=…`): a call's arguments aren't its `$1`.
+_SETS_ARGS = re.compile(r"(?<![\w$])(?:set\s+(?:--|[^-+\s;&|)])|argv(?!\w))")
+# A parameter expansion that assigns its name (`${x:=cat}`, zsh's `${x::=cat}`, `${(A)x::=…}`), wherever it is.
+_ASSIGNING_EXPANSION = re.compile(r"\$\{(?:\([^)]*\))?([A-Za-z_]\w*)(?:::=|:?=)")
+# zsh's tables of names (`commands[c]=/bin/cat`, `functions[g]=…`, `aliases[x]=…`): the name becomes a program.
+_NAME_TABLES = re.compile(r"^(?:commands|functions|aliases|galiases|saliases|builtins)\[([^\]]+)\]\+?=")
+# `${…}` in a word: its `[@]` or pattern is no glob of the word's own.
+_BRACED = re.compile(r"\$\{[^{}]*\}")
 
 
 def denied_word(kind: str) -> str:
@@ -2452,7 +2468,8 @@ def _word_verdict(word: str, literal: str) -> str | list[list[str]] | None:
         return None  # a test; `$v=x`, which _name_escape denies as an assignment to a name built at run time
     if literal.startswith("=") and len(literal) > 1:
         return [[word[1:]]]  # zsh's `=git` is git's path
-    glob = bool(_GLOB_CHARS.search(literal) or _BRACE_LIST.search(literal))
+    bare = _BRACED.sub("", literal)
+    glob = bool(_GLOB_CHARS.search(bare) or _BRACE_LIST.search(bare))
     if "$" not in literal and "`" not in literal:
         return denied_word("glob") if glob else None
     if "`" in literal or "$__scout_" in literal:
@@ -2490,6 +2507,9 @@ def _reference(m: re.Match[str], word: str) -> tuple[str, list[str]]:
     if braced is not None:
         if braced in ("@", "*") or braced.isdigit():
             return _positional()
+        whole = re.fullmatch(r"([A-Za-z_]\w*)\[[@*]\]", braced)  # `${cmd[@]}`: every word of an array
+        if whole is not None:
+            braced = whole[1]
         if not _PLAIN_NAME.fullmatch(braced):
             return "modifier", []  # `${(L)c}`, `${c:l}`, `${c//x/y}`, `${#c}`, `${!c}`, `${c:-x}`
         name = braced
@@ -2504,9 +2524,10 @@ def _reference(m: re.Match[str], word: str) -> tuple[str, list[str]]:
 
 
 def _positional() -> tuple[str, list[str]]:
-    """`$1`, `$@`: a function's argument (WRAPPER_WORD) where the command defines named functions only, whose calls
-    are judged with their arguments put in; else nothing the command set."""
-    return (WRAPPER_WORD, []) if _STATE["functions"] and not _STATE["anonymous"] else ("unassigned", [])
+    """`$1`, `$@`: a function's argument (WRAPPER_WORD) in the body of a function the command defines and calls are
+    judged for, with their arguments put in; anywhere else (`set -- cat x; "$@"`, a hook's body, one whose name
+    the gate couldn't read) nothing the command set."""
+    return (WRAPPER_WORD, []) if _STATE["defining"] else ("unassigned", [])
 
 
 def _value_kind(value: str) -> tuple[str, list[str]]:
@@ -2552,18 +2573,30 @@ def _record_command_words(words: list[str], array: bool) -> None:
     ``(``, an array assignment."""
     while words and (words[0] in _KEYWORDS or words[0] in _PREFIX):
         words = words[1:]
+    while words and words[-1] in ("}", ")"):
+        words = words[:-1]  # zsh's `{ x=cat }`
     if not words:
         return
     if all(_ASSIGN_ANY.match(w) for w in words):
         for k, w in enumerate(words):
             m = _ASSIGN_ANY.match(w)
             assert m is not None
+            if array and k == len(words) - 1 and not m[2] and m[3] == "=":
+                continue  # `cmd=(…)`: _record_array notes it from its words
             computed = m[2] or m[3] == "+=" or (array and k == len(words) - 1)
             _note_word(m[1], *(("computed", []) if computed else _value_kind(w[m.end() :])))
         return
+    while words and _ASSIGN_ANY.match(words[0]):
+        words = words[1:]  # `IFS=: read x`, `FOO=1 typeset x=cat`: the builtin still sets its target
+    if not words:
+        return
     head, args = _program(words[0]), words[1:]
     if head in _DECLARERS:
-        options = any(a.startswith(("-", "+")) and a not in ("-", "--") for a in args)
+        # An option that changes the value (`typeset -l`, `-u`, `-i`, `-n`, zsh's `-L`/`-R`/`-Z`) makes it computed;
+        # `-a`, `-A`, `-x`, `-r`, `-g` and `-t` don't.
+        options = any(
+            a.startswith(("-", "+")) and a not in ("-", "--") and not set(a[1:]) <= set("aAxrgt") for a in args
+        )
         for a in args:
             m = _ASSIGN_ANY.match(a)
             if m is not None:
@@ -2572,8 +2605,16 @@ def _record_command_words(words: list[str], array: bool) -> None:
             elif options and _PLAIN_NAME.fullmatch(a):
                 _note_word(a, "computed", [])
         return
+    if head == "set" and args[:1] in (["-A"], ["+A"]) and len(args) > 1:
+        _note_word(args[1], "computed", [])  # zsh's `set -A x …`: an array
+        return
     if head == "for":
         if len(words) < 2 or not _PLAIN_NAME.fullmatch(words[1]):
+            return
+        names = words[1 : words.index("in")] if "in" in words else [w for w in words[1:] if _PLAIN_NAME.fullmatch(w)]
+        if len(names) > 1:  # zsh's `for x y in …`: each takes every other word
+            for name in names:
+                _note_word(name, "computed", [])
             return
         if words[2:3] != ["in"]:
             _note_word(words[1], LOOP_WORD, [])  # over the arguments
@@ -2593,6 +2634,102 @@ def _record_command_words(words: list[str], array: bool) -> None:
                 _note_word(name, "computed", [])
 
 
+def _record_array(assigning: str, items: list[str]) -> None:
+    """``NAME=(items)`` (the segment ``assigning`` ends ``NAME=``, and ``items`` are the array's words): NAME is
+    those words as a command word (``"${cmd[@]}"``, zsh's ``$cmd``) when each is plain, else "computed"."""
+    words = _tokens(assigning)
+    m = _ASSIGN_ANY.match(words[-1]) if words else None
+    if m is None or m[2] or m[3] != "=" or words[-1] != m[0]:
+        return
+    declared = [w for w in words[:-1] if w not in _KEYWORDS and w not in _PREFIX and not _ASSIGN_ANY.match(w)]
+    found = [_value_kind(w) for w in items]
+    plain = all(k == "literal" and len(v) == 1 for k, v in found)
+    options = any(w.startswith(("-", "+")) for w in declared[1:])
+    if plain and not options and (not declared or _program(declared[0]) in _DECLARERS):
+        _note_word(m[1], "literal", [" ".join(v[0] for _, v in found)])
+    else:
+        _note_word(m[1], "computed", [])
+
+
+def _after_segment(words: list[str]) -> None:
+    """What a segment changes about the names that follow it: after ``.``, ``source`` or ``autoload`` the shell
+    may hold any variable or function, so every variable is "computed" and every program may be a function
+    (_STATE["sourced"]); ``hash c=…``, ``alias c=…``, ``commands[c]=…``, ``functions -c f c`` make c a program
+    the gate can't read (_STATE["aliased"])."""
+    for w in words:
+        table = _NAME_TABLES.match(w)
+        if table is not None:
+            _STATE["aliased"].add(table[1])
+    while words and (words[0] in _KEYWORDS or _ASSIGN_ANY.match(words[0])):
+        words = words[1:]
+    if not words:
+        return
+    head, args = _program(words[0]), words[1:]
+    if head in (".", "source", "autoload"):
+        _STATE["sourced"] = True
+        for name in list(_STATE["words"]):
+            _STATE["words"][name] = ("computed", [])
+    elif head in ("hash", "alias"):
+        for a in args:
+            m = _ASSIGN_ANY.match(a)
+            if m is not None:
+                _STATE["aliased"].add(m[1])
+    elif head == "functions" and "-c" in args and len(args) >= 2:
+        _STATE["aliased"].add(args[-1])
+
+
+def _maybe_a_function(word: str) -> bool:
+    """A command word that may name a function or alias the gate never saw defined (see _after_segment)."""
+    return word in _STATE["aliased"] or (_STATE["sourced"] and "/" not in word and word not in _STATE["functions"])
+
+
+def _fill_word(word: str) -> list[list[str]]:
+    """An argument with the plain values this command set put in (``for a in status 'log -1'``: ``$a`` is
+    ``status`` and ``log -1``), once a command word was filled in; any other word as it is."""
+    if "$" not in word or "`" in word or "$__scout_" in word:
+        return [[word]]
+    texts, at = [""], 0
+    for m in _WORD_REF.finditer(word):
+        texts = [t + word[at : m.start()] for t in texts]
+        at = m.end()
+        name = m[2] or (m[1] if m[1] is not None and _PLAIN_NAME.fullmatch(m[1]) else None)
+        if name is None or name in _PLACES or word[m.end() : m.end() + 1] in ("[", ":"):
+            return [[word]]
+        kind, values = _STATE["words"].get(name, ("", []))
+        if kind != "literal":
+            return [[word]]
+        texts = [t + v for t in texts for v in values]
+        if len(texts) > MAX_CHECKED_PATHS:
+            return [[word]]
+    return [(t + word[at:]).split() for t in texts]
+
+
+def _filled(words: list[str], start: int) -> list[list[str]]:
+    """``words`` with every argument from ``start`` on filled in (see _fill_word), one list per combination."""
+    out: list[list[str]] = [words[:start]]
+    for word in words[start:]:
+        out = [[*done, *more] for done in out for more in _fill_word(word)]
+        if len(out) > MAX_CHECKED_PATHS:
+            return [words]
+    return out
+
+
+def _resolved_text(segment: str, words: list[str], resolved: list[str]) -> str:
+    """``segment`` with its first command word written as the gate filled it in, for the segment it feeds
+    (``c=printf; $c '%s\\n' */*/* | while read f``): the rest of its text as it was, globs and quotes kept."""
+    i = next((k for k, (a, b) in enumerate(zip(words, resolved, strict=False)) if a != b), None)
+    if i is None or words[i] not in segment:
+        return segment
+    tail = len(words) - i - 1
+    replacement = resolved[i : len(resolved) - tail if tail else len(resolved)]
+    return segment.replace(words[i], " ".join(shlex.quote(w) for w in replacement), 1)
+
+
+def _raw_head(segment: str) -> str | None:
+    """A segment's first word past keywords as the text spells it: `case`, `esac` and `[[` are keywords only bare."""
+    return next((w for w in segment.split() if w not in _KEYWORDS), None)
+
+
 def _command_word_variants(
     words: list[str], literal: list[str], depth: int = 0
 ) -> str | list[tuple[list[str], list[str]]]:
@@ -2610,39 +2747,62 @@ def _command_word_variants(
             return denied_word("too_many")
         out: list[tuple[list[str], list[str]]] = []
         for replaced in verdict:
-            found = _command_word_variants(
-                [*words[:i], *replaced, *words[i + 1 :]], [*literal[:i], *replaced, *literal[i + 1 :]], depth + 1
-            )
-            if isinstance(found, str):
-                return found
-            out += found
-            if len(out) > MAX_CHECKED_PATHS:
-                return denied_word("too_many")
+            for filled in _filled([*words[:i], *replaced, *words[i + 1 :]], i + len(replaced)):
+                found = _command_word_variants(filled, filled, depth + 1)
+                if isinstance(found, str):
+                    return found
+                out += found
+                if len(out) > MAX_CHECKED_PATHS:
+                    return denied_word("too_many")
         return out
+    head = next(iter(_command_word_indexes(words)), None)
+    if head is not None and _maybe_a_function(words[head]):
+        unknown = [*words[:head], _UNKNOWN_READER, *words[head + 1 :]]
+        return [(words, literal), (unknown, [*literal[:head], _UNKNOWN_READER, *literal[head + 1 :]])]
     return [(words, literal)]
 
 
+def _brace_end(masked: str, opening: int) -> int | None:
+    """Where the brace at ``opening`` closes in ``masked`` (quotes masked), or None."""
+    depth = 0
+    for k in range(opening, len(masked)):
+        if masked[k] == "{":
+            depth += 1
+        elif masked[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return k
+    return None
+
+
+def _function_spans(command: str) -> list[tuple[int, int, bool]]:
+    """Each function body ``command`` defines, as (start, end, judged by its calls): True for a named function
+    whose calls are judged with their arguments (:func:`_call_escape`), False for one zsh calls itself (a hook),
+    an anonymous one, or one whose name is quoted. A body the gate can't find (``f() cmd``, ``f g () {…}``) is
+    walked as the command's own text."""
+    masked = _mask_quoted(command)
+    out: list[tuple[int, int, bool]] = []
+    for m in _FUNCTION_DEF.finditer(masked):
+        end = _brace_end(masked, m.end() - 1)
+        if end is not None:
+            name = m[1] or m[2]
+            out.append((m.end(), end, name is not None and not _HOOK_FUNCTIONS.fullmatch(name)))
+    return out
+
+
 def _scan_functions(command: str) -> None:
-    """Remember each function ``command`` defines with its body, for :func:`_call_escape`; an anonymous one, or one
-    whose body doesn't close, leaves a ``$1`` command word nothing a call explains."""
+    """Remember each named function ``command`` defines with its body, for :func:`_call_escape`."""
     masked = _mask_quoted(command)
     for m in _FUNCTION_DEF.finditer(masked):
-        depth, end = 0, None
-        for k in range(m.end() - 1, len(masked)):
-            if masked[k] == "{":
-                depth += 1
-            elif masked[k] == "}":
-                depth -= 1
-                if depth == 0:
-                    end = k
-                    break
+        end = _brace_end(masked, m.end() - 1)
         name = m[1] or m[2]
         if name is None or end is None:
-            _STATE["anonymous"] = True
             continue
         bodies: list[str] = _STATE["functions"].setdefault(name, [])
         if command[m.end() : end] not in bodies:
             bodies.append(command[m.end() : end])
+    for m in _ASSIGNING_EXPANSION.finditer(command):
+        _note_word(m[1], "computed", [])
 
 
 def _arg_text(arg: str) -> str:
@@ -2679,12 +2839,19 @@ def _call_escape(name: str, args: list[str], depth: int) -> str | None:
     shift them (``shift``, ``set``, zsh's ``argv``), with the first few dropped too."""
     results: list[str | None] = []
     for body in _STATE["functions"][name]:
-        shifts = range(min(len(args), 4) + 1) if _SHIFTS.search(body) else range(1)
+        own = bool(_SETS_ARGS.search(body))  # `set -- a b; "$@"`: its arguments are its own, not the call's
+        shifts = range(len(args) + 1) if _SHIFTS.search(body) and not own else range(1)
         for k in shifts:
             _STATE["calls"] += 1
             if _STATE["calls"] > MAX_CALLS:
                 return denied_word("too_many")
-            results.append(_run_escape(_put_args(body, name, args[k:]), depth + 1, split=False))
+            # Each call starts from the command's variables as they are, and what its body assigns stays its own.
+            saved, defining = dict(_STATE["words"]), _STATE["defining"]
+            _STATE["defining"] = defining and not own
+            try:
+                results.append(_run_escape(body if own else _put_args(body, name, args[k:]), depth + 1, split=False))
+            finally:
+                _STATE["words"], _STATE["defining"] = saved, defining
     return _merge(results)
 
 
@@ -2715,6 +2882,13 @@ def _command_escape(words: list[str], depth: int) -> str | None:
     return _git_escape(git) if git is not None else None
 
 
+def _dq_unescape(text: str) -> str:
+    """A word as a double-quoted string hands it over: ``\\$``, ``\\```, ``\\\\`` and ``\\"`` lose their backslash,
+    which the tokenizer keeps (``eval "\\$x kb"`` runs ``$x kb``). A single-quoted word keeps them: this
+    over-reads it."""
+    return re.sub(r'\\([$`\\"])', r"\1", text)
+
+
 def _plain_escape(words: list[str], depth: int) -> str | None:
     name, args = _program(words[0]), words[1:]
     if name == "env":
@@ -2740,9 +2914,9 @@ def _plain_escape(words: list[str], depth: int) -> str | None:
     if _delegate_write(name, args):
         return DELEGATE_FORM
     if name in _SHELLS and "-c" in args[:-1]:
-        return _run_escape(args[args.index("-c") + 1], depth + 1)
+        return _run_escape(_dq_unescape(args[args.index("-c") + 1]), depth + 1)
     if name == "eval":
-        return _run_escape(" ".join(args), depth + 1)
+        return _run_escape(_dq_unescape(" ".join(args)), depth + 1)
     return None
 
 
@@ -2792,7 +2966,8 @@ def run_escape(
             expanded=set(),
             lists=[],
         )
-        _STATE.update(words={}, functions={}, anonymous=False, calls=0, literals=0)
+        _STATE.update(words={}, functions={}, calls=0, literals=0, defining=False, aliased=set(), sourced=False)
+        RESOLVED.clear()
     try:
         found = _run_escape(command, depth)
         # Fail closed where the walk had to guess: an unclosed quote or a zsh group it can't rewrite (a run's
@@ -2923,11 +3098,24 @@ def _run_escape(command: str, depth: int, *, split: bool = True, arith: bool = F
     position = 0
     segments = _segments_with_ops(command)
     in_case, patterns, arith_depth, in_test = 0, False, 0, False
+    # The bodies of the functions this command defines (see _function_spans): walked as definitions, where `$1` is
+    # the arguments of calls judged on their own, and whose assignments are the body's, not the command's.
+    function_bodies = _function_spans(command)
+    outer_defining = _STATE["defining"]
+    in_body: tuple[int, int, bool] | None = None
+    saved_words: dict[str, tuple[str, list[str]]] | None = None
     for k, (segment, op) in enumerate(segments):
         position += len(op)
         here, position = position, position + len(segment)
         fed = previous if op in ("|", "|&") else None  # the segment piped into this one
         next_op = segments[k + 1][1] if k + 1 < len(segments) else ""
+        inside = next((span for span in function_bodies if here < span[1] and position > span[0]), None)
+        if inside != in_body:
+            if saved_words is not None:
+                _STATE["words"] = saved_words  # out of a body: what it assigned was its own
+            saved_words = dict(_STATE["words"]) if inside is not None and inside[2] else None
+            in_body = inside
+        _STATE["defining"] = outer_defining or (inside is not None and inside[2])
         judge_bodies(position)
         # The here-documents this command takes run their substitutions now, with the variables set so far.
         results += [(here, found) for found in _expanding_bodies(segment, depth)]
@@ -2939,8 +3127,6 @@ def _run_escape(command: str, depth: int, *, split: bool = True, arith: bool = F
         # runs): it fails closed only where it may hide a read (a reading command or an input redirect).
         _STATE["unparsed"] = unparsed or (_STATE["unparsed"] and _reads_something(words, reads))
         _record_vars(words)
-        if _KB_READ is not None:
-            _record_listed_reads(words, fed)
         # The same words, with what their quotes keep literal marked so (see _SHIELD): a quoted regex
         # (`grep -o "a/(b|c)[^/]*/…"`) is no glob for the read checks, and a quoted `rea?` no glob as a program.
         literal_words, literal_reads = words, reads
@@ -2952,14 +3138,18 @@ def _run_escape(command: str, depth: int, *, split: bool = True, arith: bool = F
         word_literals = literal_words if escaped == shielded else _tokens(_redirects(escaped)[0])
         # Where a word is no program: a `case` pattern list (`*.md|*.txt)`), arithmetic (`(( ($n + 1) * 2 ))`,
         # `$(( $n + 1 ))`), a `[[ … ]]` test's operands (split at its `||`), and an array's words (`arr=("$@")`).
-        head = next((w for w in words if w not in _KEYWORDS), None)
+        # `case` and `[[` count only as the keyword itself, bare in the text (`"case"` is a program's name), and a
+        # pattern list or a test ends with its simple command.
+        head = _raw_head(segment)
+        if op in (";", "\n", "&"):
+            in_test = False  # a test ends with its simple command
         if head == "case":
             in_case, patterns = in_case + 1, True
         elif in_case and op == ";" and k > 0 and segments[k - 1] == ("", ";"):
             patterns = True  # after `;;`
         pattern = patterns and head != "case"
-        if next_op == ")":
-            patterns = False  # the list ends at its `)`
+        if next_op not in ("|", "("):
+            patterns = False  # the list ends at its `)`, and with its simple command (`(` may open a pattern)
         if head == "esac" and in_case:
             in_case, patterns = in_case - 1, False
         if arith_depth:
@@ -2968,10 +3158,12 @@ def _run_escape(command: str, depth: int, *, split: bool = True, arith: bool = F
             arith_depth = 2
         test = in_test
         if head == "[[":
-            in_test = "]]" not in words
-        elif in_test and "]]" in words:
+            in_test = not re.search(r"(?:^|\s)\]\](?:\s|$)", segment)
+        elif in_test and re.search(r"(?:^|\s)\]\](?:\s|$)", segment):
             in_test = False
         items = op == "(" and k > 0 and segments[k - 1][0].rstrip().endswith("=")
+        if items and next_op == ")":
+            _record_array(segments[k - 1][0], words)  # `cmd=(git status)`: "${cmd[@]}" is those words
         skip = pattern or arith or arith_depth > 0 or test or items or _STATE["literals"] > 0
         variants = [(words, word_literals)] if skip else _command_word_variants(words, word_literals)
         if not isinstance(variants, str):  # the read checks keep the words as before where none was filled in
@@ -2979,26 +3171,66 @@ def _run_escape(command: str, depth: int, *, split: bool = True, arith: bool = F
         array = bool(words) and next_op == "(" and words[-1].endswith("=")  # `c=(read HOME)`
         _record_command_words(words, array)
         found = variants if isinstance(variants, str) else None
+        resolved = words
         for words_, literal_ in [] if isinstance(variants, str) else variants:
+            if _KB_READ is not None:
+                _record_listed_reads(words_, fed)
             found = _segment_escape(
                 words_, literal_, segment, targets, literal_reads, strings, fed, cwd, oldpwd, depth, next_op
             )
+            if resolved is words and words_ is not words:
+                resolved = words_
             if found is not None:
                 break
+        _after_segment(words)
         if found == "env":
             return "env"
         results.append((here, found))
-        previous = segment
+        previous = segment if resolved is words else _resolved_text(segment, words, resolved)
+        if resolved is not words:  # for the gate's text check too (raw_read), in the folder it runs in
+            RESOLVED.append(f"cd {shlex.quote(cwd)} && {previous}" if cwd else previous)
         if words[:1] in (["cd"], ["pushd"]):
             dests = [w for w in words[1:] if w not in ("-L", "-P", "-e", "-@", "--")]
             dest = _substitute(dests[0])[0] if dests else "~"
             cwd, oldpwd = ((oldpwd or "") if dest == "-" else _into(cwd, dest)), cwd
         elif words[:1] == ["popd"]:
             cwd = ""  # back where the pushd started, as far as a run's `pushd x && …; popd` goes
+    if saved_words is not None:
+        _STATE["words"] = saved_words
+    _STATE["defining"] = outer_defining
     judge_bodies(len(command) + 1)
     for number in own:  # a body no segment named (the walk misread its command): judged as before, at the end
         results += [(len(command), found) for found in _expanding_bodies(f"__scout_hd_{number}__", depth)]
     return _merge([found for _, found in sorted(results, key=lambda r: r[0])], detach)
+
+
+def _unknown_reader_escape(
+    words: list[str], literal_words: list[str], reads: list[str], cwd: str, oldpwd: str | None
+) -> str | None:
+    """A program the gate can't name (_UNKNOWN_READER): it may set a variable it is given (`read HOME`), so an
+    operand that spells a name that matters is denied as changing it; and it may read every operand, a folder's
+    files too, so each is judged as a recursive read (KB_READ_HOW "covers"), and as a read of Scout's secrets."""
+    at = words.index(_UNKNOWN_READER)
+    operands = [w for w in words[at + 1 :] if w != "--"]
+    for word in operands:
+        m = _PROTECTED_WORD.search(word)
+        if m is not None:
+            return _name_form(m[0]) or HOME_FORM
+    literal = (
+        literal_words[literal_words.index(_UNKNOWN_READER) + 1 :] if _UNKNOWN_READER in literal_words else operands
+    )
+    if _SECRET is not None or _KB_READ is not None:
+        found = _secret_read(["cat", *literal], reads, cwd)
+        if found is not None:
+            return found
+    if _KB_READ is not None:
+        for word in [*literal, *reads]:
+            for part in (word, word.split("=", 1)[1] if word.startswith("-") and "=" in word else None):
+                if part and not part.startswith("-"):
+                    found = _judge_read(part, cwd, "covers", oldpwd)
+                    if found is not None:
+                        return found
+    return None
 
 
 def _segment_escape(
@@ -3015,6 +3247,10 @@ def _segment_escape(
     next_op: str,
 ) -> str | None:
     """One segment's verdict, its command words filled in (see :func:`_command_word_variants`)."""
+    if _UNKNOWN_READER in words:
+        return _hook_write_form(words, targets, cwd) or _unknown_reader_escape(
+            words, literal_words, literal_reads, cwd, oldpwd
+        )
     found = _words_escape(words, depth) or _hook_write_form(words, targets, cwd)
     if found is None and next_op != "(":  # `f()` defines f
         for i in _command_word_indexes(words):
