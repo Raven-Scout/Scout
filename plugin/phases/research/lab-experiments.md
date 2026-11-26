@@ -8,7 +8,7 @@ requires: null
 
 # PHASE 2E: EXPERIMENTS
 
-You reach this phase from Step 1c (PHASE 1). Experiments (`E1`, `E2` …) live in `knowledge-base/lab/<slug>/experiments/`. Only the run's **broker** runs scripts, in a narrower sandbox than this run's; each answer ends in one stderr status line.
+You reach this phase from Step 1c (PHASE 1). Experiments (`E1`, `E2` …) live in `knowledge-base/lab/<slug>/experiments/`: a note `<slug>-<EID>-<short>.md` and a folder of the same name holding its scripts. Only the run's **broker** runs scripts, in a narrower sandbox than this run's; each answer ends in one stderr status line.
 
 Commits use `{{SCOUT_DIR}}/scripts/git-safe-commit.sh` with explicit paths (Step 4a).
 
