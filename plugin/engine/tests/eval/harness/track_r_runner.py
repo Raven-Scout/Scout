@@ -492,6 +492,10 @@ def _run_one_qa_session(
         pythonpath=ENGINE,
         extra_pythonpath=extra_pythonpath,
     )
+    py_bin_dir = Path(sys.executable).parent
+    if (py_bin_dir.parent / "pyvenv.cfg").is_file():
+        cur_parts = env["PATH"].split(":")
+        env["PATH"] = ":".join(dict.fromkeys([cur_parts[0], str(ENGINE / "bin"), str(py_bin_dir), *cur_parts[1:]]))
     env.update(
         SCOUT_MODE="research",
         SCOUT_READER=reader,

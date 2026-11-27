@@ -61,10 +61,8 @@ def build_env(
         env["PYTHONPATH"] = os.pathsep.join(py_entries)
     path = [
         str(STUB_BIN),
-        str(ENGINE / "bin"),
         str(ENGINE / ".venv" / "bin"),
-        str(ENGINE.parent / ".venv" / "bin"),
-        str(Path(sys.executable).parent),
+        str(ENGINE / "bin"),
         str(Path(real_claude).parent),
         *SYSTEM_PATH,
     ]
