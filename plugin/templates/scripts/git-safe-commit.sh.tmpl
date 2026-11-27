@@ -81,7 +81,8 @@ done
 # SHA and exit codes; 6 means the broker didn't answer and the commit was queued
 # for after the session (no SHA yet). SCOUT_LINT_OVERRIDE goes along with it.
 if [ -n "${SCOUT_RUN_BROKER:-}" ]; then
-  exec "$VAULT/scripts/scoutctl" broker commit -- "$MSG" "$@"
+  # scoutctl is rendered beside this script on either layout (scripts/ or scout/scripts/).
+  exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scoutctl" broker commit -- "$MSG" "$@"
 fi
 
 cd "$VAULT" 2>/dev/null || die 2 "vault not found: $VAULT"

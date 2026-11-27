@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import functools
+import re
 from pathlib import Path
 
 from scout import layout
@@ -132,3 +133,50 @@ def test_the_scan_catches_the_retitle_bug(tmp_path: Path) -> None:
         "'knowledge-base/session-log.md'",
         "'/hooks/kb-pre-filter.sh'",
     ]
+
+
+# ---- shell templates and plugin scripts ------------------------------------------------------------------------
+#
+# A shell template builds vault paths from a vault variable (`$VAULT/scripts/scoutctl`), which the AST scan above
+# can't see. git-safe-commit.sh.tmpl's broker branch did exactly that and broke every scheduled run's commit on
+# layout v2. A script finds a sibling through its own folder (`$(dirname "${BASH_SOURCE[0]}")`), and a vault path
+# through scout.layout or the paths the renderer fills in.
+
+PLUGIN = ENGINE.parents[1]
+_VAULT_VAR = (
+    r"(?:\$VAULT|\$\{VAULT\}|\$SCOUT_DIR|\$\{SCOUT_DIR\}|\{\{SCOUT_DIR\}\}|\$SCOUT_DATA_DIR|\$\{SCOUT_DATA_DIR\})"
+)
+_V1_SHELL = re.compile(
+    _VAULT_VAR
+    + r"/(?:scripts/|hooks/|docs/|(?:SKILL|DREAMING|RESEARCH|RESPOND)\.md|run-[a-z-]+\.sh|dreaming-proposals\.md"
+    r"|inbox\.md|drop/|meetings/)"
+)
+
+
+def find_v1_shell_paths(roots: tuple[Path, ...] = (PLUGIN / "templates", PLUGIN / "hooks")) -> list[str]:
+    out = []
+    for root in roots:
+        for path in sorted(p for p in root.rglob("*") if p.is_file()):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            for n, line in enumerate(text.splitlines(), 1):
+                if line.lstrip().startswith("#"):
+                    continue
+                if _V1_SHELL.search(line):
+                    out.append(f"{path.relative_to(root.parent).as_posix()}:{n}: {line.strip()}")
+    return out
+
+
+def test_no_template_builds_a_v1_vault_path() -> None:
+    found = find_v1_shell_paths()
+    assert not found, "v1 vault paths built from a vault variable in plugin templates:\n" + "\n".join(found)
+
+
+def test_the_shell_scan_catches_the_commit_helper_bug(tmp_path: Path) -> None:
+    (tmp_path / "x.sh.tmpl").write_text(
+        '# $VAULT/scripts/ in a comment is fine\nexec "$VAULT/scripts/scoutctl" broker commit\n'
+        'cat "{{SCOUT_DIR}}/SKILL.md"\nok="$VAULT/scout/scripts/scoutctl"\n'
+    )
+    assert [ln.split(":", 2)[1] for ln in find_v1_shell_paths((tmp_path,))] == ["2", "3"]
