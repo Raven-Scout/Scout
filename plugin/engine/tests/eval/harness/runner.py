@@ -21,6 +21,7 @@ from typing import Any
 from scout.action_items import stale
 from scout.action_items.parser import ActionItem, parse_lines
 
+from .arms import ArmSpec
 from .build import build_vault
 from .checkout import Checkout
 from .checks import CheckResult
@@ -422,6 +423,8 @@ def run_sample(
     arm: str = "head",
     cli_version: str = "",
     checkout: Checkout | None = None,
+    arm_spec: ArmSpec | None = None,
+    extra_pythonpath: str | None = None,
 ) -> SampleResult:
     started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     result_dir = results_root / f"{scenario.name}-{arm}-{time.strftime('%Y%m%d-%H%M%S')}-{rep}"
@@ -437,6 +440,7 @@ def run_sample(
         max_budget=effective_budget,
         checkout=checkout,
         scheduler_tick=datetime.now(UTC),
+        arm_spec=arm_spec,
     )
     yesterday_file = vault / "action-items" / f"action-items-{(today - timedelta(days=1)).isoformat()}.md"
     yesterday = _items(yesterday_file) or []
@@ -461,6 +465,7 @@ def run_sample(
         today=today.isoformat(),
         timeout_s=timeout_s,
         pythonpath=checkout.pythonpath if checkout else None,
+        extra_pythonpath=extra_pythonpath,
         linear_api_url=stage_linear_api(scenario, result_dir, today),
     )
     runner_timed_out = False

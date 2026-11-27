@@ -38,13 +38,18 @@ from typing import Any
 # nearly all of it `kb_file_dates`. Only the sections below are ever trimmed to fit.
 SESSION_CONTEXT_MAX_BYTES = 320_000
 PROJECT_KNOWLEDGE_MAX_BYTES = 64_000
+GRAPH_CONTEXT_MAX_BYTES = 32_000
 PEOPLE_CONTEXT_MAX_BYTES = 24_000
 RESEARCH_QUEUE_MAX_BYTES = 16_000
 LAB_MAX_BYTES = 16_000
 
+GRAPH_CONTEXT_ENV = "SCOUT_KB_GRAPH_CONTEXT"
 GO_DEEPER_MAX_ENTRIES = 25
 GO_DEEPER_ENTRY_CHARS = 200
 KNOWLEDGE_MAX_NOTES = 40
+GRAPH_PROJECT_PEOPLE_MAX = 20
+GRAPH_PROJECT_NOTES_MAX = 10
+GRAPH_PROJECT_GAPS_MAX = 10
 RELEVANT_PEOPLE_MAX = 40
 RESEARCH_TITLE_CHARS = 140
 NOTE_MAX_BYTES = 256_000  # a note read whole (frontmatter, body headers); a bigger one is read this far
@@ -490,6 +495,275 @@ def lab_block(vault: Path, labels: Mapping[str, str], *, full: bool) -> dict[str
     return summary.lab_list(vault, labels, full=full)
 
 
+# ----- graph context (Arm C precompute) -------------------------------------------
+
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_FALSY = frozenset({"0", "false", "no", "off"})
+_RELATION_ORDER = {"both": 0, "typed": 1, "co_mentioned": 2}
+
+
+def should_precompute_graph_context(vault: Path, env: Mapping[str, str] | None = None) -> bool:
+    """Whether ``session-context.json`` should precompute ``graph_context`` (Arm C)."""
+    import os
+
+    environ = os.environ if env is None else env
+    raw_env = _text(environ.get(GRAPH_CONTEXT_ENV)).lower()
+    if raw_env in _TRUTHY:
+        return True
+    if raw_env in _FALSY:
+        return False
+    try:
+        from scout.config import load_config
+
+        kb_cfg = load_config(vault).get("kb")
+        if isinstance(kb_cfg, Mapping):
+            return bool(kb_cfg.get("precompute_graph_context"))
+    except Exception:
+        return False
+    return False
+
+
+def _build_graph_projects(
+    vault: Path,
+    backend: Any,
+    labels: Mapping[str, str],
+    *,
+    full: bool,
+    query_hint: str,
+    projects_dir: str | None,
+) -> list[dict[str, Any]]:
+    from scout.kb.structure import load_structure_config, page_as_of, split_page
+
+    try:
+        cfg = load_structure_config(vault)
+        root = projects_dir or cfg.projects_dir
+        skip = cfg.skip_projects
+    except Exception:
+        root, skip = projects_dir or "knowledge-base/projects", frozenset()
+    base = vault / root
+    if not base.is_dir():
+        return []
+
+    person_by_name: dict[str, dict[str, Any]] = {}
+    person_by_path: dict[str, str] = {}
+    person_targets: dict[str, set[str]] = {}
+    for ent in backend.entities(type="person"):
+        pname = _text(ent.get("name"))
+        ppath = _text((ent.get("_label") or {}).get("path"))
+        if not pname or not ppath or "/archive/" in ppath:
+            continue
+        if _visibility(ppath, labels, full) is None:
+            continue
+        person_by_name[pname] = ent
+        person_by_path[ppath] = pname
+        person_targets[pname] = {_text(r.get("target")) for r in backend.related(pname) if r.get("target")}
+
+    all_gaps = backend.link_gaps(limit=100)
+    out: list[dict[str, Any]] = []
+    for folder in sorted(p for p in base.iterdir() if p.is_dir()):
+        slug = folder.name
+        front = folder / f"{slug}.md"
+        rel = f"{root}/{slug}/{slug}.md"
+        if slug in skip or not front.is_file():
+            continue
+        vis = _visibility(rel, labels, full)
+        if vis is None:
+            continue
+        text = read_note(front)
+        if not text:
+            continue
+        fm, _ = split_page(text)
+        if not is_active_project(fm):
+            continue
+
+        entity_name = _text(fm.get("name")) or slug
+        typed_names = {
+            _text(n.get("entity"))
+            for n in backend.neighbors(entity_name, depth=1, node_types={"person"})
+            if _text(n.get("entity")) in person_by_name
+        }
+        typed_names.update(pname for pname, targets in person_targets.items() if entity_name in targets)
+
+        backlink_rows = backend.backlinks(rel)
+        co_names = {person_by_path[b["source"]] for b in backlink_rows if b.get("source") in person_by_path}
+        co_names.update(mentioned_people(text, person_by_name))
+
+        people_rows: list[dict[str, Any]] = []
+        for pname in typed_names | co_names:
+            pent = person_by_name[pname]
+            ppath = _text((pent.get("_label") or {}).get("path"))
+            pvis = _visibility(ppath, labels, full) or "private"
+            in_t, in_c = pname in typed_names, pname in co_names
+            rel_kind = "both" if (in_t and in_c) else ("typed" if in_t else "co_mentioned")
+            people_rows.append({"name": pname, "path": ppath, "visibility": pvis, "relation": rel_kind})
+        people_rows.sort(key=lambda r: (_RELATION_ORDER[r["relation"]], r["name"]))
+
+        seen_notes: set[str] = set()
+        relevant_notes: list[dict[str, Any]] = []
+        if query_hint.strip():
+            for hit in backend.ranked_search(query_hint, project=entity_name, limit=GRAPH_PROJECT_NOTES_MAX):
+                npath = _text(hit.get("path"))
+                nvis = _visibility(npath, labels, full) if npath else None
+                if not npath or npath == rel or nvis is None or npath in seen_notes:
+                    continue
+                as_of_dt = page_as_of(read_frontmatter(vault / npath))
+                seen_notes.add(npath)
+                relevant_notes.append(
+                    {
+                        "path": npath,
+                        "as_of": as_of_dt.isoformat() if as_of_dt else None,
+                        "score": round(float(hit.get("score") or 0.0), 4),
+                        "visibility": nvis,
+                    }
+                )
+        for kn in knowledge_notes(vault, f"{root}/{slug}/knowledge", labels, full=full):
+            if len(relevant_notes) >= GRAPH_PROJECT_NOTES_MAX:
+                break
+            if kn["path"] not in seen_notes:
+                seen_notes.add(kn["path"])
+                relevant_notes.append({**kn, "score": None})
+        for bl in backlink_rows:
+            if len(relevant_notes) >= GRAPH_PROJECT_NOTES_MAX:
+                break
+            bpath = _text(bl.get("source"))
+            bvis = _visibility(bpath, labels, full) if bpath else None
+            if (
+                not bpath
+                or bpath == rel
+                or bvis is None
+                or bpath in seen_notes
+                or not bpath.startswith("knowledge-base/")
+            ):
+                continue
+            as_of_dt = page_as_of(read_frontmatter(vault / bpath))
+            seen_notes.add(bpath)
+            relevant_notes.append(
+                {
+                    "path": bpath,
+                    "as_of": as_of_dt.isoformat() if as_of_dt else None,
+                    "score": None,
+                    "visibility": bvis,
+                }
+            )
+
+        proj_prefix = f"{root}/{slug}/"
+        proj_gaps: list[dict[str, Any]] = []
+        for g in all_gaps:
+            sp, tp = _text(g.get("source_path")), _text(g.get("target_path"))
+            if not (
+                g.get("source") == entity_name
+                or g.get("target") == entity_name
+                or sp.startswith(proj_prefix)
+                or tp.startswith(proj_prefix)
+            ):
+                continue
+            svis, tvis = _visibility(sp, labels, full), _visibility(tp, labels, full)
+            if svis is None or tvis is None:
+                continue
+            gvis = "private" if "private" in (svis, tvis) else "normal"
+            proj_gaps.append(
+                {
+                    "source": g["source"],
+                    "target": g["target"],
+                    "source_path": sp,
+                    "target_path": tp,
+                    "count": int(g.get("count") or 1),
+                    "visibility": gvis,
+                }
+            )
+            if len(proj_gaps) >= GRAPH_PROJECT_GAPS_MAX:
+                break
+
+        out.append(
+            {
+                "project": slug,
+                "path": rel,
+                "visibility": vis,
+                "people": people_rows[:GRAPH_PROJECT_PEOPLE_MAX],
+                "people_total": len(people_rows),
+                "relevant_notes": relevant_notes[:GRAPH_PROJECT_NOTES_MAX],
+                "link_gaps": proj_gaps,
+            }
+        )
+    return out
+
+
+def graph_context(
+    vault: Path,
+    labels: Mapping[str, str],
+    *,
+    full: bool,
+    reader: str = "owner",
+    query_hint: str = "",
+    projects_dir: str | None = None,
+    backend: Any | None = None,
+    graph: Any | None = None,
+) -> dict[str, Any]:
+    """Precompute per-project graph context from ``KBBackend`` (Arm C), degrading safely to ``FilesBackend``."""
+    from scout.kb.backend import FilesBackend, open_backend, resolve_backend_kind
+    from scout.kb.privacy import reads_any
+
+    if not reads_any(reader):
+        return {}
+    degraded_from: str | None = None
+    fallback_reason: str | None = None
+    active_backend = backend
+    if active_backend is None:
+        try:
+            requested = resolve_backend_kind(vault)
+        except Exception as exc:  # noqa: BLE001
+            requested = "invalid"
+            degraded_from = "invalid"
+            fallback_reason = type(exc).__name__
+            active_backend = FilesBackend(vault, reader, graph=graph)
+        else:
+            try:
+                active_backend = open_backend(vault, reader, kind=requested, graph=graph)
+            except Exception as exc:  # noqa: BLE001
+                degraded_from = requested
+                fallback_reason = type(exc).__name__
+                active_backend = FilesBackend(vault, reader, graph=graph)
+
+    try:
+        rows = _build_graph_projects(
+            vault,
+            active_backend,
+            labels,
+            full=full,
+            query_hint=query_hint,
+            projects_dir=projects_dir,
+        )
+    except Exception as exc:  # noqa: BLE001
+        if getattr(active_backend, "kind", "files") == "files":
+            return {}
+        degraded_from = str(getattr(active_backend, "kind", "relate"))
+        fallback_reason = type(exc).__name__
+        fallback = FilesBackend(vault, reader, graph=graph)
+        try:
+            rows = _build_graph_projects(
+                vault,
+                fallback,
+                labels,
+                full=full,
+                query_hint=query_hint,
+                projects_dir=projects_dir,
+            )
+            active_backend = fallback
+        except Exception:  # noqa: BLE001
+            return {}
+
+    result: dict[str, Any] = {
+        "backend": str(getattr(active_backend, "kind", "files")),
+        "projects": rows,
+        "total": len(rows),
+        "truncated": False,
+    }
+    if degraded_from is not None:
+        result["degraded_from"] = degraded_from
+        result["fallback_reason"] = fallback_reason
+    return result
+
+
 # ----- budget --------------------------------------------------------------------
 
 
@@ -548,8 +822,29 @@ def _trim_lab(lab: dict[str, Any], limit: int) -> dict[str, Any]:
     return lab
 
 
+def _trim_graph_context(section: dict[str, Any], limit: int) -> dict[str, Any]:
+    if not section:
+        return {}
+    rows = [dict(r) for r in section.get("projects") or []]
+    out = {**section, "projects": rows}
+    for cap in (8, 4, 2, 1, 0):
+        if _size(out) <= limit:
+            return out
+        for r in rows:
+            r["relevant_notes"] = list(r.get("relevant_notes") or [])[: max(cap, 1)]
+            r["link_gaps"] = list(r.get("link_gaps") or [])[:cap]
+            r["people"] = list(r.get("people") or [])[: max(cap * 2, 1)]
+            r["truncated"] = True
+        out["truncated"] = True
+    while rows and _size(out) > limit:
+        rows.pop()
+        out["truncated"] = True
+    return out
+
+
 _SECTIONS: tuple[tuple[str, int, Callable[[Any, int], Any]], ...] = (
     ("project_knowledge", PROJECT_KNOWLEDGE_MAX_BYTES, _trim_projects),
+    ("graph_context", GRAPH_CONTEXT_MAX_BYTES, _trim_graph_context),
     ("people_context", PEOPLE_CONTEXT_MAX_BYTES, _trim_people),
     ("research_queue", RESEARCH_QUEUE_MAX_BYTES, _trim_queue),
     ("lab", LAB_MAX_BYTES, _trim_lab),
@@ -576,12 +871,15 @@ def fit_budget(data: dict[str, Any], max_bytes: int = SESSION_CONTEXT_MAX_BYTES)
 
 
 __all__ = [
+    "GRAPH_CONTEXT_ENV",
+    "GRAPH_CONTEXT_MAX_BYTES",
     "PEOPLE_CONTEXT_MAX_BYTES",
     "PROJECT_KNOWLEDGE_MAX_BYTES",
     "LAB_MAX_BYTES",
     "RESEARCH_QUEUE_MAX_BYTES",
     "SESSION_CONTEXT_MAX_BYTES",
     "fit_budget",
+    "graph_context",
     "is_active_project",
     "items_text_for",
     "lab_block",
@@ -590,4 +888,5 @@ __all__ = [
     "people_context",
     "project_knowledge",
     "research_queue",
+    "should_precompute_graph_context",
 ]

@@ -1820,10 +1820,19 @@ def kb_files(
 
 @kb_app.command("search")
 def kb_search(
-    pattern: str = typer.Argument(..., help="A regex (ripgrep syntax; Python's when rg is absent)."),
+    pattern: str = typer.Argument(
+        ..., help="A regex (ripgrep syntax; Python's when rg is absent), or full-text terms with --ranked."
+    ),
     glob: list[str] | None = typer.Option(None, "--glob", help="Vault-relative glob; repeat to OR them."),
     fixed: bool = typer.Option(False, "--fixed", help="Treat the pattern as a literal string."),
     ignore_case: bool = typer.Option(False, "-i", "--ignore-case", help="Case-insensitive."),
+    ranked: bool = typer.Option(
+        False, "--ranked", help="Full-text ranked search over KB notes via the active KBBackend."
+    ),
+    project: str | None = typer.Option(
+        None, "--project", help="With --ranked, scope results to notes linked to or about this project."
+    ),
+    limit: int | None = typer.Option(None, "--limit", help="With --ranked, max notes returned (default 10)."),
     max_matches: int | None = typer.Option(
         None, "--max-matches", help="Matching lines printed in all. Default 200; 0 = no limit."
     ),
@@ -1839,6 +1848,8 @@ def kb_search(
     reader: str | None = _R,
     as_json: bool = _J,
     repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
 ) -> None:
     """Search the reader's visible files only. Each match carries its file's label. Exit 2 = bad pattern.
 
@@ -1851,9 +1862,38 @@ def kb_search(
     given = {k: v for k, v in given.items() if v is not None}
     if not params["everything"]:
         del params["everything"]
+    if not params["ranked"]:
+        del params["ranked"]
+    for opt_k in ("project", "limit", "kb_root", "schema"):
+        if params[opt_k] is None:
+            del params[opt_k]
     # a search at the default caps keeps the audit arguments it had before the caps existed
     args = _kb_args("search", params | given)
-    from scout.kb.read import Output, cmd_search
+    from scout.kb.read import Output, UsageError, cmd_ranked_search, cmd_search
+
+    if ranked:
+        if glob or fixed or ignore_case or everything or given:
+
+            def bad_opts(_who: str, _vault: Path) -> Output:
+                raise UsageError("--ranked cannot be combined with --glob, --fixed, -i, --all or --max-*")
+
+            _kb_run(args, reader, repo, as_json, bad_opts, kb_root)
+        _kb_run(
+            args,
+            reader,
+            repo,
+            as_json,
+            lambda who, vault: cmd_ranked_search(
+                vault, who, pattern, project, limit if limit is not None else 10, kb_root, schema
+            ),
+            kb_root,
+        )
+    if project is not None or limit is not None:
+
+        def need_ranked(_who: str, _vault: Path) -> Output:
+            raise UsageError("--project and --limit require --ranked")
+
+        _kb_run(args, reader, repo, as_json, need_ranked, kb_root)
 
     lifted = dict.fromkeys(("max_matches", "max_per_file"), 0) if everything or as_json else {}
     caps = lifted | ({"max_line": 0} if as_json else {}) | given
@@ -2082,6 +2122,106 @@ def kb_path(
     src, dst = name_opt or source, to or target
     run = lambda g, _v: cmd_path(g, str(src), str(dst), hops)  # noqa: E731
     _kb_graph_cmd(args, reader, repo, kb_root, schema, as_json, run, ((src, "SOURCE"), (dst, "TARGET")))
+
+
+@kb_app.command("neighbors")
+def kb_neighbors(
+    name: str | None = typer.Argument(None, help="Seed entity name."),
+    name_opt: str | None = typer.Option(None, "--name", help="Seed entity name."),
+    depth: int = typer.Option(2, "--depth", help="Max hop depth (default 2)."),
+    rels: str | None = typer.Option(
+        None, "--rels", "--rel-types", help="Comma-separated relationship types to follow."
+    ),
+    node_types: str | None = typer.Option(None, "--node-types", help="Comma-separated target entity types to keep."),
+    limit: int | None = typer.Option(None, "--limit", help="Maximum neighbors to return."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """Multi-hop typed neighbourhood around an entity via the active KBBackend, labelled."""
+    args = _kb_args("neighbors", dict(locals()))
+    from scout.kb.read import cmd_neighbors
+
+    seed = name_opt or name
+
+    def body(who: str, vault: Path) -> object:
+        _need(seed, "NAME")
+        return cmd_neighbors(vault, who, str(seed), depth, rels, node_types, limit, kb_root, schema)
+
+    _kb_run(args, reader, repo, as_json, body, kb_root)
+
+
+@kb_app.command("paths")
+def kb_paths(
+    source: str | None = typer.Argument(None, help="Source entity."),
+    target: str | None = typer.Argument(None, help="Target entity."),
+    name_opt: str | None = typer.Option(None, "--name", help="Source entity."),
+    to: str | None = typer.Option(None, "--to", help="Target entity."),
+    hops: int = typer.Option(6, "--hops", help="Max hops (default 6)."),
+    rels: str | None = typer.Option(
+        None, "--rels", "--rel-types", help="Comma-separated relationship types to follow."
+    ),
+    k: int = typer.Option(1, "--k", help="Number of shortest paths to return (default 1)."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """Up to k shortest typed paths between two entities via the active KBBackend, labelled."""
+    args = _kb_args("paths", dict(locals()))
+    from scout.kb.read import cmd_paths
+
+    src, dst = name_opt or source, to or target
+
+    def body(who: str, vault: Path) -> object:
+        _need(src, "SOURCE")
+        _need(dst, "TARGET")
+        return cmd_paths(vault, who, str(src), str(dst), hops, rels, k, kb_root, schema)
+
+    _kb_run(args, reader, repo, as_json, body, kb_root)
+
+
+@kb_app.command("backlinks")
+def kb_backlinks(
+    path: str = typer.Argument(..., help="Target vault note path."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """Visible notes whose markdown body [[wikilinks]] to PATH, with section and line counts, labelled."""
+    args = _kb_args("backlinks", dict(locals()))
+    from scout.kb.read import cmd_backlinks
+
+    _kb_run(args, reader, repo, as_json, lambda who, vault: cmd_backlinks(vault, who, path, kb_root, schema), kb_root)
+
+
+@kb_app.command("link-gaps")
+def kb_link_gaps(
+    scope: str | None = typer.Option(None, "--scope", help="Vault-relative path prefix or glob filter."),
+    limit: int = typer.Option(25, "--limit", help="Maximum gaps returned (default 25)."),
+    reader: str | None = _R,
+    as_json: bool = _J,
+    repo: Path | None = _REPO,
+    kb_root: str | None = _KBR,
+    schema: str | None = _SCH,
+) -> None:
+    """Entity pairs connected by body [[wikilinks]] but missing any typed frontmatter relationship, labelled."""
+    args = _kb_args("link-gaps", dict(locals()))
+    from scout.kb.read import cmd_link_gaps
+
+    _kb_run(
+        args,
+        reader,
+        repo,
+        as_json,
+        lambda who, vault: cmd_link_gaps(vault, who, scope, limit, kb_root, schema),
+        kb_root,
+    )
 
 
 @kb_app.command("entity")
@@ -7306,6 +7446,10 @@ _DELEGATE_COMMANDS = frozenset(
                 "related",
                 "traverse",
                 "path",
+                "paths",
+                "neighbors",
+                "backlinks",
+                "link-gaps",
                 "name-lookup",
                 "delta",
                 "classify",

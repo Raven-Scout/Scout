@@ -12,9 +12,18 @@
 set -euo pipefail
 
 ENGINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../engine" && pwd)"
-if [ ! -x "$ENGINE/.venv/bin/python" ]; then
-    echo "eval.sh: no engine venv at $ENGINE/.venv — run: cd $ENGINE && uv venv && uv pip install -e '.[dev]'" >&2
+PLUGIN_ROOT="$(cd "$ENGINE/.." && pwd)"
+PYTHON_BIN="${SCOUT_EVAL_PYTHON:-}"
+if [ -z "$PYTHON_BIN" ]; then
+    if [ -x "$PLUGIN_ROOT/.venv/bin/python" ]; then
+        PYTHON_BIN="$PLUGIN_ROOT/.venv/bin/python"
+    elif [ -x "$ENGINE/.venv/bin/python" ]; then
+        PYTHON_BIN="$ENGINE/.venv/bin/python"
+    fi
+fi
+if [ -z "$PYTHON_BIN" ] || [ ! -x "$PYTHON_BIN" ]; then
+    echo "eval.sh: no engine venv found — run scripts/install-venv.sh (or set SCOUT_EVAL_PYTHON)" >&2
     exit 2
 fi
 
-PYTHONPATH="$ENGINE${PYTHONPATH:+:$PYTHONPATH}" exec "$ENGINE/.venv/bin/python" -m tests.eval.harness "$@"
+PYTHONPATH="$ENGINE${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON_BIN" -m tests.eval.harness "$@"

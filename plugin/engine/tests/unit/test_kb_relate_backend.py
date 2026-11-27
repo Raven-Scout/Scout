@@ -278,8 +278,11 @@ class _FakeConnection:
                 allowed_keys = set()
                 if proj_node:
                     for e in self.edges:
-                        if e["dst"] == proj_node["key"] and e["type"] in ("LINKS_TO", "ABOUT"):
-                            allowed_keys.add(e["src"])
+                        if e["type"] in ("LINKS_TO", "ABOUT"):
+                            if e["dst"] == proj_node["key"]:
+                                allowed_keys.add(e["src"])
+                            elif e["src"] == proj_node["key"]:
+                                allowed_keys.add(e["dst"])
             hits = []
             for k, n in self.nodes.items():
                 if "Note" not in n["labels"]:

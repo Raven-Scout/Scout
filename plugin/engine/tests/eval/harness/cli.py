@@ -7,6 +7,7 @@ the stubs, and (for model-backed commands) a logged-in Claude Code.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -235,7 +236,252 @@ def _age_days(sample: object) -> int | None:
         return None
 
 
+def _cmd_compare_arms(args: argparse.Namespace) -> int:
+    """Run multiple KB backend arms (e.g. a,b,c) interleaved on HEAD and score against the first arm."""
+    from .arms import parse_arms
+    from .checkout import head_checkout
+    from .metrics import verb_uptake_rate
+    from .plan import DEFAULT_MODEL, MAX_WITHOUT_MANY
+    from .report import format_comparison
+    from .runner import LoginRequired, run_sample
+    from .scenario import load_scenario
+    from .verdicts import compare_arms, hit_limit
+
+    try:
+        arm_specs = parse_arms(args.arms)
+    except ValueError as exc:
+        print(f"eval: {exc}", file=sys.stderr)
+        return 2
+    today = date.fromisoformat(args.today) if args.today else _utc_today()
+    model = "opus" if args.opus else DEFAULT_MODEL
+    real_claude = args.claude or shutil.which("claude")
+    if not real_claude:
+        print("eval: no claude on PATH (or pass --claude PATH)", file=sys.stderr)
+        return 2
+    try:
+        scenarios = [load_scenario(n) for n in args.scenarios]
+    except FileNotFoundError as exc:
+        print(f"eval: {exc}", file=sys.stderr)
+        return 2
+    if args.reps < 1:
+        print("eval: --reps must be at least 1", file=sys.stderr)
+        return 2
+    if today.weekday() >= 5 and any(s.weekdays_only for s in scenarios) and not args.allow_weekend:
+        print("eval: a weekday-only scenario on a weekend; pass --allow-weekend to run anyway", file=sys.stderr)
+        return 2
+    sessions = len(arm_specs) * args.reps * len(scenarios)
+    if sessions > MAX_WITHOUT_MANY and not args.many:
+        print(f"eval: {sessions} sessions is more than {MAX_WITHOUT_MANY}; pass --many", file=sys.stderr)
+        return 2
+    cli_version = args.cli_version or _cli_version(real_claude)
+    head_co = head_checkout()
+    if head_co.pythonpath is None and not (REPO_ROOT / "plugin" / ".venv").is_dir():
+        import dataclasses
+
+        head_co = dataclasses.replace(head_co, pythonpath=REPO_ROOT / "plugin" / "engine")
+    arm_desc = ", ".join(f"{a.id} ({a.slug}) ×{args.reps}" for a in arm_specs)
+    names = ", ".join(s.name for s in scenarios)
+    print(f"Will start {sessions} sessions ({names}: {arm_desc}, interleaved) on {model} via your Claude login.")
+    print(f"Reference arm: {arm_specs[0].id} ({arm_specs[0].slug}).")
+    if not args.yes:
+        input("Press Enter to start, Ctrl-C to cancel: ")
+
+    results_root = Path(args.results).resolve()
+    regressions = False
+    try:
+        for s in scenarios:
+            samples_by_arm: dict[str, list] = {a.id: [] for a in arm_specs}
+            for i in range(args.reps):
+                for spec in arm_specs:
+                    label = f"arm-{spec.id}"
+                    print(f"… {s.name} {label} ({spec.slug}) sample {i + 1}/{args.reps}", flush=True)
+                    sample = run_sample(
+                        s,
+                        today=today,
+                        rep=i + 1,
+                        model=model,
+                        results_root=results_root,
+                        real_claude=real_claude,
+                        arm=label,
+                        cli_version=cli_version,
+                        checkout=head_co,
+                        arm_spec=spec,
+                        extra_pythonpath=args.extra_pythonpath,
+                    )
+                    samples_by_arm[spec.id].append(sample)
+                    if sample.aborted and hit_limit(sample):
+                        print(f"   hit a run limit ({sample.aborted.get('reason')}): left out of checks and metrics")
+                        continue
+                    if sample.aborted:
+                        print(f"\n== {s.name}: stopped after an aborted sample ({sample.aborted.get('reason')}) ==")
+                        return 2
+
+            ref = arm_specs[0]
+            uptake_parts = []
+            for spec in arm_specs:
+                scored_calls = [
+                    smp.metrics.calls for smp in samples_by_arm[spec.id] if not smp.aborted and smp.metrics is not None
+                ]
+                rate = verb_uptake_rate(scored_calls)
+                uptake_parts.append(f"{spec.id}={rate * 100:.0f}%")
+            print(f"\n== {s.name}: graph verb uptake ({', '.join(uptake_parts)}) ==")
+
+            for cand in arm_specs[1:]:
+                cmp = compare_arms(samples_by_arm[ref.id], samples_by_arm[cand.id])
+                print(f"\n== {s.name}: arm {cand.id} ({cand.slug}) vs arm {ref.id} ({ref.slug}) ==")
+                print(
+                    format_comparison(
+                        cmp,
+                        samples_by_arm[ref.id],
+                        samples_by_arm[cand.id],
+                        labels=(f"arm-{ref.id}", f"arm-{cand.id}"),
+                    )
+                )
+                regressions = regressions or bool(cmp.regressions)
+
+            if len(arm_specs) >= 3:
+                second, third = arm_specs[1], arm_specs[2]
+                cmp_bc = compare_arms(samples_by_arm[second.id], samples_by_arm[third.id])
+                print(f"\n== {s.name}: arm {third.id} ({third.slug}) vs arm {second.id} ({second.slug}) ==")
+                print(
+                    format_comparison(
+                        cmp_bc,
+                        samples_by_arm[second.id],
+                        samples_by_arm[third.id],
+                        labels=(f"arm-{second.id}", f"arm-{third.id}"),
+                    )
+                )
+    except LoginRequired as exc:
+        print(f"eval: {exc}", file=sys.stderr)
+        return 2
+    return 1 if regressions else 0
+
+
+def _cmd_track_r_seed(args: argparse.Namespace) -> int:
+    """Seed local-only candidate Track R items from a vault into an owner-only JSONL file."""
+    import json
+
+    from .track_r_golden import seed_candidates_from_vault, summarize_golden_set, write_golden_set
+
+    vault = Path(args.vault).expanduser().resolve()
+    dest = Path(args.out).expanduser().resolve()
+    if not (vault / "knowledge-base").is_dir():
+        print(f"eval: {vault} has no knowledge-base/ directory", file=sys.stderr)
+        return 2
+    try:
+        items = seed_candidates_from_vault(vault, max_items=args.max_items)
+        written = write_golden_set(dest, items)
+    except (PermissionError, ValueError) as exc:
+        print(f"eval: {exc}", file=sys.stderr)
+        return 2
+    summary = summarize_golden_set(items)
+    print(json.dumps({"written": str(written), **summary}, indent=2))
+    return 0
+
+
+def _cmd_track_r_run(args: argparse.Namespace) -> int:
+    """Run read-only Track R Q&A items interleaved across KB backend arms and evaluate Gate G1."""
+    import json
+
+    from scout import safe_write
+    from scout.errors import ScoutError
+
+    from .plan import DEFAULT_MODEL, MAX_WITHOUT_MANY
+    from .runner import LoginRequired
+    from .track_r_golden import load_golden_set, refuse_public_repo_destination
+    from .track_r_runner import format_track_r_summary, parse_track_r_arms, run_track_r
+
+    try:
+        arm_specs = parse_track_r_arms(args.arms)
+    except ValueError as exc:
+        print(f"eval: {exc}", file=sys.stderr)
+        return 2
+    golden_path = Path(args.golden).expanduser().resolve()
+    vault_repo = Path(args.vault).expanduser().resolve()
+    results_root = Path(args.results).expanduser().resolve()
+    if not golden_path.is_file():
+        print(f"eval: golden file not found: {golden_path}", file=sys.stderr)
+        return 2
+    if not (vault_repo / "knowledge-base").is_dir():
+        print(f"eval: {vault_repo} has no knowledge-base/ directory", file=sys.stderr)
+        return 2
+    try:
+        refuse_public_repo_destination(results_root)
+        if args.report:
+            refuse_public_repo_destination(Path(args.report))
+        preview = load_golden_set(golden_path)
+    except (PermissionError, ValueError) as exc:
+        print(f"eval: {exc}", file=sys.stderr)
+        return 2
+
+    if args.only_audited:
+        preview = [it for it in preview if it.audited]
+    if args.category:
+        cats = set(args.category)
+        preview = [it for it in preview if it.category in cats]
+    if args.limit is not None:
+        preview = preview[: max(0, args.limit)]
+    if not preview:
+        print("eval: no Track R items matched the requested filters", file=sys.stderr)
+        return 2
+
+    real_claude = args.claude or shutil.which("claude")
+    if not real_claude:
+        print("eval: no claude on PATH (or pass --claude PATH)", file=sys.stderr)
+        return 2
+    model = "opus" if args.opus else DEFAULT_MODEL
+    sessions = len(preview) * len(arm_specs)
+    if sessions > MAX_WITHOUT_MANY and not args.many:
+        print(f"eval: {sessions} sessions is more than {MAX_WITHOUT_MANY}; pass --many", file=sys.stderr)
+        return 2
+
+    arm_desc = ", ".join(f"{a.id} ({a.slug})" for a in arm_specs)
+    print(
+        f"Will start {sessions} read-only Track R Q&A sessions "
+        f"({len(preview)} items × [{arm_desc}], interleaved) on {model} via your Claude login."
+    )
+    if not args.yes:
+        input("Press Enter to start, Ctrl-C to cancel: ")
+
+    cli_version = args.cli_version or _cli_version(real_claude)
+    try:
+        report = run_track_r(
+            golden_path,
+            vault_repo=vault_repo,
+            arm_specs=arm_specs,
+            results_root=results_root,
+            real_claude=real_claude,
+            model=model,
+            budget=args.budget,
+            timeout_s=args.timeout,
+            reader=args.reader,
+            limit=args.limit,
+            categories=args.category,
+            only_audited=args.only_audited,
+            dolphin_check=args.dolphin_check,
+            extra_pythonpath=args.extra_pythonpath,
+            cli_version=cli_version,
+        )
+    except (LoginRequired, PermissionError, RuntimeError, ScoutError, ValueError) as exc:
+        print(f"eval: {exc}", file=sys.stderr)
+        return 2
+
+    if args.report:
+        out_report = Path(args.report).expanduser().resolve()
+        out_report.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(out_report.parent, 0o700)
+        safe_write.atomic_write_text(
+            out_report,
+            json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+            mode=0o600,
+        )
+    print("\n" + format_track_r_summary(report))
+    return 0
+
+
 def _cmd_compare(args: argparse.Namespace) -> int:
+    if getattr(args, "arms", None):
+        return _cmd_compare_arms(args)
     from .cache import DEFAULT_CACHE_ROOT, BaselineCache, cache_key
     from .checkout import CheckoutError, base_checkout, head_checkout
     from .plan import DEFAULT_MODEL, MAX_WITHOUT_MANY
@@ -449,6 +695,10 @@ def main(argv: list[str] | None = None) -> int:
     cmp = sub.add_parser("compare", help="score the working tree against a base ref (reuses cached base samples)")
     cmp.add_argument("scenarios", nargs="+", help="scenario names from tests/eval/scenarios/")
     cmp.add_argument("--base", default="origin/main", help="the ref to compare against (default origin/main)")
+    cmp.add_argument(
+        "--arms",
+        help="comma-separated KB backend arms to compare on HEAD instead of base vs head (e.g. a,b,c)",
+    )
     cmp.add_argument("--reps", type=int, default=3, help="samples per arm (default 3)")
     cmp.add_argument("--fresh-base", action="store_true", help="ignore cached base samples; interleave both arms")
     cmp.add_argument("--opus", action="store_true", help="use Opus instead of the default Sonnet")
@@ -458,6 +708,7 @@ def main(argv: list[str] | None = None) -> int:
     cmp.add_argument("--today", help="render fixture dates as if today were YYYY-MM-DD (default: today, UTC)")
     cmp.add_argument("--results", default=str(REPO_ROOT / ".eval-results"), help="where result dirs go")
     cmp.add_argument("--cache", help="cache root (default ~/.cache/scout-eval)")
+    cmp.add_argument("--extra-pythonpath", help=argparse.SUPPRESS)
     cmp.add_argument("--claude", help=argparse.SUPPRESS)  # a stand-in claude binary, for tests
     cmp.add_argument("--cli-version", help=argparse.SUPPRESS)  # skip `claude --version`, for tests
     cmp.set_defaults(func=_cmd_compare)
@@ -497,5 +748,44 @@ def main(argv: list[str] | None = None) -> int:
     score.add_argument("--max-growth", type=int, help="bytes the front page may grow (default: the scenario's)")
     score.add_argument("--report", help="also write the JSON report here")
     score.set_defaults(func=_cmd_kb_score)
+    tr = sub.add_parser(
+        "track-r-seed",
+        help="mine candidate Track R read-eval items from a vault into a local owner-only JSONL file",
+    )
+    tr.add_argument("--vault", required=True, help="source Scout vault path")
+    tr.add_argument("--out", required=True, help="local output JSONL path outside the public repo")
+    tr.add_argument("--max-items", type=int, default=220, help="maximum candidate items to emit (default 220)")
+    tr.set_defaults(func=_cmd_track_r_seed)
+    tr_run = sub.add_parser(
+        "track-r-run",
+        help="run read-only Track R Q&A items interleaved across KB backend arms and evaluate Gate G1",
+    )
+    tr_run.add_argument("--golden", required=True, help="local Track R JSONL golden file")
+    tr_run.add_argument("--vault", required=True, help="source Scout vault git repo")
+    tr_run.add_argument("--arms", default="a,b,c", help="comma-separated KB arms (default a,b,c)")
+    tr_run.add_argument(
+        "--results",
+        default=str(Path.home() / ".scout-worktrees" / "relatedb-eval-data" / "runs"),
+        help="owner-only local results root outside any public repo",
+    )
+    tr_run.add_argument("--report", help="optional additional path for track-r-report.json (outside public repo)")
+    tr_run.add_argument("--limit", type=int, help="run only the first N matching items")
+    tr_run.add_argument("--category", action="append", help="filter to specific Track R category (repeatable)")
+    tr_run.add_argument("--only-audited", action="store_true", help="run only items with audited=true")
+    tr_run.add_argument("--dolphin-check", action="store_true", help="run DolphinBench gold-removal check on arm[0]")
+    tr_run.add_argument("--reader", default="autonomous", help="Scout reader identity (default autonomous)")
+    tr_run.add_argument("--budget", default="0.35", help="max USD budget per Q&A session (default 0.35)")
+    tr_run.add_argument("--timeout", type=int, default=180, help="timeout seconds per Q&A session (default 180)")
+    tr_run.add_argument("--opus", action="store_true", help="use Opus instead of the default Sonnet")
+    tr_run.add_argument("--many", action="store_true", help="allow more than 10 sessions")
+    tr_run.add_argument("--yes", action="store_true", help="don't wait for Enter after printing the plan")
+    tr_run.add_argument("--extra-pythonpath", help="extra PYTHONPATH (e.g. relate-db site-packages)")
+    tr_run.add_argument("--claude", help=argparse.SUPPRESS)
+    tr_run.add_argument("--cli-version", help=argparse.SUPPRESS)
+    tr_run.set_defaults(func=_cmd_track_r_run)
     args = parser.parse_args(argv)
     return int(args.func(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

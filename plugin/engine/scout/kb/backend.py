@@ -13,7 +13,9 @@ is parity-tested against :class:`FilesBackend`.
 
 from __future__ import annotations
 
+import math
 import os
+import re
 from collections import Counter, deque
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -21,11 +23,11 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from scout.errors import ConfigError
-from scout.kb.export_jsonl import PropertyGraph, build_property_graph
+from scout.kb.export_jsonl import HEADING_RE, PropertyGraph, build_property_graph, layer_of
 from scout.kb.lint_config import glob_match
 from scout.kb.ontology import KnowledgeGraph
 from scout.kb.privacy import normalize_rel, reads_any
-from scout.kb.read import Match, load_graph, query_rows, resolve, search
+from scout.kb.read import Match, load_graph, query_rows, resolve, search, visible_files
 
 BACKEND_ENV = "SCOUT_KB_BACKEND"
 DEFAULT_BACKEND_KIND = "files"
@@ -101,6 +103,14 @@ class KBBackend(Protocol):
         ignore_case: bool = False,
         k: int | None = None,
     ) -> list[Match]: ...
+
+    def ranked_search(
+        self,
+        query_text: str,
+        *,
+        project: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]: ...
 
     def resolve(self, name: str) -> list[dict[str, Any]]: ...
 
@@ -424,6 +434,70 @@ class FilesBackend:
             return hits[:k]
         return hits
 
+    def ranked_search(
+        self,
+        query_text: str,
+        *,
+        project: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Deterministic lexical ranked search over visible markdown notes (reference fallback for full-text)."""
+        if limit <= 0 or not query_text.strip() or not reads_any(self._reader):
+            return []
+        raw_terms = re.findall(r"[a-z0-9]+", query_text.lower())
+        terms = [t for t in raw_terms if len(t) >= 2] or raw_terms
+        if not terms:
+            return []
+        unique_terms = set(terms)
+
+        allowed_paths: set[str] | None = None
+        proj_prefix = ""
+        if project:
+            pg = self._ensure_property_graph()
+            proj_key = pg.entity_keys.get(project)
+            if not proj_key:
+                return []
+            proj_prefix = f"{Path(proj_key).parent.as_posix()}/"
+            allowed_paths = {
+                e["src"] for e in pg.edges if e["dst"] == proj_key and e["type"] in ("LINKS_TO", "ABOUT")
+            } | {e["dst"] for e in pg.edges if e["src"] == proj_key and e["type"] in ("LINKS_TO", "ABOUT")}
+
+        rows: list[dict[str, Any]] = []
+        for rel, flabel in visible_files(self._vault, self._reader, ("**/*.md",)):
+            if allowed_paths is not None and rel not in allowed_paths and not rel.startswith(proj_prefix):
+                continue
+            try:
+                data = (self._vault / rel).read_bytes()
+            except OSError:
+                continue
+            if b"\x00" in data:
+                continue
+            text = data.decode("utf-8", errors="replace")
+            stem = Path(rel).stem
+            title = stem
+            for line in text.splitlines()[:40]:
+                hm = HEADING_RE.match(line)
+                if hm and len(hm.group(1)) == 1:
+                    title = f"{stem} {hm.group(2)}"
+                    break
+            title_low = title.lower()
+            body_low = text.lower()
+            title_hits = sum(1 for t in unique_terms if t in title_low)
+            body_hits = sum(body_low.count(t) for t in unique_terms)
+            if title_hits == 0 and body_hits == 0:
+                continue
+            score = round(2.5 * title_hits + math.log1p(body_hits), 4)
+            rows.append(
+                {
+                    "path": rel,
+                    "layer": layer_of(rel),
+                    "score": score,
+                    "label": flabel.to_json(),
+                }
+            )
+        rows.sort(key=lambda r: (-float(r["score"]), str(r["path"])))
+        return rows[:limit]
+
     def resolve(self, name: str) -> list[dict[str, Any]]:
         return resolve(self._vault, self._reader, self._ensure_graph(), name)
 
@@ -494,6 +568,7 @@ def open_backend(
     kb_root: str | None = None,
     schema: str | None = None,
     env: Mapping[str, str] | None = None,
+    graph: KnowledgeGraph | None = None,
 ) -> KBBackend:
     """Open the configured :class:`KBBackend` for ``(vault, reader)``."""
     resolved = resolve_backend_kind(vault, kind=kind, env=env)
@@ -501,4 +576,4 @@ def open_backend(
         from scout.kb.relate_backend import RelateBackend
 
         return RelateBackend(vault, reader, kb_root=kb_root, schema=schema)
-    return FilesBackend(vault, reader, kb_root=kb_root, schema=schema)
+    return FilesBackend(vault, reader, kb_root=kb_root, schema=schema, graph=graph)

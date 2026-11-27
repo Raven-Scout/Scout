@@ -217,7 +217,20 @@ def test_slack_wrap_sections_use_the_outbound_draft_step(kind: str, heading: str
 # --- the scout-ask skill (plan Task 10) ------------------------------------------------
 
 SCOUT_ASK = PLUGIN_ROOT / "skills" / "scout-ask" / "SKILL.md"
-KB_READ_COMMANDS = {"resolve", "files", "read", "search", "query", "related", "traverse", "path"}
+KB_READ_COMMANDS = {
+    "resolve",
+    "files",
+    "read",
+    "search",
+    "query",
+    "related",
+    "traverse",
+    "path",
+    "paths",
+    "neighbors",
+    "backlinks",
+    "link-gaps",
+}
 # Vault folders the KB read gate doesn't judge (it covers knowledge-base/ and action-items/context/).
 _SHELL_VAULT_READ = re.compile(r"\b(?:ls|rg|grep|find|cat|head|tail|tree)\s+[^|;&]*\b(?:action-items|meetings)/")
 SAM = "knowledge-base/people/sam.md"

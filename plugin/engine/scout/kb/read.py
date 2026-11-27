@@ -1241,6 +1241,192 @@ def cmd_path(graph: KnowledgeGraph, source: str, target: str, hops: int | None) 
     return Output(data=data, lines=[f"  {chain}", f"\n{count(len(steps), 'hop')}."], labels=labels)
 
 
+def _open_cmd_backend(vault: Path, reader: str, kb_root: str | None = None, schema: str | None = None) -> Any:
+    if delegate_id(reader) is not None and (kb_root is not None or schema is not None):
+        raise UsageError("--kb-root and --schema aren't available to a delegate reader")
+    from scout.kb.backend import open_backend
+
+    return open_backend(vault, reader, kb_root=kb_root, schema=schema)
+
+
+def cmd_neighbors(
+    vault: Path,
+    reader: str,
+    name: str,
+    depth: int = 2,
+    rels: str | None = None,
+    node_types: str | None = None,
+    limit: int | None = None,
+    kb_root: str | None = None,
+    schema: str | None = None,
+) -> Output:
+    if depth < 1:
+        raise UsageError("--depth must be 1 or more")
+    if limit is not None and limit < 1:
+        raise UsageError("--limit must be 1 or more")
+    backend = _open_cmd_backend(vault, reader, kb_root, schema)
+    rel_list = [s.strip() for s in rels.split(",") if s.strip()] if rels else None
+    type_list = [s.strip() for s in node_types.split(",") if s.strip()] if node_types else None
+    results = backend.neighbors(name, depth=depth, rel_types=rel_list, node_types=type_list, limit=limit)
+    rows = [
+        {
+            "entity": r["entity"],
+            "hops": r["hops"],
+            "via": r["via"],
+            "path": [{"type": t, "node": n} for t, n in r.get("path") or ()],
+            "label": r.get("_label"),
+        }
+        for r in results
+    ]
+    if not rows:
+        lines = [f"No neighbors found for '{name}'."]
+    else:
+        lines = [
+            f"  {_mark(r['label'])}[{r['hops']} hop{'s' if r['hops'] != 1 else ''}] {r['entity']} (via {r['via']})"
+            for r in rows
+        ]
+        lines.append(f"\n{len(rows)} reachable entit{'ies' if len(rows) != 1 else 'y'}.")
+    labels = [r["label"] for r in rows if isinstance(r.get("label"), Mapping)]
+    return Output(data=rows, lines=lines, labels=labels)
+
+
+def cmd_paths(
+    vault: Path,
+    reader: str,
+    source: str,
+    target: str,
+    hops: int = 6,
+    rels: str | None = None,
+    k: int = 1,
+    kb_root: str | None = None,
+    schema: str | None = None,
+) -> Output:
+    if hops < 0:
+        raise UsageError("--hops must be 0 or more")
+    if k < 1:
+        raise UsageError("--k must be 1 or more")
+    backend = _open_cmd_backend(vault, reader, kb_root, schema)
+    rel_list = [s.strip() for s in rels.split(",") if s.strip()] if rels else None
+    found = backend.paths(source, target, max_hops=hops, rel_types=rel_list, k=k)
+    if not found:
+        return Output(data=None, lines=[f"No path from '{source}' to '{target}'."])
+
+    label_cache: dict[str, Mapping[str, Any] | None] = {}
+
+    def label_for(ename: str) -> Mapping[str, Any] | None:
+        if ename not in label_cache:
+            ent = backend.entity(ename)
+            lbl = ent.get("_label") if isinstance(ent, Mapping) else None
+            label_cache[ename] = lbl if isinstance(lbl, Mapping) else None
+        return label_cache[ename]
+
+    src_label = label_for(source)
+    path_rows = [[{"type": t, "node": n, "label": label_for(n)} for t, n in steps] for steps in found]
+    data = {
+        "source": source,
+        "target": target,
+        "source_label": src_label,
+        "paths": path_rows,
+    }
+    seen_labels: dict[str, Mapping[str, Any]] = {}
+    for lbl in [src_label, *(step["label"] for p in path_rows for step in p)]:
+        if isinstance(lbl, Mapping) and lbl.get("path"):
+            seen_labels.setdefault(str(lbl["path"]), lbl)
+    labels = list(seen_labels.values())
+    if found == [[]]:
+        return Output(data=data, lines=[f"'{source}' and '{target}' are the same entity."], labels=labels)
+    lines = [
+        "  "
+        + _mark(src_label)
+        + source
+        + "".join(f" --{step['type']}--> {_mark(step['label'])}{step['node']}" for step in p)
+        for p in path_rows
+    ]
+    lines.append(f"\n{count(len(path_rows), 'path')} ({count(len(path_rows[0]), 'hop')}).")
+    return Output(data=data, lines=lines, labels=labels)
+
+
+def cmd_backlinks(
+    vault: Path,
+    reader: str,
+    path: str,
+    kb_root: str | None = None,
+    schema: str | None = None,
+) -> Output:
+    root = vault.resolve()
+    try:
+        rel = normalize_rel(root, path)
+    except ValueError as e:
+        raise UsageError(str(e)) from e
+    if ".git" in rel.split("/"):
+        if reader in FULL_READERS:
+            raise UsageError(f"not a vault file: {rel}")
+        return Output(data=[], lines=[f"No backlinks found for '{rel}'."])
+    backend = _open_cmd_backend(vault, reader, kb_root, schema)
+    rows = backend.backlinks(rel)
+    if not rows:
+        lines = [f"No backlinks found for '{rel}'."]
+    else:
+        lines = []
+        for r in rows:
+            secs = ", ".join(r.get("sections") or ())
+            sec_part = f" in {secs}" if secs else ""
+            lines.append(f"  {_mark(r.get('label'))}{r['source']} ({count(int(r['count']), 'link')}{sec_part})")
+        lines.append(f"\n{count(len(rows), 'backlink')}.")
+    labels = [r["label"] for r in rows if isinstance(r.get("label"), Mapping)]
+    return Output(data=rows, lines=lines, labels=labels)
+
+
+def cmd_link_gaps(
+    vault: Path,
+    reader: str,
+    scope: str | None = None,
+    limit: int = 25,
+    kb_root: str | None = None,
+    schema: str | None = None,
+) -> Output:
+    if limit < 1:
+        raise UsageError("--limit must be 1 or more")
+    backend = _open_cmd_backend(vault, reader, kb_root, schema)
+    rows = backend.link_gaps(scope=scope, limit=limit)
+    if not rows:
+        lines = ["No open link gaps."]
+    else:
+        lines = [
+            f"  {_mark(r.get('source_label'))}{r['source']} → {_mark(r.get('target_label'))}{r['target']} "
+            f"({count(int(r['count']), 'body link')}, no typed edge)"
+            for r in rows
+        ]
+        lines.append(f"\n{count(len(rows), 'link gap')}.")
+    seen_labels: dict[str, Mapping[str, Any]] = {}
+    for r in rows:
+        for key in ("source_label", "target_label"):
+            lbl = r.get(key)
+            if isinstance(lbl, Mapping) and lbl.get("path"):
+                seen_labels.setdefault(str(lbl["path"]), lbl)
+    return Output(data=rows, lines=lines, labels=list(seen_labels.values()))
+
+
+def cmd_ranked_search(
+    vault: Path,
+    reader: str,
+    query_text: str,
+    project: str | None = None,
+    limit: int = 10,
+    kb_root: str | None = None,
+    schema: str | None = None,
+) -> Output:
+    if limit < 1:
+        raise UsageError("--limit must be 1 or more")
+    if not query_text.strip():
+        raise UsageError("PATTERN must not be empty")
+    backend = _open_cmd_backend(vault, reader, kb_root, schema)
+    rows = backend.ranked_search(query_text, project=project, limit=limit)
+    lines = [f"{_mark(r.get('label'))}{r['path']}  score={float(r['score']):.4f}  [{r['layer']}]" for r in rows]
+    labels = [r["label"] for r in rows if isinstance(r.get("label"), Mapping)]
+    return Output(data=rows, lines=lines, labels=labels)
+
+
 def cmd_entity(graph: KnowledgeGraph, name: str) -> Output:
     entity = graph.entity(name)
     if not entity:

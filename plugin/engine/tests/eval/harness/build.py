@@ -30,6 +30,7 @@ from pathlib import Path
 import scout
 from scout.scripts.bootstrap import BootstrapConfig, install
 
+from .arms import ArmSpec, apply_arm
 from .checkout import Checkout
 from .dates import UNRENDERED, render_dates
 from .index_gen import generate_index
@@ -123,6 +124,7 @@ def build_vault(
     max_budget: str = "5",
     checkout: Checkout | None = None,
     scheduler_tick: datetime | None = None,
+    arm_spec: ArmSpec | None = None,
 ) -> Path:
     """Build the fixture vault. ``checkout`` (a comparison's base arm) installs from that
     checkout's own engine and phases instead of this one's."""
@@ -147,6 +149,8 @@ def build_vault(
     config_add = scenario_dir / CONFIG_ADD if scenario_dir is not None else None
     if config_add is not None and config_add.is_file():
         _add_config(config_add, dest / "scout-config.yaml")
+    if arm_spec is not None:
+        apply_arm(dest, arm_spec)
     (dest / "knowledge-base.md").write_text(render_dates(generate_index(), today), encoding="utf-8")
     if scheduler_tick is not None:
         _seed_scheduler_tick(dest, scheduler_tick)
