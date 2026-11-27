@@ -33,19 +33,19 @@ The KB is the **persistent memory** of this system. Action items are ephemeral (
 - Durable detail goes in the project's `knowledge/` notes, cited with the issue URL. A closed issue moves to the archive file (e.g. `issues-archive.md`) as one line.
 - Quality bar: the state column matches the tracker; stale states are the most common KB rot. Every run spot-checks 2-3 rows.
 
-**Entity files (`people/`, `personal/`, `ontology/entities/`) — Knowledge graph entities**
+**Entity files — Knowledge graph entities.** A person or organization is an **identity note** (`knowledge-base/people/<name>.md`, `knowledge-base/organizations/<name>.md`) plus a **role note** per space (`knowledge-base/<space>/people/<name>-<space>.md`, `knowledge-base/<space>/organizations/<name>-<space>.md`); other entities (technologies, personal tasks) are files under `ontology/entities/` or a space folder. The graph folds each role note into its identity, so `kb entity <name>` returns them together.
 - Individual entity files with YAML frontmatter defining typed properties and relationships
-- The frontmatter is machine-readable: query it with `scripts/scoutctl kb query`, `kb entity`, `kb related` (never by reading the files raw)
+- The frontmatter is machine-readable: query it with `scout/scripts/scoutctl kb query`, `kb entity`, `kb related` (never by reading the files raw)
 - Relationships use `[[wikilinks]]` in targets: `target: "[[Entity Name]]"`
 - Entity files complement (not replace) `people.md` — the flat table remains the authoritative directory
-- When adding a new person to `people.md`, also create an entity file in `knowledge-base/people/` if they have relationships worth tracking
+- When adding a new person to `people.md`, also create their identity note in `knowledge-base/people/` and a role note in the space they showed up in, if they have relationships worth tracking. Properties and relationships go in the role note; the identity note holds only name, type, aliases, handles, `spaces:` and privacy keys, plus a link line per role note (kb lint refuses anything else)
 - Personal task entities (`personal/task-*.md`) have `domain: personal`, `status`, `priority`, `deadline`, and `completion_signal` fields
 
 **`projects/<project-name>/<project-name>.md` — Project files**
-- The KB's front page for a workstream, written **for a person** to [[docs/kb-page-standard]]: one screen (under 8 KB), sections in its fixed order (intro · status line · Where it stands · What's next · Key decisions · Open questions · People · Go deeper · History), no run narration.
+- The KB's front page for a workstream, written **for a person** to [[scout/kb-page-standard]]: one screen (under 8 KB), sections in its fixed order (intro · status line · Where it stands · What's next · Key decisions · Open questions · People · Go deeper · History), no run narration.
 - **Verification goes in frontmatter** (`last_verified:`, `verified_against:`), never a "Last verified" line in the body. **The dated decision log lives in `knowledge/<project-name>-decisions.md`**; the page shows its top 7.
 - **The folder:** `<project-name>.md` at the top; everything else in `knowledge/`, `documents/`, `research/` or `archive/`.
-- **Read the knowledge notes before you edit the page.** `.scout-cache/session-context.json` → `project_knowledge` (near the top of the file) lists each active project's Go deeper map and its `knowledge/` notes, newest `as_of` first. Before changing a front page, `scripts/scoutctl kb read` the notes your edit draws on (at least the one whose subject the edit touches), and make "Where it stands" agree with them. A front page edit with no read of its project's notes this session gets a `[scout:front-page-reads]` warning: read them, then check the edit.
+- **Read the knowledge notes before you edit the page.** `.scout-cache/session-context.json` → `project_knowledge` (near the top of the file) lists each active project's Go deeper map and its `knowledge/` notes, newest `as_of` first. Before changing a front page, `scout/scripts/scoutctl kb read` the notes your edit draws on (at least the one whose subject the edit touches), and make "Where it stands" agree with them. A front page edit with no read of its project's notes this session gets a `[scout:front-page-reads]` warning: read them, then check the edit.
 - Quality bar: after reading a project page, {{USER_NAME}} should understand what's happening *right now*, who's doing what, what was decided and why, and what's next, in under a minute. A page past one screen needs restructuring, not more sections.
 - **`slack_channels:` frontmatter (required for 🔴 projects):** every high-priority project file declares the Slack channels that carry its work, so runs can poll them directly (see the Slack connector's 🔴 Project Channel Poll). Shape:
   ```yaml
@@ -57,7 +57,7 @@ The KB is the **persistent memory** of this system. Action items are ephemeral (
 
 ### When to Create New KB Files
 
-**Most new knowledge is a topic or source note, not a new project.** Follow the KB WRITE PROTOCOL table: events → `knowledge-base/sources/`, durable facts about one project → `knowledge-base/projects/<name>/knowledge/`, durable facts that span projects → `knowledge-base/topics/<domain>/`. The rules below govern project pages and entity files only.
+**Most new knowledge is a topic or source note, not a new project.** Follow the KB WRITE PROTOCOL table: events → `knowledge-base/<space>/sources/`, durable facts about one project → `knowledge-base/<space>/projects/<name>/knowledge/`, durable facts that span projects → `knowledge-base/<space>/topics/<domain>/`. The rules below govern project pages and entity files only.
 
 **Create a new project file when:**
 - A new workstream appears that has its own meetings, issues, AND people (all three — not just one)
@@ -65,13 +65,13 @@ The KB is the **persistent memory** of this system. Action items are ephemeral (
 - It would take more than 3 bullets to describe in `projects.md`
 
 **How to create:**
-1. Create `knowledge-base/projects/<project-name>/<project-name>.md` (folder + file named identically) from the project-page template in `docs/kb-page-standard.md`. Create its subfolders only when their first file arrives.
+1. Create `knowledge-base/<space>/projects/<project-name>/<project-name>.md` (folder + file named identically) from the project-page template in `scout/kb-page-standard.md`. Create its subfolders only when their first file arrives.
 2. Add a row to `projects/projects.md` with priority and status summary
 3. Add `[[project-name]]` link to `projects.md`
 4. Add any new people to `people.md`
 5. Add any new issues to the issue tracker file
 
-**Create a new entity file (`knowledge-base/people/`, `ontology/entities/`) when:**
+**Create a new entity file (an identity note and a role note for a person or organization; `ontology/entities/` for anything else) when:**
 - A person, organization, or technology **recurs across 3+ independent sources** (e.g. named in two meetings and a message thread, or an issue + a PR + a calendar invite). Recurrence at that threshold means it's a real entity worth tracking, not a one-off mention — the trigger is the recurrence itself; don't wait to be told.
 - It has relationships worth tracking (who it works with, what it depends on, which projects it touches).
 
@@ -89,7 +89,7 @@ Move a project to `projects/archived/` when:
 - No meetings about it in the last 30 days
 - {{USER_NAME}} confirms it's complete (or the system detects no activity for 30+ days)
 
-To archive: `mv` the project's folder into `archived/` and name both paths when you commit with `scripts/git-safe-commit.sh`; in the same commit, rewrite links that name its old path (`scripts/scoutctl kb search --all --fixed 'projects/<project-name>/'`) to the bare `[[<project-name>]]`, which resolves wherever the file lives; move its row to the Archived table in `projects.md`, and update `knowledge-base.md` if needed.
+To archive: `mv` the project's folder into `archived/` and name both paths when you commit with `scout/scripts/git-safe-commit.sh`; in the same commit, rewrite links that name its old path (`scout/scripts/scoutctl kb search --all --fixed 'projects/<project-name>/'`) to the bare `[[<project-name>]]`, which resolves wherever the file lives; move its row to the Archived table in `projects.md`, and update `knowledge-base.md` if needed.
 
 ### KB Freshness Standards
 
@@ -169,7 +169,7 @@ Never fan a causal claim out to multiple KB surfaces (project file + people + DM
 
 **Consequential claims carry an inline primary-source citation.** Any claim that — if wrong — would cause {{USER_NAME}} to act on bad information (who owns/built something, a strategy/decision, a status that gates action, an attribution) must cite the specific source inline: "per [Linear PROJ-123 status]", "per [DM from X 2026-05-01]", "per [PR #45 mergedAt]". A bare assertion with no traceable source is treated as `[unverified]`.
 
-**Dreaming fact-check pass (deep-work mode).** During deep-work runs, take the notes in `fact_check_targets` (`scripts/scoutctl kb delta --since 3d --diff` shows their changes) and re-verify the highest-stakes claims against a **freshly re-read primary source** — do not paraphrase what a prior run already wrote (prior runs can be wrong; the KB is claims-to-verify, not facts). Correct or mark `[unverified]`/`[contradicted]` anything that doesn't hold up, and route genuine conflicts to the review queue. This is the active counterpart to the passive verification markers — hallucinations compound across runs unless something re-checks them. A `[private]` note is fact-checked like any other, but its names and content never go into a connector or web query (see the privacy phase). Skip `knowledge-base/from-agents/`: agents' text, kept as accepted.
+**Dreaming fact-check pass (deep-work mode).** During deep-work runs, take the notes in `fact_check_targets` (`scout/scripts/scoutctl kb delta --since 3d --diff` shows their changes) and re-verify the highest-stakes claims against a **freshly re-read primary source** — do not paraphrase what a prior run already wrote (prior runs can be wrong; the KB is claims-to-verify, not facts). Correct or mark `[unverified]`/`[contradicted]` anything that doesn't hold up, and route genuine conflicts to the review queue. This is the active counterpart to the passive verification markers — hallucinations compound across runs unless something re-checks them. A `[private]` note is fact-checked like any other, but its names and content never go into a connector or web query (see the privacy phase). Skip `knowledge-base/from-agents/`: agents' text, kept as accepted.
 
 ### Audits Remediate or Hand Off — Never Just Report
 
@@ -181,7 +181,7 @@ Applies to **every** audit in every mode — the consolidation KB audit, KG-inte
 
 ### Session Log Row (mandatory every run)
 
-**Every briefing, consolidation, dreaming, or research run must append one row to this month's shard, `knowledge-base/session-log/YYYY-MM.md`** (create it with a table header if it doesn't exist yet; `knowledge-base/session-log.md` is the index that links the shards). Append it with Edit/Write on that file (find it with `scripts/scoutctl kb files --glob 'knowledge-base/session-log/*.md'`); never `ls`, `tail` or `grep` `knowledge-base/` or `action-items/context/` to find it. Context notes are listed the same way, `scripts/scoutctl kb files --glob 'action-items/context/*.md'`; read a note with `scripts/scoutctl kb read <path>`. A run that skips the row leaves the next run blind to what just happened.
+**Every briefing, consolidation, dreaming, or research run must append one row to this month's shard, `scout/records/session-log/YYYY-MM.md`** (create it with a table header if it doesn't exist yet; `scout/records/session-log.md` is the index that links the shards). Append it with Edit/Write on that file (find it with `scout/scripts/scoutctl kb files --glob 'scout/records/session-log/*.md'`); never `ls`, `tail` or `grep` `knowledge-base/` or `action-items/context/` to find it. Context notes are listed the same way, `scout/scripts/scoutctl kb files --glob 'action-items/context/*.md'`; read a note with `scout/scripts/scoutctl kb read <path>`. A run that skips the row leaves the next run blind to what just happened.
 
 Row shape, **≤ 500 characters**: date · session type (time, manual/scheduled) · one sentence of material findings with `[[links]]` to the notes changed · commit hash. Write `pending` for the hash pre-commit; back-fill it when possible (dreaming also back-fills `pending`). The detail lives in the notes and the commit message, not the row.
 

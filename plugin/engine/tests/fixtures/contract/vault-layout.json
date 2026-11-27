@@ -1,0 +1,112 @@
+{
+  "brain": {
+    "DREAMING": "scout/brain/DREAMING.md",
+    "RESEARCH": "scout/brain/RESEARCH.md",
+    "RESPOND": "scout/brain/RESPOND.md",
+    "SKILL": "scout/brain/SKILL.md"
+  },
+  "categories": {
+    "generated": [
+      "action-items",
+      "drafts",
+      "reports"
+    ],
+    "knowledge": [
+      "knowledge-base"
+    ],
+    "records": [
+      "scout/records"
+    ],
+    "system": [
+      "scout-config.yaml",
+      "README.md",
+      "scout"
+    ],
+    "user_input": [
+      "inbox"
+    ]
+  },
+  "layout_version": 2,
+  "migration": {
+    "id": "layout-v2",
+    "state": "applied"
+  },
+  "paths": {
+    "action_items_archive_dir": "action-items/archive",
+    "action_items_dir": "action-items",
+    "brain_dir": "scout/brain",
+    "channels_index": "knowledge-base/channels.md",
+    "config": "scout-config.yaml",
+    "connector_health": "scout/records/connector-health.md",
+    "context_notes_dir": "action-items/context",
+    "decisions_log": "knowledge-base/decisions-log.md",
+    "drafts_dir": "drafts",
+    "dreaming_proposals": "scout/records/dreaming-proposals.md",
+    "dreaming_proposals_dir": "scout/records/dreaming-proposals",
+    "drop_dir": "inbox/drop",
+    "entities_dir": "knowledge-base/ontology/entities",
+    "hooks_dir": "scout/hooks",
+    "inbox": "inbox/inbox.md",
+    "inbox_dir": "inbox",
+    "kb_index": "knowledge-base/knowledge-base.md",
+    "knowledge_base": "knowledge-base",
+    "meetings_registry": "knowledge-base/meetings.md",
+    "mistake_audit": "scout/records/scout-mistake-audit.md",
+    "mistake_audit_dir": "scout/records/scout-mistake-audit",
+    "ontology_dir": "knowledge-base/ontology",
+    "organizations_dir": "knowledge-base/organizations",
+    "page_standard": "scout/kb-page-standard.md",
+    "people_dir": "knowledge-base/people",
+    "people_index": "knowledge-base/people.md",
+    "readme": "README.md",
+    "records_dir": "scout/records",
+    "recurring_tasks_dir": "knowledge-base/recurring-tasks",
+    "reports_dir": "reports",
+    "research_queue": "knowledge-base/research-queue.md",
+    "research_queue_dir": "knowledge-base/research-queue",
+    "review_queue": "knowledge-base/review-queue.md",
+    "review_queue_dir": "knowledge-base/review-queue",
+    "runners_dir": "scout/runners",
+    "scripts_dir": "scout/scripts",
+    "session_log": "scout/records/session-log.md",
+    "session_log_dir": "scout/records/session-log",
+    "system_dir": "scout",
+    "wishlist_dir": "scout/records/wishlist"
+  },
+  "runners": {
+    "run-dreaming.sh": "scout/runners/run-dreaming.sh",
+    "run-research.sh": "scout/runners/run-research.sh",
+    "run-respond.sh": "scout/runners/run-respond.sh",
+    "run-scout.sh": "scout/runners/run-scout.sh"
+  },
+  "schema_version": 1,
+  "space_paths": {
+    "meetings": "knowledge-base/{space}/meetings",
+    "organizations": "knowledge-base/{space}/organizations",
+    "people": "knowledge-base/{space}/people",
+    "projects": "knowledge-base/{space}/projects",
+    "root": "knowledge-base/{space}",
+    "sources": "knowledge-base/{space}/sources",
+    "topics": "knowledge-base/{space}/topics"
+  },
+  "spaces": [
+    {
+      "default": true,
+      "key": "work",
+      "root": "knowledge-base/work",
+      "visibility": "normal"
+    },
+    {
+      "default": false,
+      "key": "personal",
+      "root": "knowledge-base/personal",
+      "visibility": "private"
+    },
+    {
+      "default": false,
+      "key": "svj",
+      "root": "knowledge-base/svj",
+      "visibility": "private"
+    }
+  ]
+}

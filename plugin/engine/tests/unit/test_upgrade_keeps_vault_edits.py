@@ -16,13 +16,15 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from scout.scripts import vault_drift as vd
 from scout.scripts.bootstrap import BootstrapConfig, install, upgrade
 from scout.scripts.bootstrap_doctor import Severity, run_doctor
 
 REAL_PLUGIN = Path(__file__).resolve().parents[3]
 
-HEARTBEAT = "scripts/heartbeat.sh"
+HEARTBEAT = layout.script_path("heartbeat.sh")
+RUNNER = layout.runner_path("run-scout.sh")
 HEARTBEAT_TMPL = "templates/scripts/heartbeat.sh.tmpl"
 PARSER = "knowledge-base/ontology/parser.py"
 
@@ -171,7 +173,7 @@ def test_resolving_a_conflict_by_hand_sticks(vault: Path, plugin: Path) -> None:
 
 def test_repeated_upgrades_are_idempotent(vault: Path, plugin: Path) -> None:
     _append(vault / HEARTBEAT, VAULT_FIX)
-    _append(vault / "run-scout.sh", "# vault-local runner tweak\n")
+    _append(vault / RUNNER, "# vault-local runner tweak\n")
     _plugin_changes_heartbeat_top(plugin)
     upgrade(_config(vault, plugin))
     after_first = _managed_bytes(vault)
@@ -185,13 +187,13 @@ def test_repeated_upgrades_are_idempotent(vault: Path, plugin: Path) -> None:
 
 
 def test_a_runner_hand_edit_is_kept_in_place_not_backed_up(vault: Path, plugin: Path) -> None:
-    _append(vault / "run-scout.sh", "# vault-local runner tweak\n")
+    _append(vault / RUNNER, "# vault-local runner tweak\n")
 
     result = upgrade(_config(vault, plugin))
 
-    assert "# vault-local runner tweak" in (vault / "run-scout.sh").read_text(encoding="utf-8")
-    assert result.vault_edits == [vd.VaultEdit("run-scout.sh", "kept")]
-    assert list(vault.glob("run-*.sh.bak.*")) == []
+    assert "# vault-local runner tweak" in (vault / RUNNER).read_text(encoding="utf-8")
+    assert result.vault_edits == [vd.VaultEdit(RUNNER, "kept")]
+    assert list((vault / layout.V2["runners_dir"]).glob("run-*.sh.bak.*")) == []
 
 
 def test_a_vault_edit_to_parser_survives_a_plugin_change(vault: Path, plugin: Path) -> None:
@@ -292,7 +294,7 @@ def test_first_baseline_never_silently_overwrites_a_hand_edited_value(vault: Pat
     a line that holds a {{VAR}}; it must be parked and reported, not taken for
     a render with other values."""
     _forget_snapshots(vault)
-    runner = vault / "run-scout.sh"
+    runner = vault / RUNNER
     # Whatever claude path the install resolved on this machine, hand-fix it.
     text, n = re.subn(r'^CLAUDE_BIN="[^"]*"$', 'CLAUDE_BIN="/opt/tools/bin/claude"', runner.read_text(), flags=re.M)
     assert n == 1
@@ -300,8 +302,8 @@ def test_first_baseline_never_silently_overwrites_a_hand_edited_value(vault: Pat
 
     result = upgrade(_config(vault, plugin))
 
-    assert [(e.path, e.outcome) for e in result.vault_edits] == [("run-scout.sh", "replaced")]
-    assert 'CLAUDE_BIN="/opt/tools/bin/claude"' in (vault / ".scout-state/drift/run-scout.sh.vault").read_text(
+    assert [(e.path, e.outcome) for e in result.vault_edits] == [(RUNNER, "replaced")]
+    assert 'CLAUDE_BIN="/opt/tools/bin/claude"' in (vault / f".scout-state/drift/{RUNNER}.vault").read_text(
         encoding="utf-8"
     )
 
@@ -379,14 +381,14 @@ def test_parked_copies_are_one_doctor_note_not_one_per_file(vault: Path, plugin:
     first baseline; the doctor names them all in one note."""
     _forget_snapshots(vault)
     _append(vault / HEARTBEAT, VAULT_FIX)
-    _append(vault / "run-scout.sh", "# vault-local runner tweak\n")
+    _append(vault / RUNNER, "# vault-local runner tweak\n")
 
     result = upgrade(_config(vault, plugin))
 
     parked_notes = [n for n in result.doctor.notes if ".vault" in n]
     assert len(parked_notes) == 1
     assert f".scout-state/drift/{HEARTBEAT}.vault" in parked_notes[0]
-    assert ".scout-state/drift/run-scout.sh.vault" in parked_notes[0]
+    assert f".scout-state/drift/{RUNNER}.vault" in parked_notes[0]
 
 
 # ---------------------------------------------------------- robustness ----
@@ -427,7 +429,7 @@ def test_a_file_the_upgrade_cannot_read_is_reported_and_the_rest_still_upgrades(
     [edit] = result.vault_edits
     assert (edit.path, edit.outcome) == (HEARTBEAT, "error")
     assert "Permission denied" in edit.describe()
-    assert "# plugin runner change" in (vault / "run-scout.sh").read_text(encoding="utf-8")
+    assert "# plugin runner change" in (vault / RUNNER).read_text(encoding="utf-8")
     assert "0.12.0" in (vault / "scout-config.yaml").read_text(encoding="utf-8")
 
 

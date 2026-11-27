@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from scout import health
+from scout import health, layout
 
 TEMPLATES = Path(__file__).resolve().parents[3] / "templates"
 RUN_TIMEOUT_S = 60
@@ -99,16 +99,16 @@ def vault(tmp_path: Path, lifts: datetime) -> Path:
     for name in ("osascript", "notify-send"):  # the engine-unreachable floor never reaches a desktop
         _script(tmp_path / "fakebin" / name, "#!/bin/bash\ncat > /dev/null\n")
     for name in ("run-outcome.sh", "rate-limit-detect.sh", "budget-check.sh", "scout-lock.sh"):
-        _render(TEMPLATES / "scripts" / f"{name}.tmpl", v / "scripts" / name, v)
+        _render(TEMPLATES / "scripts" / f"{name}.tmpl", v / layout.script_path(name), v)
     _script(
-        v / "scripts" / "claude-with-retry.sh",
+        v / layout.script_path("claude-with-retry.sh"),
         SESSION_STUB.format(sessions=tmp_path / "sessions", message=_weekly_message(lifts)),
     )
     return v
 
 
 def _run_slot(vault: Path) -> None:
-    runner = _render(TEMPLATES / "run-scout.sh.tmpl", vault / "run-scout.sh", vault)
+    runner = _render(TEMPLATES / "run-scout.sh.tmpl", vault / layout.runner_path("run-scout.sh"), vault)
     fake_bin = vault.parent / "fakebin"
     env = {k: v for k, v in os.environ.items() if not k.startswith("SCOUT_")}
     env["SCOUT_RUN_SANDBOX"] = "off"  # the runners' write sandbox needs a real engine (tests/conftest.py)

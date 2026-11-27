@@ -49,9 +49,19 @@ def sidecar_name(kind: str) -> str:
     return f"{kind}.md.proposed-merge"
 
 
+def sidecar_rel(vault: Path, kind: str) -> str:
+    """The vault-relative path of ``kind``'s sidecar, beside the brain file in the vault's layout."""
+    from scout import layout
+
+    return layout.for_vault(vault).brain(kind) + ".proposed-merge"
+
+
 def pending_brain_sidecars(vault: Path) -> list[str]:
-    """The brain-file sidecars present in ``vault``, in ``BRAIN_KINDS`` order."""
-    return [sidecar_name(k) for k in BRAIN_KINDS if (vault / sidecar_name(k)).exists()]
+    """The brain-file sidecars present in ``vault`` (names), in ``BRAIN_KINDS`` order.
+
+    Looked up in the vault's own layout: ``scout/brain/`` on v2, the root on v1.
+    """
+    return [sidecar_name(k) for k in BRAIN_KINDS if (vault / sidecar_rel(vault, k)).exists()]
 
 
 def assembly_header(kind: str, vault: Path) -> str:

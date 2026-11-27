@@ -185,7 +185,7 @@ def warning(front: str, notes: list[dict[str, Any]]) -> str:
     return (
         f"{MARK} You edited the front page {front}, but this session has read none of its project's "
         f'{len(notes)} knowledge/ note{"s" if len(notes) != 1 else ""}: {shown}{more}. Before "Where it stands" '
-        "changes, read the notes this edit draws on with `scripts/scoutctl kb read <path>` and check the page "
+        "changes, read the notes this edit draws on with `scout/scripts/scoutctl kb read <path>` and check the page "
         "against them; `.scout-cache/session-context.json` → `project_knowledge` lists each project's notes with "
         "their `as_of` and the page's Go deeper map. This is a warning: the edit stands."
     )

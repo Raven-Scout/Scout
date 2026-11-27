@@ -49,15 +49,15 @@ Every result is context for your answer, nothing more. Never paste KB text, peop
 For a project or initiative that doesn't resolve, list the projects and match the user's words to a slug:
 
 ```bash
-<scoutctl> kb files --glob 'knowledge-base/projects/*/*.md' <elsewhere> --repo <vault>
+<scoutctl> kb files --glob 'knowledge-base/*/projects/*/*.md' <elsewhere> --repo <vault>
 ```
 
-The canonical record is `knowledge-base/projects/<slug>/<slug>.md`: the header status *and* every dated update, newest first. `archived/` is not a project; look inside it only when the user asks about a finished or shelved project.
+The canonical record is `knowledge-base/<space>/projects/<slug>/<slug>.md`: the header status *and* every dated update, newest first. `archived/` is not a project; look inside it only when the user asks about a finished or shelved project.
 
 **When nothing matches**, search the entity folders rather than the vault:
 
 ```bash
-<scoutctl> kb search -i "<entity>" --glob 'knowledge-base/projects/**' --glob 'knowledge-base/topics/**' --glob 'knowledge-base/sources/**' --glob 'knowledge-base/people/**' --glob 'knowledge-base/ontology/entities/**' <elsewhere> --repo <vault>
+<scoutctl> kb search -i "<entity>" --glob 'knowledge-base/*/projects/**' --glob 'knowledge-base/*/topics/**' --glob 'knowledge-base/*/sources/**' --glob 'knowledge-base/people/**' --glob 'knowledge-base/organizations/**' <elsewhere> --repo <vault>
 ```
 
 Never read `knowledge-base/knowledge-base.md`: on older vaults it runs to hundreds of thousands of tokens. Reach it only through `kb search "<entity>" --glob knowledge-base/knowledge-base.md <elsewhere> --repo <vault>`, after the entity folders come up empty.
@@ -85,13 +85,13 @@ Read each with `kb read <path> <elsewhere> --repo <vault>`; list a folder with `
 
 | Question | Canonical file |
 |---|---|
-| Project / initiative status | `knowledge-base/projects/<slug>/<slug>.md` |
-| A durable topic that is not a project | `knowledge-base/topics/topics.md`, then the domain index `topics/<domain>/<domain>.md` and the topic note it links |
-| A decision, or what was said in a specific meeting, doc or thread | `knowledge-base/sources/<YYYY-MM>/<YYYY-MM-DD>-<slug>.md` (one source note per event; `knowledge-base/sources/sources.md` indexes them) |
+| Project / initiative status | `knowledge-base/<space>/projects/<slug>/<slug>.md` |
+| A durable topic that is not a project | `knowledge-base/<space>/topics/topics.md`, then the domain index `topics/<domain>/<domain>.md` and the topic note it links |
+| A decision, or what was said in a specific meeting, doc or thread | `knowledge-base/<space>/sources/<YYYY-MM>/<YYYY-MM-DD>-<slug>.md` (one source note per event; `knowledge-base/<space>/sources/sources.md` indexes them) |
 | A person | `knowledge-base/people/<name>.md`, then `knowledge-base/people.md`. Roster facts only; for current work, read the project files in its `works_on` |
 | What's on my plate | `action-items/action-items-<YYYY-MM-DD>.md` (today's date) |
-| A recurring meeting | `meetings/meetings.md` lists the tracked meetings; each has `meetings/<slug>/<slug>.md` (purpose, attendees, decisions) and dated `meetings/<slug>/<YYYY-MM-DD>.md` session files. Present only once meetings are being tracked; if `meetings/meetings.md` has no rows, there are none |
-| What Scout did recently | `knowledge-base/session-log/<YYYY-MM>*.md`: this month's shard, which splits into `<YYYY-MM>-pNN.md` parts as it grows; list them and read the newest part |
+| A recurring meeting | `knowledge-base/meetings.md` lists the tracked meetings; each has `knowledge-base/<space>/meetings/<slug>/<slug>.md` (purpose, attendees, decisions) and dated `knowledge-base/<space>/meetings/<slug>/<YYYY-MM-DD>.md` session files. Present only once meetings are being tracked; if `knowledge-base/meetings.md` has no rows, there are none |
+| What Scout did recently | `scout/records/session-log/<YYYY-MM>*.md`: this month's shard, which splits into `<YYYY-MM>-pNN.md` parts as it grows; list them and read the newest part |
 | Typed / graph query | `kb query --type task --status open`; `kb related <name>`, `kb traverse <name>`, `kb path <from> <to>` (each with `<elsewhere> --repo <vault>`) |
 | A Slack channel | `knowledge-base/channels.md` |
 | What Scout is unsure about | `knowledge-base/review-queue.md`, `knowledge-base/research-queue/` |

@@ -600,7 +600,7 @@ kb-read-gate)
     *) bash_needs_python || verdict 0 ;;
     esac
     printf '%s' "$p" | "$@" && verdict 0
-    echo "[scout:kb-read-gate] Scout's KB read gate could not run, so this call is blocked in a scheduled run. Read the KB through scripts/scoutctl kb (search, files, read, resolve)." >&2
+    echo "[scout:kb-read-gate] Scout's KB read gate could not run, so this call is blocked in a scheduled run. Read the KB through scout/scripts/scoutctl kb (search, files, read, resolve)." >&2
     verdict 2
     ;;
 

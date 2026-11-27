@@ -84,5 +84,9 @@ def run(
     # whatever runner the trigger names (a vault-local one may not export it).
     env["SCOUT_READER"] = "autonomous"
 
-    pid = spawn([str(vault / runner)], env)
+    from scout import layout
+
+    if layout.move_in_progress(vault):
+        return {"skill": skill, "runner": runner, "pid": None, "skipped": "layout move in progress"}
+    pid = spawn([str(vault / layout.for_vault(vault).runner(runner))], env)
     return {"skill": skill, "runner": runner, "pid": pid, "event_payload_path": str(payload_path)}

@@ -87,7 +87,7 @@ class Slot:
 
     key: str  # user-chosen kebab-case identifier
     type: SlotType  # fixed plugin vocabulary
-    runner: str  # script name relative to vault root
+    runner: str  # a bare runner name; scout.layout finds it (scout/runners/ on layout v2, the vault root before)
     fires_at_local: str  # "HH:MM" 24-hour
     weekdays: tuple[str, ...]  # subset of _VALID_WEEKDAYS
     missed_window_hours: int

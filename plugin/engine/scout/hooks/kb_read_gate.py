@@ -8,7 +8,7 @@ all of that, and the phase rule saying so lost in 30 of 34 privacy eval runs
 
   - **Bash**: a command :func:`raw_kb_read` flags is denied, judged with the session's cwd and
     vault so a recursive read rooted at the vault (``rg x``, ``grep -r x .``) counts. ``scoutctl``
-    segments (so ``scripts/scoutctl kb …``), the engine's scripts, ``git
+    segments (so ``scout/scripts/scoutctl kb …``), the engine's scripts, ``git
     add``/``commit`` and quoted commit messages are never flagged. So is one
     that sets, unsets or blanks ``SCOUT_MODE``/``SCOUT_READER`` or clears the
     environment (``env -i``), or one that detaches (``nohup``, ``setsid``,
@@ -73,7 +73,7 @@ MARK = f"[scout:{GATE}]"
 # Claude Code's file-writing tools: a run's write into hook or agent config is denied (scout.kb.hook_paths).
 WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
 _REPLACEMENT = (
-    "Read the KB through `scripts/scoutctl kb` instead: `kb search <words>`, `kb files [dir]`, "
+    "Read the KB through `scout/scripts/scoutctl kb` instead: `kb search <words>`, `kb files [dir]`, "
     "`kb read <path>`, `kb resolve <name>`, `kb name-lookup <name>`, `kb delta` (in place of git log/diff). "
     "`kb read <path> --lines A:B` (or `:B`, `A:`, `-N:`) in place of sed -n, head and tail; "
     "`kb stat <path>…` or `kb stat --glob '<glob>'` (bytes, lines, words) in place of wc, ls -l and stat. "
@@ -145,7 +145,7 @@ def _deny_search(tool: str) -> str:
 def _deny_run_env() -> str:
     return (
         f"{MARK} A scheduled run doesn't set, unset or blank SCOUT_MODE or SCOUT_READER, or clear its environment: "
-        "they say this session is a scheduled run and not the owner. Commit with `scripts/git-safe-commit.sh` as "
+        "they say this session is a scheduled run and not the owner. Commit with `scout/scripts/git-safe-commit.sh` as "
         "usual; if a check refuses the commit, follow what it says."
     )
 
@@ -186,7 +186,7 @@ def _deny_delegate_write() -> str:
 def _deny_hook_skip(form: str) -> str:
     return (
         f"{MARK} A scheduled run doesn't skip or redirect git's commit hooks ({form}): their checks are what keep "
-        "private and shared notes apart. Commit the normal way: `scripts/git-safe-commit.sh` in the vault, plain "
+        "private and shared notes apart. Commit the normal way: `scout/scripts/git-safe-commit.sh` in the vault, plain "
         "`git commit` in any other repo. If a hook refuses the commit, fix what it reports; if you can't, leave the "
         "file uncommitted and say so in the run notes."
     )
@@ -211,7 +211,7 @@ def _deny_git_dir(form: str) -> str:
     return (
         f"{MARK} A scheduled run doesn't write into the vault's git folder or git's own files ({form}) with a file "
         "tool or the shell: git's hooks and config live there. Use git commands, and commit with "
-        "`scripts/git-safe-commit.sh`."
+        "`scout/scripts/git-safe-commit.sh`."
     )
 
 

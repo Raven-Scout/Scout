@@ -83,8 +83,11 @@ def _overlay(src: Path, dest: Path, today: date) -> None:
 
 def _append_brain(src: Path, dest: Path, today: date) -> None:
     """Append ``src/<KIND>.md`` to the vault's built ``<KIND>.md``, date macros rendered."""
+    from scout import layout
+
+    brain = layout.for_vault(dest)
     for path in sorted(src.glob("*.md")) if src.is_dir() else []:
-        target = dest / path.name
+        target = dest / brain.brain(path.name.removesuffix(".md"))
         if not target.is_file():
             raise FileNotFoundError(f"scenario brain append {path.name}: the vault has no {path.name}")
         text = render_dates(path.read_text(encoding="utf-8"), today)
@@ -150,7 +153,9 @@ def build_vault(
     (dest / "knowledge-base.md").write_text(render_dates(generate_index(), today), encoding="utf-8")
     if scheduler_tick is not None:
         _seed_scheduler_tick(dest, scheduler_tick)
-    cache = dest / "scripts" / "cc-session-cache.sh"
+    from scout import layout
+
+    cache = dest / layout.for_vault(dest).script("cc-session-cache.sh")
     cache.write_text(NOOP_SCRIPT, encoding="utf-8")
     cache.chmod(0o755)
     env = _git_env(today)
@@ -221,7 +226,9 @@ def _install_from(checkout: Checkout, dest: Path, connectors: frozenset[str], in
     ]  # fmt: skip
     _refuse_system_side_effects(cmd, env)
     done = subprocess.run(cmd, env=env, cwd=dest.parent, capture_output=True, text=True)
-    if done.returncode != 0 or not (dest / "SKILL.md").is_file():
+    # The checkout's own layout: scout/brain/ from layout v2 on, the vault root before (a compare run builds an
+    # older release's vault too).
+    if done.returncode != 0 or not ((dest / "scout" / "brain" / "SKILL.md").is_file() or (dest / "SKILL.md").is_file()):
         raise RuntimeError(
             f"bootstrap install from {checkout.label} checkout {checkout.root} failed "
             f"(exit {done.returncode}):\n{done.stdout[-2000:]}\n{done.stderr[-2000:]}"

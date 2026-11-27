@@ -397,7 +397,7 @@ def cli_sandbox_verify(
             if state == "gap":
                 cause = (
                     "the commit broker was on but couldn't name every commit it made (usually an old "
-                    "scripts/git-safe-commit.sh: run /scout-update)"
+                    "scout/scripts/git-safe-commit.sh: run /scout-update)"
                 )
             else:
                 cause = "no commit broker"
@@ -500,7 +500,7 @@ def cli_broker_profile(
 def cli_broker_commit(
     args: list[str] = typer.Argument(None, help="MESSAGE PATH…, as git-safe-commit.sh takes them."),
 ) -> None:
-    """In-session client for scripts/git-safe-commit.sh: the run's broker commits (exit 6: queued, no SHA yet)."""
+    """In-session client for scout/scripts/git-safe-commit.sh: the run's broker commits (exit 6: queued, no SHA yet)."""
     from scout.sandbox import broker
 
     args = list(args or [])
@@ -2297,11 +2297,11 @@ def kb_check_fact_check(
 # Top-level command — `connector-health-report` is a script, not a hook
 # (it runs AFTER the scheduled session ends, mirroring the bash invocation
 # from run-scout.sh). Single-token name keeps the runner-side migration
-# path simple: replace `scripts/connector-health-report.sh` with
+# path simple: replace `scout/scripts/connector-health-report.sh` with
 # `scoutctl connector-health-report`.
 @app.command("connector-health-report")
 def connector_health_report_cmd() -> None:
-    """Roll up connector-calls JSONL into knowledge-base/connector-health.md and fire alerts."""
+    """Roll up connector-calls JSONL into scout/records/connector-health.md and fire alerts."""
     from scout.scripts.connector_health_report import main as chr_main
 
     raise typer.Exit(chr_main())
@@ -2516,7 +2516,7 @@ def cli_progress_watch(
 ) -> None:
     """Sample the runner's session and keep .scout-logs/.scout-session.lock.alive current while it holds the lock.
 
-    Started by scripts/scout-lock.sh beside every scheduled run. The lock
+    Started by scout/scripts/scout-lock.sh beside every scheduled run. The lock
     reaper, `scoutctl health` and the app read the line it writes; see
     scout/run_progress.py. Exits when the runner exits or loses the lock.
     """
@@ -2544,7 +2544,7 @@ def cli_progress_watch(
 # `scoutctl session index` builds .scout-cache/sessions-index.json from
 # desktop records, transcripts, live PIDs and gh (Agent Sessions plan 1,
 # #74 + #75). `session list` reads that index back. `cc-cache` is the
-# back-compat alias for `index --render` that vault scripts/cc-session-cache.sh
+# back-compat alias for `index --render` that vault scout/scripts/cc-session-cache.sh
 # still calls — it replaces the old ~/Scout/scripts/cc-session-cache.sh, whose
 # bash version spawned one python3 cold start per JSONL file in
 # ~/.claude/projects/* plus a 5-stage subprocess pipeline per file.
@@ -2606,7 +2606,7 @@ def session_cc_cache_cmd(
     instance_name: str = typer.Option("Scout", "--instance-name", help="Instance name used in the digest header."),
     timezone: str = typer.Option(None, "--timezone", help="IANA zone for rendered timestamps (default: vault's)."),
 ) -> None:
-    """Back-compat alias for `session index --render` (vault scripts/cc-session-cache.sh calls this)."""
+    """Back-compat alias for `session index --render` (vault scout/scripts/cc-session-cache.sh calls this)."""
     from scout.scripts.cc_session_cache import main as cc_main
 
     raise typer.Exit(cc_main(hours=hours, instance_name=instance_name, tz_name=timezone))
@@ -4822,6 +4822,12 @@ def _register_bootstrap() -> None:
             typer.echo(f"would {verb}: {payload['vault']} ({reason})")
             return
         typer.echo(f"{_TEXT_VERB.get(action, action)}: {payload['vault']}")
+        migration = payload.get("migration") or {}
+        if migration.get("state") == "applied":
+            moved = (migration.get("summary") or {}).get("moved", 0)
+            typer.echo(f"  layout v2: {moved} files moved; report {migration.get('report')}")
+        elif migration.get("state") in ("recovered", "rehomed"):
+            typer.echo(f"  layout v2: {migration.get('reason')}")
         if action == "migrate-legacy":
             typer.echo(f"snapshots recorded: {', '.join(payload.get('snapshots_recorded') or []) or 'none'}")
         for c in payload.get("conflicts", []):
@@ -4976,7 +4982,16 @@ def _register_bootstrap() -> None:
             # distinct from the "no vault"/"refused" (2) case above.
             typer.echo(str(e), err=True)
             raise typer.Exit(code=ConfigError.exit_code) from e
-        result = upgrade(cfg)
+        from scout.scripts.bootstrap import LayoutDeferred
+
+        try:
+            result = upgrade(cfg)
+        except LayoutDeferred as e:
+            payload = result_dict(action=AutoAction.DEFERRED, vault=vault, plugin_version=__version__, result=None)
+            payload["migration"] = e.outcome.to_json()  # type: ignore[attr-defined]
+            payload["error"] = f"the layout move is deferred: {e.reason}. Nothing was changed; run this again then"
+            _emit(payload, json_out=json_out)
+            raise typer.Exit(code=0) from e
         _emit(
             result_dict(action=AutoAction.UPGRADE, vault=vault, plugin_version=__version__, result=result),
             json_out=json_out,
@@ -5274,7 +5289,16 @@ def _register_bootstrap() -> None:
             skip_jobs=skip_jobs,
             managed_by=managed_by,
         )
-        result = migrate_legacy(cfg)
+        try:
+            result = migrate_legacy(cfg)
+        except RuntimeError as e:  # a legacy vault in the old layout (layout v2): refused, nothing changed
+            _emit(
+                result_dict(
+                    action=AutoAction.REFUSED, vault=vault, plugin_version=__version__, result=None, error=str(e)
+                ),
+                json_out=json_out,
+            )
+            raise typer.Exit(code=2) from e
         _emit(
             result_dict(action=AutoAction.MIGRATE_LEGACY, vault=vault, plugin_version=__version__, result=result),
             json_out=json_out,
@@ -5693,7 +5717,9 @@ def _register_phases() -> None:
         # file that assembles it; the bundle applies it once.
         plans: list[tuple[str, list, list]] = []
         for k in kinds:
-            snap, live = snapshot_dir / f"{k}.md", vault / f"{k}.md"
+            from scout import layout as _layout
+
+            snap, live = snapshot_dir / f"{k}.md", vault / _layout.for_vault(vault).brain(k)
             if not snap.exists() or not live.exists():
                 missing = "snapshot" if not snap.exists() else "live"
                 typer.echo(f"{k}: skip — missing {missing} file", err=True)
@@ -5763,6 +5789,163 @@ def _register_phases() -> None:
 
 
 _register_phases()
+
+
+vault_app = typer.Typer(help="The vault's folder layout: where things are, the layout v2 move, spaces.")
+app.add_typer(vault_app, name="vault")
+
+
+@vault_app.command("layout")
+def cli_vault_layout(
+    json_out: bool = typer.Option(False, "--json", help="The layout document (scoutctl vault layout)."),
+) -> None:
+    """Where everything in this vault lives (layout v1 or v2). Read-only, no lock; paths only."""
+    import json as _json
+
+    from scout import config as _config
+    from scout import paths as _paths
+
+    vault = _paths.data_dir()
+    applied = (_config.user_value("plugin", vault) or {}).get("applied_migrations") or []
+    from scout import layout as _layout
+
+    doc = _layout.layout_document(vault, spaces=_config.load_spaces(vault), applied=applied)
+    if json_out:
+        typer.echo(_json.dumps(doc, indent=2, sort_keys=True))
+        return
+    typer.echo(f"layout v{doc['layout_version']} (move: {doc['migration']['state']})")  # type: ignore[index]
+    paths_ = doc["paths"]
+    spaces_ = doc["spaces"]
+    assert isinstance(paths_, dict) and isinstance(spaces_, list)
+    for key, rel in sorted(paths_.items()):
+        typer.echo(f"  {key}: {rel}")
+    for sp in spaces_:
+        typer.echo(f"  space {sp['key']}{' (default)' if sp['default'] else ''}: {sp['root']} ({sp['visibility']})")
+
+
+@vault_app.command("migrate")
+def cli_vault_migrate(
+    plan: bool = typer.Option(False, "--plan", help="Print the move this upgrade would make; change nothing."),
+    apply: bool = typer.Option(False, "--apply", help="Run the move now, outside an upgrade (test it on a copy)."),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """The layout v2 move (spec 2026-11-26 §4). Every upgrade runs it; --plan previews it, --apply runs it alone."""
+    import json as _json
+    import os
+
+    from scout import layout_migrate
+    from scout import paths as _paths
+    from scout.kb import live_run
+    from scout.scripts.bootstrap_lock import acquire_lock_with_wait, release_lock
+
+    if plan == apply:
+        typer.echo("give exactly one of --plan or --apply", err=True)
+        raise typer.Exit(code=2)
+    vault = _paths.data_dir()
+    if plan:
+        the_plan = layout_migrate.plan(vault)
+        reason = None
+        if not the_plan.done:
+            reason = layout_migrate.check_preconditions(
+                vault, the_plan, layout_migrate.live_facts(vault, the_plan, holder=live_run.lock_holder(vault))
+            ) or layout_migrate.parity_problem(vault, the_plan)
+        doc = {**the_plan.to_json(), "would_defer": reason}
+        if json_out:
+            typer.echo(_json.dumps(doc, indent=2, sort_keys=True))
+            return
+        if the_plan.done:
+            typer.echo("this vault is on layout v2: nothing to move")
+            return
+        summary = the_plan.summary()
+        typer.echo(
+            f"This version reorganises your vault: {summary['moved']} files move, {summary['identity_notes']} "
+            f"identity notes are written, {summary['removed']} files are removed."
+        )
+        for hint in the_plan.prefix_hints:
+            typer.echo(f"  hint: {hint}")
+        if the_plan.unknown_root:
+            typer.echo(f"  left where they are (unknown root entries): {', '.join(the_plan.unknown_root)}")
+        if the_plan.worktrees:
+            typer.echo(f"  other work trees still on the old layout: {', '.join(the_plan.worktrees)}")
+        typer.echo(f"  would defer: {reason}" if reason else "  ready to move")
+        return
+    lock = vault / ".scout-logs" / ".scout-session.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    acquire_lock_with_wait(lock)
+    try:
+        from pathlib import Path as _Path
+
+        import scout as _scout
+
+        # The engine's own plugin checkout: its render history seeds the bases of unedited managed files.
+        plugin_root = _Path(_scout.__file__).resolve().parents[2]
+        outcome = layout_migrate.migrate_layout(vault, holder=os.getpid(), plugin_root=plugin_root)
+    finally:
+        release_lock(lock)
+    if json_out:
+        typer.echo(_json.dumps(outcome.to_json(), indent=2, sort_keys=True))
+    else:
+        typer.echo(f"{outcome.state}: {outcome.reason or outcome.report or ''}".rstrip(": "))
+    raise typer.Exit(code=0 if outcome.state != "deferred" else 3)
+
+
+@vault_app.command("space-candidates")
+def cli_vault_space_candidates(
+    json_out: bool = typer.Option(False, "--json"),
+    done: bool = typer.Option(False, "--done", help="Record that the space review ran (or isn't wanted)."),
+) -> None:
+    """Notes in the default space that may belong to another (the space review, spec §5). Read-only."""
+    import json as _json
+
+    from scout import layout_spaces
+    from scout import paths as _paths
+
+    if done:
+        from scout import layout as _layout
+
+        (_paths.data_dir() / _layout.REVIEW_PENDING_REL).unlink(missing_ok=True)
+        typer.echo("space review recorded as done")
+        return
+    cands = layout_spaces.space_candidates(_paths.data_dir())
+    if json_out:
+        typer.echo(_json.dumps({"schema_version": 1, "candidates": [c.to_json() for c in cands]}, indent=2))
+        return
+    for c in cands:
+        typer.echo(f"{c.path}: {', '.join(c.signals)}" + (f" -> {c.suggested}?" if c.suggested else ""))
+
+
+@vault_app.command("move")
+def cli_vault_move(
+    path: str = typer.Argument(..., help="A note or meeting series folder inside knowledge-base/<space>/."),
+    space: str = typer.Option(..., "--space", help="The registered space to move it to."),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Move one note or meeting series to another space, with its links (spec §5 step 3). One commit.
+
+    Under the session lock; refused inside a scheduled run.
+    """
+    import json as _json
+    import os
+
+    from scout import layout_spaces
+    from scout import paths as _paths
+    from scout.scripts.bootstrap_lock import acquire_lock_with_wait, release_lock
+
+    if os.environ.get("SCOUT_MODE") or os.environ.get("SCOUT_READER") not in (None, "", "owner"):
+        typer.echo("refused: `vault move` is for an interactive session, not a scheduled run", err=True)
+        raise typer.Exit(code=2)
+    vault = _paths.data_dir()
+    lock = vault / ".scout-logs" / ".scout-session.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    acquire_lock_with_wait(lock)
+    try:
+        out = layout_spaces.move_to_space(vault, path, space)
+    except layout_spaces.SpaceMoveError as e:
+        typer.echo(f"refused: {e}", err=True)
+        raise typer.Exit(code=2) from e
+    finally:
+        release_lock(lock)
+    typer.echo(_json.dumps(out, indent=2) if json_out else f"moved {out['from']} -> {out['to']} ({out['commit']})")
 
 
 self_update_app = typer.Typer(help="Plugin self-update: check for a release, or apply one to a headless engine.")

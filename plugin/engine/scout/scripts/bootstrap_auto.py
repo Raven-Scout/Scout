@@ -16,6 +16,7 @@ from scout.plural import noun
 from scout.scripts.bootstrap import (
     BootstrapConfig,
     InstallResult,
+    LayoutDeferred,
     MigrateLegacyResult,
     UpgradeResult,
     _is_legacy_vault,
@@ -42,6 +43,8 @@ class AutoAction(Enum):
     UPGRADE = "upgrade"
     MIGRATE_LEGACY = "migrate-legacy"
     REFUSED = "refused"
+    # The upgrade stopped before rendering anything: the layout move must wait (not a failure).
+    DEFERRED = "deferred"
 
 
 @dataclass(frozen=True)
@@ -150,7 +153,14 @@ def result_dict(
         ],
         "pointer": str(pointer) if pointer else None,
         "mutated": mutated,
+        # The layout move's outcome on an upgrade (layout_migrate.LayoutOutcome.to_json), else None.
+        "migration": _migration_json(result),
     }
+
+
+def _migration_json(result: object) -> dict[str, Any] | None:
+    migration = getattr(result, "migration", None)
+    return migration.to_json() if migration is not None and hasattr(migration, "to_json") else None
 
 
 def run(cfg: BootstrapConfig, *, plan: Plan | None = None, dry_run: bool = False) -> tuple[dict[str, Any], int]:
@@ -178,6 +188,11 @@ def run(cfg: BootstrapConfig, *, plan: Plan | None = None, dry_run: bool = False
             res = migrate_legacy(cfg)
         else:
             res = upgrade(cfg)
+    except LayoutDeferred as e:
+        # Before RuntimeError (its base): nothing was rendered, and a later upgrade retries the move.
+        out = result_dict(action=AutoAction.DEFERRED, result=None, error=e.reason, **common)
+        out["migration"] = e.outcome.to_json() if hasattr(e.outcome, "to_json") else None
+        return out, 0
     except (FileExistsError, FileNotFoundError, LockBusyError) as e:
         # Before RuntimeError/OSError: FileExistsError and FileNotFoundError
         # are OSError subclasses.

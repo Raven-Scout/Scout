@@ -13,7 +13,7 @@ A commit is a lane's output when
   - its subject starts with the lane's name ("dreaming [22:00]: ..."), the
     convention the dreaming and research phases commit with, or
   - it landed during a run of that lane recorded in .scout-logs/run-outcomes.jsonl
-    (written by scripts/run-outcome.sh), which covers lanes whose commits carry
+    (written by scout/scripts/run-outcome.sh), which covers lanes whose commits carry
     no such prefix.
 
 The lanes are the slot types declared in .scout-state/schedule.yaml (``manual``
@@ -76,9 +76,22 @@ AUTH_RE = re.compile(
 OK, DEGRADED, NO_DATA, SILENT, DARK = "🟢 OK", "🟡 DEGRADED", "⚪ NO DATA YET", "🔴 FIRING-BUT-SILENT", "🔴 DARK"
 
 
+def _vault_above(start: Path) -> Path:
+    """The nearest folder above ``start`` holding scout-config.yaml (the vault), else the folder above the scripts
+    folder (``scout/scripts/`` in layout v2, ``scripts/`` before it).
+
+    Layout v2 keeps this script in scout/scripts/; before it, scripts/. Walking up finds the vault either way.
+    """
+    for parent in start.parents:
+        if (parent / "scout-config.yaml").is_file():
+            return parent
+    above = start.parent.parent
+    return above.parent if above.name == "scout" else above
+
+
 def vault_dir() -> Path:
     env = os.environ.get("SCOUT_DATA_DIR")
-    return Path(env) if env else Path(__file__).resolve().parent.parent
+    return Path(env) if env else _vault_above(Path(__file__).resolve())
 
 
 # ---------- inputs ----------
@@ -256,7 +269,7 @@ def newest_log_outcome(vault: Path, runner: str | None, ledger_logs: list[str], 
     runner's other logs (named <stem>-YYYY-MM-DD_HH-MM.log, or
     <stem>-YYYY-MM-DD_HH-MM-SS-PID.log for a later run in the same minute,
     including runs that stopped before the ledger step, such as a budget skip)
-    count only when no other lane uses the same runner: run-scout.sh serves both
+    count only when no other lane uses the same runner: scout/runners/run-scout.sh serves both
     briefing and consolidation, and its log names do not say which one ran.
     """
     log_dir = vault / ".scout-logs"

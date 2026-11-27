@@ -48,7 +48,7 @@ Reader API (stable; scout.changes.scan, scout.changes.actions, scout.health and 
 :func:`unbrokered_since`, :func:`mode_lane`.
 
 Cutover: the ledger starts with the first run after upgrading to the release that ships it; the broker's exact record
-starts once ``/scout-update`` has re-rendered ``scripts/git-safe-commit.sh``: until then the helper names no sha,
+starts once ``/scout-update`` has re-rendered ``scout/scripts/git-safe-commit.sh``: until then the helper names no sha,
 so every broker commit is a gap and ``sandbox verify`` records the git window as for a broker-less run.
 
 Commits are looked up by sha alone, not by vault: a sha names the same commit in any clone, and a commit a run made

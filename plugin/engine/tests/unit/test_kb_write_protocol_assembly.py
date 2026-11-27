@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from scout.scripts.bootstrap import BootstrapConfig, _assemble
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[3]
@@ -32,7 +33,8 @@ def _cfg(tmp_path: Path) -> BootstrapConfig:
 def test_write_protocol_in_every_brain(kind: str, tmp_path: Path) -> None:
     text = _assemble(_cfg(tmp_path), kind)
     assert "KB WRITE PROTOCOL" in text
-    assert "knowledge-base/topics/" in text and "knowledge-base/sources/" in text
+    assert f"{layout.space_dir('<space>', 'topics')}/" in text
+    assert f"{layout.space_dir('<space>', 'sources')}/" in text
 
 
 def test_dreaming_has_shrink_pass(tmp_path: Path) -> None:
@@ -45,7 +47,7 @@ def test_shrink_pass_never_targets_daily_files_or_legacy_session_log(tmp_path: P
     shrink = text[text.index("Step 2a-shrink") : text.index("### Step 2b")]
     assert "Only a project page is a target" in shrink
     assert "Never rebuild a daily action-items file" in shrink
-    assert "`knowledge-base/session-log.md`" in shrink
+    assert f"`{layout.record_path('session_log')}`" in shrink
 
 
 def test_dreaming_session_log_row_is_one_line(tmp_path: Path) -> None:

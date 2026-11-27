@@ -2,7 +2,7 @@ summary: Team chat — direct messages, mentions, channels
 inbound: |
   Look at messages to or mentioning {{USER_NAME}} since the last run: direct messages first, then
   @-mentions, then threads {{USER_NAME}} started or replied in, then decisions, blockers, and status updates
-  in channels tied to projects in `knowledge-base/projects/`. Check thread replies, not just top-level
+  in channels tied to projects in `knowledge-base/<space>/projects/`. Check thread replies, not just top-level
   messages; asks are often buried in threads.
 
   Note who sent each message, where, what is being asked, how time-sensitive it is, and whether {{USER_NAME}}

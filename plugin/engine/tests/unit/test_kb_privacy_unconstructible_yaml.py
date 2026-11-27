@@ -175,12 +175,19 @@ def test_a_schema_with_such_a_value_is_a_schema_error(tmp_path: Path) -> None:
 @pytest.mark.parametrize("body", UNCONSTRUCTIBLE)
 def test_load_policy_drops_the_overlay(tmp_path: Path, body: str) -> None:
     (tmp_path / "scout-config.yaml").write_text(body + "\n", encoding="utf-8")
-    assert load_policy(tmp_path).warnings == ("privacy-overlay-unreadable",)
+    # `spaces-invalid` too when the registry can't be built alone either (the file doesn't compose): fails closed
+    assert load_policy(tmp_path).warnings in (
+        ("privacy-overlay-unreadable",),
+        ("spaces-invalid", "privacy-overlay-unreadable"),
+    )
 
 
 @pytest.mark.parametrize("body", UNCONSTRUCTIBLE)
 def test_lint_reads_the_config_as_unparseable(body: str) -> None:
-    assert policy_from_config_text(body).warnings == ("privacy-overlay-unreadable",)
+    assert policy_from_config_text(body).warnings in (
+        ("privacy-overlay-unreadable",),
+        ("spaces-invalid", "privacy-overlay-unreadable"),
+    )
     assert isinstance(_config_data(body), _Unparseable)
 
 

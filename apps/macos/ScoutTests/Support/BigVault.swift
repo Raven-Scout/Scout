@@ -106,7 +106,7 @@ struct BigVault {
 
     private static func writeVault(at root: URL, scale: Scale, now: Date) throws {
         let fm = FileManager.default
-        for sub in ["action-items", "dreaming-proposals", PerFileTabConfig.wishlist.directoryDefaultRelative,
+        for sub in ["action-items", VaultLayout.dreamingProposalsDir, PerFileTabConfig.wishlist.directoryDefaultRelative,
                     PerFileTabConfig.research.directoryDefaultRelative, ".scout-logs", ".scout-state", ".scout-cache"] {
             try fm.createDirectory(at: root.appendingPathComponent(sub), withIntermediateDirectories: true)
         }
@@ -122,7 +122,7 @@ struct BigVault {
         }
         for i in 0..<scale.proposals {
             try write(proposal(i), to: root.appendingPathComponent(
-                "dreaming-proposals/2026-06-\(String(format: "%02d", 1 + i % 28))-\(slug(longTitle(i + 3), max: 60))-\(i).md"))
+                "\(VaultLayout.dreamingProposalsDir)/2026-06-\(String(format: "%02d", 1 + i % 28))-\(slug(longTitle(i + 3), max: 60))-\(i).md"))
         }
         try writeLogs(at: root.appendingPathComponent(".scout-logs"), scale: scale, now: now)
         try write(sessionsIndex(scale: scale, now: now), to: root.appendingPathComponent("sessions-index.big.json"))

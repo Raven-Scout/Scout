@@ -7,14 +7,16 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from scout.kb.lint import lint_staged, over_budget
 from scout.kb.lint_config import load_lint_config
 from scout.scripts import vault_drift
 from scout.scripts.bootstrap import BootstrapConfig, _assemble, install, upgrade
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[3]
-STANDARD = "docs/kb-page-standard.md"
-TEMPLATE = PLUGIN_ROOT / "templates" / STANDARD
+STANDARD = layout.V2["page_standard"]  # scout/kb-page-standard.md in the vault
+TEMPLATE_REL = "docs/kb-page-standard.md"  # the plugin keeps its template where it was
+TEMPLATE = PLUGIN_ROOT / "templates" / TEMPLATE_REL
 
 
 def _cfg(vault: Path, plugin_root: Path = PLUGIN_ROOT) -> BootstrapConfig:
@@ -44,8 +46,8 @@ def _section(text: str, start: str, end: str) -> str:
 @pytest.mark.parametrize("kind", ["SKILL", "DREAMING", "RESEARCH"])
 def test_every_brain_points_at_the_standard(kind: str, tmp_path: Path) -> None:
     text = _assemble(_cfg(tmp_path / "Scout"), kind)
-    assert "[[docs/kb-page-standard]]" in text
-    assert "knowledge-base/projects/<name>/knowledge/<topic>.md" in text
+    assert "[[scout/kb-page-standard]]" in text
+    assert "knowledge-base/<space>/projects/<name>/knowledge/<topic>.md" in text
 
 
 @pytest.mark.parametrize("kind", ["SKILL", "DREAMING"])
@@ -102,7 +104,7 @@ def test_nightly_pass_rebuilds_one_project_page_in_the_standards_order(tmp_path:
 def test_nightly_pass_runs_once_a_night_in_one_slot(tmp_path: Path) -> None:
     step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
     assert "`$SCOUT_MODE` is `dreaming-nightly`" in step
-    assert "`scripts/scoutctl kb delta --since 20h` shows no `nightly KB pass` commit" in step
+    assert "`scout/scripts/scoutctl kb delta --since 20h` shows no `nightly KB pass` commit" in step
     # Every commit of the step carries the summary --next printed: the resume check reads it.
     assert "with the printed `commit:` summary on every commit, the 5.2 moves included" in step
     assert "`commit: nightly KB pass — <page>`, is the summary for every commit of this step" in step
@@ -110,7 +112,7 @@ def test_nightly_pass_runs_once_a_night_in_one_slot(tmp_path: Path) -> None:
 
 def test_nightly_pass_takes_its_target_from_kb_structure(tmp_path: Path) -> None:
     step = _section(_assemble(_cfg(tmp_path / "Scout"), "DREAMING"), "### Step 2a-shrink", "### Step 2b")
-    assert "`scripts/scoutctl kb structure --next` prints the project" in step
+    assert "`scout/scripts/scoutctl kb structure --next` prints the project" in step
     assert "take it as printed" in step
     assert "An empty line means skip to Step 2b" in step
     # The hand-written ranking is gone: the command owns the order and the skips.
@@ -179,7 +181,9 @@ def test_nightly_pass_skips_pages_it_could_widen_and_keeps_the_lossless_rule(tmp
     assert "name it in the commit message as deliberately dropped" in step
     assert "naming both paths of each move" in step
     # No count a run has no command for: privacy.md forbids grep in knowledge-base/.
-    assert "Count the baseline:** over-budget rows in `kb lint --report` and `scripts/scoutctl kb validate`" in step
+    assert (
+        "Count the baseline:** over-budget rows in `kb lint --report` and `scout/scripts/scoutctl kb validate`"
+    ) in step
     # The 2026-10-04 off switch is the vault's; the engine's pass is on.
     assert "deliberately OFF" not in step
 
@@ -229,7 +233,7 @@ def test_upgrade_writes_the_standard_into_a_vault_that_lacks_it(tmp_path: Path, 
     vault = tmp_path / "Scout"
     install(_cfg(vault, plugin))
     (vault / STANDARD).unlink()
-    shutil.rmtree(vault / vault_drift.SNAPSHOT_DIR / "docs")
+    (vault / vault_drift.SNAPSHOT_DIR / STANDARD).unlink()
 
     upgrade(_cfg(vault, plugin))
 
@@ -243,7 +247,7 @@ def test_upgrade_keeps_a_standard_the_vault_wrote_itself(tmp_path: Path, plugin:
     install(_cfg(vault, plugin))
     own = "# KB page standard\n\nThis vault's own version.\n"
     (vault / STANDARD).write_text(own, encoding="utf-8")
-    shutil.rmtree(vault / vault_drift.SNAPSHOT_DIR / "docs")  # no record of a render
+    (vault / vault_drift.SNAPSHOT_DIR / STANDARD).unlink()  # no record of a render
 
     result = upgrade(_cfg(vault, plugin))
 
@@ -258,7 +262,7 @@ def test_upgrade_merges_a_tailored_standard_with_a_plugin_change(tmp_path: Path,
     install(_cfg(vault, plugin))
     with (vault / STANDARD).open("a", encoding="utf-8") as fh:
         fh.write("\n## This vault's extra rule\n\nKeep pages short.\n")
-    tmpl = plugin / "templates" / STANDARD
+    tmpl = plugin / "templates" / TEMPLATE_REL
     v2 = tmpl.read_text(encoding="utf-8").replace("# KB page standard\n", "# KB page standard\n\n<!-- v2 -->\n", 1)
     tmpl.write_text(v2, encoding="utf-8")
 

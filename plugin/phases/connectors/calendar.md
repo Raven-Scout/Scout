@@ -52,13 +52,13 @@ Use `gcal_list_events` to get all events for today. For each meeting:
 - Check if meeting notes or transcripts are available from other connectors (Granola, Drive)
 - Flag meetings that haven't happened yet — these provide context for the briefing ("{{USER_NAME}} has a meeting with X about Y at 2 PM")
 
-**Away today.** When today has an all-day out-of-office, travel or leave event of {{USER_NAME}}'s own (on their calendar, not an event someone else is away for), record the day: `scripts/scoutctl engagement record owner-away --surface calendar --ref <YYYY-MM-DD>`, today's date from `scripts/scout-tz.sh date '+%Y-%m-%d'`. When away days fill more than half of a change's before or after window, the changes map says `can't tell` instead of reading the quiet as harm. `already recorded` means an earlier run did it today.
+**Away today.** When today has an all-day out-of-office, travel or leave event of {{USER_NAME}}'s own (on their calendar, not an event someone else is away for), record the day: `scout/scripts/scoutctl engagement record owner-away --surface calendar --ref <YYYY-MM-DD>`, today's date from `scout/scripts/scout-tz.sh date '+%Y-%m-%d'`. When away days fill more than half of a change's before or after window, the changes map says `can't tell` instead of reading the quiet as harm. `already recorded` means an earlier run did it today.
 
 ### Yesterday's Meetings (Consolidation)
 
 For consolidation runs, also pull yesterday's meetings. Meetings from yesterday are the most likely source of unprocessed action items:
 - Check if transcripts or notes exist for these meetings
-- Cross-reference attendees with `people.md` (`scripts/scoutctl kb name-lookup <name>`)
+- Cross-reference attendees with `people.md` (`scout/scripts/scoutctl kb name-lookup <name>`)
 - Any meeting that happened but has no notes/transcript anywhere should be flagged as a gap
 
 ### Recently Added/Changed Events
@@ -134,7 +134,7 @@ requires: calendar
 
 ## Calendar-Sourced KB Updates
 
-After scanning the calendar, update the knowledge base. Find the notes to update through `scoutctl kb`, never `cat`, `ls`, `find`, `grep` or Glob in `knowledge-base/`: `scripts/scoutctl kb name-lookup <name>` for a person, `kb resolve <name>` for a project or other note, `kb read <path>` for one you aren't changing. Open a note with Read only to edit it.
+After scanning the calendar, update the knowledge base. Find the notes to update through `scoutctl kb`, never `cat`, `ls`, `find`, `grep` or Glob in `knowledge-base/`: `scout/scripts/scoutctl kb name-lookup <name>` for a person, `kb resolve <name>` for a project or other note, `kb read <path>` for one you aren't changing. Open a note with Read only to edit it.
 
 ### Upcoming Meetings on Project Pages
 

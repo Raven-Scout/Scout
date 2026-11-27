@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from scout.scripts import bootstrap
 from scout.scripts.bootstrap import BootstrapConfig, install, upgrade
 
@@ -134,7 +135,7 @@ def test_a_missing_phase_dir_yields_an_assembled_file_anyway(tmp_path: Path, bar
     vault = tmp_path / "Scout"
     install(_config(vault, bare_plugin))
     for kind in ("SKILL", "DREAMING", "RESEARCH"):
-        assert (vault / f"{kind}.md").exists()
+        assert (vault / layout.brain_path(kind)).exists()
 
 
 def test_an_unparseable_phase_file_is_skipped_with_a_loud_warning(
@@ -155,7 +156,7 @@ def test_an_unparseable_phase_file_is_skipped_with_a_loud_warning(
     assert "warning: skipping unparseable phase file" in err
     assert broken.name in err
     # The rest of the assembly still happened.
-    assert (vault / "SKILL.md").read_text().strip()
+    assert (vault / layout.brain_path("SKILL")).read_text().strip()
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +245,7 @@ def test_a_clean_three_way_merge_of_a_brain_file_keeps_both_sides(tmp_path: Path
     vault = tmp_path / "Scout"
     install(_config(vault, plugin))
 
-    live = vault / "SKILL.md"
+    live = vault / layout.brain_path("SKILL")
     snap = vault / ".scout-state" / "last-assembled" / "SKILL.md"
     assert live.exists() and snap.exists()
 
@@ -278,8 +279,10 @@ def test_migrate_legacy_snapshots_only_the_brain_files_that_exist(tmp_path: Path
 
     vault = tmp_path / "Scout"
     (vault / ".scout-state").mkdir(parents=True)
-    (vault / "SKILL.md").write_text("# SKILL\n\nlive content\n", encoding="utf-8")
-    (vault / "DREAMING.md").write_text("# DREAMING\n\nlive content\n", encoding="utf-8")
+    # This engine migrates only a legacy vault already in layout v2 (spec 2026-11-26 §7.1).
+    (vault / layout.V2["brain_dir"]).mkdir(parents=True)
+    (vault / layout.brain_path("SKILL")).write_text("# SKILL\n\nlive content\n", encoding="utf-8")
+    (vault / layout.brain_path("DREAMING")).write_text("# DREAMING\n\nlive content\n", encoding="utf-8")
     # RESEARCH.md deliberately absent.
 
     result = migrate_legacy(_config(vault, PLUGIN_ROOT))

@@ -1,12 +1,12 @@
 """A fresh vault gets the helper scripts, and the guarded steps that call them run.
 
-The runners, ``hooks/kb-pre-filter.sh`` and ``scripts/heartbeat.sh`` each call an
+The runners, ``scout/hooks/kb-pre-filter.sh`` and ``scout/scripts/heartbeat.sh`` each call an
 optional helper and skip the step when it is absent. The plugin now ships the
 helpers as cat-1 files:
 
-  - ``scripts/run-outcome.sh``           (rendered template)
-  - ``scripts/vault-freshness.py``       (copied verbatim)
-  - ``scripts/session-lane-liveness.py`` (copied verbatim)
+  - ``scout/scripts/run-outcome.sh``           (rendered template)
+  - ``scout/scripts/vault-freshness.py``       (copied verbatim)
+  - ``scout/scripts/session-lane-liveness.py`` (copied verbatim)
 
 so on a vault that was only ever installed by the plugin, those steps now run.
 (The connector-health roll-up needs no helper: the runner calls the engine.)
@@ -24,12 +24,14 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from scout.scripts.bootstrap import BootstrapConfig, install, upgrade
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 RUN_TIMEOUT_S = 120
 
-SHIPPED_VERBATIM = ["scripts/vault-freshness.py", "scripts/session-lane-liveness.py"]
+# Template-relative names; each lands at layout.script_path(<name>) in the vault.
+SHIPPED_VERBATIM = ["vault-freshness.py", "session-lane-liveness.py"]
 
 SCOUTCTL_STUB = """#!/usr/bin/env python3
 import json, os, sys
@@ -121,7 +123,7 @@ def _calls(calls: Path) -> list[list[str]]:
 
 
 def test_a_fresh_install_ships_run_outcome_rendered_for_this_vault(vault: Path, plugin: Path) -> None:
-    script = vault / "scripts" / "run-outcome.sh"
+    script = vault / layout.script_path("run-outcome.sh")
 
     text = script.read_text(encoding="utf-8")
     assert os.access(script, os.X_OK)
@@ -130,12 +132,14 @@ def test_a_fresh_install_ships_run_outcome_rendered_for_this_vault(vault: Path, 
     assert f'SCOUTCTL="${{SCOUTCTL_BIN:-{plugin / ".venv" / "bin" / "scoutctl"}}}"' in text
 
 
-@pytest.mark.parametrize("rel", SHIPPED_VERBATIM)
-def test_a_fresh_install_ships_the_python_helpers_verbatim(vault: Path, rel: str) -> None:
-    assert (vault / rel).read_bytes() == (PLUGIN_ROOT / "templates" / rel).read_bytes()
+@pytest.mark.parametrize("name", SHIPPED_VERBATIM)
+def test_a_fresh_install_ships_the_python_helpers_verbatim(vault: Path, name: str) -> None:
+    assert (vault / layout.script_path(name)).read_bytes() == (
+        PLUGIN_ROOT / "templates" / "scripts" / name
+    ).read_bytes()
 
 
-@pytest.mark.parametrize("rel", ["scripts/run-outcome.sh", *SHIPPED_VERBATIM])
+@pytest.mark.parametrize("rel", [layout.script_path(n) for n in ["run-outcome.sh", *SHIPPED_VERBATIM]])
 def test_an_upgrade_gives_an_existing_vault_the_helpers(vault: Path, plugin: Path, rel: str) -> None:
     """A vault installed before the helpers shipped picks them up on its next upgrade."""
     (vault / rel).unlink()
@@ -145,7 +149,7 @@ def test_an_upgrade_gives_an_existing_vault_the_helpers(vault: Path, plugin: Pat
     assert (vault / rel).exists()
 
 
-@pytest.mark.parametrize("rel", ["scripts/run-outcome.sh", *SHIPPED_VERBATIM])
+@pytest.mark.parametrize("rel", [layout.script_path(n) for n in ["run-outcome.sh", *SHIPPED_VERBATIM]])
 def test_an_upgrade_parks_a_hand_copy_of_a_helper_instead_of_losing_it(vault: Path, plugin: Path, rel: str) -> None:
     """A vault that wrote its own helper before the plugin shipped one has no
     record of a plugin render for it. The upgrade installs the plugin's version
@@ -164,7 +168,7 @@ def test_an_upgrade_parks_a_hand_copy_of_a_helper_instead_of_losing_it(vault: Pa
     assert Path(parked).parts[:2] == (".scout-state", "drift")
 
 
-@pytest.mark.parametrize("rel", ["scripts/run-outcome.sh", *SHIPPED_VERBATIM])
+@pytest.mark.parametrize("rel", [layout.script_path(n) for n in ["run-outcome.sh", *SHIPPED_VERBATIM]])
 def test_an_upgrade_keeps_an_edit_to_a_shipped_helper(vault: Path, plugin: Path, rel: str) -> None:
     """Once the plugin has rendered a helper, a vault edit to it survives the next upgrade."""
     edited = (vault / rel).read_text(encoding="utf-8") + "# a local tweak\n"
@@ -184,11 +188,11 @@ def test_the_installed_runner_records_its_outcome_and_rolls_up_connector_health(
 ) -> None:
     # Stand in for claude: the run dies on an expired login.
     _script(
-        vault / "scripts" / "claude-with-retry.sh",
+        vault / layout.script_path("claude-with-retry.sh"),
         '#!/bin/bash\necho "Failed to authenticate. API Error: 401" >> "$1"\nexit 1\n',
     )
 
-    result = _run(vault / "run-scout.sh", vault, bindir, SCOUT_FORCE_MODE="morning-briefing")
+    result = _run(vault / layout.runner_path("run-scout.sh"), vault, bindir, SCOUT_FORCE_MODE="morning-briefing")
 
     assert result.returncode == 0, result.stderr
     (row,) = [json.loads(line) for line in (vault / ".scout-logs" / "run-outcomes.jsonl").read_text().splitlines()]
@@ -200,19 +204,19 @@ def test_the_installed_runner_records_its_outcome_and_rolls_up_connector_health(
 
 
 def test_the_installed_kb_pre_filter_caches_the_freshness_view(vault: Path, bindir: Path, calls: Path) -> None:
-    (vault / "knowledge-base" / "projects" / "roadmap.md").write_text("# Roadmap\n", encoding="utf-8")
+    (vault / layout.space_dir("work", "projects") / "roadmap.md").write_text("# Roadmap\n", encoding="utf-8")
 
-    result = _run(vault / "hooks" / "kb-pre-filter.sh", vault, bindir, "briefing")
+    result = _run(vault / layout.hook_path("kb-pre-filter.sh"), vault, bindir, "briefing")
 
     assert result.returncode == 0, result.stderr
     view = (vault / ".scout-cache" / "vault-freshness.md").read_text(encoding="utf-8")
     assert view.startswith("# Vault Freshness")
-    assert "knowledge-base/projects/roadmap.md" in view
+    assert f"{layout.space_dir('work', 'projects')}/roadmap.md" in view
     assert ["hook", "kb-pre-filter", "--session-type", "briefing"] in _calls(calls)
 
 
 def test_the_installed_heartbeat_sweeps_run_health(vault: Path, bindir: Path, calls: Path) -> None:
-    result = _run(vault / "scripts" / "heartbeat.sh", vault, bindir)
+    result = _run(vault / layout.script_path("heartbeat.sh"), vault, bindir)
 
     assert result.returncode == 0, result.stderr
     assert _calls(calls) == [

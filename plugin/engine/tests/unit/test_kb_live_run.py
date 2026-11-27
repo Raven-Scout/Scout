@@ -1772,3 +1772,28 @@ def test_the_owners_delegate_commands_are_a_named_form(command, flagged):
     from scout.kb.live_run import DELEGATE_FORM
 
     assert (run_escape(command) == DELEGATE_FORM) is flagged
+
+
+def test_a_run_is_found_by_its_wrapper_at_the_v1_and_the_v2_path(tmp_path: Path) -> None:
+    """Layout v2: during the move a woken v1 runner shows scripts/, a v2 run scout/scripts/ (spec §7.1)."""
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    for pid, rel in ((10, "scripts"), (11, "scout/scripts")):
+        table = {
+            1: Proc(1, 0, "Ss", "/sbin/launchd", 500_000),
+            pid: Proc(pid, 1, "S", f"{vault}/{rel}/claude-with-retry.sh -p x", 5),
+        }
+        assert live_run.run_processes(vault, table, holder=None) == {pid}
+
+
+def test_queued_runners_are_every_runner_but_the_holder(tmp_path: Path) -> None:
+    vault = tmp_path / "Scout"
+    vault.mkdir()
+    table = {
+        1: Proc(1, 0, "Ss", "/sbin/launchd", 500_000),
+        20: Proc(20, 1, "S", f"/bin/bash {vault}/scout/runners/run-scout.sh", 5),
+        21: Proc(21, 1, "S", f"/bin/bash {vault}/run-dreaming.sh", 5),
+        22: Proc(22, 1, "S", f"/bin/bash {vault}/scout/runners/run-mine.sh", 5),
+        23: Proc(23, 1, "S", "/bin/bash /elsewhere/run-scout.sh", 5),
+    }
+    assert live_run.queued_runners(vault, table, holder=20) == {21, 22}

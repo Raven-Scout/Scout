@@ -22,6 +22,7 @@ from types import ModuleType
 
 import pytest
 
+from scout import layout
 from scout.hooks import kb_pre_filter
 
 SCRIPT = Path(__file__).resolve().parents[3] / "templates" / "scripts" / "vault-freshness.py"
@@ -293,8 +294,8 @@ def test_the_divergence_view_can_be_written_as_the_cache(vault: Path) -> None:
 
 def test_without_scout_data_dir_it_scans_the_vault_it_is_installed_in(vault: Path) -> None:
     _commit(vault, "projects/roadmap.md", days_ago=10)
-    installed = vault / "scripts" / "vault-freshness.py"
-    installed.parent.mkdir()
+    installed = vault / layout.script_path("vault-freshness.py")
+    installed.parent.mkdir(parents=True)
     shutil.copy(SCRIPT, installed)
     env = {k: v for k, v in os.environ.items() if k != "SCOUT_DATA_DIR"}
 

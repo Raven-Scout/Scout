@@ -4,7 +4,7 @@
 # stale vs. fresh — so the session reads the cache instead of re-scanning every
 # KB file from inside Claude.
 #
-# Usage: ./hooks/kb-pre-filter.sh [session-type]
+# Usage: ./scout/hooks/kb-pre-filter.sh [session-type]
 #   session-type: briefing | consolidation | dreaming
 #
 # This is a thin wrapper around `scoutctl hook kb-pre-filter` — the logic lives
@@ -30,17 +30,17 @@ export SCOUT_DATA_DIR
 # Git-truth staleness ranking, cached before the session starts. The filter
 # below ranks each KB file by the "Last verified" date the file *claims*, and a
 # file can carry a fresh claimed date for facts nobody re-checked. The optional
-# vault helper scripts/vault-freshness.py ranks by git committer date instead,
+# vault helper scout/scripts/vault-freshness.py ranks by git committer date instead,
 # which cannot drift that way; running it here puts both views in .scout-cache/
 # before the model starts. Never fatal: a session must not die because a
 # staleness cache could not be written. The ranking table on stdout is dropped;
 # errors on stderr reach the run log. The old cache is removed first, so a failed
 # run leaves no ranking rather than a stale one that reads as current.
-if [[ -f "$SCOUT_DATA_DIR/scripts/vault-freshness.py" ]]; then
+if [[ -f "$SCOUT_DATA_DIR/scout/scripts/vault-freshness.py" ]]; then
     rm -f "$SCOUT_DATA_DIR/.scout-cache/vault-freshness.md" 2>/dev/null || true
-    # -I: the script's own folder (scripts/, which a run may add files to) and the user's site-packages stay off
+    # -I: the script's own folder (scout/scripts/, which a run may add files to) and the user's site-packages stay off
     # sys.path; it imports the stdlib only (review of #642).
-    ( cd "$SCOUT_DATA_DIR" && python3 -I scripts/vault-freshness.py --limit 15 \
+    ( cd "$SCOUT_DATA_DIR" && python3 -I scout/scripts/vault-freshness.py --limit 15 \
         --out .scout-cache/vault-freshness.md >/dev/null ) || true
 fi
 

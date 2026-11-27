@@ -1081,6 +1081,9 @@ def test_the_mirror_config_keeps_kb_structure_only_for_mirrored_folders(vault: P
     sammy = ["knowledge-base/projects/Sammy/Sammy.md"]  # a folder named for a hidden note: the name stays home
     assert structure("kb_structure: {skip_projects: [Sammy]}\n", sammy) is None
     assert structure("kb_structure: [projects_dir]\n", widget) is None
+    # Layout v2: the default projects folder is each space's, so a skipped project there still counts.
+    v2_widget = ["knowledge-base/work/projects/widget/widget.md"]
+    assert structure("kb_structure: {skip_projects: [widget, hidden]}\n", v2_widget) == {"skip_projects": ["widget"]}
 
 
 @pytest.mark.parametrize("allowlist", [False, True])
@@ -2349,3 +2352,17 @@ def test_check_tree_refuses_a_mirror_that_carries_a_now_left_out_office_file_or_
     assert "attachments/bundle.zip" in {f.path for f in the_plan.files}
     commit = git(vault, "commit-tree", dm.write_tree(vault, the_plan), "-m", "x").strip()
     dm.check_tree(vault, commit, "grok-personal", head)  # opted in: the check agrees
+
+
+def test_the_scoped_policy_drops_ceilings_that_name_spaces_it_keeps_home(vault: Path) -> None:
+    """Per-space ceilings name every normal space: under sync_only only those the engine ships or a mirrored
+    file meets stay in the document the host gets (review of #832)."""
+    _widget_only(vault, None)
+    policy = policy_from_config_text(
+        (vault / "scout-config.yaml").read_text(encoding="utf-8")
+        + "spaces:\n  - key: work\n    default: true\n  - key: acme-secret\n"
+    )
+    scope = rs.sync_scope(vault, policy)
+    globs = [c["glob"] for c in rs.scoped_policy_json(policy, scope, [])["federation_ceilings"]]
+    assert not any("acme-secret" in g for g in globs)
+    assert "knowledge-base/work/topics/**" in globs  # the engine's own (default space) entry stays

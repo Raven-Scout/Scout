@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from scout import layout
 from scout.scripts.bootstrap import (
     _INSTALL_ONLY_TEMPLATES,
     BootstrapConfig,
@@ -62,7 +63,7 @@ def test_upgrade_proposes_when_the_snapshot_was_changed_by_hand(tmp_path):
     vault = tmp_path / "Scout"
     install(_config(vault, plugin_root=plugin))
 
-    skill = vault / "SKILL.md"
+    skill = vault / layout.brain_path("SKILL")
     skill_text = skill.read_text()
     skill.write_text(skill_text.replace("BASE_DIR", "VAULT_EDITED_BASE_DIR"))
 
@@ -73,7 +74,7 @@ def test_upgrade_proposes_when_the_snapshot_was_changed_by_hand(tmp_path):
     cfg = _config(vault, plugin_root=plugin)
     cfg.plugin_version = "0.4.1"
     result = upgrade(cfg)
-    sidecar = vault / "SKILL.md.proposed-merge"
+    sidecar = vault / layout.sidecar_path("SKILL")
     assert sidecar.exists()
     assert "VAULT_EDITED_BASE_DIR" in skill.read_text()  # live untouched
     assert any("SKILL.md" in c for c in result.conflicts)
@@ -85,10 +86,11 @@ def test_upgrade_runs_with_a_pending_brain_sidecar(tmp_path):
     plugin = Path(__file__).parent.parent.parent.parent
     vault = tmp_path / "Scout"
     install(_config(vault, plugin_root=plugin))
-    (vault / "SKILL.md.proposed-merge").write_text("# pending\n")
+    sidecar = vault / layout.sidecar_path("SKILL")
+    sidecar.write_text("# pending\n")
     result = upgrade(_config(vault, plugin_root=plugin))
     assert result.skipped == ["SKILL.md.proposed-merge"]
-    assert (vault / "SKILL.md.proposed-merge").read_text() == "# pending\n"
+    assert sidecar.read_text() == "# pending\n"
 
 
 def test_upgrade_keeps_a_runner_hand_edit_in_place(tmp_path):
@@ -97,13 +99,15 @@ def test_upgrade_keeps_a_runner_hand_edit_in_place(tmp_path):
     plugin = Path(__file__).parent.parent.parent.parent
     vault = tmp_path / "Scout"
     install(_config(vault, plugin_root=plugin))
-    runner = vault / "run-scout.sh"
+    runner_rel = layout.runner_path("run-scout.sh")
+    runner = vault / runner_rel
     runner.write_text(runner.read_text() + "\n# hand edit\n")
     cfg = _config(vault, plugin_root=plugin)
     cfg.plugin_version = "0.4.1"
     result = upgrade(cfg)
     assert "# hand edit" in runner.read_text()
-    assert [(e.path, e.outcome) for e in result.vault_edits] == [("run-scout.sh", "kept")]
+    assert [(e.path, e.outcome) for e in result.vault_edits] == [(runner_rel, "kept")]
+    assert list(runner.parent.glob("run-scout.sh.bak.*")) == []
     assert list(vault.glob("run-scout.sh.bak.*")) == []
 
 
@@ -152,9 +156,10 @@ def test_upgrade_never_overwrites_an_edited_cat2_file(tmp_path):
     edited = {rel: f"# mine: {rel}\n" for rel, _ in _INSTALL_ONLY_TEMPLATES}
     for rel, text in edited.items():
         (vault / rel).write_text(text)
-    empty = vault / "inbox.md"
+    inbox_rel = layout.V2["inbox"]
+    empty = vault / inbox_rel
     empty.write_text("")  # emptied on purpose is still the vault's choice
-    edited["inbox.md"] = ""
+    edited[inbox_rel] = ""
 
     upgrade(_config(vault, plugin_root=plugin))
     assert {rel: (vault / rel).read_text() for rel in edited} == edited
@@ -166,7 +171,7 @@ def test_upgrade_leaves_a_dangling_cat2_symlink_alone(tmp_path):
     plugin = Path(__file__).parent.parent.parent.parent
     vault = tmp_path / "Scout"
     install(_config(vault, plugin_root=plugin))
-    link = vault / "inbox.md"
+    link = vault / layout.V2["inbox"]
     link.unlink()
     link.symlink_to(tmp_path / "elsewhere" / "inbox.md")
 
@@ -318,7 +323,9 @@ def test_upgrade_migrates_legacy_wishlist_and_research(tmp_path):
     vault = tmp_path / "Scout"
     install(_config(vault, plugin_root=plugin))
 
-    # Simulate a pre-migration (legacy-format) vault: plant the old single files.
+    # Simulate a pre-migration (legacy-format) vault: plant the old single files
+    # where an older app or plugin left them (the v1 docs/ folder).
+    (vault / "docs").mkdir(exist_ok=True)
     (vault / "docs" / "Wishlist.md").write_text(
         "# Wishlist\n\n"
         "* **HIGH — Alpha thing** (2026-06-10 — Alex DM) do alpha.\n"
@@ -333,10 +340,11 @@ def test_upgrade_migrates_legacy_wishlist_and_research(tmp_path):
     cfg.plugin_version = "0.4.1"
     upgrade(cfg)
 
-    # Wishlist migrated to per-file; old file gone.
-    wl = sorted((vault / "docs" / "wishlist").glob("*.md"))
+    # Wishlist migrated to per-file and re-homed to the v2 records folder; old file gone.
+    wl = sorted((vault / layout.V2["wishlist_dir"]).glob("*.md"))
     assert len(wl) == 2
     assert not (vault / "docs" / "Wishlist.md").exists()
+    assert not (vault / "docs" / "wishlist").exists()
     # Research migrated to per-file; research-queue.md reduced to thin run-log.
     rq_items = sorted((vault / "knowledge-base" / "research-queue").glob("*.md"))
     assert len(rq_items) == 1
@@ -350,13 +358,14 @@ def test_upgrade_migration_idempotent_second_run(tmp_path):
     plugin = Path(__file__).parent.parent.parent.parent
     vault = tmp_path / "Scout"
     install(_config(vault, plugin_root=plugin))
+    (vault / "docs").mkdir(exist_ok=True)
     (vault / "docs" / "Wishlist.md").write_text("# Wishlist\n\n* **Alpha** do alpha.\n")
 
     cfg = _config(vault, plugin_root=plugin)
     upgrade(cfg)
-    first = sorted((vault / "docs" / "wishlist").glob("*.md"))
+    first = sorted((vault / layout.V2["wishlist_dir"]).glob("*.md"))
     assert len(first) == 1
     # Second upgrade must not duplicate or alter migrated items.
     upgrade(_config(vault, plugin_root=plugin))
-    second = sorted((vault / "docs" / "wishlist").glob("*.md"))
+    second = sorted((vault / layout.V2["wishlist_dir"]).glob("*.md"))
     assert [p.name for p in second] == [p.name for p in first]

@@ -15,10 +15,29 @@ a rename waiting to happen, not a second meaning.
 The user's own Scout git repository, holding the knowledge base, the action items and the brain skills.
 _Avoid_: Scout folder, data dir, repo
 
+**Layout move**:
+The one-time move of a vault from layout v1 to layout v2, run as a stage of an upgrade in two commits (renames,
+then content); it defers, changing nothing, when it can't run yet.
+_Avoid_: migration (alone: Scout has several), restructure
+
+**Compatibility link**:
+A symlink the layout move leaves at an old entry point (`scripts`, `hooks`, a root brain skill or runner) so
+jobs and sessions still on the old paths keep working until the next upgrade removes it.
+_Avoid_: shim (the `scoutctl` shim in `~/.local/bin` is something else)
+
 **Space**:
 A separate area of the user's life, such as work, personal or a homeowners' association, that Scout keeps apart while still
-reasoning across them.
+reasoning across them. Each space has a folder in the knowledge base and a default visibility.
 _Avoid_: domain, realm, area
+
+**Records**:
+What Scout writes about its own runs and its own improvement: the mistake audit, the session log, connector
+health, dreaming proposals and wishlist items. They live outside the knowledge base.
+_Avoid_: logs, using "records" for knowledge-base notes
+
+**Report**:
+A one-off document Scout writes for the user, such as a migration report, kept in the vault's reports folder.
+_Avoid_: status report loose in the vault root
 
 **Inbox**:
 The vault file where the user drops notes for the next run to route into action items or the knowledge base.
@@ -34,6 +53,16 @@ _Avoid_: knowledge graph, memory
 **Entity**:
 One knowledge-base note about a single person, organization, project or other thing, whose type comes from
 the ontology.
+
+**Identity note**:
+The Scout-wide note for a person or organization, holding only facts safe for every space: name, aliases,
+handles and links to its role notes.
+_Avoid_: person page, using it for what Scout knows about someone in one space
+
+**Role note**:
+A note holding what Scout knows about a person or organization within one space, linked to its identity note.
+Together they form one entity.
+_Avoid_: a second person note, duplicate
 
 **Ontology**:
 The entity types and relationships the knowledge base allows.

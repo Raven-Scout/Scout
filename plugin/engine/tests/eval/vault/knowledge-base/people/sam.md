@@ -1,12 +1,9 @@
 ---
 type: person
 name: Sam
-team: Platform
-works_on: [api-gateway]
+spaces: [work]
 ---
 
 # Sam
-**Last verified:** {{d-40}}
-**Parent:** [[people]]
 
-Backend engineer. Owns the gateway. [unverified]
+- Work: [[work/people/sam-work]]

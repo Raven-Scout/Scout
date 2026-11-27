@@ -1253,7 +1253,7 @@ def unbrokered_attribution_findings(*, vault: Path, now: datetime) -> list[Findi
             "commit it made, so the changes map worked out which commits were Scout's from git instead (best "
             "effort). Automatic rollback never acts on those."
         )
-        fix = "Run /scout-update: an old scripts/git-safe-commit.sh doesn't name the commits it makes."
+        fix = "Run /scout-update: an old scout/scripts/git-safe-commit.sh doesn't name the commits it makes."
     else:
         summary = (
             f"{count(len(rows), 'run')} in the last {days} days committed without the commit broker, so the "
@@ -1754,6 +1754,72 @@ def delegate_findings(
                 )
             )
     return found
+
+
+def layout_findings(vault: Path, *, now: datetime) -> list[Finding]:
+    """The vault layout (spec 2026-11-26 §4.12): red while a layout move is interrupted (runs are paused), yellow
+    while one is deferred, while the space review hasn't run, and while unknown files sit in the vault root."""
+    from scout import layout, layout_migrate
+
+    out: list[Finding] = []
+    try:
+        if layout.move_in_progress(vault):
+            return [
+                Finding(
+                    id="layout.interrupted",
+                    severity="red",
+                    since=None,
+                    summary="Scout's vault reorganisation (layout v2) was interrupted, so scheduled runs are paused.",
+                    fix="Run: scoutctl bootstrap upgrade (it finishes or undoes the move)",
+                    source="state",
+                )
+            ]
+        if layout.layout_version(vault) < 2:
+            deferred = layout_migrate.deferral(vault)
+            if deferred:
+                out.append(
+                    Finding(
+                        id="layout.deferred",
+                        severity="yellow",
+                        since=None,
+                        summary=f"Scout's vault reorganisation (layout v2) is waiting: {deferred.get('reason', '')}",
+                        fix="Clear the reason, then run /scout-update (or scoutctl bootstrap upgrade)",
+                        source="state",
+                    )
+                )
+            return out
+        if (vault / layout.REVIEW_PENDING_REL).exists():
+            out.append(
+                Finding(
+                    id="layout.space_review",
+                    severity="yellow",
+                    since=None,
+                    summary="Scout filed most notes in the default space when it reorganised the vault; some may "
+                    "belong to another space.",
+                    fix="Review the spaces with /scout-update, or dismiss: scoutctl vault space-candidates --done",
+                    source="state",
+                )
+            )
+        unknown = sorted(
+            p.name
+            for p in vault.iterdir()
+            if p.name not in layout.KNOWN_ROOT_ENTRIES and not p.is_symlink() and not p.name.startswith(".")
+        )
+        if unknown:
+            out.append(
+                Finding(
+                    id="layout.unknown_root",
+                    severity="yellow",
+                    since=None,
+                    summary=f"{count(len(unknown), 'file')} in the vault root that Scout doesn't know "
+                    "(it never moves them).",
+                    fix="Move them where they belong: notes into knowledge-base/, one-off reports into reports/",
+                    source="state",
+                )
+            )
+    except OSError:
+        return out
+    return out
 
 
 def config_findings(vault: Path) -> list[Finding]:
@@ -2484,8 +2550,9 @@ def evaluate(vault: Path, *, now: datetime | None = None, home: Path | None = No
     engine = engine_findings(home=home)
     config = config_findings(vault)
     delegates = delegate_findings(vault) + delegate_inbox_findings(vault)
+    vault_layout = layout_findings(vault, now=now)
     return build_report(
-        found + sched + lanes + updates + engine + config + delegates,
+        found + sched + lanes + updates + engine + config + delegates + vault_layout,
         now=now,
         last_ok_at=_last_ok_at(rows),
         slots=slots,

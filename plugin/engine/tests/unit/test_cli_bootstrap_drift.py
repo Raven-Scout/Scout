@@ -15,12 +15,13 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from scout import cli
+from scout import cli, layout
 from scout.scripts.bootstrap import BootstrapConfig, install
 
 runner = CliRunner()
 PLUGIN = Path(cli.__file__).resolve().parent.parent.parent
-HEARTBEAT = "scripts/heartbeat.sh"
+HEARTBEAT = layout.script_path("heartbeat.sh")
+RUNNER = layout.runner_path("run-scout.sh")
 FIX = 'mkdir -p "$SCOUT_DATA_DIR/.scout-cache"  # vault-local fix\n'
 
 
@@ -109,12 +110,12 @@ def test_drift_resolve_dismisses_a_parked_copy(vault: Path) -> None:
     shutil.rmtree(vault / ".scout-state" / "last-rendered")
     _append(vault / HEARTBEAT, FIX)
     runner.invoke(cli.app, ["bootstrap", "upgrade", "--no-jobs"])
-    assert (vault / ".scout-state/drift/scripts/heartbeat.sh.vault").exists()
+    assert (vault / f".scout-state/drift/{HEARTBEAT}.vault").exists()
 
     result = runner.invoke(cli.app, ["bootstrap", "drift", "--resolve", HEARTBEAT])
 
     assert result.exit_code == 0, result.output
-    assert not (vault / ".scout-state/drift/scripts/heartbeat.sh.vault").exists()
+    assert not (vault / f".scout-state/drift/{HEARTBEAT}.vault").exists()
 
 
 def test_drift_resolve_with_nothing_parked_exits_two(vault: Path) -> None:
@@ -143,10 +144,10 @@ def test_doctor_prints_notes(vault: Path) -> None:
 def test_drift_resolve_takes_several_files(vault: Path) -> None:
     shutil.rmtree(vault / ".scout-state" / "last-rendered")
     _append(vault / HEARTBEAT, FIX)
-    _append(vault / "run-scout.sh", "# vault-local runner tweak\n")
+    _append(vault / RUNNER, "# vault-local runner tweak\n")
     runner.invoke(cli.app, ["bootstrap", "upgrade", "--no-jobs"])
 
-    result = runner.invoke(cli.app, ["bootstrap", "drift", "--resolve", HEARTBEAT, "--resolve", "run-scout.sh"])
+    result = runner.invoke(cli.app, ["bootstrap", "drift", "--resolve", HEARTBEAT, "--resolve", RUNNER])
 
     assert result.exit_code == 0, result.output
     assert not (vault / ".scout-state" / "drift").exists()
@@ -204,11 +205,11 @@ def test_drift_resolve_drop_update_keeps_the_vault_version(vault: Path) -> None:
     (vault / ".scout-state" / "last-rendered" / HEARTBEAT).write_text(base, encoding="utf-8")
     (vault / HEARTBEAT).write_text(base + FIX, encoding="utf-8")
     runner.invoke(cli.app, ["bootstrap", "upgrade", "--no-jobs"])
-    assert (vault / ".scout-state/drift/scripts/heartbeat.sh.plugin").exists()
+    assert (vault / f".scout-state/drift/{HEARTBEAT}.plugin").exists()
 
     refused = runner.invoke(cli.app, ["bootstrap", "drift", "--resolve", HEARTBEAT])
     dropped = runner.invoke(cli.app, ["bootstrap", "drift", "--resolve", HEARTBEAT, "--drop-update"])
 
     assert refused.exit_code == 2 and "--drop-update" in refused.output
     assert dropped.exit_code == 0, dropped.output
-    assert not (vault / ".scout-state/drift/scripts/heartbeat.sh.plugin").exists()
+    assert not (vault / f".scout-state/drift/{HEARTBEAT}.plugin").exists()

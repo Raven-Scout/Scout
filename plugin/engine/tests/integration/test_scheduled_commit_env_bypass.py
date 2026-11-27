@@ -122,11 +122,11 @@ def vault(tmp_path: Path) -> Path:
     clear_frontmatter_cache()
     v = build_privacy_vault(tmp_path)
     with (v / ".git" / "info" / "exclude").open("a", encoding="utf-8") as fh:
-        fh.write(".scout-logs/\n.scout-cache/\nbin/\nscripts/\nrun-*.sh\n")
+        fh.write(".scout-logs/\n.scout-cache/\nbin/\nscout/scripts/\nscout/runners/\n")
     install_hook(v)  # the scoutctl next to this interpreter
     _script(v / "bin" / "scoutctl", "#!/bin/bash\nexit 0\n")  # the runner's own scoutctl calls
-    _render(TEMPLATES / "scripts" / "run-outcome.sh.tmpl", v / "scripts" / "run-outcome.sh", v)
-    _render(TEMPLATES / "scripts" / "scout-lock.sh.tmpl", v / "scripts" / "scout-lock.sh", v)
+    _render(TEMPLATES / "scripts" / "run-outcome.sh.tmpl", v / "scout" / "scripts" / "run-outcome.sh", v)
+    _render(TEMPLATES / "scripts" / "scout-lock.sh.tmpl", v / "scout" / "scripts" / "scout-lock.sh", v)
     return v
 
 
@@ -138,8 +138,8 @@ def _clean_env() -> dict[str, str]:
 
 def _run(vault: Path, runner: str, route: str) -> subprocess.CompletedProcess[str]:
     session = SESSION.format(positions=POSITIONS, moved=MOVED, route=ROUTES[route])
-    _script(vault / "scripts" / "claude-with-retry.sh", session)
-    script = _render(TEMPLATES / runner, vault / runner.removesuffix(".tmpl"), vault)
+    _script(vault / "scout" / "scripts" / "claude-with-retry.sh", session)
+    script = _render(TEMPLATES / runner, vault / "scout" / "runners" / runner.removesuffix(".tmpl"), vault)
     env = {**_clean_env(), "SCOUT_FORCE_MODE": SLOT, "SCOUT_LOCK_POLL_SECS": "1", "SCOUT_LOCK_WAIT_SECS": "30"}
     return subprocess.run([str(script)], env=env, capture_output=True, text=True, timeout=180)
 

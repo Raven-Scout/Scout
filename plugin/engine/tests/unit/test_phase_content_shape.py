@@ -13,6 +13,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from scout import layout
 from scout.action_items.cli import app
 from scout.action_items.titles import FOCUS_MAX_BULLETS, FOCUS_MAX_CHARS, LEGACY_PER_RUN, TITLE_MAX
 from scout.scripts.phase_assembly import parse_phase_file
@@ -22,6 +23,7 @@ ACTION_ITEMS = PLUGIN / "phases" / "core" / "action-items.md"
 WISHLIST = PLUGIN / "phases" / "modes" / "wishlist.md"
 STATUS = PLUGIN / "commands" / "scout-status.md"
 RUN_MODES = PLUGIN / "phases" / "core" / "00-run-modes.md"
+WISHLIST_DIR = layout.record_path("wishlist_dir")
 
 
 def _text(path: Path) -> str:
@@ -59,8 +61,8 @@ def test_wishlist_cards_keep_status_and_link_a_progress_note() -> None:
     text = _text(WISHLIST)
     assert "**The item file is a card, not a log.**" in text
     assert "`## Status`" in text
-    assert "`docs/wishlist/progress/<item file name>`" in text
-    assert "[[docs/wishlist/progress/<item stem>|Progress log]]" in text
+    assert f"`{WISHLIST_DIR}/progress/<item file name>`" in text
+    assert f"[[{WISHLIST_DIR}/progress/<item stem>|Progress log]]" in text
     # A log is moved, never dropped.
     assert "Never delete a log" in text and "move it verbatim to the note in the same commit" in text
 
@@ -68,7 +70,8 @@ def test_wishlist_cards_keep_status_and_link_a_progress_note() -> None:
 def test_wishlist_phase_runs_check_log_move_before_commit() -> None:
     text = _text(WISHLIST)
     run = (
-        "`scripts/scoutctl wishlist check-log-move --data-dir {{SCOUT_DIR}} <the paths you will commit>`"
+        f"`{layout.script_path('scoutctl')} wishlist check-log-move --data-dir {{{{SCOUT_DIR}}}} "
+        "<the paths you will commit>`"
         " until it exits 0"
     )
     assert run in text
@@ -92,7 +95,7 @@ def test_check_log_move_is_a_real_subcommand() -> None:
 
 
 def test_wishlist_phase_reads_items_but_not_their_progress_notes() -> None:
-    assert "`docs/wishlist/` (not its `progress/` folder)" in _text(WISHLIST)
+    assert f"`{WISHLIST_DIR}/` (not its `progress/` folder)" in _text(WISHLIST)
 
 
 def test_wishlist_phase_no_longer_appends_dated_notes_to_the_card() -> None:

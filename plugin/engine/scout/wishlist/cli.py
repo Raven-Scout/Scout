@@ -37,10 +37,10 @@ def cli_check_log_move(
 ) -> None:
     """Check that a log leaving a wishlist card lands verbatim in its progress note, in the same commit.
 
-    For each card (`docs/wishlist/<item>.md`) changed since the last commit,
+    For each card (`scout/records/wishlist/<item>.md`) changed since the last commit,
     every dated line it lost (a line under a log heading such as
     `## 2026-01-05`, an entry that starts with a date and its sub-lines, or a
-    ticked sub-task with a date) must be in `docs/wishlist/progress/<item>.md`
+    ticked sub-task with a date) must be in `scout/records/wishlist/progress/<item>.md`
     as this commit will hold it: byte for byte, in the card's order. A progress
     note not among PATHS (files or directories) counts as last committed. Run
     it before committing a wishlist change, with the same paths.

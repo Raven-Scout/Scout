@@ -12,7 +12,7 @@ requires: null
 
 Each file in `knowledge-base/research-queue/` is one topic: YAML frontmatter (`title`, `status`, `priority`, `date`, optional `area`) plus a body with the research brief / findings. The thin `knowledge-base/research-queue.md` is just the run log (see the end of this step).
 
-**Start from the queue summary, not the files.** `.scout-cache/session-context.json` → `research_queue` (near the top of the file) holds every open entry as `{id, path, status, priority, title, area, date, visibility}`, `urgent` first, plus `counts` by status. Pick from it, then `scripts/scoutctl kb read` only the entries you will work on. Do not list the folder and read every entry to filter by status. Only if the file's `generated_at` isn't today, or `research_queue` is missing, empty while `counts` shows open entries, or marked `truncated`, fall back to `scripts/scoutctl kb files --glob 'knowledge-base/research-queue/*.md'` and read what you need.
+**Start from the queue summary, not the files.** `.scout-cache/session-context.json` → `research_queue` (near the top of the file) holds every open entry as `{id, path, status, priority, title, area, date, visibility}`, `urgent` first, plus `counts` by status. Pick from it, then `scout/scripts/scoutctl kb read` only the entries you will work on. Do not list the folder and read every entry to filter by status. Only if the file's `generated_at` isn't today, or `research_queue` is missing, empty while `counts` shows open entries, or marked `truncated`, fall back to `scout/scripts/scoutctl kb files --glob 'knowledge-base/research-queue/*.md'` and read what you need.
 
 `status: open` and `in-progress` (or no status) are the work queue; `done` and `dropped` are resolved. If {{USER_NAME}} has explicitly queued topics, those take priority.
 
@@ -24,10 +24,10 @@ Each file in `knowledge-base/research-queue/` is one topic: YAML frontmatter (`t
 
 This does NOT stop the opportunistic lane (a good incidental find is still worth pursuing) — it fixes the **ordering** (`urgent` first). A "this is the top priority" intention stays inert until the picker mechanically honors it.
 
-**Second source of preemption — declarative coverage mandates (optional vault helper).** The scan above only sees topics someone hand-wrote a queue file for; a project the user named as top-priority but never queued is invisible to it. Some vaults close that gap with a local `scripts/coverage-mandates.py` helper. The plugin does not ship it, so check for it first — **if the script is absent, skip this paragraph entirely; that is not an error**:
+**Second source of preemption — declarative coverage mandates (optional vault helper).** The scan above only sees topics someone hand-wrote a queue file for; a project the user named as top-priority but never queued is invisible to it. Some vaults close that gap with a local `scout/scripts/coverage-mandates.py` helper. The plugin does not ship it, so check for it first — **if the script is absent, skip this paragraph entirely; that is not an error**:
 
 ```bash
-[ -f scripts/coverage-mandates.py ] && python3 scripts/coverage-mandates.py --session research
+[ -f scout/scripts/coverage-mandates.py ] && python3 scout/scripts/coverage-mandates.py --session research
 # absent → skip; 0 = no live mandate; 3 = live mandate(s) listed; 4 = a mandate's review_at reached or its window expired
 ```
 
@@ -52,9 +52,9 @@ If the queue is empty (no `open`/`in-progress` items, or after completing them),
 4. Organizations with no industry/competitive context
 5. Technology topics related to active projects
 
-Score from `scripts/scoutctl kb query --visibility normal` (add `--type <type>` as needed): only normal entities are candidates.
+Score from `scout/scripts/scoutctl kb query --visibility normal` (add `--type <type>` as needed): only normal entities are candidates.
 
-**Skip:** Entities that were researched in the last 7 days (`scripts/scoutctl kb delta --since 7d` lists the `research:` commits). **Never pick a `[private]` entity or queue item as a research target**: researching it puts its name into a web or connector query. A skipped private item is never mentioned on a shared surface.
+**Skip:** Entities that were researched in the last 7 days (`scout/scripts/scoutctl kb delta --since 7d` lists the `research:` commits). **Never pick a `[private]` entity or queue item as a research target**: researching it puts its name into a web or connector query. A skipped private item is never mentioned on a shared surface.
 
 ## Step 1c: Pick 1-3 Research Targets
 

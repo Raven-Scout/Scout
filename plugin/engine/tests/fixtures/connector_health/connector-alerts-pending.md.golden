@@ -5,4 +5,4 @@
 • ⚠️ *Linear* — 19/24 calls errored this run (79%)
    ↳ *Try first:* Reconnect Linear at https://claude.ai/settings/connectors — claude.ai Linear OAuth likely expired.
    ↳ *Last error:* `stand-in failure from mcp:claude_ai_Linear: request timed out after 30s`
-_Full matrix + detailed remediation: `knowledge-base/connector-health.md`._
+_Full matrix + detailed remediation: `scout/records/connector-health.md`._

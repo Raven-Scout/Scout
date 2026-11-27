@@ -1,7 +1,7 @@
 # kb-front-page: does a consolidation run keep a project front page to the KB page standard while
 # new facts about the project arrive? (The KB-writing release gate: plugin/scripts/eval.sh kb-gate.)
 #
-# The vault holds one project folder, knowledge-base/projects/report-builder/, that meets the page
+# The vault holds one project folder, knowledge-base/work/projects/report-builder/, that meets the page
 # standard (`scoutctl kb structure` ✓). connectors.yaml scripts a day of signals about it: the export
 # streaming PR merged, the nightly PDF ticket moved to Done, and the weekly sync's notes raise the
 # row cap. A good run rewrites the front page's current state in place and files the detail, cited,

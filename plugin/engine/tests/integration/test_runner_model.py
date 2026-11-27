@@ -2,7 +2,7 @@
 
 Renders run-scout / run-dreaming / run-research with:
 
-  - a stub ``scripts/claude-with-retry.sh`` that records its argv and the
+  - a stub ``scout/scripts/claude-with-retry.sh`` that records its argv and the
     ``SCOUT_MODEL`` it inherited, and
   - a stub ``scoutctl`` that answers ``model resolve`` (and records its argv).
 
@@ -44,10 +44,11 @@ def _render(tmpl: Path, scout_dir: Path, scoutctl: str) -> Path:
     }.items():
         text = text.replace(placeholder, value)
     assert "{{" not in text, f"unrendered placeholder left in {tmpl.name}"
-    out = scout_dir / tmpl.name.removesuffix(".tmpl")
+    out = scout_dir / "scout" / "runners" / tmpl.name.removesuffix(".tmpl")
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
     out.chmod(0o755)
-    lock_lib = scout_dir / "scripts" / "scout-lock.sh"
+    lock_lib = scout_dir / "scout" / "scripts" / "scout-lock.sh"
     lock_lib.parent.mkdir(parents=True, exist_ok=True)
     lock_lib.write_text(
         (TEMPLATES / "scripts" / "scout-lock.sh.tmpl")
@@ -61,7 +62,7 @@ def _render(tmpl: Path, scout_dir: Path, scoutctl: str) -> Path:
 def _stub_claude(scout_dir: Path) -> tuple[Path, Path]:
     argv_file = scout_dir / "claude.argv"
     env_file = scout_dir / "claude.model-env"
-    stub = scout_dir / "scripts" / "claude-with-retry.sh"
+    stub = scout_dir / "scout" / "scripts" / "claude-with-retry.sh"
     stub.parent.mkdir(parents=True, exist_ok=True)
     stub.write_text(
         "#!/bin/bash\n"

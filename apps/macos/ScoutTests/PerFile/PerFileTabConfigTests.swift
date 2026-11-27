@@ -9,7 +9,7 @@ struct PerFileTabConfigTests {
         #expect(c.title == "Wishlist")
         #expect(c.priorities == [.high, .medium, .low])    // no urgent
         #expect(c.optionalField == .source(label: "Source"))
-        #expect(c.directoryDefaultRelative == "docs/wishlist")
+        #expect(c.directoryDefaultRelative == "scout/records/wishlist")  // layout v2 (ADR 0011)
         #expect(c.pathOverrideKey == "wishlistPath")
     }
     @Test func researchConfig() {

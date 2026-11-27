@@ -71,7 +71,9 @@ PRIVACY_BLOCKING = frozenset(
 # Block in every mode, but unlike PRIVACY_BLOCKING SCOUT_LINT_OVERRIDE still overrides them: a broken
 # lab thread would otherwise reach the app and the runs that parse it, and a vault on `mode: report`
 # (or a `path_modes` rule saying so) is not a reason to let one in. `mode_for` answers `block` for them.
-ALWAYS_BLOCKING = frozenset({"lab-format"})
+# ``identity-note``: an identity note (layout v2: knowledge-base/people/<n>.md, knowledge-base/organizations/<n>.md)
+# holds only identity keys and its link lines; facts go in a space's role note (spec 2026-11-26 §3.2).
+ALWAYS_BLOCKING = frozenset({"lab-format", "identity-note"})
 # Warnings: never block, whatever the mode.
 WARNING_CHECKS = frozenset(
     {

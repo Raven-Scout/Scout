@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from scout.scripts.bootstrap import BootstrapConfig
 from scout.scripts.bootstrap_auto import AutoAction, detect, result_dict, run
 
@@ -66,17 +67,19 @@ def test_detect_pending_brain_sidecar_still_upgrades(tmp_path):
     an unattended upgrade."""
     (tmp_path / "Scout").mkdir()
     (tmp_path / "Scout" / "scout-config.yaml").write_text("instance_name: x\n")
-    (tmp_path / "Scout" / "SKILL.md.proposed-merge").write_text("<<<<<<<\n")
+    sidecar = tmp_path / "Scout" / layout.sidecar_path("SKILL")
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text("<<<<<<<\n")
     assert detect(tmp_path / "Scout").action is AutoAction.UPGRADE
 
 
 def test_run_reports_a_skipped_brain_file(tmp_path):
     vault = tmp_path / "Scout"
     run(_cfg(vault))
-    (vault / "DREAMING.md.proposed-merge").write_text("pending\n")
+    (vault / layout.sidecar_path("DREAMING")).write_text("pending\n")
     result, code = run(_cfg(vault))
     assert result["action"] == "upgrade"
-    assert result["skipped"] == ["DREAMING.md.proposed-merge"]
+    assert result["skipped"] == ["DREAMING.md.proposed-merge"]  # names, as brain_merge.pending_brain_sidecars
     assert code == 1  # the pending sidecar keeps the doctor yellow
 
 
@@ -134,6 +137,7 @@ def test_result_dict_has_the_contract_keys(tmp_path):
         "installed",
         "pointer",
         "vault_edits",
+        "migration",
         "mutated",
     }
     assert d["mutated"] is False
@@ -152,15 +156,22 @@ def test_detect_file_at_vault_path_is_refused(tmp_path):
     assert plan.action is AutoAction.REFUSED and "not a directory" in plan.reason
 
 
-def _populate_legacy_vault(vault: Path) -> None:
+def _populate_legacy_vault(vault: Path, *, old_layout: bool = False) -> None:
+    """A legacy vault (.scout-state/, no scout-config.yaml). This engine migrates
+    only one already in layout v2; ``old_layout`` builds the v1 shape it refuses."""
     vault.mkdir(parents=True, exist_ok=True)
     (vault / ".scout-state").mkdir()
     (vault / "knowledge-base").mkdir()
     (vault / "action-items").mkdir()
-    (vault / "scripts").mkdir()
-    (vault / "hooks").mkdir()
     (vault / ".scout-logs").mkdir()
-    (vault / "SKILL.md").write_text("# SKILL\n")
+    if old_layout:
+        (vault / "scripts").mkdir()
+        (vault / "hooks").mkdir()
+        (vault / "SKILL.md").write_text("# SKILL\n")
+        return
+    for key in ("scripts_dir", "hooks_dir", "brain_dir"):
+        (vault / layout.V2[key]).mkdir(parents=True)
+    (vault / layout.brain_path("SKILL")).write_text("# SKILL\n")
 
 
 def test_run_dispatches_migrate_legacy(tmp_path):
@@ -171,6 +182,18 @@ def test_run_dispatches_migrate_legacy(tmp_path):
     d, code = run(_cfg(vault))
     assert d["action"] == "migrate-legacy"
     assert code in (0, 1, 2)
+
+
+def test_run_refuses_to_migrate_a_legacy_vault_in_the_old_layout(tmp_path):
+    """Spec 2026-11-26 §7.1: this engine renders layout v2 only, so a v1 legacy
+    vault is sent to a pre-v2 release first, and nothing is written."""
+    vault = tmp_path / "Scout"
+    _populate_legacy_vault(vault, old_layout=True)
+    assert detect(vault).action is AutoAction.MIGRATE_LEGACY
+    d, code = run(_cfg(vault))
+    assert code == 2 and d["action"] == "refused"
+    assert "old layout" in d["error"]
+    assert not (vault / "scout-config.yaml").exists()
 
 
 def test_run_dispatch_exception_becomes_refused(tmp_path, monkeypatch):
@@ -275,7 +298,7 @@ def test_interrupted_install_resumes_as_install(tmp_path, monkeypatch):
     assert d["doctor"]["severity"] != "red", d["doctor"]
     assert code in (0, 1)
     assert not marker.exists()
-    assert (vault / "SKILL.md").exists()
+    assert (vault / layout.brain_path("SKILL")).exists()
     assert (vault / "knowledge-base" / "ontology" / "parser.py").exists()
 
 
@@ -311,13 +334,13 @@ def test_upgrade_json_reports_vault_edits(tmp_path):
     Scout.app can show what was kept, merged or parked."""
     vault = tmp_path / "Scout"
     run(_cfg(vault))
-    heartbeat = vault / "scripts" / "heartbeat.sh"
+    heartbeat = vault / layout.script_path("heartbeat.sh")
     heartbeat.write_text(heartbeat.read_text(encoding="utf-8") + "# a local fix\n", encoding="utf-8")
     d, _ = run(_cfg(vault))
     assert d["action"] == "upgrade"
     edits = {e["path"]: e for e in d["vault_edits"]}
-    assert edits["scripts/heartbeat.sh"]["outcome"] == "kept"
-    assert edits["scripts/heartbeat.sh"]["message"]
+    assert edits[layout.script_path("heartbeat.sh")]["outcome"] == "kept"
+    assert edits[layout.script_path("heartbeat.sh")]["message"]
 
 
 def test_install_that_waited_for_the_lock_refuses_the_vault_finished_meanwhile(tmp_path, monkeypatch):
@@ -433,7 +456,7 @@ def test_crontab_apply_failure_is_refused_and_flagged_mutated(tmp_path, monkeypa
     assert d["action"] == "refused"
     assert d["mutated"] is True
     assert "crontab apply failed" in d["error"]
-    assert (vault / "scripts" / "heartbeat.sh").exists()  # earlier stages did run
+    assert (vault / layout.script_path("heartbeat.sh")).exists()  # earlier stages did run
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")

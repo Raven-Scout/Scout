@@ -28,7 +28,7 @@ from pathlib import Path
 import yaml
 
 from scout import config as scout_config
-from scout import custom_connectors, safe_write, yaml_blocks
+from scout import custom_connectors, layout, safe_write, yaml_blocks
 from scout.errors import ConfigError
 from scout.plural import noun
 from scout.scripts import brain_merge, vault_drift
@@ -108,6 +108,9 @@ class UpgradeResult:
     # Every vault edit to a managed file the upgrade kept, merged, or parked.
     vault_edits: list[VaultEdit] = field(default_factory=list)
     pointer: Path | None = None
+    # The layout move's outcome (layout_migrate.LayoutOutcome), and compatibility links removed.
+    migration: object | None = None
+    removed_compat_links: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -122,41 +125,50 @@ class MigrateLegacyResult:
 
 # ---------- shared helpers ----------
 
+# Directories every v2 vault has, whatever its spaces (layout v2, spec 2026-11-26 §3).
+# The per-space folders come from the registry: _dir_layout().
 _CAT1_DIR_LAYOUT = (
-    "knowledge-base/projects",
     "knowledge-base/ontology/entities",
     "knowledge-base/people",
-    "knowledge-base/personal",
+    "knowledge-base/organizations",
     "knowledge-base/recurring-tasks",
-    # Layered KB (write protocol): topic notes, source notes, session-log shards.
-    "knowledge-base/topics",
-    "knowledge-base/sources",
-    "knowledge-base/session-log",
-    # Per-file items: one research topic, or one wishlist item, per file.
+    # Per-file items: one research topic per file.
     "knowledge-base/research-queue",
+    "scout/brain",
+    "scout/runners",
+    "scout/scripts",
+    "scout/hooks",
+    "scout/records/session-log",
+    "scout/records/wishlist",
     "action-items/archive",
-    "action-items/meeting-prep",
-    "meetings",
-    "docs",
-    "docs/wishlist",
-    "scripts",
-    "hooks",
+    "reports",
+    "inbox/drop",
     ".scout-logs",
     ".scout-cache",
     ".scout-state/last-assembled",
 )
 
+# Each registered space's folders (knowledge-base/<space>/...).
+_SPACE_DIRS = ("projects", "topics", "sources", "meetings", "people", "organizations")
+
+
+def _dir_layout(spaces: tuple[scout_config.Space, ...]) -> tuple[str, ...]:
+    """Every directory a v2 vault with ``spaces`` has: the fixed ones, then each space's."""
+    per_space = tuple(layout.space_dir(s.key, kind) for s in spaces for kind in _SPACE_DIRS)
+    return _CAT1_DIR_LAYOUT + per_space
+
+
 _CAT1_FILES_FROM_PLUGIN = {
     "knowledge-base/ontology/__init__.py": "templates/knowledge-base/ontology/__init__.py",
     "action-items/render.py": "templates/action-items/render.py",
-    "scripts/recurring-task-status.py": "templates/scripts/recurring-task-status.py",
+    "scout/scripts/recurring-task-status.py": "templates/scripts/recurring-task-status.py",
     # Optional helpers the plugin-owned scripts call, guarded: the git-truth
     # staleness ranking (hooks/kb-pre-filter.sh) and the session-lane watchdog
-    # (scripts/heartbeat.sh). Standard-library Python, run with python3.
-    "scripts/vault-freshness.py": "templates/scripts/vault-freshness.py",
-    "scripts/session-lane-liveness.py": "templates/scripts/session-lane-liveness.py",
+    # (scout/scripts/heartbeat.sh). Standard-library Python, run with python3.
+    "scout/scripts/vault-freshness.py": "templates/scripts/vault-freshness.py",
+    "scout/scripts/session-lane-liveness.py": "templates/scripts/session-lane-liveness.py",
     # The KB log sharder (one-time log sharding, spec 2026-09-26 §3.1).
-    "scripts/kb-shard-log.py": "templates/scripts/kb-shard-log.py",
+    "scout/scripts/kb-shard-log.py": "templates/scripts/kb-shard-log.py",
 }
 
 # Plugin-owned files the vault is known to extend, not just patch: parser.py is
@@ -170,34 +182,34 @@ _CAT1_FILES_FROM_PLUGIN = {
 _CAT_MERGE_FILES = {
     "knowledge-base/ontology/parser.py": "templates/knowledge-base/ontology/parser.py",
     # What a KB page must look like; the write protocol and kb-deep-work link it.
-    "docs/kb-page-standard.md": "templates/docs/kb-page-standard.md",
+    "scout/kb-page-standard.md": "templates/docs/kb-page-standard.md",
 }
 
 _CAT1_TEMPLATES = (
     # scout-tz.sh first: it is the runtime timezone resolver every other script
-    # calls via TZ="$(scripts/scout-tz.sh)", and the assembled brain files as
-    # `scripts/scout-tz.sh date '+FORMAT'` (no command substitution: #742).
-    ("scripts/scout-tz.sh", "templates/scripts/scout-tz.sh.tmpl"),
-    # How the brain files call the engine (`scripts/scoutctl …`): finds it when
+    # calls via TZ="$(scout/scripts/scout-tz.sh)", and the assembled brain files as
+    # `scout/scripts/scout-tz.sh date '+FORMAT'` (no command substitution: #742).
+    ("scout/scripts/scout-tz.sh", "templates/scripts/scout-tz.sh.tmpl"),
+    # How the brain files call the engine (`scout/scripts/scoutctl …`): finds it when
     # it isn't on PATH, and points it at this vault wherever the vault lives.
-    ("scripts/scoutctl", "templates/scripts/scoutctl.sh.tmpl"),
-    ("scripts/budget-check.sh", "templates/scripts/budget-check.sh.tmpl"),
-    ("scripts/heartbeat.sh", "templates/scripts/heartbeat.sh.tmpl"),
-    ("scripts/pre-session-data.sh", "templates/scripts/pre-session-data.sh.tmpl"),
-    ("scripts/cc-session-cache.sh", "templates/scripts/cc-session-cache.sh.tmpl"),
-    ("scripts/write-session-cost.sh", "templates/scripts/write-session-cost.sh.tmpl"),
-    ("scripts/rate-limit-detect.sh", "templates/scripts/rate-limit-detect.sh.tmpl"),
-    ("scripts/claude-with-retry.sh", "templates/scripts/claude-with-retry.sh.tmpl"),
-    ("scripts/post-session-backfill.sh", "templates/scripts/post-session-backfill.sh.tmpl"),
-    ("scripts/materialize-daily-file.sh", "templates/scripts/materialize-daily-file.sh.tmpl"),
+    ("scout/scripts/scoutctl", "templates/scripts/scoutctl.sh.tmpl"),
+    ("scout/scripts/budget-check.sh", "templates/scripts/budget-check.sh.tmpl"),
+    ("scout/scripts/heartbeat.sh", "templates/scripts/heartbeat.sh.tmpl"),
+    ("scout/scripts/pre-session-data.sh", "templates/scripts/pre-session-data.sh.tmpl"),
+    ("scout/scripts/cc-session-cache.sh", "templates/scripts/cc-session-cache.sh.tmpl"),
+    ("scout/scripts/write-session-cost.sh", "templates/scripts/write-session-cost.sh.tmpl"),
+    ("scout/scripts/rate-limit-detect.sh", "templates/scripts/rate-limit-detect.sh.tmpl"),
+    ("scout/scripts/claude-with-retry.sh", "templates/scripts/claude-with-retry.sh.tmpl"),
+    ("scout/scripts/post-session-backfill.sh", "templates/scripts/post-session-backfill.sh.tmpl"),
+    ("scout/scripts/materialize-daily-file.sh", "templates/scripts/materialize-daily-file.sh.tmpl"),
     # The runners' out-of-band record of how each run ended (run-outcomes.jsonl).
-    ("scripts/run-outcome.sh", "templates/scripts/run-outcome.sh.tmpl"),
+    ("scout/scripts/run-outcome.sh", "templates/scripts/run-outcome.sh.tmpl"),
     # The session lock every run-*.sh sources: wait, skip rows, redundancy (#218).
-    ("scripts/scout-lock.sh", "templates/scripts/scout-lock.sh.tmpl"),
+    ("scout/scripts/scout-lock.sh", "templates/scripts/scout-lock.sh.tmpl"),
     # The dreaming and research commit steps (and /scout-work): explicit paths only, behind a
     # cross-session mutex, so overlapping runs never commit each other's work.
-    ("scripts/git-safe-commit.sh", "templates/scripts/git-safe-commit.sh.tmpl"),
-    ("hooks/kb-pre-filter.sh", "templates/hooks/kb-pre-filter.sh.tmpl"),
+    ("scout/scripts/git-safe-commit.sh", "templates/scripts/git-safe-commit.sh.tmpl"),
+    ("scout/hooks/kb-pre-filter.sh", "templates/hooks/kb-pre-filter.sh.tmpl"),
     (".gitignore", "templates/.gitignore.tmpl"),
 )
 
@@ -211,22 +223,28 @@ _INSTALL_ONLY_TEMPLATES = (
     # Vault-owned files (cat 2): seeded by install, upgrade and migrate-legacy
     # only where the vault has none, so a file added here reaches existing
     # vaults too. Never overwritten.
-    ("dreaming-proposals.md", "templates/dreaming-proposals.md.tmpl"),
-    ("knowledge-base/scout-mistake-audit.md", "templates/scout-mistake-audit.md.tmpl"),
+    ("scout/records/dreaming-proposals.md", "templates/dreaming-proposals.md.tmpl"),
+    ("scout/records/scout-mistake-audit.md", "templates/scout-mistake-audit.md.tmpl"),
+    ("scout/records/session-log.md", "templates/knowledge-base/session-log.md.tmpl"),
     ("knowledge-base/review-queue.md", "templates/review-queue.md.tmpl"),
-    ("inbox.md", "templates/inbox.md.tmpl"),
-    ("meetings/meetings.md", "templates/meetings/meetings.md.tmpl"),
-    # Layered-KB indexes the write protocol links to.
-    ("knowledge-base/topics/topics.md", "templates/knowledge-base/topics/topics.md.tmpl"),
-    ("knowledge-base/sources/sources.md", "templates/knowledge-base/sources/sources.md.tmpl"),
-    ("knowledge-base/session-log.md", "templates/knowledge-base/session-log.md.tmpl"),
+    ("inbox/inbox.md", "templates/inbox.md.tmpl"),
+    ("inbox/drop/README.md", "templates/inbox/drop/README.md.tmpl"),
+    # The one meetings registry, with a Space column (spec §3.3).
+    ("knowledge-base/meetings.md", "templates/meetings/meetings.md.tmpl"),
     # The KB index and the directories it links, which every session reads.
     ("knowledge-base/knowledge-base.md", "templates/knowledge-base/knowledge-base.md.tmpl"),
     ("knowledge-base/people.md", "templates/knowledge-base/people.md.tmpl"),
     ("knowledge-base/channels.md", "templates/knowledge-base/channels.md.tmpl"),
-    ("knowledge-base/projects/projects.md", "templates/knowledge-base/projects/projects.md.tmpl"),
     # The research run log (its items are files in knowledge-base/research-queue/).
     ("knowledge-base/research-queue.md", "templates/knowledge-base/research-queue.md.tmpl"),
+)
+
+# Seeded per registered space, like the cat-2 templates (``{space}`` is the key): the
+# layered-KB indexes the write protocol links to.
+_SPACE_SEED_TEMPLATES = (
+    ("knowledge-base/{space}/projects/projects.md", "templates/knowledge-base/projects/projects.md.tmpl"),
+    ("knowledge-base/{space}/topics/topics.md", "templates/knowledge-base/topics/topics.md.tmpl"),
+    ("knowledge-base/{space}/sources/sources.md", "templates/knowledge-base/sources/sources.md.tmpl"),
 )
 
 # Vault-owned files seeded, like the cat-2 templates above, only where the
@@ -238,10 +256,10 @@ _INSTALL_ONLY_TEMPLATES = (
 _PACKAGED_SEEDS = (("knowledge-base/ontology/schema.yaml", ("kb", "schema.yaml")),)
 
 _CAT1B_RUNNERS = (
-    ("run-scout.sh", "templates/run-scout.sh.tmpl"),
-    ("run-dreaming.sh", "templates/run-dreaming.sh.tmpl"),
-    ("run-research.sh", "templates/run-research.sh.tmpl"),
-    ("run-respond.sh", "templates/run-respond.sh.tmpl"),
+    ("scout/runners/run-scout.sh", "templates/run-scout.sh.tmpl"),
+    ("scout/runners/run-dreaming.sh", "templates/run-dreaming.sh.tmpl"),
+    ("scout/runners/run-research.sh", "templates/run-research.sh.tmpl"),
+    ("scout/runners/run-respond.sh", "templates/run-respond.sh.tmpl"),
 )
 
 
@@ -307,6 +325,8 @@ def _template_vars(cfg: BootstrapConfig) -> dict[str, str]:
         # merged config cannot answer. #207.
         "TODAY_DATE": _dt.datetime.now(scout_config.timezone_or_default(cfg.timezone)).date().isoformat(),
         "AUTO_UPDATE_ENABLED": _auto_update_enabled(cfg),
+        # The space new notes go to when nothing says otherwise (layout v2): seeds link its folders.
+        "DEFAULT_SPACE": scout_config.default_space(scout_config.load_spaces(cfg.vault)).key,
     }
 
 
@@ -367,7 +387,7 @@ def merge_gitignore(vault_text: str, template_text: str) -> str:
 
 
 def _stage_create_dirs(cfg: BootstrapConfig) -> None:
-    for rel in _CAT1_DIR_LAYOUT:
+    for rel in _dir_layout(scout_config.load_spaces(cfg.vault)):
         (cfg.vault / rel).mkdir(parents=True, exist_ok=True)
 
 
@@ -418,7 +438,9 @@ def _stage_managed_files(cfg: BootstrapConfig) -> list[VaultEdit]:
         m = r.file
         # Older releases' templates, and the current one: a render of it with
         # other variable values (the plugin root moved) is not a vault edit.
-        signatures = [*history.get(m.vault_rel, ()), vault_drift.signature(r.template, rendered=m.rendered)]
+        # Keyed by vault path; releases before layout v2 recorded the v1 path (layout.legacy_of).
+        older = history.get(m.vault_rel) or history.get(layout.legacy_of(m.vault_rel) or "", [])
+        signatures = [*older, vault_drift.signature(r.template, rendered=m.rendered)]
         try:
             edit = vault_drift.reconcile(
                 cfg.vault,
@@ -481,7 +503,12 @@ def _stage_install_only_seeds(cfg: BootstrapConfig) -> None:
     The price of running on upgrade: a cat-2 file the user deleted comes back.
     """
     vars_ = _template_vars(cfg)
-    for vault_rel, tmpl_rel in _INSTALL_ONLY_TEMPLATES:
+    space_seeds = [
+        (rel.format(space=s.key), tmpl)
+        for s in scout_config.load_spaces(cfg.vault)
+        for rel, tmpl in _SPACE_SEED_TEMPLATES
+    ]
+    for vault_rel, tmpl_rel in [*_INSTALL_ONLY_TEMPLATES, *space_seeds]:
         target = cfg.vault / vault_rel
         if target.exists() or target.is_symlink():
             continue  # never overwrite
@@ -606,7 +633,7 @@ def _stage_cat4_install(cfg: BootstrapConfig) -> None:
     custom = load_custom(cfg)
     for kind in brain_merge.BRAIN_KINDS:
         content = _assemble(cfg, kind, custom=custom)
-        _atomic_write(cfg.vault / f"{kind}.md", content)
+        _atomic_write(cfg.vault / layout.brain_path(kind), content)
         _atomic_write(snapshot_dir / f"{kind}.md", content)
         records[f"{kind}.md"] = brain_merge.Provenance.assembled(content)
     _write_provenance(snapshot_dir, records)
@@ -664,7 +691,7 @@ def _stage_cat4_upgrade(
     for kind in kinds:
         name = f"{kind}.md"
         ours = _assemble(cfg, kind, custom=custom)
-        live = cfg.vault / name
+        live = cfg.vault / layout.brain_path(kind)
         # A missing live file (a brain kind new to this vault, or one an
         # earlier engine recorded as installed without writing it) reads as
         # ``ours``, so decide() advances and the write below installs it.
@@ -674,7 +701,7 @@ def _stage_cat4_upgrade(
         base = snap.read_text(encoding="utf-8") if snap.exists() else None
         proposed_path = _proposed_path(snapshot_dir, name)
         proposed = proposed_path.read_text(encoding="utf-8") if proposed_path.exists() else None
-        sidecar = cfg.vault / brain_merge.sidecar_name(kind)
+        sidecar = cfg.vault / layout.sidecar_path(kind)
         prov = records.get(name, brain_merge.Provenance())
 
         action = brain_merge.decide(
@@ -712,7 +739,7 @@ def _stage_cat4_upgrade(
                 # Only the fingerprint vouches for the base (a vault from before
                 # provenance): park the file being replaced, once, like any
                 # vault copy an upgrade replaces.
-                parked = vault_drift.park_vault_copy(cfg.vault, name, theirs)
+                parked = vault_drift.park_vault_copy(cfg.vault, layout.brain_path(kind), theirs)
                 out.backups.append(parked.relative_to(cfg.vault).as_posix())
             _atomic_write(live, new_live)
             if not live_exists:
@@ -746,8 +773,9 @@ def resolve_brain_file(vault: Path, kind: str) -> ResolveResult:
     there is nothing to resolve; ``FileNotFoundError`` if the live file is missing.
     """
     name = f"{kind}.md"
-    live = vault / name
-    sidecar = vault / brain_merge.sidecar_name(kind)
+    lay = layout.for_vault(vault)
+    live = vault / lay.brain(kind)
+    sidecar = vault / brain_merge.sidecar_rel(vault, kind)
     snapshot_dir = vault / ".scout-state" / "last-assembled"
     proposed_path = _proposed_path(snapshot_dir, name)
     if not live.exists():
@@ -1219,10 +1247,35 @@ def _stage_version_stamp(cfg: BootstrapConfig, *, is_upgrade: bool) -> None:
         # permanently red.
         plugin.setdefault("version_at_last_setup", cfg.plugin_version)
     plugin["version_at_last_update"] = cfg.plugin_version
-    plugin.setdefault("applied_migrations", [])
+    applied = plugin.setdefault("applied_migrations", [])
+    if not is_upgrade and isinstance(applied, list) and layout.MIGRATION_ID not in applied:
+        # An install writes layout v2 directly: there is nothing to move (spec §4.1).
+        applied.append(layout.MIGRATION_ID)
+    if not is_upgrade and "spaces" not in existing:
+        existing["spaces"] = [s.to_json() for s in scout_config.DEFAULT_SPACES]
     # Not a plain safe_dump: that round-trip deleted every comment in the file
     # on every upgrade, including the one `scoutctl budget set` writes.
     _atomic_write(config_path, _dump_keeping_comments(text, existing))
+
+
+def _stage_readme(cfg: BootstrapConfig) -> None:
+    """Write the generated root README.md when absent or still generated (spec §3.4).
+
+    A README the user wrote (one that doesn't start with the marker) is never touched.
+    """
+    target = cfg.vault / layout.V2["readme"]
+    if target.is_symlink():
+        return
+    if target.exists():
+        try:
+            head = target.read_text(encoding="utf-8")[: len(layout.README_MARKER) + 4]
+        except (OSError, UnicodeDecodeError):
+            return
+        if not head.startswith(layout.README_MARKER):
+            return
+    text = layout.render_readme(scout_config.load_spaces(cfg.vault), engine_version=cfg.plugin_version)
+    if not target.exists() or target.read_text(encoding="utf-8") != text:
+        _atomic_write(target, text)
 
 
 def _stage_write_engine_pointer(cfg: BootstrapConfig) -> Path | None:
@@ -1273,15 +1326,16 @@ def _refuse_interrupted_install(vault: Path) -> None:
         )
 
 
+# The v1 paths of the _CAT_MERGE_FILES: an older engine's sidecar of one blocks the move too.
+_CAT_MERGE_FILES_V1 = ("knowledge-base/ontology/parser.py", "docs/kb-page-standard.md")
+
+
 def blocking_sidecars(vault: Path) -> list[str]:
     """Pending sidecars that make ``upgrade`` refuse: the ``_CAT_MERGE_FILES``
-    ones. A pending brain-file sidecar only skips that file
-    (``brain_merge.pending_brain_sidecars``)."""
-    return [
-        f"{vault_rel}.proposed-merge"
-        for vault_rel in _CAT_MERGE_FILES
-        if (vault / f"{vault_rel}.proposed-merge").exists()
-    ]
+    ones, at their v2 or v1 paths. A pending brain-file sidecar only skips that
+    file (``brain_merge.pending_brain_sidecars``)."""
+    rels = dict.fromkeys([*_CAT_MERGE_FILES, *_CAT_MERGE_FILES_V1])
+    return [f"{rel}.proposed-merge" for rel in rels if (vault / f"{rel}.proposed-merge").exists()]
 
 
 def _refuse_pending_sidecars(vault: Path) -> None:
@@ -1337,6 +1391,7 @@ def install(cfg: BootstrapConfig) -> InstallResult:
         _stage_jobs_install(cfg)
         _stage_install_scoutctl_shim(cfg)
         _stage_version_stamp(cfg, is_upgrade=False)
+        _stage_readme(cfg)
         marker.unlink(missing_ok=True)
         # After the stamp and the marker, so the initial commit holds the whole
         # install (scout-config.yaml included) and never the marker.
@@ -1362,14 +1417,36 @@ def _is_legacy_vault(vault: Path) -> bool:
     return (vault / ".scout-state").exists() and not (vault / "scout-config.yaml").exists()
 
 
-def _stage_migrations(cfg: BootstrapConfig) -> None:
+class LayoutDeferred(RuntimeError):
+    """The layout move could not run yet: the upgrade stopped before rendering anything (spec §4.3).
+
+    Not a failure: self-update and ``bootstrap auto`` report it as ``deferred`` and
+    retry on a later upgrade. ``outcome`` is the ``layout_migrate.LayoutOutcome``.
+    """
+
+    def __init__(self, outcome: object, reason: str) -> None:
+        super().__init__(f"layout move deferred: {reason}")
+        self.outcome = outcome
+        self.reason = reason
+
+
+def _stage_migrations(cfg: BootstrapConfig) -> object:
     """Run idempotent data-format migrations on an existing vault.
 
-    Currently: convert a single-file Wishlist + research-queue into the
-    per-file format. ``migrate_perfile`` no-ops on already-migrated vaults,
-    so this is safe to run on every upgrade.
+    First ``migrate_perfile`` (single-file Wishlist and research queue to one
+    file per item, at their v1 paths), then the layout move
+    (``layout_migrate.migrate_layout``), which also re-homes v1 record folders
+    an older app or plugin recreated on a v2 vault. Both no-op when done.
+    Raises :class:`LayoutDeferred` when the move must wait: every later stage
+    would write v2 files into a v1 vault.
     """
+    from scout import layout_migrate
+
     migrate_perfile(cfg.vault)
+    outcome = layout_migrate.migrate_layout(cfg.vault, plugin_root=cfg.plugin_root)
+    if outcome.state == "deferred":
+        raise LayoutDeferred(outcome, outcome.reason)
+    return outcome
 
 
 def _stage_privacy_report(vault: Path) -> None:
@@ -1441,10 +1518,18 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
     lock.parent.mkdir(parents=True, exist_ok=True)
     acquire_lock_with_wait(lock)
     try:
+        # A vault installed before #433 was never initialized: repair it before
+        # the migrations, which need a repository (the layout move commits).
+        _stage_git_init(cfg)
+        # Compatibility links an earlier move left go once the jobs, pointer,
+        # git hook and installed plugin are on v2 paths (spec §4.5 step 5).
+        from scout import layout_migrate
+
+        removed_links = layout_migrate.remove_compat_links_if_unused(cfg.vault)
         # Migrations run FIRST so later stages (e.g. cat-4 assembly of
         # DREAMING/RESEARCH) land on an already-migrated vault. Idempotent:
         # no-ops on vaults that are already per-file or never had legacy files.
-        _stage_migrations(cfg)
+        migration = _stage_migrations(cfg)
         vault_edits = _stage_managed_files(cfg)
         _stage_gitignore(cfg)
         # _stage_seed_schedule is idempotent (returns early if the file
@@ -1461,8 +1546,7 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         _stage_jobs_install(cfg)
         _stage_install_scoutctl_shim(cfg)
         _stage_version_stamp(cfg, is_upgrade=True)
-        # A vault installed before #433 was never initialized: repair it here.
-        _stage_git_init(cfg)
+        _stage_readme(cfg)
         _stage_install_git_hook(cfg)
         pointer = _stage_write_engine_pointer(cfg)
         _stage_privacy_report(cfg.vault)
@@ -1480,6 +1564,8 @@ def upgrade(cfg: BootstrapConfig) -> UpgradeResult:
         installed=cat4.installed,
         vault_edits=vault_edits,
         pointer=pointer,
+        migration=migration,
+        removed_compat_links=removed_links,
     )
 
 
@@ -1519,6 +1605,12 @@ def migrate_legacy(cfg: BootstrapConfig) -> MigrateLegacyResult:
             f"vault at {cfg.vault} is not a legacy vault (scout-config.yaml "
             f"exists). Use `scoutctl bootstrap upgrade` instead."
         )
+    if layout.layout_version(cfg.vault) < 2:
+        # This engine renders layout v2 only; a Plan-5-era vault is v1 everywhere (spec §7.1).
+        raise RuntimeError(
+            f"{cfg.vault} is a legacy vault in the old layout. Run `scoutctl bootstrap migrate-legacy` with a "
+            f"Scout release before layout v2 (0.18.x), then `scoutctl bootstrap upgrade` with this one."
+        )
     lock = cfg.vault / ".scout-logs" / ".scout-session.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     acquire_lock_with_wait(lock)
@@ -1529,7 +1621,7 @@ def migrate_legacy(cfg: BootstrapConfig) -> MigrateLegacyResult:
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         records: dict[str, brain_merge.Provenance] = {}
         for kind in brain_merge.BRAIN_KINDS:
-            live = cfg.vault / f"{kind}.md"
+            live = cfg.vault / layout.brain_path(kind)
             if live.exists():
                 content = live.read_text(encoding="utf-8")
                 _atomic_write(snapshot_dir / f"{kind}.md", content)

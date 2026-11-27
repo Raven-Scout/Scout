@@ -79,7 +79,7 @@ def sections(lines: list[str], level: int, per_file: re.Pattern[str] | None) -> 
             if per_file is not None:
                 m = per_file.search(ln)
                 if m:
-                    key = keys.setdefault(m.group(1), f"pattern-{m.group(1)}-{_slug(ln[m.end():])}")
+                    key = keys.setdefault(m.group(1), f"pattern-{m.group(1)}-{_slug(ln[m.end() :])}")
             else:
                 d = DATE.search(ln)
                 if d:
@@ -174,8 +174,9 @@ def _base_stem(p: Path) -> str:
     return re.sub(r"-p\d{2}$", "", p.stem)
 
 
-def split_oversized(shard_dir: Path, max_bytes: int, header_lines: int,
-                    index_file: Path | None = None) -> tuple[int, list[str]]:
+def split_oversized(
+    shard_dir: Path, max_bytes: int, header_lines: int, index_file: Path | None = None
+) -> tuple[int, list[str]]:
     """Split every over-budget shard into `-pNN` parts.
 
     Returns (count, orphaned_stems). Each orphaned stem is a basename that used to be a
@@ -190,8 +191,11 @@ def split_oversized(shard_dir: Path, max_bytes: int, header_lines: int,
         # The index lives inside the shard dir. Splitting it would delete the very file
         # _reindex() reads next, leaving the mutation done and the command reporting failure.
         # Checked before any split, so a refusal leaves every shard untouched.
-        print(f"refusing to split {index_file} — it is the index file passed as `file`; "
-              f"pass the real index (e.g. the folder's parent .md) instead", file=sys.stderr)
+        print(
+            f"refusing to split {index_file} — it is the index file passed as `file`; "
+            f"pass the real index (e.g. the folder's parent .md) instead",
+            file=sys.stderr,
+        )
         raise SystemExit(2)
     for p in oversized:
         lines = p.read_text(encoding="utf-8").splitlines()

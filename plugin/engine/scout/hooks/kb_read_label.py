@@ -50,7 +50,7 @@ def private_text(rel: str, why: str) -> str:
 def unlabelled_text(rel: str) -> str:
     return (
         f"{MARK} Scout could not label {rel}, so treat it as [private]. {_SHARED} "
-        "`scripts/scoutctl kb read <path>` shows its label."
+        "`scout/scripts/scoutctl kb read <path>` shows its label."
     )
 
 

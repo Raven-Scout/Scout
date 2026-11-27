@@ -1221,10 +1221,10 @@ def test_calibration_report_due(repo, env):
     assert _due(repo, env)["calibration_report_due"] is False
     _brain_edit(repo, days_ago=43, content="older\n")  # review_on 29 days ago
     assert _due(repo, env)["calibration_report_due"] is True
-    (repo / "docs").mkdir()
-    (repo / "docs/changes-calibration-report.md").write_text("report\n")
+    (repo / "reports").mkdir()
+    (repo / "reports/changes-calibration-report.md").write_text("report\n")
     assert _due(repo, env)["calibration_report_due"] is False
-    (repo / "docs/changes-calibration-report.md").unlink()
+    (repo / "reports/changes-calibration-report.md").unlink()
     write_settings(Settings(calibrated_on=NOW.date()), env)
     assert _due(repo, env)["calibration_report_due"] is False
 

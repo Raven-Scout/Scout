@@ -32,21 +32,21 @@ Work through the messages oldest first (lowest `message_id`): a later message ca
 
 ### Step 2: Read only what the messages touch
 
-Read today's `action-items/action-items-YYYY-MM-DD.md` (the date from `scripts/scout-tz.sh date '+%Y-%m-%d'`; if the file is missing, run `scripts/scoutctl action-items materialize` first). Then read only the KB notes the messages name or need: find them with `scripts/scoutctl kb resolve` or `kb search`, and read them with `scripts/scoutctl kb read <path>`. Don't run a full sweep: no connector scans, no meeting prep, no KB audit.
+Read today's `action-items/action-items-YYYY-MM-DD.md` (the date from `scout/scripts/scout-tz.sh date '+%Y-%m-%d'`; if the file is missing, run `scout/scripts/scoutctl action-items materialize` first). Then read only the KB notes the messages name or need: find them with `scout/scripts/scoutctl kb resolve` or `kb search`, and read them with `scout/scripts/scoutctl kb read <path>`. Don't run a full sweep: no connector scans, no meeting prep, no KB audit.
 
 ### Step 3: Skip work already done
 
 Before acting on a message, check whether an earlier respond commit already handled it. Respond commits name their message ids in the subject (Step 5), and `kb delta` prints subjects:
 
 ```bash
-scripts/scoutctl kb delta --since 7d
+scout/scripts/scoutctl kb delta --since 7d
 ```
 
 Look for subjects whose comma-separated `tg:` list holds this message's id (the whole id: `tg:5,6` doesn't hold 56): `respond [HH:MM]: tg:<ids> — …`, or a scheduled run's that answered leftovers, such as `consolidation [HH:MM]: tg:<ids> — …`. A hit means that message's work is done. Don't redo it (no second draft PR, no duplicate action item); report that commit's short sha in the reply instead.
 
 ### Step 4: Handle each message by what it asks
 
-- **Correction or feedback:** record it in the mistake audit (`knowledge-base/scout-mistake-audit.md`), and fix the KB note or action item too if a fact was wrong.
+- **Correction or feedback:** record it in the mistake audit (`scout/records/scout-mistake-audit.md`), and fix the KB note or action item too if a fact was wrong.
 - **Task-ask:** do it if it is in scope under the guardrails below. Otherwise add it to today's action items as 🔴, in {{USER_NAME}}'s words, in the format of the items already there (each starts with a stable `[#TAG]`), and say so in the reply.
 - **Question:** answer it from the KB. If the KB doesn't know, say so; don't guess.
 - **Approval of a {{INSTANCE_NAME}} proposal:** carry it out only within existing grants.
@@ -55,10 +55,10 @@ Anything risky or unclear: don't act; ask the question in the reply.
 
 ### Step 5: Commit
 
-Commit as "Changing the vault's git" above says, with only the paths this run touched. Take `HH:MM` from `scripts/scout-tz.sh date '+%H:%M'`. The subject names every message id in the batch, comma-separated (`tg:5,6`), so Step 3 finds it:
+Commit as "Changing the vault's git" above says, with only the paths this run touched. Take `HH:MM` from `scout/scripts/scout-tz.sh date '+%H:%M'`. The subject names every message id in the batch, comma-separated (`tg:5,6`), so Step 3 finds it:
 
 ```bash
-{{SCOUT_DIR}}/scripts/git-safe-commit.sh "respond [HH:MM]: tg:<ids> — <what changed, in a few words>" <only the paths THIS run touched>
+{{SCOUT_DIR}}/scout/scripts/git-safe-commit.sh "respond [HH:MM]: tg:<ids> — <what changed, in a few words>" <only the paths THIS run touched>
 ```
 
 It prints `committed <sha>`: the reply names that short sha. Exit 4: nothing changed (questions only), so there is no commit. Exit 6: queued for after the session, so say "commit queued" instead of a sha. Exit 3 or 5: say so in the reply; never fall back to `-A`.

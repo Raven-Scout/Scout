@@ -25,7 +25,7 @@ from typer.testing import CliRunner
 
 from scout import config as scout_config
 from scout import connectors as scout_connectors
-from scout import custom_connectors, health, health_notify
+from scout import custom_connectors, health, health_notify, layout
 from scout import schedule as scout_schedule
 from scout.cli import app
 from scout.errors import ConfigError
@@ -805,7 +805,7 @@ def test_custom_add_leaves_a_file_it_cant_read_alone(installed: Path, breakit: C
     """Writing back the empty ``raw`` would delete the other entries and lift their ``restrict_tools``."""
     before = _break_custom(installed, breakit)
     config_before = (installed / "scout-config.yaml").read_bytes()
-    skill_before = (installed / "SKILL.md").read_bytes()
+    skill_before = (installed / layout.brain_path("SKILL")).read_bytes()
     gate_before = custom_connectors.tool_gate(installed)
 
     assert _custom_add(installed, THIRD, dry_run=True).status == "error"
@@ -814,7 +814,7 @@ def test_custom_add_leaves_a_file_it_cant_read_alone(installed: Path, breakit: C
     assert out.status == "error" and "fix it by hand" in (out.message or "")
     assert (installed / custom_connectors.CUSTOM_FILE).read_bytes() == before
     assert (installed / "scout-config.yaml").read_bytes() == config_before
-    assert (installed / "SKILL.md").read_bytes() == skill_before
+    assert (installed / layout.brain_path("SKILL")).read_bytes() == skill_before
     assert custom_connectors.tool_gate(installed) == gate_before
 
 
@@ -865,7 +865,7 @@ def test_an_upgrade_stops_rather_than_drop_the_custom_sections(installed: Path, 
     with pytest.raises(ConfigError, match="could not be read") as raised:
         bootstrap.upgrade(cfg)
     assert body.split(": ", 1)[1] not in str(raised.value)
-    assert "## First Inbound Scan" in (installed / "SKILL.md").read_text(encoding="utf-8")
+    assert "## First Inbound Scan" in (installed / layout.brain_path("SKILL")).read_text(encoding="utf-8")
 
 
 def test_an_upgrade_still_runs_past_a_syntax_error(installed: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -874,7 +874,7 @@ def test_an_upgrade_still_runs_past_a_syntax_error(installed: Path, capsys: pyte
     cfg = bootstrap.config_from_vault(installed, plugin_root=PLUGIN, plugin_version="0.0.1", skip_jobs=True)
     bootstrap.upgrade(cfg)
     assert "could not be read: ParserError at line" in capsys.readouterr().err
-    assert "## First Inbound Scan" not in (installed / "SKILL.md").read_text(encoding="utf-8")
+    assert "## First Inbound Scan" not in (installed / layout.brain_path("SKILL")).read_text(encoding="utf-8")
 
 
 def test_the_doctor_warns_on_a_bad_custom_file_and_does_not_crash(installed: Path, tmp_path: Path) -> None:

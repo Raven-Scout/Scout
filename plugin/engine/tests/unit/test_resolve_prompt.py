@@ -190,7 +190,7 @@ def test_guardrails_block_carries_the_rules():
         "runner scripts",
         "`.mcp.json`",
         "`.scout-state/schedule.yaml`",
-        "`scripts/git-safe-commit.sh`",
+        "`scout/scripts/git-safe-commit.sh`",
         "force-push",
         "`.env*`",
         "Draft an issue",

@@ -1,5 +1,6 @@
 """Connector health report — rolls up `.scout-logs/connector-calls-*.jsonl`
-into `knowledge-base/connector-health.md` and fires alerts.
+into `scout/records/connector-health.md` (layout v2; `knowledge-base/` on a vault that
+hasn't moved) and fires alerts.
 
 Direct port of ``~/Scout/scripts/connector-health-report.sh``. Rules preserved:
   - Mode-aware baseline: alert if connector was healthy on >=2 of last 3 prior
@@ -31,7 +32,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from scout import connector_calls, paths, safe_write
+from scout import connector_calls, layout, paths, safe_write
 from scout.config import resolve_timezone
 from scout.connectors import Capability, Connector, ConnectorRegistry, load_registry
 from scout.events import Event, now_iso
@@ -618,7 +619,7 @@ def render_health_md(
         "",
         "- Every tool call in a scheduled scout run is logged by `hooks/connector-log.sh` "
         "(PostToolUse hook) to `.scout-logs/connector-calls-YYYY-MM-DD.jsonl`.",
-        "- After each run, `scripts/connector-health-report.sh` rolls up the last 14 days, "
+        "- After each run, `scoutctl connector-health-report` rolls up the last 14 days, "
         "rewrites this file in place, and fires alerts on degradation.",
         "- Interactive Claude Code sessions in ~/Scout are not logged (the hook short-circuits "
         "when `SCOUT_MODE` is unset).",
@@ -666,7 +667,7 @@ def render_pending_alerts_md(
         lines.append(f"   ↳ *Try first:* {first_fix}")
         if a.err_sample:
             lines.append(f"   ↳ *Last error:* `{a.err_sample}`")
-    lines.append("_Full matrix + detailed remediation: `knowledge-base/connector-health.md`._")
+    lines.append(f"_Full matrix + detailed remediation: `{layout.V2['connector_health']}`._")
     return "\n".join(lines) + "\n"
 
 
@@ -851,7 +852,7 @@ def _run(*, data_dir: Path | None, now: datetime | None, cleanup: bool) -> Event
     n = now or _default_now()
     target_data = data_dir if data_dir is not None else paths.data_dir()
     log_dir = paths.logs_dir(target_data)
-    out_path = paths.kb_dir(target_data) / "connector-health.md"
+    out_path = target_data / layout.for_vault(target_data)["connector_health"]
     alerts_path = log_dir / "connector-alerts.log"
     alerts_state_path = log_dir / ALERTS_STATE_FILENAME
     pending_path = paths.cache_dir(target_data) / "connector-alerts-pending.md"
@@ -993,7 +994,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         event = run(cleanup=True)
         if event is None:
-            surface = paths.kb_dir(paths.data_dir()) / "connector-health.md"
+            surface = paths.data_dir() / layout.for_vault(paths.data_dir())["connector_health"]
             if surface.exists():
                 print(
                     f"connector-health: no scheduled-run records in the last {DEFAULT_WINDOW_DAYS} days; "

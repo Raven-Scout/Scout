@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from scout import custom_connectors as cc
+from scout import layout
 from scout.scripts import brain_merge
 from scout.scripts.bootstrap import (
     BootstrapConfig,
@@ -102,15 +103,15 @@ def test_add_on_clean_vault_fast_forwards_live_snapshot_and_provenance(tmp_path:
     assert result.status == "applied"
     assert result.updated == ["SKILL.md"]
     new = _assemble(after, "SKILL", custom=custom_after)
-    assert (before.vault / "SKILL.md").read_text() == new
+    assert (before.vault / layout.brain_path("SKILL")).read_text() == new
     assert (_snap(before) / "SKILL.md").read_text() == new
     assert brain_merge.load_provenance(_snap(before))["SKILL.md"].sha256 == brain_merge.sha256_text(new)
-    assert not (before.vault / "SKILL.md.proposed-merge").exists()
+    assert not (before.vault / layout.sidecar_path("SKILL")).exists()
 
 
 def test_add_keeps_the_users_own_edits(tmp_path: Path):
     before = _installed(tmp_path)
-    live_path = before.vault / "SKILL.md"
+    live_path = before.vault / layout.brain_path("SKILL")
     lines = live_path.read_text().splitlines()
     lines.insert(2, "Local rule: keep the briefing under one screen.")
     live_path.write_text("\n".join(lines) + "\n")
@@ -129,7 +130,7 @@ def test_existing_vault_trailing_newline_does_not_spuriously_conflict(tmp_path: 
     conflict; see three_way_merge._pad_trailing_newline)."""
     before = _installed(tmp_path)
     snapshot = (_snap(before) / "SKILL.md").read_text()
-    live_path = before.vault / "SKILL.md"
+    live_path = before.vault / layout.brain_path("SKILL")
     assert not snapshot.endswith("\n")
     assert live_path.read_text() == snapshot
     lines = snapshot.splitlines()
@@ -146,12 +147,12 @@ def test_plugin_drift_defers_and_writes_nothing(tmp_path: Path):
     before = _installed(tmp_path)
     snap = _snap(before) / "SKILL.md"
     snap.write_text(snap.read_text() + "\nplugin changed underneath\n")
-    live_before = (before.vault / "SKILL.md").read_text()
+    live_before = (before.vault / layout.brain_path("SKILL")).read_text()
     result, _, _ = _add_suite(before)
     assert result.status == "deferred"
     assert result.drifted == ["SKILL.md"]
-    assert (before.vault / "SKILL.md").read_text() == live_before
-    assert not (before.vault / "SKILL.md.proposed-merge").exists()
+    assert (before.vault / layout.brain_path("SKILL")).read_text() == live_before
+    assert not (before.vault / layout.sidecar_path("SKILL")).exists()
 
 
 def test_drift_names_every_drifted_brain_file(tmp_path: Path):
@@ -170,7 +171,7 @@ def test_drift_names_every_drifted_brain_file(tmp_path: Path):
 
 def test_overlapping_user_edit_goes_to_sidecar_with_recorded_proposal(tmp_path: Path):
     before = _installed(tmp_path)
-    live_path = before.vault / "SKILL.md"
+    live_path = before.vault / layout.brain_path("SKILL")
     live_path.write_text(live_path.read_text() + "\nMy own footer.\n")
     result, after, custom_after = _add_suite(before)
     assert result.status == "conflict"
@@ -183,18 +184,18 @@ def test_overlapping_user_edit_goes_to_sidecar_with_recorded_proposal(tmp_path: 
 
 def test_pending_sidecar_defers_and_touches_nothing(tmp_path: Path):
     before = _installed(tmp_path)
-    sidecar = before.vault / "SKILL.md.proposed-merge"
+    sidecar = before.vault / layout.sidecar_path("SKILL")
     sidecar.write_text("pending review\n")
-    live_before = (before.vault / "SKILL.md").read_text()
+    live_before = (before.vault / layout.brain_path("SKILL")).read_text()
     result, _, _ = _add_suite(before)
     assert (result.status, result.waiting) == ("deferred", ["SKILL.md"])
     assert sidecar.read_text() == "pending review\n"
-    assert (before.vault / "SKILL.md").read_text() == live_before
+    assert (before.vault / layout.brain_path("SKILL")).read_text() == live_before
 
 
 def test_live_file_with_conflict_markers_is_held(tmp_path: Path):
     before = _installed(tmp_path)
-    live_path = before.vault / "SKILL.md"
+    live_path = before.vault / layout.brain_path("SKILL")
     live_path.write_text(live_path.read_text() + "\n<<<<<<< ours\nmine\n=======\ntheirs\n>>>>>>> theirs\n")
     result, _, _ = _add_suite(before)
     assert (result.status, result.waiting) == ("deferred", ["SKILL.md"])
@@ -205,14 +206,14 @@ def test_only_the_changed_brain_files_are_reconciled(tmp_path: Path):
     """A seeded DREAMING.md with local edits would get a PROPOSE sidecar from a full
     reconciliation; an inbound-only connector never changes DREAMING, so it must not."""
     before = _installed(tmp_path)
-    dreaming = before.vault / "DREAMING.md"
+    dreaming = before.vault / layout.brain_path("DREAMING")
     dreaming.write_text(dreaming.read_text() + "\nLocal dreaming note.\n")
     records = brain_merge.load_provenance(_snap(before))
     records["DREAMING.md"] = brain_merge.Provenance.seeded((_snap(before) / "DREAMING.md").read_text())
     (_snap(before) / brain_merge.PROVENANCE_FILE).write_text(brain_merge.dumps_provenance(records))
     result, _, _ = _add_suite(before)
     assert result.status == "applied"
-    assert not (before.vault / "DREAMING.md.proposed-merge").exists()
+    assert not (before.vault / layout.sidecar_path("DREAMING")).exists()
     assert "Local dreaming note." in dreaming.read_text()
 
 

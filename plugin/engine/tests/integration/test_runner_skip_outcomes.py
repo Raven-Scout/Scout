@@ -2,7 +2,7 @@
 
 A runner that finds the session lock held by a live session, or whose budget
 check says to skip, logs one line and exits 0. Before #401 it exited before
-``scripts/run-outcome.sh record``, so the slot had fired with no ledger row and
+``scout/scripts/run-outcome.sh record``, so the slot had fired with no ledger row and
 ``scoutctl health`` reported ``slot.fired_silent:<slot>`` for a run that was
 skipped on purpose. These tests render the real runner and ``run-outcome.sh``
 templates into a temporary vault and check that each skip leaves a
@@ -75,15 +75,15 @@ def vault(tmp_path: Path) -> Path:
     _script(v / "bin" / "scoutctl", "#!/bin/bash\nexit 0\n")
     for name in ("osascript", "notify-send"):
         _script(tmp_path / "fakebin" / name, "#!/bin/bash\ncat > /dev/null\n")
-    _render(TEMPLATES / "scripts" / "run-outcome.sh.tmpl", v / "scripts" / "run-outcome.sh", v)
-    _render(TEMPLATES / "scripts" / "scout-lock.sh.tmpl", v / "scripts" / "scout-lock.sh", v)
+    _render(TEMPLATES / "scripts" / "run-outcome.sh.tmpl", v / "scout" / "scripts" / "run-outcome.sh", v)
+    _render(TEMPLATES / "scripts" / "scout-lock.sh.tmpl", v / "scout" / "scripts" / "scout-lock.sh", v)
     # The session body must never run on a skip path.
-    _script(v / "scripts" / "claude-with-retry.sh", f'#!/bin/bash\ntouch "{v}/session-ran"\n')
+    _script(v / "scout" / "scripts" / "claude-with-retry.sh", f'#!/bin/bash\ntouch "{v}/session-ran"\n')
     return v
 
 
 def _run(vault: Path, runner: str, **env: str) -> subprocess.CompletedProcess[str]:
-    script = _render(TEMPLATES / runner, vault / runner.removesuffix(".tmpl"), vault)
+    script = _render(TEMPLATES / runner, vault / "scout" / "runners" / runner.removesuffix(".tmpl"), vault)
     fake_bin = vault.parent / "fakebin"
     return subprocess.run(
         [str(script)],
@@ -112,7 +112,7 @@ def live_holder(vault: Path):
 
 
 def _over_budget(vault: Path) -> None:
-    _script(vault / "scripts" / "budget-check.sh", "#!/bin/bash\necho 'over budget'\nexit 1\n")
+    _script(vault / "scout" / "scripts" / "budget-check.sh", "#!/bin/bash\necho 'over budget'\nexit 1\n")
 
 
 @pytest.mark.parametrize("runner", RUNNERS)
@@ -154,7 +154,7 @@ def test_a_manual_skip_is_recorded_under_the_runner_default_mode(vault: Path, ru
     _over_budget(vault)
     env = {k: v for k, v in os.environ.items() if k != "SCOUT_FORCE_MODE"}
 
-    script = _render(TEMPLATES / runner, vault / runner.removesuffix(".tmpl"), vault)
+    script = _render(TEMPLATES / runner, vault / "scout" / "runners" / runner.removesuffix(".tmpl"), vault)
     subprocess.run(
         [str(script)],
         env={**env, "PATH": f"{vault.parent / 'fakebin'}{os.pathsep}{env['PATH']}"},
@@ -252,7 +252,7 @@ def test_the_gate_probe_runs_after_the_lock_and_budget_and_before_claude(runner:
     probe = text.index("gates probe --cached")
     assert text.index("scout_lock_acquire") < probe
     assert text.index("scout_record_skip skipped_budget") < probe
-    assert probe < text.index('"$SCOUT_DIR/scripts/claude-with-retry.sh"')
+    assert probe < text.index('"$SCOUT_DIR/scout/scripts/claude-with-retry.sh"')
 
 
 # ----- the health reading of a skip --------------------------------------------
@@ -339,7 +339,7 @@ def _sandbox_scoutctl(vault: Path, action: str) -> None:
 def _capture_wrapper_env(vault: Path) -> Path:
     seen = vault / "wrapper-env.txt"
     _script(
-        vault / "scripts" / "claude-with-retry.sh",
+        vault / "scout" / "scripts" / "claude-with-retry.sh",
         f'#!/bin/bash\nprintf "%s|%s\\n" "${{SCOUT_SANDBOX_STATUS-}}" "${{SCOUT_SANDBOX_PROFILE:0:11}}" > "{seen}"\n'
         f'touch "{vault}/session-ran"\n',
     )
@@ -480,7 +480,7 @@ def test_the_profile_is_built_for_the_claude_the_runner_starts(vault: Path, runn
 def test_the_integrity_check_brackets_claude_and_comes_before_every_post_session_step(runner: str) -> None:
     text = (TEMPLATES / runner).read_text(encoding="utf-8")
     snapshot = text.index("sandbox snapshot --vault")
-    claude = text.index('"$SCOUT_DIR/scripts/claude-with-retry.sh"')
+    claude = text.index('"$SCOUT_DIR/scout/scripts/claude-with-retry.sh"')
     verify = text.index("sandbox verify --vault")
     outcome = text.index('"$OUTCOME" record')
     assert snapshot < claude < verify < outcome

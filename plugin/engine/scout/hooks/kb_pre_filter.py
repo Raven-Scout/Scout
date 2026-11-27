@@ -1,7 +1,7 @@
 """UserPromptSubmit hook — pre-session KB staleness scorer.
 
 Started as a port of ~/Scout/hooks/kb-pre-filter.sh:
-  - Walks $SCOUT_DATA_DIR/knowledge-base/ and meetings/ (#217), classifying each *.md file
+  - Walks $SCOUT_DATA_DIR/knowledge-base/ (and, on a layout-v1 vault, meetings/, #217), classifying each *.md file
     as STALE / NO_DATE / FRESH against a per-file freshness budget. The date
     comes from the frontmatter `last_updated:` key, else the prose
     "Last updated" line, read in any zone a run writes (#201).
@@ -10,15 +10,16 @@ Started as a port of ~/Scout/hooks/kb-pre-filter.sh:
   - Exits 0 even on partial failure (single bad file doesn't block the session).
 
 Discovery exclusions are layered to match the bash:
-  - find-level: */ontology/*, *archive*, */personal/*
+  - find-level: */ontology/*, *archive*, */personal/* and each private space's folder
   - per-file basename skip: review-queue.md, archived.md, *-archive*,
     *-draft*, *-prompt*
   - per-file rel-path skip: */people/*.md (entity files)
   - per-item record folders: knowledge-base/{scout-mistake-audit,
     research-queue,session-log,kg-audits,review-queue}/ (#201), under
-    knowledge-base/ only
-  - a meeting's dated session files: meetings/<slug>/YYYY-MM-DD[-_. …].md,
-    but never its home file meetings/<slug>/<slug>.md
+    knowledge-base/ only (layout v2 moved the mistake audit and session log
+    to scout/records/, outside the walk; the names stay for v1 vaults)
+  - a meeting's dated occurrence files: .../meetings/<slug>/YYYY-MM-DD[-_. …].md,
+    but never its home file .../meetings/<slug>/<slug>.md
 
 Privacy labels (#453, spec §6.3): the scan is made as the reader the
 environment names (``resolve_reader(None, os.environ)``): ``owner`` in an
@@ -98,9 +99,36 @@ SKIP_KB_SUBDIRS: frozenset[str] = frozenset(
     {"scout-mistake-audit", "research-queue", "session-log", "kg-audits", "review-queue", "from-agents"}
 )
 
-# The vault's content roots, walked in this order. meetings/ holds the home
-# file of every recurring meeting, which SKILL.md treats as canonical (#217).
-KB_ROOTS: tuple[str, ...] = ("knowledge-base", "meetings")
+# The vault's content roots, walked in this order. On a layout-v1 vault the
+# root meetings/ holds the home file of every recurring meeting (#217); layout
+# v2 keeps meetings inside the KB (knowledge-base/<space>/meetings/).
+KB_ROOTS: tuple[str, ...] = ("knowledge-base",)
+V1_KB_ROOTS: tuple[str, ...] = ("knowledge-base", "meetings")
+
+
+def kb_roots(scout_dir: Path) -> tuple[str, ...]:
+    from scout import layout
+
+    return KB_ROOTS if layout.layout_version(scout_dir) == 2 else V1_KB_ROOTS
+
+
+def _private_space_dirs(scout_dir: Path) -> frozenset[str]:
+    """Each private space's folder name (``personal`` always): skipped like ``personal/`` always was.
+
+    A registry that can't be read fails closed, as the privacy policy does: every folder directly under
+    ``knowledge-base/`` that isn't Scout-wide is skipped, so a custom private space is never ranked."""
+    try:
+        from scout.config import RESERVED_SPACE_KEYS, spaces_or_none
+
+        spaces = spaces_or_none(scout_dir)
+        if spaces is None:
+            kb = scout_dir / "knowledge-base"
+            found = {p.name for p in kb.iterdir() if p.is_dir() and p.name not in RESERVED_SPACE_KEYS}
+            return frozenset({"personal", *found})
+        return frozenset({"personal", *(s.key for s in spaces if s.visibility == "private")})
+    except Exception:  # noqa: BLE001 - a hook never raises
+        return frozenset({"personal"})
+
 
 # A meeting's dated session file (`meetings/<slug>/YYYY-MM-DD.md`, or with a
 # suffix after `-`, `_`, `.` or a space): a per-meeting record that moves through prep → notes → synthesis,
@@ -367,7 +395,8 @@ def discover_kb_files(scout_dir: Path) -> list[Path]:
     A root that does not exist is skipped.
     """
     candidates: list[Path] = []
-    for root_name in KB_ROOTS:
+    private = _private_space_dirs(scout_dir)
+    for root_name in kb_roots(scout_dir):
         root = scout_dir / root_name
         if not root.is_dir():
             continue
@@ -376,19 +405,21 @@ def discover_kb_files(scout_dir: Path) -> list[Path]:
                 if not fname.endswith(".md"):
                     continue
                 p = Path(dirpath) / fname
-                if p.is_file() and _ranked(p.relative_to(scout_dir).as_posix()):
+                if p.is_file() and _ranked(p.relative_to(scout_dir).as_posix(), private):
                     candidates.append(p)
 
     candidates.sort()
     return candidates
 
 
-def _ranked(rel_posix: str) -> bool:
-    """Whether a file under one of KB_ROOTS gets a freshness ranking."""
-    # Find-level exclusions: */ontology/*, *archive*, */personal/*
-    if "/ontology/" in rel_posix or "archive" in rel_posix or "/personal/" in rel_posix:
+def _ranked(rel_posix: str, private: frozenset[str] = frozenset({"personal"})) -> bool:
+    """Whether a file under one of the KB roots gets a freshness ranking."""
+    # Find-level exclusions: */ontology/*, *archive*, */personal/* and every other private space
+    if "/ontology/" in rel_posix or "archive" in rel_posix:
         return False
     parts = rel_posix.split("/")
+    if any(part in private for part in parts[1:-1]):
+        return False
     name = parts[-1]
     # Per-file basename exact-match and glob skips
     if name in SKIP_BASENAMES or any(fnmatch.fnmatchcase(name, g) for g in SKIP_BASENAME_GLOBS):
@@ -400,9 +431,11 @@ def _ranked(rel_posix: str) -> bool:
     # Per-item record folders directly under knowledge-base/.
     if parts[0] == "knowledge-base" and len(parts) > 2 and parts[1] in SKIP_KB_SUBDIRS:
         return False
-    # A meeting's dated session files; a home file named for a dated slug still ranks.
+    # A meeting's dated occurrence files (meetings/<slug>/, at the root on v1, in a space on v2); a home file
+    # named for a dated slug still ranks.
     is_home = len(parts) > 2 and name == f"{parts[-2]}.md"
-    return not (parts[0] == "meetings" and len(parts) > 2 and not is_home and _MEETING_SESSION_RE.match(name))
+    in_series = len(parts) >= 3 and parts[-3] == "meetings"
+    return not (in_series and not is_home and _MEETING_SESSION_RE.match(name))
 
 
 def classify(path: Path, now: datetime, scout_dir: Path, tz: ZoneInfo | None = None) -> tuple[str, dict[str, Any]]:
@@ -553,8 +586,9 @@ def run(
 
     reader = resolve_reader(None, os.environ)
     files = discover_kb_files(scout_dir) if reader in FULL_READERS else []
-    labels = visibility_map(scout_dir, reader, [f"{r}/**" for r in KB_ROOTS], who="kb-pre-filter") if files else {}
-    roots = [r for r in KB_ROOTS if (scout_dir / r).is_dir()]
+    walked = kb_roots(scout_dir)
+    labels = visibility_map(scout_dir, reader, [f"{r}/**" for r in walked], who="kb-pre-filter") if files else {}
+    roots = [r for r in walked if (scout_dir / r).is_dir()]
     stale: list[dict[str, Any]] = []
     no_date: list[dict[str, Any]] = []
     fresh: list[dict[str, Any]] = []

@@ -2,7 +2,7 @@
 
 ``run-scout.sh``, ``run-dreaming.sh`` and ``run-research.sh`` take
 ``.scout-logs/.scout-session.lock`` in shell (the shared
-``scripts/scout-lock.sh``), and ``scoutctl`` takes the same
+``scout/scripts/scout-lock.sh``), and ``scoutctl`` takes the same
 file through ``scout/scripts/bootstrap_lock.py``. These tests render the real
 runner templates and drive them against crashed holders, live Python
 ``O_EXCL`` holders, and each other. The lock must be created atomically, a
@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from tests._waits import wait_until
 
 REPO_ROOT = Path(__file__).resolve().parents[3]  # …/plugin
@@ -45,7 +46,8 @@ def _render(tmpl: Path, scout_dir: Path) -> Path:
         "{{USER_SLACK_ID}}": "U0123456789",
     }.items():
         text = text.replace(placeholder, value)
-    out = scout_dir / tmpl.name.removesuffix(".tmpl")
+    out = scout_dir / layout.runner_path(tmpl.name.removesuffix(".tmpl"))
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
     out.chmod(0o755)
     _render_lock_lib(scout_dir)
@@ -53,11 +55,11 @@ def _render(tmpl: Path, scout_dir: Path) -> Path:
 
 
 def _render_lock_lib(scout_dir: Path) -> None:
-    """scripts/scout-lock.sh, which every runner sources (#218)."""
+    """scout/scripts/scout-lock.sh, which every runner sources (#218)."""
     text = (
         (TEMPLATES / "scripts" / "scout-lock.sh.tmpl").read_text(encoding="utf-8").replace("{{INSTANCE_NAME}}", "Scout")
     )
-    out = scout_dir / "scripts" / "scout-lock.sh"
+    out = scout_dir / layout.script_path("scout-lock.sh")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
 
@@ -73,8 +75,8 @@ def _vault(tmp_path: Path, runner: str = "run-scout.sh.tmpl") -> tuple[Path, Pat
 
 
 def _stub_session(scout_dir: Path, body: str) -> None:
-    """Replace scripts/claude-with-retry.sh — the session body — with `body`."""
-    stub = scout_dir / "scripts" / "claude-with-retry.sh"
+    """Replace scout/scripts/claude-with-retry.sh — the session body — with `body`."""
+    stub = scout_dir / layout.script_path("claude-with-retry.sh")
     stub.parent.mkdir(parents=True, exist_ok=True)
     stub.write_text(f"#!/bin/bash\n{body}\n", encoding="utf-8")
     stub.chmod(0o755)
@@ -96,6 +98,11 @@ def _stub_overlap_session(scout_dir: Path, hold_s: float = 0.2) -> tuple[Path, P
         "fi",
     )
     return ran, overlap
+
+
+def _vault_dir(script: Path) -> Path:
+    """The vault a rendered runner (``scout/runners/<name>``) belongs to."""
+    return script.parents[2]
 
 
 def _popen(script: Path) -> subprocess.Popen:
@@ -139,7 +146,7 @@ def test_empty_or_unparseable_lock_is_busy(tmp_path: Path, runner: str, contents
     """An empty lock is a competitor between its O_EXCL create and its PID
     write — never a stale lock to remove (#331 race 4)."""
     script, log_dir, lock = _vault(tmp_path, runner)
-    ran, _ = _stub_overlap_session(script.parent)
+    ran, _ = _stub_overlap_session(_vault_dir(script))
     lock.write_text(contents, encoding="utf-8")
 
     result = _run(script)
@@ -158,7 +165,7 @@ def test_exit_trap_leaves_a_taken_over_lock_alone(tmp_path: Path, runner: str) -
     holder = subprocess.Popen(["sleep", "300"])
     try:
         # The session body plays the reaper: it replaces the lock with its own.
-        _stub_session(script.parent, f'rm -f "{lock}"; echo {holder.pid} > "{lock}"')
+        _stub_session(_vault_dir(script), f'rm -f "{lock}"; echo {holder.pid} > "{lock}"')
 
         result = _run(script)
 
@@ -173,7 +180,7 @@ def test_exit_trap_leaves_a_taken_over_lock_alone(tmp_path: Path, runner: str) -
 @pytest.mark.parametrize("runner", RUNNERS)
 def test_runner_releases_its_own_lock(tmp_path: Path, runner: str) -> None:
     script, _, lock = _vault(tmp_path, runner)
-    ran, _ = _stub_overlap_session(script.parent, hold_s=0)
+    ran, _ = _stub_overlap_session(_vault_dir(script), hold_s=0)
 
     result = _run(script)
 
@@ -188,7 +195,7 @@ def test_live_python_holder_is_skipped_and_not_overwritten(tmp_path: Path, runne
     """A lock scoutctl took (bootstrap_lock.acquire_lock) blocks the runner,
     and the runner leaves its contents untouched."""
     script, log_dir, lock = _vault(tmp_path, runner)
-    ran, _ = _stub_overlap_session(script.parent)
+    ran, _ = _stub_overlap_session(_vault_dir(script))
     holder = subprocess.Popen(
         [
             sys.executable,
@@ -223,7 +230,7 @@ def test_stale_lock_is_left_alone_while_another_process_recovers_it(tmp_path: Pa
     """A fresh <lock>.takeover guard means someone else is mid-recovery: the
     runner skips instead of unlinking the lock out from under them."""
     script, _, lock = _vault(tmp_path)
-    ran, _ = _stub_overlap_session(script.parent)
+    ran, _ = _stub_overlap_session(_vault_dir(script))
     dead = _dead_pid()
     lock.write_text(str(dead), encoding="utf-8")
     guard = lock.with_name(lock.name + ".takeover")
@@ -240,7 +247,7 @@ def test_stale_lock_is_left_alone_while_another_process_recovers_it(tmp_path: Pa
 def test_abandoned_guard_is_cleared_and_stale_lock_recovered(tmp_path: Path) -> None:
     """A guard older than 30 s was left by a process that died mid-recovery."""
     script, _, lock = _vault(tmp_path)
-    ran, _ = _stub_overlap_session(script.parent, hold_s=0)
+    ran, _ = _stub_overlap_session(_vault_dir(script), hold_s=0)
     lock.write_text(str(_dead_pid()), encoding="utf-8")
     guard = lock.with_name(lock.name + ".takeover")
     guard.touch()
@@ -258,7 +265,7 @@ def test_abandoned_guard_is_cleared_and_stale_lock_recovered(tmp_path: Path) -> 
 def test_wedged_holder_is_not_reaped_while_another_process_holds_the_guard(tmp_path: Path) -> None:
     """The wedged-holder reap runs under the same guard as stale recovery."""
     script, log_dir, lock = _vault(tmp_path)
-    ran, _ = _stub_overlap_session(script.parent)
+    ran, _ = _stub_overlap_session(_vault_dir(script))
     holder = subprocess.Popen(["sleep", "300"])
     try:
         lock.write_text(str(holder.pid), encoding="utf-8")
@@ -298,7 +305,7 @@ def test_two_runners_racing_one_stale_lock_never_both_run(tmp_path: Path) -> Non
     """Two runners recovering the same crashed holder's lock: exactly one runs
     (#331 races 1 and 2)."""
     script, _, lock = _vault(tmp_path)
-    ran, overlap = _stub_overlap_session(script.parent)
+    ran, overlap = _stub_overlap_session(_vault_dir(script))
     for _ in range(RACE_ROUNDS):
         lock.write_text(f"{_dead_pid()}\n", encoding="utf-8")
         before = len(_lines(ran))
@@ -358,18 +365,18 @@ def test_runner_racing_a_python_exclusive_holder_never_overwrites_it(tmp_path: P
     runner must never delete or overwrite the lock scoutctl took with O_EXCL,
     and the two never hold it together.
 
-    Both sides wait on a start barrier — the runner inside scripts/scout-tz.sh,
+    Both sides wait on a start barrier — the runner inside scout/scripts/scout-tz.sh,
     which it calls just before its lock block, so start-up cost (the Python
     import, bash's own start) doesn't decide the race — and then the offset
     between them is swept across the runner's recovery window.
     """
     script, _, lock = _vault(tmp_path)
-    scout_dir = script.parent
+    scout_dir = _vault_dir(script)
     ran, overlap = _stub_overlap_session(scout_dir)
     clobbered = scout_dir / "clobbered.log"
     runner_ready, py_ready, go = (scout_dir / n for n in ("runner-ready", "py-ready", "go"))
     runner_delay = scout_dir / "runner-delay"
-    tz = scout_dir / "scripts" / "scout-tz.sh"
+    tz = scout_dir / layout.script_path("scout-tz.sh")
     tz.write_text(
         f'#!/bin/bash\ntouch "{runner_ready}"\n'
         f'while [ ! -e "{go}" ]; do sleep 0.001; done\n'

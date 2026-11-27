@@ -37,7 +37,7 @@ PATTERNS=(
     # It names its own reset time, so it is transient by construction, but none of the
     # patterns above matched it ("session limit" is neither "usage limit" nor "rate limit"),
     # so such runs were classified non-transient and never retried.
-    # Keep in sync with RATE_LIMIT_RE in scripts/run-outcome.sh.
+    # Keep in sync with RATE_LIMIT_RE in scout/scripts/run-outcome.sh.
     'session limit'
     'hit your .{0,20}limit'
     'limit.{0,20}resets'

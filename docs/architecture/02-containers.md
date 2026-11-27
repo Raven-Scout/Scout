@@ -23,7 +23,7 @@ C4Container
 
   System_Ext(telegram, "Telegram Bot API")
   ContainerDb(state, "Operational state", "YAML, JSON, JSONL, gitignored", ".scout-state: schedule.yaml, id-map.json, last-assembled snapshots, locks. .scout-logs: usage-tracker.jsonl, session-tokens.jsonl, connector-calls, run logs. .scout-cache: pre-session caches")
-  ContainerDb(vault, "Vault", "Markdown and YAML, git repo, Obsidian vault", "Brain files SKILL.md, DREAMING.md, RESEARCH.md. knowledge-base/, action-items/, meetings/, inbox.md, review-queue.md, dreaming-proposals.md, docs/wishlist/, scout-config.yaml")
+  ContainerDb(vault, "Vault", "Markdown and YAML, git repo, Obsidian vault", "Brain skills in scout/brain/ (SKILL.md, DREAMING.md, RESEARCH.md). knowledge-base/ (meetings and spaces inside it), action-items/, inbox/inbox.md, review-queue.md, dreaming-proposals.md, docs/wishlist/, scout-config.yaml")
   System_Ext(companions, "Scout desktop and iOS apps")
 
   Rel(scheduler, engine, "schedule tick", "5 min")

@@ -513,7 +513,10 @@ def _dec(v: Any) -> Any:
 
 
 def _is_entity(frontmatter: Any) -> bool:
-    return isinstance(frontmatter, dict) and "name" in frontmatter and "type" in frontmatter
+    """An entity, or a role note the graph folds into one (layout v2): both are kept in the index."""
+    from scout.kb.ontology import is_graph_note
+
+    return is_graph_note(frontmatter)
 
 
 class IndexStore:
@@ -1197,29 +1200,59 @@ def _node_labels(graph: KnowledgeGraph, names: Sequence[str]) -> list[Mapping[st
     return list(seen.values())
 
 
+def _edge_mark(node: Mapping[str, Any] | None, edge: Mapping[str, Any] | None) -> str:
+    """The node's mark, private as well when the edge came from a private role note (layout v2 §3.2)."""
+    if edge and edge.get("visibility") == "private" and not (node and node.get("visibility") == "private"):
+        return _PRIVATE + (from_agent(node) or "")
+    return _mark(node)
+
+
+def _with_edges(labels: list[Mapping[str, Any]], edges: Sequence[Mapping[str, Any] | None]) -> list[Mapping[str, Any]]:
+    seen = {(lb.get("path"), lb.get("visibility")) for lb in labels}
+    for e in edges:
+        if e and (e.get("path"), e.get("visibility")) not in seen:
+            seen.add((e.get("path"), e.get("visibility")))
+            labels.append(e)
+    return labels
+
+
 def cmd_related(graph: KnowledgeGraph, name: str) -> Output:
     rels = graph.related(name)
-    rows: list[dict[str, Any]] = [{**r, "label": graph.label_of(r["target"])} for r in rels]
+    rows: list[dict[str, Any]] = [
+        {
+            **{k: v for k, v in r.items() if k != "_label"},
+            "label": graph.label_of(r["target"]),
+            "edge_label": r.get("_label"),
+        }
+        for r in rels
+    ]
     if rows:
-        lines = [f"  {_mark(graph.label_of(r['target']))}{r['type']} → {r['target']}" for r in rels]
+        lines = [f"  {_edge_mark(r['label'], r['edge_label'])}{r['type']} → {r['target']}" for r in rows]
     else:
         lines = [f"No relationships found for '{name}'."]
-    return Output(data=rows, lines=lines, labels=_node_labels(graph, [r["target"] for r in rels]))
+    labels = _with_edges(_node_labels(graph, [r["target"] for r in rels]), [r["edge_label"] for r in rows])
+    return Output(data=rows, lines=lines, labels=labels)
 
 
 def cmd_traverse(graph: KnowledgeGraph, name: str, hops: int | None, rels: str | None) -> Output:
     rel_types = [s.strip() for s in rels.split(",")] if rels else None
     results = graph.traverse(name, max_hops=hops or 2, rel_types=rel_types)
-    rows = [{**{k: v for k, v in r.items() if k != "_label"}, "label": r["_label"]} for r in results]
+    rows = [
+        {**{k: v for k, v in r.items() if k not in ("_label", "_edge_label")}, "label": r["_label"]}
+        | ({"edge_label": r["_edge_label"]} if r.get("_edge_label") else {})
+        for r in results
+    ]
     if not results:
         lines = [f"No entities reachable from '{name}'."]
     else:
         lines = [
-            f"  {_mark(r['label'])}[{r['hops']} hop{'s' if r['hops'] != 1 else ''}] {r['entity']} (via {r['via']})"
+            f"  {_edge_mark(r['label'], r.get('edge_label'))}[{r['hops']} hop{'s' if r['hops'] != 1 else ''}] "
+            f"{r['entity']} (via {r['via']})"
             for r in rows
         ]
         lines.append(f"\n{len(results)} reachable entit{'ies' if len(results) != 1 else 'y'}.")
-    return Output(data=rows, lines=lines, labels=_node_labels(graph, [r["entity"] for r in results]))
+    labels = _with_edges(_node_labels(graph, [r["entity"] for r in results]), [r.get("edge_label") for r in rows])
+    return Output(data=rows, lines=lines, labels=labels)
 
 
 def cmd_path(graph: KnowledgeGraph, source: str, target: str, hops: int | None) -> Output:

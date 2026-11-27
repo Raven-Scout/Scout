@@ -27,7 +27,7 @@ _SEARCH_BASH = re.compile(r"^\s*(?:rg|grep|egrep|fgrep|find|ag|fd)\b")
 FILE_TOOLS = {"Read", "Edit", "Write", "NotebookEdit"}
 # The static instructions a run loads: the brain files, and any slice or deferred
 # block cut from them (spec 2026-10-13-static-instruction-trim §8.1).
-BRAIN_FILES = {"SKILL.md", "DREAMING.md", "RESEARCH.md"}
+BRAIN_FILES = {"SKILL.md", "DREAMING.md", "RESEARCH.md"}  # by name: scout/brain/ (layout v2) or the root
 BRAIN_CACHE_DIR = "/.scout-cache/brain/"
 GATE_MARK = re.compile(r"\[scout:(kb-read-gate|outbound-gate)\]")
 

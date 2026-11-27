@@ -78,7 +78,7 @@ summary: "One sentence: what this is."
 last_updated: 2026-03-14T10:20:00+02:00
 as_of: 2026-03-14             # the date "Where it stands" was last made true
 last_verified: 2026-03-14
-verified_against: ["gh example-org/<repo>", "issue tracker project <name>", "[[sources/2026-03/…]]"]
+verified_against: ["gh example-org/<repo>", "issue tracker project <name>", "[[<space>/sources/2026-03/…]]"]
 ---
 # <Project name>
 
@@ -118,7 +118,7 @@ _As of Mar 14, 2026._
 ## History
 <one short paragraph on how the project got here. Then:> The full record is in
 [[<name>-decisions]] and the pre-restructure page is
-[[projects/<name>/archive/<name>-YYYY-MM-DD-pre-restructure]].
+[[<space>/projects/<name>/archive/<name>-YYYY-MM-DD-pre-restructure]].
 ```
 
 A large sub-area that is really its own page (a sub-project, a long reference table) becomes its
@@ -132,7 +132,7 @@ something costs. Rewrite it in place as understanding improves.
 ```markdown
 ---
 domain: <project or domain>
-project: "[[projects/<name>/<name>]]"
+project: "[[<space>/projects/<name>/<name>]]"
 last_updated: 2026-03-14T10:20:00+02:00
 as_of: 2026-03-14
 ---
@@ -142,7 +142,7 @@ as_of: 2026-03-14
 
 ## <Sections as the subject needs>
 <Prose and tables. Every paragraph cites a source note or a permalink, e.g.
-"([PR #42](…))" or "([[sources/2026-03/2026-03-08-widgets-sync]])".>
+"([PR #42](…))" or "([[<space>/sources/2026-03/2026-03-08-widgets-sync]])".>
 
 ## History
 <optional: dated bullets of how the understanding or decision changed, newest first>
@@ -161,7 +161,7 @@ stopped mattering stay here; they don't clutter the page. Past 50 KB, move the o
 ## Domain index — `topics/<domain>/<domain>.md` (cross-project domains only)
 
 A short intro line, then every topic note in the folder grouped under 3–6 plain headings, one line
-each saying what the note answers. Link it from `[[topics]]`. A topic domain must not share a
+each saying what the note answers. Link it from `[[<space>/topics]]`. A topic domain must not share a
 basename with a project page (`topics/widgets/widgets.md` would collide with
 `projects/widgets/widgets.md` and make bare `[[widgets]]` links ambiguous), so name it for the
 subject, e.g. `widgets-platform`.
@@ -169,7 +169,7 @@ subject, e.g. `widgets-platform`.
 ## Restructuring an existing over-long page
 
 The `dreaming-nightly` run's KB pass rebuilds one project page a night this way, the one
-`scripts/scoutctl kb structure --next` picks. Do the same by hand for any page you restructure. The pass skips a page labelled private, shared or
+`scout/scripts/scoutctl kb structure --next` picks. Do the same by hand for any page you restructure. The pass skips a page labelled private, shared or
 local-only (`kb classify`), because a new copy could widen it or hit a hard privacy block, and a folder
 where a rebuild could write into a share; restructure those by hand. The pass only trims a
 shared page that is over budget or carries narration: it cuts whole lines (never a heading), and
@@ -186,9 +186,9 @@ shrink), and rewrite it once the rest fits.
    10 KB each) and the decisions into the decisions note. An old `decision-log.md` merges into it.
    Meetings, docs, PRs and decision threads go in source notes. Sort every other loose file in the
    folder into `documents/`, `research/` or `archive/` (or out of the folder) with `mv`: an old
-   `nav-history.md` goes to `archive/`. Find path-style links with `scripts/scoutctl kb search --all --fixed
+   `nav-history.md` goes to `archive/`. Find path-style links with `scout/scripts/scoutctl kb search --all --fixed
    'projects/<name>/'` and repoint them in the same commit, and name both paths of each move when you
-   commit with `scripts/git-safe-commit.sh`. Leave a loose file labelled private, shared or local-only
+   commit with `scout/scripts/git-safe-commit.sh`. Leave a loose file labelled private, shared or local-only
    where it is. Don't drop facts. Superseded facts go into a topic's
    **History** section or stay only in the archive.
 3. Check the current state against a live source before writing "Where it stands": its status, next
@@ -196,8 +196,8 @@ shrink), and rewrite it once the rest fits.
    to verify, never facts to preserve.
 4. Rewrite the page in place, at the same path, to this standard, so inbound links keep working.
    If other notes link to `[[<name>#<heading>]]`, keep that heading or repoint the links.
-5. `scripts/scoutctl kb lint --report` and `scripts/scoutctl kb validate` must not get worse: count
+5. `scout/scripts/scoutctl kb lint --report` and `scout/scripts/scoutctl kb validate` must not get worse: count
    each before you start and again before you commit, and fix any dangling-link warning the commit's
-   lint prints. Run `scripts/scoutctl kb lint --lossless-rev HEAD --lossless-path <page>`. It doesn't
+   lint prints. Run `scout/scripts/scoutctl kb lint --lossless-rev HEAD --lossless-path <page>`. It doesn't
    count archive copies, so each token it reports reached no live note: restore it, or name it in the
    commit message as deliberately dropped.

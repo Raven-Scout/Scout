@@ -1,7 +1,7 @@
 #!/bin/bash
-# scripts/scoutctl — the vault's way to call the Scout engine.
+# scout/scripts/scoutctl — the vault's way to call the Scout engine.
 #
-# The brain files run `scripts/scoutctl …` (relative: every session runs in the
+# The brain files run `scout/scripts/scoutctl …` (relative: every session runs in the
 # vault) instead of a bare `scoutctl`, which is only there when the engine put
 # itself on PATH. This finds the engine and runs it against THIS vault:
 #
@@ -10,7 +10,7 @@
 #   3. $CLAUDE_PLUGIN_ROOT/engine/bin/scoutctl
 #   4. the newest Scout plugin in Claude Code's plugin cache
 #
-# SCOUT_DATA_DIR defaults to the folder holding this script's scripts/, not to
+# SCOUT_DATA_DIR defaults to the folder holding this script's scout/scripts/, not to
 # the path the vault was rendered at, so a vault that moved (or runs inside a
 # sandbox at another path) still finds itself. An explicit SCOUT_DATA_DIR wins.
 #
@@ -29,7 +29,11 @@ for path_entry in ${path_entries[@]+"${path_entries[@]}"}; do
 done
 export PATH="${safe_path:-/usr/bin:/bin}"
 
-VAULT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The vault is the nearest folder above this script holding scout-config.yaml (scout/scripts/ in layout v2,
+# scripts/ before it), so the script finds it whatever its depth.
+VAULT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+while [ "$VAULT" != "/" ] && [ ! -f "$VAULT/scout-config.yaml" ]; do VAULT="$(dirname "$VAULT")"; done
+[ -f "$VAULT/scout-config.yaml" ] || VAULT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export SCOUT_DATA_DIR="${SCOUT_DATA_DIR:-$VAULT}"
 
 engine=""
@@ -53,7 +57,7 @@ else
 fi
 
 if [ -z "$engine" ] || [ ! -x "$engine" ]; then
-    echo "scripts/scoutctl: no Scout engine found (looked on PATH, at {{SCOUTCTL_BIN}}, in \$CLAUDE_PLUGIN_ROOT and in ~/.claude/plugins/cache)" >&2
+    echo "scout/scripts/scoutctl: no Scout engine found (looked on PATH, at {{SCOUTCTL_BIN}}, in \$CLAUDE_PLUGIN_ROOT and in ~/.claude/plugins/cache)" >&2
     exit 127
 fi
 

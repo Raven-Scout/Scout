@@ -187,7 +187,7 @@ def test_no_section_tells_the_session_to_skip_the_other_channel() -> None:
         assert "replaces the Slack DM" not in text
         assert "instead of** any Slack DM" not in text
         assert "notify.wrap_channels" in text
-    assert "Send this DM even when SKILL.md also has a Telegram Notification section" in slack
+    assert "Send this DM even when scout/brain/SKILL.md also has a Telegram Notification section" in slack
     assert "Send this DM even when this file also has a Step 4d: Telegram Notification" in research
 
 

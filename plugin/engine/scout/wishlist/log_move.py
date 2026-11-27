@@ -1,9 +1,9 @@
 """*The item file is a card, not a log*, held at commit: ``wishlist check-log-move``.
 
 The wishlist phase (``phases/modes/wishlist.md``, Step 3d) keeps a wishlist
-card (``docs/wishlist/<item>.md``) to the request and a ``## Status`` section.
+card (``scout/records/wishlist/<item>.md``) to the request and a ``## Status`` section.
 Dated entries live in the item's progress note,
-``docs/wishlist/progress/<item file name>``, and a run that touches a card
+``scout/records/wishlist/progress/<item file name>``, and a run that touches a card
 whose body still holds a log moves it there verbatim, in the same commit.
 Nothing is deleted. Prose alone can't hold "verbatim": a model tidying a log
 rewords, merges, reorders or drops lines. This check holds it.
@@ -48,8 +48,17 @@ from pathlib import Path, PurePosixPath
 
 from scout import paths as scout_paths
 
-WISHLIST_DIR = "docs/wishlist"
-PROGRESS_DIR = "docs/wishlist/progress"
+WISHLIST_DIR = "scout/records/wishlist"  # layout v2; a vault that hasn't moved keeps docs/wishlist
+PROGRESS_DIR = "scout/records/wishlist/progress"
+
+
+def _dirs(repo: Path) -> tuple[str, str]:
+    """(cards folder, progress folder) in ``repo``'s layout."""
+    from scout import layout
+
+    cards = layout.for_vault(repo)["wishlist_dir"]
+    return cards, f"{cards}/progress"
+
 
 # A standalone ISO date: not part of a path or slug (``progress/2026-01-05-x``) or a longer number.
 _DATE = r"(?<![\w/-])\d{4}-\d{2}-\d{2}(?![\d-])"
@@ -254,18 +263,18 @@ def _git(repo: Path, *args: str) -> bytes:
 
 
 def _head_files(repo: Path) -> set[str] | None:
-    """Every path under ``docs/wishlist/`` at ``HEAD``; None when the repository has no commit yet."""
+    """Every path under the wishlist folder at ``HEAD``; None when the repository has no commit yet."""
     try:
         _git(repo, "rev-parse", "--verify", "-q", "HEAD")
     except LogMoveCheckError:
         return None
-    out = _git(repo, "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", WISHLIST_DIR + "/")
+    out = _git(repo, "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", _dirs(repo)[0] + "/")
     return {p.decode("utf-8", errors="surrogateescape") for p in out.split(b"\0") if p}
 
 
-def _is_card(rel: str) -> bool:
+def _is_card(rel: str, cards_dir: str = WISHLIST_DIR) -> bool:
     p = PurePosixPath(rel)
-    return str(p.parent) == WISHLIST_DIR and p.suffix == ".md"
+    return str(p.parent) == cards_dir and p.suffix == ".md"
 
 
 def _rel(repo: Path, path: str) -> str:
@@ -321,9 +330,10 @@ def check_log_move(*, data_dir: Path | None = None, paths: Iterable[str] | None 
         except OSError as e:
             raise LogMoveCheckError(f"cannot read {rel}: {e}") from e
 
-    wishlist = repo / WISHLIST_DIR
-    on_disk_cards = {f"{WISHLIST_DIR}/{p.name}" for p in wishlist.glob("*.md") if p.is_file()}
-    cards = sorted(on_disk_cards | {rel for rel in (head or ()) if _is_card(rel)})
+    cards_dir, progress_dir = _dirs(repo)
+    wishlist = repo / cards_dir
+    on_disk_cards = {f"{cards_dir}/{p.name}" for p in wishlist.glob("*.md") if p.is_file()}
+    cards = sorted(on_disk_cards | {rel for rel in (head or ()) if _is_card(rel, cards_dir)})
     if committing is not None:
         cards = [card for card in cards if _covered(card, committing)]
 
@@ -339,7 +349,7 @@ def check_log_move(*, data_dir: Path | None = None, paths: Iterable[str] | None 
         if not removed:
             continue
         name = PurePosixPath(card).name
-        note_rel = f"{PROGRESS_DIR}/{name}"
+        note_rel = f"{progress_dir}/{name}"
         note = on_disk(note_rel) if committing is None or _covered(note_rel, committing) else at_head(note_rel)
         missing = first_missing(removed, note)
         if missing is None:

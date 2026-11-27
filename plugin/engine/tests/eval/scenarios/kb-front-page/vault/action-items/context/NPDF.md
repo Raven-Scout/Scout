@@ -11,4 +11,4 @@ updated: {{d-3}}
 **Status:** waiting on Sam since {{d-3}}.
 
 **Links:** [PROJ-1240](https://linear.app/example-org/issue/PROJ-1240) · [[people/sam]] ·
-[[projects/report-builder/report-builder]]
+[[work/projects/report-builder/report-builder]]

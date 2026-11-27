@@ -24,24 +24,24 @@ Do not mention git setup in your output unless something goes wrong.
 
 ## Using Git History
 
-Git is a core part of the {{INSTANCE_NAME}} system — every change is committed with descriptive messages. Use the vault's history actively during runs, through `scripts/scoutctl kb delta` (it labels every changed path, so you know which changes are private):
+Git is a core part of the {{INSTANCE_NAME}} system — every change is committed with descriptive messages. Use the vault's history actively during runs, through `scout/scripts/scoutctl kb delta` (it labels every changed path, so you know which changes are private):
 
-- `scripts/scoutctl kb delta --since 1d` — see what recent runs did (avoid duplicate work)
-- `scripts/scoutctl kb delta --since <commit> --diff` — inspect what changed after a commit
-- `scripts/scoutctl kb delta --since 8h` — understand what happened today
+- `scout/scripts/scoutctl kb delta --since 1d` — see what recent runs did (avoid duplicate work)
+- `scout/scripts/scoutctl kb delta --since <commit> --diff` — inspect what changed after a commit
+- `scout/scripts/scoutctl kb delta --since 8h` — understand what happened today
 
 The commit history is as valuable as the files themselves. When verifying KB claims or understanding what was already audited, check git before querying connectors.
 
 ### Changing the vault's git
 
-Commit only with `scripts/git-safe-commit.sh "<message>" <paths…>`: it prints `committed <sha>` (exit 6: queued for after the session, no SHA yet). In a scheduled run git reads history but can't change the repository: to move or delete, `mv`/`rm` and pass every path to the helper; to restore, `git show HEAD:<path> > <path>`; to untrack, list it in `.gitignore`, move it aside, commit its path, move it back.
+Commit only with `scout/scripts/git-safe-commit.sh "<message>" <paths…>`: it prints `committed <sha>` (exit 6: queued for after the session, no SHA yet). In a scheduled run git reads history but can't change the repository: to move or delete, `mv`/`rm` and pass every path to the helper; to restore, `git show HEAD:<path> > <path>`; to untrack, list it in `.gitignore`, move it aside, commit its path, move it back.
 
 ### Vault Git-Delta Narration (consolidation/briefing — mandatory before composing)
 
 Interactive sessions ({{INSTANCE_NAME}} work sessions, manual edits, `/scout-work`, audits) commit to the vault between scheduled runs. Those commits are a **primary signal source**, not background noise — a `work [HH:MM]:` commit may already have done the thing an action item is about. Before composing the run summary:
 
 ```bash
-cd {{SCOUT_DIR}} && scripts/scoutctl kb delta --since <since>
+cd {{SCOUT_DIR}} && scout/scripts/scoutctl kb delta --since <since>
 ```
 
 `<since>` is the last scheduled run's commit sha (its `<mode> [HH:MM]:` commit in an earlier `kb delta`), or the hours since that run rounded up, such as `8h` (`--since` takes a commit or `Nh` / `Nd` / `Nw`, not a timestamp).
@@ -67,31 +67,31 @@ Commit there, `git push -u origin scout/$NAME`, then `gh pr create --draft`. Nev
 
 ## Timezone Handling
 
-The sandbox/server clock may run in UTC. You **must** use the run's display zone for all time checks and timestamp generation throughout the run: the computer's own timezone (the clock the scheduler fires on), unless `scout-config.yaml` sets a `timezone:` override. Never use bare `date`: run `scripts/scout-tz.sh date '+FMT'`, which resolves it. Never hardcode a zone name: the user travels, and the resolver follows them.
+The sandbox/server clock may run in UTC. You **must** use the run's display zone for all time checks and timestamp generation throughout the run: the computer's own timezone (the clock the scheduler fires on), unless `scout-config.yaml` sets a `timezone:` override. Never use bare `date`: run `scout/scripts/scout-tz.sh date '+FMT'`, which resolves it. Never hardcode a zone name: the user travels, and the resolver follows them.
 
-**Convert ingested connector timestamps at write time.** Connector payloads frequently carry timestamps in UTC (a trailing `Z`, or `+00:00`) — never copy one verbatim into the KB, an action item, or a DM as if it were already in the display zone. Unconverted, it is hours or even a day off on every surface downstream. At write time, parse the source's zone and convert to the display zone (a tz-aware datetime, e.g. `TZ="$(scripts/scout-tz.sh)" python3 -I -c 'import sys, datetime as d; print(d.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d %H:%M %Z"))' <iso>`), then label the result. If a connector timestamp's zone is ambiguous, resolve it before writing — don't assume it matches the display zone.
+**Convert ingested connector timestamps at write time.** Connector payloads frequently carry timestamps in UTC (a trailing `Z`, or `+00:00`) — never copy one verbatim into the KB, an action item, or a DM as if it were already in the display zone. Unconverted, it is hours or even a day off on every surface downstream. At write time, parse the source's zone and convert to the display zone (a tz-aware datetime, e.g. `TZ="$(scout/scripts/scout-tz.sh)" python3 -I -c 'import sys, datetime as d; print(d.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d %H:%M %Z"))' <iso>`), then label the result. If a connector timestamp's zone is ambiguous, resolve it before writing — don't assume it matches the display zone.
 
-**Sanity-check cited times at compose time.** When citing a timestamp described as "this morning" / "earlier today," cross-check it against `scripts/scout-tz.sh date '+%H:%M'` — if the cited hour doesn't fit the narrative (a pre-8 AM event at an afternoon time), that's a UTC-copied-as-local smell; re-derive from the source string. **One event, one time:** a single event must never appear with two different times across surfaces in the same run (raw UTC in one line, local in another) — pick the display zone, convert once, and use it everywhere.
+**Sanity-check cited times at compose time.** When citing a timestamp described as "this morning" / "earlier today," cross-check it against `scout/scripts/scout-tz.sh date '+%H:%M'` — if the cited hour doesn't fit the narrative (a pre-8 AM event at an afternoon time), that's a UTC-copied-as-local smell; re-derive from the source string. **One event, one time:** a single event must never appear with two different times across surfaces in the same run (raw UTC in one line, local in another) — pick the display zone, convert once, and use it everywhere.
 
 ### Hard Rule — Weekday Derivation
 
-Every DM, briefing, and file header that includes a day name (e.g., "Sat Apr 18", "Monday, April 20") **must** be generated by a fresh `scripts/scout-tz.sh date '+%A %b %-d'` invocation *at compose time*. Never hand-write the weekday. Never reuse a weekday string from an earlier step or file: copies drift, and bare `date` in a UTC-clocked sandbox is off by a day near the timezone/UTC boundary.
+Every DM, briefing, and file header that includes a day name (e.g., "Sat Apr 18", "Monday, April 20") **must** be generated by a fresh `scout/scripts/scout-tz.sh date '+%A %b %-d'` invocation *at compose time*. Never hand-write the weekday. Never reuse a weekday string from an earlier step or file: copies drift, and bare `date` in a UTC-clocked sandbox is off by a day near the timezone/UTC boundary.
 
 ```bash
-scripts/scout-tz.sh date '+%A %b %-d'     # e.g., "Saturday Apr 18"
-scripts/scout-tz.sh date '+%Y-%m-%d'      # date for filenames
+scout/scripts/scout-tz.sh date '+%A %b %-d'     # e.g., "Saturday Apr 18"
+scout/scripts/scout-tz.sh date '+%Y-%m-%d'      # date for filenames
 ```
 
-**Pre-send assertion:** before sending any notification or writing any file header that contains a day name, verify the day name matches `scripts/scout-tz.sh date '+%A'` for the current moment. On mismatch, regenerate — do not send.
+**Pre-send assertion:** before sending any notification or writing any file header that contains a day name, verify the day name matches `scout/scripts/scout-tz.sh date '+%A'` for the current moment. On mismatch, regenerate — do not send.
 
-**Canonical filename pattern:** `action-items-YYYY-MM-DD.md`, with the date part from `scripts/scout-tz.sh date '+%Y-%m-%d'`. Any day-name written inside the file header must be derived from that same date via a fresh `date` call, not hand-written.
+**Canonical filename pattern:** `action-items-YYYY-MM-DD.md`, with the date part from `scout/scripts/scout-tz.sh date '+%Y-%m-%d'`. Any day-name written inside the file header must be derived from that same date via a fresh `date` call, not hand-written.
 
 ## Session Cost Reporting (Final Action)
 
 As the very last action before exit, log this session's cost:
 
 ```bash
-{{SCOUT_DIR}}/scripts/write-session-cost.sh "$SESSION_TYPE" 0 0 0
+{{SCOUT_DIR}}/scout/scripts/write-session-cost.sh "$SESSION_TYPE" 0 0 0
 ```
 
 The runner records the run's cost after it ends, so the cap and spent arguments stay `0`; the row logs timestamp, type and model.

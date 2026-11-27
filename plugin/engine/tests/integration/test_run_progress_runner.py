@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from scout import health
+from scout import health, layout
 from scout import run_progress as rp
 
 from .test_lock_reaper_progress import (
@@ -155,7 +155,7 @@ def holders() -> Iterator[list[int]]:
 
 
 def _holder(vault: Path, **env: str) -> int:
-    return _detached(str(vault / "run-scout.sh"), env=_env(SCOUT_PROGRESS_SAMPLE_SECS="1", **env))
+    return _detached(str(vault / layout.runner_path("run-scout.sh")), env=_env(SCOUT_PROGRESS_SAMPLE_SECS="1", **env))
 
 
 def _beat(vault: Path) -> rp.Heartbeat | None:
@@ -241,7 +241,7 @@ def test_a_crashed_runner_takes_its_progress_line_with_it(vault: Path, holders: 
 
 def test_a_run_that_ends_leaves_no_line_and_no_watcher(vault: Path) -> None:
     result = subprocess.run(
-        [str(vault / "run-scout.sh")],
+        [str(vault / layout.runner_path("run-scout.sh"))],
         env=_env(SCOUT_PROGRESS_SAMPLE_SECS="1", FAKE_CLAUDE="working", FAKE_CLAUDE_HOLD_S="2"),
         capture_output=True,
         text=True,

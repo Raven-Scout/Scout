@@ -326,3 +326,25 @@ def test_network_count_is_broken_by_another_row(tmp_path):
         (timedelta(hours=1), "deferred", {"detail": "network: x"}),
     )
     assert sur.run_update(deps, scheduled=False).row.result == "deferred"
+
+
+def test_a_layout_deferral_counts_as_a_completed_check(tmp_path):
+    """A layout deferral may not clear by itself (a pending sidecar): it must not reopen the gate outside the
+    off-peak window on every heartbeat once the last real check is 36 h old (review of #832)."""
+    deps, world, _ = make_deps(tmp_path, in_off_peak=lambda: False)
+    _prior(
+        deps,
+        (timedelta(hours=40), "up_to_date", {"target": "0.16.0"}),
+        (timedelta(hours=1), "deferred", {"step": "vault", "detail": f"{sur.LAYOUT_DEFERRED_MARK}a sidecar"}),
+    )
+    attempt = sur.run_update(deps, scheduled=True)
+    assert attempt.row is None and attempt.reason == "outside the off-peak window"
+    assert world.calls == []
+
+
+def test_a_layout_deferral_settles_the_day(tmp_path):
+    deps, world, _ = make_deps(tmp_path)
+    world.auto_result = {"action": "deferred", "error": "a brain sidecar is pending"}
+    attempt = sur.run_update(deps, scheduled=True)
+    assert attempt.row.result == "deferred" and attempt.row.detail.startswith(sur.LAYOUT_DEFERRED_MARK)
+    assert attempt.settled  # the day's marker is written: the next attempt is tomorrow's, not the next heartbeat

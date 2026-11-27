@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from scout.scripts import bootstrap
 from scout.scripts.bootstrap import BootstrapConfig, install
 from scout.scripts.migrate_perfile import RUN_LOG_HEADER
@@ -32,6 +33,7 @@ def _manifest_paths() -> set[str]:
         *bootstrap._CAT_MERGE_FILES.values(),
         *(p for _, p in bootstrap._CAT1_TEMPLATES),
         *(p for _, p in bootstrap._INSTALL_ONLY_TEMPLATES),
+        *(p for _, p in bootstrap._SPACE_SEED_TEMPLATES),
         *(p for _, p in bootstrap._CAT1B_RUNNERS),
     }
 
@@ -87,8 +89,11 @@ def _config(vault: Path) -> BootstrapConfig:
         "knowledge-base/knowledge-base.md",
         "knowledge-base/people.md",
         "knowledge-base/channels.md",
-        "knowledge-base/projects/projects.md",
+        "knowledge-base/work/projects/projects.md",
+        "knowledge-base/work/topics/topics.md",
+        "knowledge-base/work/sources/sources.md",
         "knowledge-base/research-queue.md",
+        "knowledge-base/meetings.md",
     ],
 )
 def test_install_seeds_the_kb_index_files(tmp_path, vault_rel):
@@ -114,7 +119,7 @@ def test_research_queue_seed_is_the_migrated_run_log():
     assert text.startswith(RUN_LOG_HEADER)
 
 
-@pytest.mark.parametrize("vault_rel", ["docs/wishlist", "knowledge-base/research-queue"])
+@pytest.mark.parametrize("vault_rel", [layout.record_path("wishlist_dir"), "knowledge-base/research-queue"])
 def test_install_creates_the_per_file_item_dirs(tmp_path, vault_rel):
     vault = tmp_path / "Scout"
     install(_config(vault))

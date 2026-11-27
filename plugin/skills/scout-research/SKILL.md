@@ -7,7 +7,7 @@ Launch a SCOUT research session as a background process on this machine.
 
 Do the following steps:
 
-1. Run `nohup bash ~/Scout/run-research.sh > /dev/null 2>&1 &` to launch the research session in the background. Capture the PID.
+1. Run `R=~/Scout/scout/runners/run-research.sh; [ -x "$R" ] || R=~/Scout/run-research.sh; nohup bash "$R" > /dev/null 2>&1 &` (the runner is in `scout/runners/` from layout v2 on, at the vault root before it) to launch the research session in the background. Capture the PID.
 
 2. Find the most recent log file: `ls -t ~/Scout/.scout-logs/research-*.log | head -1`
 

@@ -22,7 +22,9 @@ local_only:
     - ".scout-state/id-map.json"
     - ".scout-state/privacy-policy.json"
 
-# Path defaults for notes with no `visibility:` key. First match wins.
+# Path defaults for notes with no `visibility:` key. First match wins. Each private space of the
+# vault's registry (`spaces:` in scout-config.yaml, layout v2) adds `knowledge-base/<space>/**` as
+# private, after the owner's entries and before these (scout.kb.privacy.with_spaces).
 visibility_defaults:
   - {glob: "knowledge-base/personal/**", visibility: private}
   - {glob: ".scout-inbox/**",            visibility: private}
@@ -55,7 +57,10 @@ federation:
 # The widest federation_scope a note may have. Levels: none < people < org;
 # `people` admits `person:` principals only. First match wins; an entry with
 # `kinds` applies only to notes whose frontmatter `kind` is one of them; a note
-# no entry matches has ceiling `none`. The overlay can only narrow these.
+# no entry matches has ceiling `none`. The overlay can only narrow these. Each registered space adds
+# the same ceilings for its own folders (knowledge-base/<space>/{topics,projects,organizations,sources}),
+# and identity organizations (knowledge-base/organizations/) get the entities ceiling; the v1 globs
+# below stay while a vault that hasn't moved to layout v2 is readable.
 federation_ceilings:
   - {glob: "knowledge-base/topics/**",            ceiling: org}
   - {glob: "knowledge-base/projects/**",          ceiling: org}

@@ -371,3 +371,9 @@ Claim
 Affected
 Reviewed
 Item
+
+# --- Layout v2 vault words (registry columns, role-note links, moved registry cells) ---
+Space
+Off
+Work
+From

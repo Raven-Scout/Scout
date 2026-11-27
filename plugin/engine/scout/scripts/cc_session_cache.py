@@ -4,7 +4,7 @@ The original module walked ``~/.claude/projects/*/*.jsonl`` and rendered a flat
 24-hour list. That work now lives in :mod:`scout.sessions` — the index builder
 plus the state-first digest — and this module only keeps the historical entry
 point (and the two extractor names) importable so nothing in an installed vault
-breaks: ``scripts/cc-session-cache.sh`` still calls ``scoutctl session cc-cache``.
+breaks: ``scout/scripts/cc-session-cache.sh`` still calls ``scoutctl session cc-cache``.
 """
 
 from __future__ import annotations

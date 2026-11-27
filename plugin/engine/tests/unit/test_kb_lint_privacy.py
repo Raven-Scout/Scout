@@ -1857,8 +1857,8 @@ def test_widens(head: object, staged: object, widens: bool) -> None:
     [
         (None, ()),
         ("", ()),
-        ("- just\n- a list\n", ("privacy-overlay-unreadable",)),
-        ("privacy: [unclosed\n", ("privacy-overlay-unreadable",)),
+        ("- just\n- a list\n", ("spaces-invalid", "privacy-overlay-unreadable")),
+        ("privacy: [unclosed\n", ("spaces-invalid", "privacy-overlay-unreadable")),
         ("privacy:\n  federation:\n    enabled: true\n", ()),
         ("privacy:\n  federation: true\n", ("privacy-overlay-invalid",)),
     ],

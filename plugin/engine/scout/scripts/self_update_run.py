@@ -27,6 +27,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
@@ -189,10 +190,16 @@ def _plugin_version(root: Path) -> str | None:
 
 
 def _last_completed_check(rows: list[UpdateOutcome]) -> datetime | None:
+    # A layout deferral is a completed check: the release was found, and what holds it back (a sidecar, unmerged
+    # paths, an old plugin entry) may not clear by itself, so it must not reopen the gate on every heartbeat.
     for row in reversed(rows):
-        if row.result != "deferred":
+        if row.result != "deferred" or _layout_deferral(row):
             return row.at
     return None
+
+
+def _layout_deferral(row: UpdateOutcome) -> bool:
+    return row.result == "deferred" and row.detail.startswith(LAYOUT_DEFERRED_MARK)
 
 
 def scheduled_gate(deps: Deps, rows: list[UpdateOutcome]) -> str | None:
@@ -351,7 +358,7 @@ def _parse_json(text: str) -> dict[str, Any] | None:
     return None
 
 
-def _vault_step(att: _Attempt, scoutctl: Path) -> list[str]:
+def _vault_step(att: _Attempt, scoutctl: Path) -> tuple[list[str], dict[str, Any] | None]:
     argv = [
         str(scoutctl),
         "bootstrap",
@@ -369,31 +376,54 @@ def _vault_step(att: _Attempt, scoutctl: Path) -> list[str]:
     if result is None:
         # Its stderr is in the update log (Attempt.run). The detail reaches pushes, and stderr can quote a file.
         raise att.stop("failed", "vault", f"bootstrap auto exited {proc.returncode} without a result")
+    if result.get("action") == "deferred":
+        # The layout move must wait (a pending brain sidecar, a queued run, an old plugin): outside the failure
+        # cap, and retried by a later attempt (spec 2026-11-26 §4.3).
+        raise att.stop("deferred", "vault", f"{LAYOUT_DEFERRED_MARK}{result.get('error') or ''}")
     if result.get("action") == "refused":
         error = str(result.get("error") or result.get("reason") or "")
         if result.get("mutated") is False and _LOCK_BUSY_MARK in error:
             raise att.stop("deferred", "vault", f"vault lock busy: {error}")
         raise att.stop("failed", "vault", f"bootstrap auto refused: {error}")
     conflicts = result.get("conflicts")
-    return [str(c) for c in conflicts] if isinstance(conflicts, list) else []
+    migration = result.get("migration")
+    return ([str(c) for c in conflicts] if isinstance(conflicts, list) else []), (
+        migration if isinstance(migration, dict) else None
+    )
 
 
-def _verify(att: _Attempt, scoutctl: Path, conflicts: list[str]) -> UpdateOutcome:
+LAYOUT_DEFERRED_MARK = "layout move deferred: "
+_DIGITS = re.compile(r"\d+")
+LAYOUT_APPLIED_MARK = "layout move applied: "
+
+
+def _migration_detail(migration: dict[str, Any] | None) -> str:
+    """The row's note on a layout move this attempt made: counts and the report path only."""
+    if not migration or migration.get("state") != "applied":
+        return ""
+    moved = (migration.get("summary") or {}).get("moved", 0)
+    return f"{LAYOUT_APPLIED_MARK}{moved} files moved; report {migration.get('report') or 'reports/'}"
+
+
+def _verify(
+    att: _Attempt, scoutctl: Path, conflicts: list[str], migration: dict[str, Any] | None = None
+) -> UpdateOutcome:
     proc = att.run([str(scoutctl), "bootstrap", "doctor", "--json"], "verify", _vault_env(att.deps.vault))
     report = _parse_json(proc.stdout)
     severity = str(report.get("severity")) if report else "unknown"
     if severity not in ("green", "yellow"):
         errors = "; ".join(str(e) for e in (report or {}).get("errors") or [])
         raise att.stop("failed", "verify", f"install doctor is {severity} after the upgrade. {errors}", doctor=severity)
+    moved = _migration_detail(migration)
     if conflicts:
         return att.row(
             "applied_with_sidecars",
             "verify",
-            f"left {plural.count(len(conflicts), 'file')} to merge",
+            "; ".join(x for x in (f"left {plural.count(len(conflicts), 'file')} to merge", moved) if x),
             doctor=severity,
             sidecars=tuple(conflicts),
         )
-    return att.row("applied", "verify", doctor=severity)
+    return att.row("applied", "verify", moved, doctor=severity)
 
 
 def run_update(deps: Deps, *, scheduled: bool, dry_run: bool = False, force: bool = False) -> Attempt:
@@ -455,8 +485,8 @@ def run_update(deps: Deps, *, scheduled: bool, dry_run: bool = False, force: boo
             return Attempt(row=None, reason="dry run")
         root = _fetch(att, pointer)
         scoutctl = _venv(att, root)
-        conflicts = _vault_step(att, scoutctl)
-        row = _verify(att, scoutctl, conflicts)
+        conflicts, migration = _vault_step(att, scoutctl)
+        row = _verify(att, scoutctl, conflicts, migration)
     except _Stop as stop:
         row = stop.row
     return _finish(deps, row, rows, dry_run=dry_run)
@@ -468,7 +498,8 @@ def _finish(deps: Deps, row: UpdateOutcome, prior: list[UpdateOutcome], *, dry_r
         return Attempt(row=row, reason="dry run")
     append_outcome(deps.vault, row)
     deps.notify(row, prior)
-    return Attempt(row=row, settled=row.result != "deferred")
+    # A layout deferral settles the day too: it retries on the next day's attempt, not every heartbeat.
+    return Attempt(row=row, settled=row.result != "deferred" or _layout_deferral(row))
 
 
 # --- process handling ---------------------------------------------------------------------
@@ -609,6 +640,33 @@ def info_pushes(row: UpdateOutcome, prior: list[UpdateOutcome]) -> list[Any]:
                 "scoutctl config set-auto-update --disabled",
             )
         )
+    if LAYOUT_APPLIED_MARK in row.detail:
+        moved = row.detail.split(LAYOUT_APPLIED_MARK, 1)[1]
+        count, _, report = moved.partition("; report ")
+        pushes.append(
+            Push(
+                finding_id="update.layout",
+                kind="info",
+                severity="green",
+                title="Scout reorganised your vault",
+                body=f"Scout reorganised your vault ({count.removesuffix(' files moved')} files moved). "
+                f"Report: {report}. Review the spaces with /scout-update.",
+            )
+        )
+    if _layout_deferral(row):
+        last = next((r for r in reversed(prior) if r.detail.startswith(LAYOUT_DEFERRED_MARK)), None)
+        # once per reason, not every attempt: a count in the reason ("3 files ...") changing is the same reason
+        if last is None or _DIGITS.sub("N", last.detail) != _DIGITS.sub("N", row.detail):
+            pushes.append(
+                Push(
+                    finding_id="update.layout_deferred",
+                    kind="info",
+                    severity="yellow",
+                    title="Scout's vault reorganisation is waiting",
+                    body=f"Scout {row.target} reorganises your vault, but not yet: "
+                    f"{row.detail.removeprefix(LAYOUT_DEFERRED_MARK)}. It retries on the next update.",
+                )
+            )
     if row.result == "applied_with_sidecars":
         pushes.append(
             Push(

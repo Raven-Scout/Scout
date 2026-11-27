@@ -139,6 +139,27 @@ class StructureConfig:
     max_bullets: int = 6
     nightly_max_bytes: int = NIGHTLY_MAX_BYTES
     linked_dirs: tuple[str, ...] = (f"{KB_PREFIX}sources", f"{KB_PREFIX}topics")
+    # Every space's projects folder (layout v2), ``projects_dir`` (the default space's) first.
+    projects_dirs: tuple[str, ...] = ()
+
+    def all_projects_dirs(self) -> tuple[str, ...]:
+        return self.projects_dirs or (self.projects_dir,)
+
+
+def _space_defaults(vault: Path | None) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    """(default projects folder, every space's, linked folders) for ``vault``'s layout and spaces.
+
+    A layout-v1 vault (or none) keeps the single v1 folders.
+    """
+    from scout import layout
+    from scout.config import load_spaces
+
+    if vault is None or layout.layout_version(vault) < 2:
+        return f"{KB_PREFIX}projects", (), (f"{KB_PREFIX}sources", f"{KB_PREFIX}topics")
+    spaces = sorted(load_spaces(vault), key=lambda sp: not sp.default)
+    projects = tuple(layout.space_dir(sp.key, "projects") for sp in spaces)
+    linked = tuple(layout.space_dir(sp.key, k) for sp in spaces for k in ("sources", "topics"))
+    return projects[0], projects, linked
 
 
 def _strs(raw: dict[str, Any], key: str) -> tuple[str, ...]:
@@ -165,14 +186,16 @@ def load_structure_config(vault: Path | None = None) -> StructureConfig:
     raw = load_config(vault).get("kb_structure") or {}
     if not isinstance(raw, dict):
         raw = {}
-    projects_dir = raw.get("projects_dir", "knowledge-base/projects")
+    default_projects, every_projects, default_linked = _space_defaults(vault)
+    # A configured projects_dir is the default space's (a single v1 value reads that way after the move).
+    projects_dir = raw.get("projects_dir", default_projects)
     # Normalised, because git prints paths this way and `newest_changes` matches them on this prefix.
     parts = PurePosixPath(projects_dir.strip("/")).parts if isinstance(projects_dir, str) else ()
     if not parts or ".." in parts:
         raise KBError("kb_structure.projects_dir must be a folder inside the vault")
     try:
         max_bullet_chars = _positive(raw, "max_bullet_chars", 300)
-        linked_dirs = _strs(raw, "linked_dirs") if "linked_dirs" in raw else StructureConfig.linked_dirs
+        linked_dirs = _strs(raw, "linked_dirs") if "linked_dirs" in raw else default_linked
         for d in linked_dirs:
             if not PurePosixPath(d.strip("/")).parts or ".." in PurePosixPath(d).parts:
                 raise ValueError(f"linked_dirs entries must be folders inside the vault, not {d!r}")
@@ -190,6 +213,7 @@ def load_structure_config(vault: Path | None = None) -> StructureConfig:
             max_bullets=_positive(raw, "max_bullets", 6),
             nightly_max_bytes=_positive(raw, "nightly_max_bytes", NIGHTLY_MAX_BYTES),
             linked_dirs=tuple("/".join(PurePosixPath(d.strip("/")).parts) for d in linked_dirs),
+            projects_dirs=tuple(dict.fromkeys(["/".join(parts), *every_projects])) if every_projects else (),
         )
     except (TypeError, ValueError) as e:
         raise KBError(f"kb_structure: {e}") from e
@@ -1015,8 +1039,8 @@ class PageRules:
         """``front`` for a project's front page, ``loose`` for a ``.md`` beside it, else None.
 
         Raises ``KBError`` when the KB schema is malformed."""
-        prefix = self.cfg.projects_dir + "/"
-        if not rel.startswith(prefix) or not rel.endswith(".md"):
+        prefix = next((d + "/" for d in self.cfg.all_projects_dirs() if rel.startswith(d + "/")), None)
+        if prefix is None or not rel.endswith(".md"):
             return None
         parts = rel[len(prefix) :].split("/")
         if len(parts) != 2 or parts[0] in self.cfg.skip_projects:
@@ -1051,24 +1075,28 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
     staleness), highest first, then the largest front page."""
     cfg = load_structure_config(vault)
     excluded = _excluder(vault, load_lint_config(vault).exclude_globs)
-    root = vault / cfg.projects_dir
-    if not root.is_dir():
-        return []
-    listing = _listing(vault, cfg.projects_dir)
     folders: list[_Folder] = []
-    for entry in sorted(root.iterdir(), key=lambda p: p.name):
-        rel = f"{cfg.projects_dir}/{entry.name}"
-        front = f"{rel}/{entry.name}.md"
-        if entry.name in cfg.skip_projects or not (vault / front).is_file() or excluded(front):
+    for pdir in cfg.all_projects_dirs():
+        root = vault / pdir
+        if not root.is_dir():
             continue
-        folders.append(_scan(vault, rel, entry.name, cfg, excluded, listing))
+        listing = _listing(vault, pdir)
+        for entry in sorted(root.iterdir(), key=lambda p: p.name):
+            rel = f"{pdir}/{entry.name}"
+            front = f"{rel}/{entry.name}.md"
+            if entry.name in cfg.skip_projects or not (vault / front).is_file() or excluded(front):
+                continue
+            folders.append(_scan(vault, rel, entry.name, cfg, excluded, listing))
+    if not folders:
+        return []
     # Grouped once: scanning the whole history for each folder is quadratic on a big vault.
     day = today(vault)
     history: dict[str, dict[str, dt.date]] = {}
-    if folders:
-        prefix = cfg.projects_dir + "/"
-        for path, changed in newest_changes(vault, cfg.projects_dir, day).items():
-            history.setdefault(path.removeprefix(prefix).split("/", 1)[0], {})[path] = changed
+    for pdir in cfg.all_projects_dirs():
+        if not (vault / pdir).is_dir():
+            continue
+        for path, changed in newest_changes(vault, pdir, day).items():
+            history.setdefault(f"{pdir}/" + path.removeprefix(pdir + "/").split("/", 1)[0], {})[path] = changed
     policy = load_policy(vault)
     edits = _shared_edits(vault, policy)
     probes = _probe_policy(policy)
@@ -1084,7 +1112,7 @@ def structure_rows(vault: Path) -> list[dict[str, Any]]:
             vault,
             folder,
             cfg,
-            history.get(folder.name, {}),
+            history.get(folder.rel, {}),
             excluded,
             label,
             pinned_loose,
@@ -1130,11 +1158,10 @@ def trim_destinations(vault: Path, front: str) -> list[Label]:
     Not the front page or ``archive/``, nor a note left out of the KB or gitignored.
     Unshared is narrower than any share the page has; a note shared with the same or
     other people isn't."""
-    cfg = load_structure_config(vault)
     excluded = _excluder(vault, load_lint_config(vault).exclude_globs)
-    listing = _listing(vault, cfg.projects_dir)
-    policy = load_policy(vault)
     folder = PurePosixPath(front).parent
+    listing = _listing(vault, folder.parent.as_posix())
+    policy = load_policy(vault)
     out: list[Label] = []
     for path in sorted((vault / folder).rglob("*.md")):
         rel = path.relative_to(vault).as_posix()

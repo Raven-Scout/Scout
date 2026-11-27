@@ -53,6 +53,19 @@ Surface-window DSL (subset):
 from __future__ import annotations
 
 
+def _vault_above(start: Path) -> Path:
+    """The nearest folder above ``start`` holding scout-config.yaml (the vault), else the folder above the scripts
+    folder (``scout/scripts/`` in layout v2, ``scripts/`` before it).
+
+    Layout v2 keeps this script in scout/scripts/; before it, scripts/. Walking up finds the vault either way.
+    """
+    for parent in start.parents:
+        if (parent / "scout-config.yaml").is_file():
+            return parent
+    above = start.parent.parent
+    return above.parent if above.name == "scout" else above
+
+
 def _run_under_a_python_with_yaml() -> None:
     """Re-exec this script under a Python that has PyYAML when this one lacks it.
 
@@ -82,7 +95,7 @@ def _run_under_a_python_with_yaml() -> None:
                 candidates.append(pointer["python"])
         except (OSError, ValueError):
             pass
-        candidates.append(str(Path(__file__).resolve().parent.parent / ".venv" / "bin" / "python3"))
+        candidates.append(str(_vault_above(Path(__file__).resolve()) / ".venv" / "bin" / "python3"))
     script = os.path.abspath(sys.argv[0])
     for python in candidates:
         if os.access(python, os.X_OK):
@@ -122,8 +135,13 @@ except ImportError:
 
 
 WEEKDAYS = {
-    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
-    "friday": 4, "saturday": 5, "sunday": 6,
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
 }
 
 
@@ -232,7 +250,7 @@ def vault_of(directory: Path) -> Path:
         if parent.name == "knowledge-base":
             return parent.parent
     env = os.environ.get("SCOUT_DATA_DIR")
-    return Path(env) if env else Path(__file__).resolve().parent.parent
+    return Path(env) if env else _vault_above(Path(__file__).resolve())
 
 
 def parse_frontmatter(path: Path) -> dict:
@@ -620,7 +638,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=doc.split("\n")[0])
     parser.add_argument(
         "--dir",
-        default=str(Path(__file__).resolve().parent.parent / "knowledge-base" / "recurring-tasks"),
+        default=str(_vault_above(Path(__file__).resolve()) / "knowledge-base" / "recurring-tasks"),
         help="Directory containing recurring_task entity files",
     )
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of markdown")
@@ -701,8 +719,7 @@ def main() -> int:
     for slug in overrides:
         if slug not in seen_slugs:
             print(
-                f"warning: --last-completed slug '{slug}' matched no open recurring_task "
-                f"entity file in {root}",
+                f"warning: --last-completed slug '{slug}' matched no open recurring_task entity file in {root}",
                 file=sys.stderr,
             )
 

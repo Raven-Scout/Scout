@@ -5,12 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import yaml
 
 from scout.scripts.bootstrap import (
     _INSTALL_ONLY_TEMPLATES,
     BootstrapConfig,
-    MigrateLegacyResult,
     _is_legacy_vault,
     migrate_legacy,
     upgrade,
@@ -77,92 +75,26 @@ def test_upgrade_refuses_on_legacy_vault(tmp_path):
         upgrade(_config(tmp_path, plugin_root=plugin))
 
 
-def test_migrate_legacy_writes_scout_config(tmp_path):
+def test_migrate_legacy_refuses_a_legacy_vault_in_the_old_layout_and_changes_nothing(tmp_path):
+    """Layout v2 (spec 2026-11-26 §7.1): this engine renders v2 only, and a Plan-5-era vault is v1 everywhere, so
+    migrate-legacy refuses before writing anything. The way through is an 0.18.x release's migrate-legacy, then
+    an upgrade with this one, which moves the vault. (The conversion itself was tested against those releases;
+    the M3 guard it relied on is tested in test_upgrade_brain_sidecars.py and test_brain_merge.py.)"""
     _populate_legacy_vault(tmp_path)
+    before = {p.relative_to(tmp_path).as_posix(): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     plugin = Path(__file__).parent.parent.parent.parent
-    result = migrate_legacy(_config(tmp_path, plugin_root=plugin))
-    assert isinstance(result, MigrateLegacyResult)
-    config_path = tmp_path / "scout-config.yaml"
-    assert config_path.exists()
-    cfg = yaml.safe_load(config_path.read_text())
-    assert cfg["user"]["name"] == "Test User"
-    assert cfg["plugin"]["version_at_last_setup"] == "0.4.0"
-    assert cfg["plugin"]["version_at_last_update"] == "0.4.0"
+    with pytest.raises(RuntimeError, match="legacy vault in the old layout"):
+        migrate_legacy(_config(tmp_path, plugin_root=plugin))
+    after = {p.relative_to(tmp_path).as_posix(): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    assert after == before
+    assert not (tmp_path / "scout-config.yaml").exists()
 
 
-def test_migrate_legacy_preserves_cat4_live_files(tmp_path):
-    """Live SKILL/DREAMING/RESEARCH must NOT be overwritten."""
-    _populate_legacy_vault(tmp_path)
-    original_skill = (tmp_path / "SKILL.md").read_text()
-    original_dreaming = (tmp_path / "DREAMING.md").read_text()
-    plugin = Path(__file__).parent.parent.parent.parent
-    migrate_legacy(_config(tmp_path, plugin_root=plugin))
-    assert (tmp_path / "SKILL.md").read_text() == original_skill
-    assert (tmp_path / "DREAMING.md").read_text() == original_dreaming
-
-
-def test_migrate_legacy_seeds_schedule_yaml(tmp_path):
-    """schedule.yaml must be seeded so the doctor reports green post-migration."""
-    _populate_legacy_vault(tmp_path)
-    plugin = Path(__file__).parent.parent.parent.parent
-    migrate_legacy(_config(tmp_path, plugin_root=plugin))
-    schedule = tmp_path / ".scout-state" / "schedule.yaml"
-    assert schedule.exists()
-    assert "schema_version" in schedule.read_text()
-
-
-def test_migrate_legacy_seeds_missing_cat2_files_and_keeps_existing_ones(tmp_path):
-    """Cat-2 files a legacy vault lacks are seeded; one it already has is never
-    touched (#197)."""
-    _populate_legacy_vault(tmp_path)
-    (tmp_path / "inbox.md").write_text("# legacy inbox\n")
-    plugin = Path(__file__).parent.parent.parent.parent
-    migrate_legacy(_config(tmp_path, plugin_root=plugin))
-    assert (tmp_path / "inbox.md").read_text() == "# legacy inbox\n"
-    for rel, _ in _INSTALL_ONLY_TEMPLATES:
-        assert (tmp_path / rel).exists(), rel
-
-
-def test_migrate_legacy_installs_the_kb_lint_hook(tmp_path):
-    import subprocess
-
-    from scout.kb.hook import MARKER
-
-    _populate_legacy_vault(tmp_path)
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
-    plugin = Path(__file__).parent.parent.parent.parent
-    migrate_legacy(_config(tmp_path, plugin_root=plugin))
-    hook = tmp_path / ".git" / "hooks" / "pre-commit"
-    assert MARKER in hook.read_text()
-    assert str(plugin / "engine" / "bin" / "scoutctl") in hook.read_text()
-
-
-def test_migrate_legacy_records_snapshots(tmp_path):
-    """Snapshots in .scout-state/last-assembled/ should match current live files."""
-    _populate_legacy_vault(tmp_path)
-    plugin = Path(__file__).parent.parent.parent.parent
-    result = migrate_legacy(_config(tmp_path, plugin_root=plugin))
-    snapshot_dir = tmp_path / ".scout-state" / "last-assembled"
-    for kind in ("SKILL", "DREAMING", "RESEARCH"):
-        snap = snapshot_dir / f"{kind}.md"
-        assert snap.exists()
-        assert snap.read_text() == (tmp_path / f"{kind}.md").read_text()
-    assert set(result.snapshots_recorded) == {"SKILL.md", "DREAMING.md", "RESEARCH.md"}
-
-
-def test_migrate_legacy_parks_customized_runners(tmp_path):
-    """Heavily-customized legacy runners match no release, so each is parked
-    under .scout-state/drift/ before the template is installed."""
-    _populate_legacy_vault(tmp_path)
-    plugin = Path(__file__).parent.parent.parent.parent
-    originals = {n: (tmp_path / n).read_text() for n in ("run-scout.sh", "run-dreaming.sh", "run-research.sh")}
-    result = migrate_legacy(_config(tmp_path, plugin_root=plugin))
-    parked = sorted((tmp_path / ".scout-state" / "drift").glob("run-*.sh.vault"))
-    # All three runners diverge from the template — all three are parked.
-    assert [p.name for p in parked] == ["run-dreaming.sh.vault", "run-research.sh.vault", "run-scout.sh.vault"]
-    assert all(p.read_text() == originals[p.name.removesuffix(".vault")] for p in parked)
-    assert len(result.backups) == 3
-    assert {e.outcome for e in result.vault_edits} == {"replaced"}
+def test_the_cat2_seed_table_is_layout_v2(tmp_path):
+    """What migrate-legacy and upgrade seed, at layout v2 paths."""
+    seeded = {rel for rel, _ in _INSTALL_ONLY_TEMPLATES}
+    assert "inbox/inbox.md" in seeded and "knowledge-base/meetings.md" in seeded
+    assert "inbox.md" not in seeded and "meetings/meetings.md" not in seeded
 
 
 def test_migrate_legacy_refuses_when_config_already_exists(tmp_path):
@@ -179,117 +111,3 @@ def test_migrate_legacy_refuses_when_no_state_dir(tmp_path):
     plugin = Path(__file__).parent.parent.parent.parent
     with pytest.raises(FileNotFoundError, match="run /scout-setup"):
         migrate_legacy(_config(tmp_path, plugin_root=plugin))
-
-
-def test_migrate_then_upgrade_works(tmp_path):
-    """After migrate_legacy, upgrade() succeeds (full Plan 8 round-trip)."""
-    _populate_legacy_vault(tmp_path)
-    plugin = Path(__file__).parent.parent.parent.parent
-    migrate_legacy(_config(tmp_path, plugin_root=plugin))
-    # Now upgrade should not refuse.
-    cfg = _config(tmp_path, plugin_root=plugin)
-    cfg.plugin_version = "0.4.1"
-    from scout.scripts.bootstrap import upgrade as _upgrade
-
-    _upgrade(cfg)  # no exception expected
-    new_cfg = yaml.safe_load((tmp_path / "scout-config.yaml").read_text())
-    assert new_cfg["plugin"]["version_at_last_update"] == "0.4.1"
-    assert new_cfg["plugin"]["version_at_last_setup"] == "0.4.0"  # unchanged
-
-
-def test_migrate_then_upgrade_preserves_live_cat4(tmp_path):
-    """Critical regression guard from M3 incident: migrate-then-upgrade must
-    NEVER overwrite live SKILL/DREAMING/RESEARCH when their content matches
-    the snapshot. The previous degenerate-merge fast-forward silently wiped
-    vault content; the sidecar-on-base==theirs policy must prevent this.
-
-    Scenario: legacy vault → migrate → run upgrade. After upgrade:
-    - live cat-4 files should be byte-identical to pre-migrate state
-    - either no sidecars (plugin assembly == snapshot) OR sidecars exist with
-      proposed plugin content (depending on whether phase content changed)
-    - never: live SKILL.md overwritten with plugin-assembled content.
-    """
-    _populate_legacy_vault(tmp_path)
-    plugin = Path(__file__).parent.parent.parent.parent
-    pre_migrate_skill = (tmp_path / "SKILL.md").read_text()
-    pre_migrate_dreaming = (tmp_path / "DREAMING.md").read_text()
-    pre_migrate_research = (tmp_path / "RESEARCH.md").read_text()
-    migrate_legacy(_config(tmp_path, plugin_root=plugin))
-    # Post-migrate state: live files unchanged, snapshots equal them.
-    assert (tmp_path / "SKILL.md").read_text() == pre_migrate_skill
-    # Now upgrade — should not touch live cat-4.
-    cfg = _config(tmp_path, plugin_root=plugin)
-    cfg.plugin_version = "0.4.1"
-    from scout.scripts.bootstrap import upgrade as _upgrade
-
-    _upgrade(cfg)
-    # Live cat-4 must STILL match pre-migrate content.
-    assert (tmp_path / "SKILL.md").read_text() == pre_migrate_skill
-    assert (tmp_path / "DREAMING.md").read_text() == pre_migrate_dreaming
-    assert (tmp_path / "RESEARCH.md").read_text() == pre_migrate_research
-
-
-def test_migrate_legacy_persists_connector_inputs(tmp_path):
-    """Critical regression guard: scout-config.yaml must persist
-    connector_inputs (claude_bin, max_budget, user_slack_id, etc.) so the
-    upgrade CLI can re-read them and pass them to BootstrapConfig.
-
-    Without this, upgrade defaults these vars to fallback values
-    (CLAUDE_BIN=/usr/local/bin/claude, MAX_BUDGET=5.00, USER_SLACK_ID=""),
-    which makes _stage_cat1b_runners detect false hand-edits on every
-    upgrade and clobber legitimate same-day .bak files.
-    """
-    _populate_legacy_vault(tmp_path)
-    plugin = Path(__file__).parent.parent.parent.parent
-    cfg = _config(tmp_path, plugin_root=plugin)
-    cfg.connector_inputs = {
-        "claude_bin": "/Users/test/.local/bin/claude",
-        "max_budget": "10.00",
-        "user_slack_id": "U12345",
-        "github_username": "testuser",
-        "github_repos": "org/repo1",
-    }
-    cfg.enabled_connectors = {"slack", "github"}
-    migrate_legacy(cfg)
-    written = yaml.safe_load((tmp_path / "scout-config.yaml").read_text())
-    assert written["connectors"]["inputs"]["claude_bin"] == "/Users/test/.local/bin/claude"
-    assert written["connectors"]["inputs"]["max_budget"] == "10.00"
-    assert written["connectors"]["inputs"]["user_slack_id"] == "U12345"
-    assert written["connectors"]["enabled"] == ["github", "slack"]
-    assert written["timezone"] == "America/New_York"
-    assert written["platform"] == "macos"
-
-
-def test_upgrade_sidecar_when_base_equals_theirs_but_ours_diverges(tmp_path):
-    """When snapshot==live but plugin assembly produces different content,
-    write to sidecar instead of overwriting. This is the M3-incident guard."""
-    _populate_legacy_vault(tmp_path)
-    plugin = Path(__file__).parent.parent.parent.parent
-    migrate_legacy(_config(tmp_path, plugin_root=plugin))
-
-    # Manually corrupt the snapshot to force ours != snapshot, while keeping
-    # snapshot == theirs (the no-recorded-edits scenario).
-    snapshot = tmp_path / ".scout-state" / "last-assembled" / "SKILL.md"
-    live = tmp_path / "SKILL.md"
-    # Synchronize snapshot to current live (already done by migrate, but
-    # explicit for clarity).
-    live_text = live.read_text()
-    snapshot.write_text(live_text)
-    # Now mutate live AND snapshot together (so base == theirs) but neither
-    # matches what _assemble would produce. After upgrade, ours == fresh
-    # assembly which differs from this synthetic content.
-    synthetic = "# SYNTHETIC matching snapshot\n" * 50
-    live.write_text(synthetic)
-    snapshot.write_text(synthetic)
-
-    cfg = _config(tmp_path, plugin_root=plugin)
-    cfg.plugin_version = "0.4.1"
-    from scout.scripts.bootstrap import upgrade as _upgrade
-
-    result = _upgrade(cfg)
-    # Live must be untouched.
-    assert live.read_text() == synthetic
-    # A sidecar should exist with plugin content.
-    sidecar = tmp_path / "SKILL.md.proposed-merge"
-    assert sidecar.exists()
-    assert "SKILL.md" in str(result.conflicts)

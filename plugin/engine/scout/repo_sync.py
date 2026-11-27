@@ -81,8 +81,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
-import yaml
-
 import scout
 from scout import paths, safe_write
 from scout.kb.lint_config import glob_match
@@ -94,8 +92,8 @@ from scout.kb.privacy import (
     classify,
     decode_head,
     load_policy,
-    load_yaml,
-    policy_from_overlay,
+    policy_from_config_text,
+    unreadable_policy,
 )
 from scout.plural import agree, are, count
 
@@ -596,20 +594,16 @@ def _commit_tree(vault: Path, tree: str, parents: Sequence[str], message: str, i
 
 
 def policy_at(vault: Path, rev: str, blobs: BlobReader) -> Policy:
-    """``load_policy`` for the vault as it was at ``rev`` (its committed ``scout-config.yaml``)."""
-    base = load_policy(None)
+    """``load_policy`` for the vault as it was at ``rev`` (its committed ``scout-config.yaml``), space registry
+    included: a custom private space committed private stays private in the committed policy."""
     entry = _blob_at(vault, rev, paths.VAULT_MARKER)
     if entry is None:
-        return base
+        return load_policy(None)
     try:
-        data = load_yaml(blobs.read(entry.sha).decode("utf-8"))
-    except (UnicodeDecodeError, yaml.YAMLError):
-        return dataclasses.replace(base, warnings=("privacy-overlay-unreadable",))
-    if data is None:
-        return base
-    if not isinstance(data, dict):
-        return dataclasses.replace(base, warnings=("privacy-overlay-unreadable",))
-    return policy_from_overlay(data.get("privacy"))
+        text = blobs.read(entry.sha).decode("utf-8")
+    except UnicodeDecodeError:
+        return unreadable_policy()
+    return policy_from_config_text(text)
 
 
 def _committed_policy(vault: Path, rev: str, blobs: BlobReader) -> Policy | None:
@@ -702,6 +696,10 @@ def scoped_policy_json(policy: Policy, rules: LocalOnlyRules, mirrored: Sequence
         "owner_only": sorted(policy.owner_only_surfaces & (base.owner_only_surfaces | base.shared_surfaces)),
         "shared": sorted(policy.shared_surfaces & (base.owner_only_surfaces | base.shared_surfaces)),
     }
+    # The per-space ceilings name every normal space: only those the engine ships or a mirrored file meets stay.
+    doc["federation_ceilings"] = [
+        r.to_json() for r in policy.federation_ceilings if r in base.federation_ceilings or hit(r.glob)
+    ]
     doc["federation_ceilings_overlay"] = [r.to_json() for r in policy.federation_ceilings_overlay if hit(r.glob)]
     doc["federation_defaults"] = [
         d.to_json() for d in policy.federation_defaults if d in base.federation_defaults or hit(d.glob)

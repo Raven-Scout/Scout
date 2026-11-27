@@ -55,7 +55,7 @@
     "var_lines": {}
    }
   ],
-  "scripts/recurring-task-status.py": [
+  "scout/scripts/recurring-task-status.py": [
    {
     "versions": [
      "v0.5.0",
@@ -115,7 +115,7 @@
     "var_lines": {}
    }
   ],
-  "scripts/scout-tz.sh": [
+  "scout/scripts/scout-tz.sh": [
    {
     "versions": [
      "v0.9.0",
@@ -129,7 +129,7 @@
     }
    }
   ],
-  "scripts/budget-check.sh": [
+  "scout/scripts/budget-check.sh": [
    {
     "versions": [
      "v0.4.0",
@@ -162,7 +162,7 @@
     }
    }
   ],
-  "scripts/heartbeat.sh": [
+  "scout/scripts/heartbeat.sh": [
    {
     "versions": [
      "v0.4.0",
@@ -210,7 +210,7 @@
     }
    }
   ],
-  "scripts/pre-session-data.sh": [
+  "scout/scripts/pre-session-data.sh": [
    {
     "versions": [
      "v0.4.0",
@@ -247,7 +247,7 @@
     }
    }
   ],
-  "scripts/cc-session-cache.sh": [
+  "scout/scripts/cc-session-cache.sh": [
    {
     "versions": [
      "v0.4.0",
@@ -295,7 +295,7 @@
     }
    }
   ],
-  "scripts/write-session-cost.sh": [
+  "scout/scripts/write-session-cost.sh": [
    {
     "versions": [
      "v0.4.0",
@@ -329,7 +329,7 @@
     }
    }
   ],
-  "scripts/rate-limit-detect.sh": [
+  "scout/scripts/rate-limit-detect.sh": [
    {
     "versions": [
      "v0.4.0",
@@ -370,7 +370,7 @@
     }
    }
   ],
-  "scripts/claude-with-retry.sh": [
+  "scout/scripts/claude-with-retry.sh": [
    {
     "versions": [
      "v0.5.0",
@@ -425,7 +425,7 @@
     }
    }
   ],
-  "scripts/post-session-backfill.sh": [
+  "scout/scripts/post-session-backfill.sh": [
    {
     "versions": [
      "v0.6.0",
@@ -446,7 +446,7 @@
     }
    }
   ],
-  "scripts/materialize-daily-file.sh": [
+  "scout/scripts/materialize-daily-file.sh": [
    {
     "versions": [
      "v0.8.0",
@@ -462,7 +462,7 @@
     }
    }
   ],
-  "hooks/kb-pre-filter.sh": [
+  "scout/hooks/kb-pre-filter.sh": [
    {
     "versions": [
      "v0.4.0",
@@ -510,7 +510,7 @@
     }
    }
   ],
-  "run-scout.sh": [
+  "scout/runners/run-scout.sh": [
    {
     "versions": [
      "v0.4.0"
@@ -662,7 +662,7 @@
     }
    }
   ],
-  "run-dreaming.sh": [
+  "scout/runners/run-dreaming.sh": [
    {
     "versions": [
      "v0.4.0"
@@ -768,7 +768,7 @@
     }
    }
   ],
-  "run-research.sh": [
+  "scout/runners/run-research.sh": [
    {
     "versions": [
      "v0.4.0"

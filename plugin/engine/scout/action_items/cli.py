@@ -1169,7 +1169,7 @@ def cli_retitle(
     in today's file, keeps each original word for word in the item's context
     note (`former_title`), records each rewrite in
     `.scout-state/title-rewrites.jsonl` so the 60-day clock is kept, and makes
-    one commit with `scripts/git-safe-commit.sh`. Undo it with
+    one commit with `scout/scripts/git-safe-commit.sh`. Undo it with
     `--undo <commit> --yes`, never `git revert` on a later day: that drops the
     records and restarts every clock from the cleanup day.
     Exit codes: 0 = done, 1 = nothing to apply, 2 = refused or cannot run.

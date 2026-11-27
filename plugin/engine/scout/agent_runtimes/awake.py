@@ -2,7 +2,7 @@
 
 Jordan's decision (2026-11-16, option A): a run's timeout counts *awake* time, so a Mac
 that sleeps through the night mid-run isn't a runaway. The clock is the one
-``scripts/scout-lock.sh``'s ``_scout_awake_now`` uses: CLOCK_UPTIME_RAW on macOS,
+``scout/scripts/scout-lock.sh``'s ``_scout_awake_now`` uses: CLOCK_UPTIME_RAW on macOS,
 CLOCK_MONOTONIC on Linux (both exclude suspend), and the same ``"<clock> <seconds>"``
 text, so a value the runner took in shell compares with one taken here. A ``wall``
 value (no python3 where the runner ran) is never subtracted from an ``awake`` one.

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from scout.scripts import vault_drift as vd
 from scout.scripts.three_way_merge import MergeResult, MergeUnavailable
 
@@ -222,7 +223,7 @@ def test_the_shipped_history_recognises_a_real_older_release_render() -> None:
     live = live.replace("{{SCOUTCTL_BIN}}", "/cache/scout/0.11.0/.venv/bin/scoutctl").replace(
         "{{INSTANCE_NAME}}", "Scout"
     )
-    sigs = vd.load_render_history()["scripts/heartbeat.sh"]
+    sigs = vd.load_render_history()[layout.script_path("heartbeat.sh")]
     assert any(vd.matches(live, s) for s in sigs)
     assert not any(vd.matches(live + "# vault edit\n", s) for s in sigs)
 

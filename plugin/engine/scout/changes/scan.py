@@ -24,12 +24,17 @@ DERIVE_CHUNK = 500
 # How far back the first watermark scan reads (no mark yet, or its commit is gone from the repository).
 FALLBACK_WINDOW = timedelta(days=14)
 
-BRAIN_FILES = frozenset({"SKILL.md", "DREAMING.md", "RESEARCH.md", "RESPOND.md"})
+# Brain skills, scripts and the wishlist at their layout v2 paths and, for older commits, their v1 paths.
+BRAIN_FILES = frozenset(
+    {f"{prefix}{k}.md" for prefix in ("", "scout/brain/") for k in ("SKILL", "DREAMING", "RESEARCH", "RESPOND")}
+)
+SCRIPT_PREFIXES = ("scripts/", "scout/scripts/")
+WISHLIST_PREFIXES = ("docs/wishlist/", "scout/records/wishlist/")
 _PHASE_LANES = ("briefing", "consolidation", "dreaming", "research", "work")
 _UPDATE_PREFIXES = ("scout-update:", "upgrade", "chore(scout-update)")
 _PREFIX_RE = re.compile(r"^(?:(?:briefing|consolidation|dreaming|research|work|trading) \[[^\]]*\]|scout):\s*")
 _PATTERN_RE = re.compile(r"Pattern\s+#(\d+)", re.IGNORECASE)
-_WISHLIST_PATH_RE = re.compile(r"docs/wishlist/([A-Za-z0-9._-]+?)(?:\.md)?(?=\s|$|[,;:)\]])")
+_WISHLIST_PATH_RE = re.compile(r"(?:docs|scout/records)/wishlist/([A-Za-z0-9._-]+?)(?:\.md)?(?=\s|$|[,;:)\]])")
 _STATUS_DONE_RE = re.compile(r"^\+\s*status:\s*done\b", re.MULTILINE)
 _REVERTS_BODY_RE = re.compile(r"^This reverts commit ([0-9a-f]{40})", re.MULTILINE)
 _FULL_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -53,12 +58,12 @@ def parse_trailers(message: str) -> dict[str, str]:
 
 
 def is_self_path(status: str, path: str) -> bool:
-    """A path a self-change is made of, and so what undoing one restores: a brain file, anything under ``scripts/``
-    or ``docs/wishlist/``, or either side of a rename inside ``knowledge-base/``. Never session logs, the mistake
-    audit or action items: a later run's own bookkeeping there is not part of the change."""
+    """A path a self-change is made of, and so what undoing one restores: a brain file, anything under the scripts
+    folder or the wishlist (layout v2 or v1), or either side of a rename inside ``knowledge-base/``. Never session
+    logs, the mistake audit or action items: a later run's own bookkeeping there is not part of the change."""
     return (
         path in BRAIN_FILES
-        or path.startswith(("scripts/", "docs/wishlist/"))
+        or path.startswith((*SCRIPT_PREFIXES, *WISHLIST_PREFIXES))
         or (status[:1] == "R" and path.startswith("knowledge-base/"))
     )
 
@@ -115,12 +120,12 @@ def classify(
         return "rollback"
     if any(p in BRAIN_FILES and s[:1] in ("A", "M") for s, p in paths):
         return "brain-edit"
-    if any(p.startswith("scripts/") and s[:1] in ("A", "M") for s, p in paths):
+    if any(p.startswith(SCRIPT_PREFIXES) and s[:1] in ("A", "M") for s, p in paths):
         return "driver"
     if any(s[:1] == "R" and p.startswith("knowledge-base/") for s, p in paths):
         return "kb-structure"
     for s, p in paths:
-        if p.startswith("docs/wishlist/") and s[:1] in ("A", "M") and _STATUS_DONE_RE.search(diff_of(p)):
+        if p.startswith(WISHLIST_PREFIXES) and s[:1] in ("A", "M") and _STATUS_DONE_RE.search(diff_of(p)):
             return "wishlist-done"
     return None
 

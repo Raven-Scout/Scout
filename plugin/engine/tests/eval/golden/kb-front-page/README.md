@@ -10,7 +10,7 @@ case lists only the files a run changed or added, as vault-relative paths; every
 | `good` | Rewrote the front page in place (it shrinks by 94 bytes); filed the facts, cited, in `knowledge/` | nothing |
 | `placeholder` | Left `_None right now._` in the emptied Open questions section | nothing |
 | `lazy-wrap` | Rewrote a bullet with its second line unindented (a lazy continuation) | nothing |
-| `meeting-cite` | Filed the row cap with a link to the meeting's own note under `knowledge-base/meetings/` | nothing |
+| `meeting-cite` | Filed the row cap with a link to the meeting's own note under `knowledge-base/<space>/meetings/` | nothing |
 | `status-front` | Filed PROJ-1240's close only as a cited "Where it stands" bullet, as real runs do; the decision behind it is already a decisions row | nothing |
 | `narrated` | Left the page as it was and added an update paragraph with narration (+243 bytes) | structure, narration |
 | `bullet-diary` | Added the run's update as a dated bullet ("… update: checked gh … this morning") | narration |

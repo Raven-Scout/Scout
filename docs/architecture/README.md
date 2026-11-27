@@ -50,7 +50,7 @@ with it ("brain file", "Scout session", "wrap-up DM"), `CONTEXT.md` wins.
 |---|---|
 | Plugin root | The directory Claude Code loads the plugin from: a marketplace cache entry or a clone |
 | Vault | `$SCOUT_DATA_DIR`, default `~/Scout`. A git repo and an Obsidian vault |
-| Brain file | One of `SKILL.md`, `DREAMING.md`, `RESEARCH.md` in the vault, assembled from `phases/` |
+| Brain file | One of `SKILL.md`, `DREAMING.md`, `RESEARCH.md` in the vault's `scout/brain/` (layout v2), assembled from `phases/` |
 | Runner | `run-scout.sh`, `run-dreaming.sh` or `run-research.sh`, rendered from `templates/` into the vault |
 | Slot | One scheduled session in `.scout-state/schedule.yaml`, for example `morning-briefing` |
 | Connector | A work tool the session can reach, keyed by MCP server name or `github` |

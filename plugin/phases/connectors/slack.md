@@ -21,7 +21,7 @@ Use `slack_search_public_and_private` with `from:{{USER_SLACK_ID}}` and date fil
 
 ### Channel Posts
 
-Search project channels for posts by {{USER_NAME}}. Check channels listed in the KB's `channels.md` file (`scripts/scoutctl kb read knowledge-base/channels.md`). Channel posts indicate:
+Search project channels for posts by {{USER_NAME}}. Check channels listed in the KB's `channels.md` file (`scout/scripts/scoutctl kb read knowledge-base/channels.md`). Channel posts indicate:
 - Status updates given (the underlying work is done or in progress)
 - Questions asked ({{USER_NAME}} is blocked or exploring)
 - Answers provided ({{USER_NAME}} helped someone — may indicate context/expertise)
@@ -73,7 +73,7 @@ Check DMs received by {{USER_NAME}} from frequent contacts. Inbound DMs often co
 
 ### Key Channel Activity
 
-Check project channels listed in `channels.md` (`scripts/scoutctl kb read knowledge-base/channels.md`) for recent activity, even if {{USER_NAME}} wasn't mentioned. Important channel activity includes:
+Check project channels listed in `channels.md` (`scout/scripts/scoutctl kb read knowledge-base/channels.md`) for recent activity, even if {{USER_NAME}} wasn't mentioned. Important channel activity includes:
 - Decisions made that affect {{USER_NAME}}'s work
 - New issues or blockers raised
 - Status updates from collaborators
@@ -81,7 +81,7 @@ Check project channels listed in `channels.md` (`scripts/scoutctl kb read knowle
 
 ### 🔴 Project Channel Poll (mandatory)
 
-`slack_search` misses threads and non-mention activity — the recurring cause of "Scout went quiet on project X." The runner lists every 🔴 project (`priority: "🔴"` or a 🔴 status) and the channels its `slack_channels:` frontmatter declares in `.scout-cache/session-context.json` → `red_project_channels`. **Directly read each listed channel** since the last run via `slack_read_channel(channel_id=<id>, limit=20)` — do not rely on search alone. Surface: every {{USER_NAME}} @-mention, every message from a person in the project's `worked_on_by`/key-people set, and every decision/blocker. List the polled channels on this run's 🪵 Run notes entry (`  - 🔴 channels polled: #a, #b`; add `(unavailable: <error>)` after one you couldn't read). If a 🔴 project has no channels yet, add its `slack_channels:` frontmatter (see project-file conventions in kb-management). Before committing, run `scripts/scoutctl action-items check-red-polls --data-dir {{SCOUT_DIR}}`; exit 1 names each channel not yet listed: poll it, list it, run it again. Only this run's own Run notes entry counts, never an earlier run's line.
+`slack_search` misses threads and non-mention activity — the recurring cause of "Scout went quiet on project X." The runner lists every 🔴 project (`priority: "🔴"` or a 🔴 status) and the channels its `slack_channels:` frontmatter declares in `.scout-cache/session-context.json` → `red_project_channels`. **Directly read each listed channel** since the last run via `slack_read_channel(channel_id=<id>, limit=20)` — do not rely on search alone. Surface: every {{USER_NAME}} @-mention, every message from a person in the project's `worked_on_by`/key-people set, and every decision/blocker. List the polled channels on this run's 🪵 Run notes entry (`  - 🔴 channels polled: #a, #b`; add `(unavailable: <error>)` after one you couldn't read). If a 🔴 project has no channels yet, add its `slack_channels:` frontmatter (see project-file conventions in kb-management). Before committing, run `scout/scripts/scoutctl action-items check-red-polls --data-dir {{SCOUT_DIR}}`; exit 1 names each channel not yet listed: poll it, list it, run it again. Only this run's own Run notes entry counts, never an earlier run's line.
 
 ### Both Scans Required (gate)
 
@@ -163,7 +163,7 @@ requires: slack
 
 ## Slack-Sourced KB Updates
 
-After scanning Slack, update the knowledge base with any new information discovered. Find the notes to update through `scoutctl kb`, never `cat`, `ls`, `find`, `grep` or Glob in `knowledge-base/`: `scripts/scoutctl kb name-lookup <name>` for a person, `kb resolve <name>` for a project or other note, `kb read <path>` for one you aren't changing. Open a note with Read only to edit it.
+After scanning Slack, update the knowledge base with any new information discovered. Find the notes to update through `scoutctl kb`, never `cat`, `ls`, `find`, `grep` or Glob in `knowledge-base/`: `scout/scripts/scoutctl kb name-lookup <name>` for a person, `kb resolve <name>` for a project or other note, `kb read <path>` for one you aren't changing. Open a note with Read only to edit it.
 
 ### People Updates
 
@@ -184,7 +184,7 @@ After scanning Slack, update the knowledge base with any new information discove
 
 ### Project Updates
 
-- If Slack conversations revealed new decisions, status changes, or context for active projects, update the relevant project files in `knowledge-base/projects/`.
+- If Slack conversations revealed new decisions, status changes, or context for active projects, update the relevant project files in `knowledge-base/<space>/projects/`.
 - Always cite the Slack source: "Per discussion in #channel-name on [date]" or "Per DM from [person] on [date]."
 
 ---
@@ -197,9 +197,9 @@ requires: slack
 
 ## Slack Notification
 
-Send a Slack DM to {{USER_NAME}} (Slack ID: `{{USER_SLACK_ID}}`) summarizing the run results. Slack is a shared surface: send it through the privacy phase's outbound-draft step (write `.scout-cache/outbound-draft.md`, run `scripts/scoutctl kb check-outbound` on it with `--surface slack`, send only on exit 0). Private items go in the daily file or the owner's Telegram chat, not here.
+Send a Slack DM to {{USER_NAME}} (Slack ID: `{{USER_SLACK_ID}}`) summarizing the run results. Slack is a shared surface: send it through the privacy phase's outbound-draft step (write `.scout-cache/outbound-draft.md`, run `scout/scripts/scoutctl kb check-outbound` on it with `--surface slack`, send only on exit 0). Private items go in the daily file or the owner's Telegram chat, not here.
 
-**Send this DM even when SKILL.md also has a Telegram Notification section:** the wrap then goes to both, and this DM still carries non-private items only. The vault's `notify.wrap_channels` in `scout-config.yaml` decides which channels get a notification section, so if this section is here, send it.
+**Send this DM even when scout/brain/SKILL.md also has a Telegram Notification section:** the wrap then goes to both, and this DM still carries non-private items only. The vault's `notify.wrap_channels` in `scout-config.yaml` decides which channels get a notification section, so if this section is here, send it.
 
 ### Consolidation Notification (3-5 lines)
 

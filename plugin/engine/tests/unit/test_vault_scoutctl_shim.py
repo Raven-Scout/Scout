@@ -1,4 +1,4 @@
-"""The vault's scripts/scoutctl: how brain files reach the engine when it isn't on PATH."""
+"""The vault's scout/scripts/scoutctl: how brain files reach the engine when it isn't on PATH."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import layout
 from scout.scripts.phase_assembly import render_template
 
 TEMPLATE = Path(__file__).resolve().parents[3] / "templates" / "scripts" / "scoutctl.sh.tmpl"
@@ -22,7 +23,7 @@ def _engine(path: Path, name: str) -> Path:
 
 
 def _shim(vault: Path, scoutctl_bin: Path) -> Path:
-    shim = vault / "scripts" / "scoutctl"
+    shim = vault / layout.script_path("scoutctl")
     shim.parent.mkdir(parents=True)
     shim.write_text(render_template(TEMPLATE.read_text(encoding="utf-8"), {"SCOUTCTL_BIN": str(scoutctl_bin)}))
     shim.chmod(0o755)
@@ -33,7 +34,7 @@ def _run(shim: Path, home: Path, *, path: str = "/usr/bin:/bin", **env: str) -> 
     return subprocess.run(
         [str(shim), "health", "--json"],
         env={"HOME": str(home), "PATH": path, **env},
-        cwd=shim.parent.parent,
+        cwd=shim.parents[2],  # the vault: scout/scripts/scoutctl
         capture_output=True,
         text=True,
         timeout=30,
@@ -85,6 +86,7 @@ def test_no_engine_anywhere_fails_loudly(tmp_path: Path, home: Path) -> None:
 def test_the_template_is_registered_as_an_executable_vault_script() -> None:
     from scout.scripts import bootstrap
 
-    assert ("scripts/scoutctl", "templates/scripts/scoutctl.sh.tmpl") in bootstrap._CAT1_TEMPLATES
+    rel = layout.script_path("scoutctl")
+    assert (rel, "templates/scripts/scoutctl.sh.tmpl") in bootstrap._CAT1_TEMPLATES
     managed = {m.vault_rel: m for m in bootstrap._MANAGED_FILES}
-    assert managed["scripts/scoutctl"].executable and managed["scripts/scoutctl"].rendered
+    assert managed[rel].executable and managed[rel].rendered

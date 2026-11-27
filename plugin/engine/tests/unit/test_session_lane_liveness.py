@@ -1,6 +1,6 @@
 """templates/scripts/session-lane-liveness.py — is each session type still producing work?
 
-``scripts/heartbeat.sh`` runs this once a day with ``--quiet --notify``. Connector
+``scout/scripts/heartbeat.sh`` runs this once a day with ``--quiet --notify``. Connector
 health watches tool calls inside a run and the run-outcome ledger watches one
 run's exit, but neither notices a whole session type (a *lane*: every slot of one
 type) going quiet for weeks. A lane is judged by committed output, not by
@@ -27,6 +27,8 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+
+from scout import layout
 
 SCRIPT = Path(__file__).resolve().parents[3] / "templates" / "scripts" / "session-lane-liveness.py"
 NOW = datetime.now(UTC)
@@ -473,8 +475,8 @@ def test_notify_is_silent_when_every_lane_is_healthy(vault: Path, tmp_path: Path
 
 def test_without_scout_data_dir_it_checks_the_vault_it_is_installed_in(vault: Path) -> None:
     _healthy(vault)
-    installed = vault / "scripts" / "session-lane-liveness.py"
-    installed.parent.mkdir()
+    installed = vault / layout.script_path("session-lane-liveness.py")
+    installed.parent.mkdir(parents=True)
     shutil.copy(SCRIPT, installed)
     env = {k: v for k, v in os.environ.items() if k != "SCOUT_DATA_DIR"}
 

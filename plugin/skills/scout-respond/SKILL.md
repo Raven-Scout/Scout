@@ -7,7 +7,7 @@ Launch a SCOUT respond session as a background process on this machine. The tele
 
 Do the following steps, from the vault directory:
 
-1. Run `nohup bash ./run-respond.sh > /dev/null 2>&1 &` to launch the respond session in the background. Capture the PID.
+1. Run `R=./scout/runners/run-respond.sh; [ -x "$R" ] || R=./run-respond.sh; nohup bash "$R" > /dev/null 2>&1 &` (the runner is in `scout/runners/` from layout v2 on, at the vault root before it) to launch the respond session in the background. Capture the PID.
 
 2. Find the most recent log file: `ls -t .scout-logs/respond-*.log | head -1`
 

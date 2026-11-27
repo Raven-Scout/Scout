@@ -226,7 +226,8 @@ def marker_sets() -> tuple[tuple[str, ...], ...]:
 def run_processes(vault: Path, table: Mapping[int, Proc], *, holder: int | None) -> set[int]:
     """The live processes of a scheduled run of ``vault`` (see the module doc)."""
     roots = _vault_paths(vault)
-    wrappers = {f"{r}/scripts/claude-with-retry.sh" for r in roots}
+    # The wrapper at its v1 and v2 paths: during the layout move a woken v1 runner shows one, a v2 run the other.
+    wrappers = {f"{r}/{d}/claude-with-retry.sh" for r in roots for d in ("scripts", "scout/scripts")}
     markers = marker_sets()
     out: set[int] = set()
     for p in table.values():
@@ -238,6 +239,25 @@ def run_processes(vault: Path, table: Mapping[int, Proc], *, holder: int | None)
         elif any(_runs_script(cmd, w) for w in wrappers):
             out.add(p.pid)
         elif any(all(w in cmd for w in words) for words in markers) and any(r in cmd for r in roots):
+            out.add(p.pid)
+    return out
+
+
+_ANY_RUNNER_RE = re.compile(r"(?:^|[\s/])run-[\w.-]+\.sh(?:\s|$)")
+
+
+def queued_runners(vault: Path, table: Mapping[int, Proc], *, holder: int | None) -> set[int]:
+    """Runner processes of ``vault`` other than the lock holder: queued on the lock, or a holder's children.
+
+    The layout move needs none queued (spec 2026-11-26 §4.3 precondition 1): a runner waiting for the lock
+    wakes with the paths it started with. Any ``run-*.sh`` counts, the vault's own runners too.
+    """
+    roots = _vault_paths(vault)
+    out: set[int] = set()
+    for p in table.values():
+        if p.stat.startswith("Z") or p.pid == holder:
+            continue
+        if _ANY_RUNNER_RE.search(p.command) and any(r in p.command for r in roots):
             out.add(p.pid)
     return out
 

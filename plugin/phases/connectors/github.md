@@ -254,7 +254,7 @@ requires: github
 
 ## GitHub-Sourced KB Updates
 
-After scanning GitHub, update the knowledge base with current code activity. Find the notes to update through `scoutctl kb`, never `cat`, `ls`, `find`, `grep` or Glob in `knowledge-base/`: `scripts/scoutctl kb name-lookup <name>` for a person, `kb resolve <name>` for a project or other note, `kb read <path>` for one you aren't changing. Open a note with Read only to edit it.
+After scanning GitHub, update the knowledge base with current code activity. Find the notes to update through `scoutctl kb`, never `cat`, `ls`, `find`, `grep` or Glob in `knowledge-base/`: `scout/scripts/scoutctl kb name-lookup <name>` for a person, `kb resolve <name>` for a project or other note, `kb read <path>` for one you aren't changing. Open a note with Read only to edit it.
 
 ### PRs on Project Pages
 

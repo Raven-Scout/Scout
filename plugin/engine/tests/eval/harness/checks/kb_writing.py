@@ -40,6 +40,8 @@ KB_CHECKS = (
 # Notes a wikilink may cite, by vault-relative folder (write-protocol.md's source notes;
 # meeting-prep.md's meetings/<slug>/YYYY-MM-DD.md, in both places a vault keeps them).
 SOURCE_ROOTS = ("knowledge-base/sources/", "knowledge-base/meetings/", "meetings/")
+# Layout v2: each space's sources/ and meetings/ (knowledge-base/<space>/...).
+_SPACE_SOURCE = re.compile(r"^knowledge-base/[a-z][a-z0-9-]*/(?:sources|meetings)/")
 STANDS = "Where it stands"  # kb-page-standard.md: the front page's current-status section
 MAX_STANDS_BULLETS = 6  # kb-page-standard.md: "Where it stands", up to 6 bullets
 _URL = re.compile(r"https?://\S+")
@@ -129,7 +131,7 @@ def source_keys(paths: Collection[str]) -> frozenset[str]:
     ``knowledge-base/``, or its bare name, each without ``.md``."""
     keys: set[str] = set()
     for path in paths:
-        if not path.endswith(".md") or not path.startswith(SOURCE_ROOTS):
+        if not path.endswith(".md") or not (path.startswith(SOURCE_ROOTS) or _SPACE_SOURCE.match(path)):
             continue
         stem = path[: -len(".md")]
         keys |= {stem, stem.removeprefix("knowledge-base/"), stem.rsplit("/", 1)[-1]}

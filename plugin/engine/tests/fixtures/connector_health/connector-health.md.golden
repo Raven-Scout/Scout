@@ -52,7 +52,7 @@ If a Linear workspace switch happened, the OAuth scope may need re-grant.
 ## How this works
 
 - Every tool call in a scheduled scout run is logged by `hooks/connector-log.sh` (PostToolUse hook) to `.scout-logs/connector-calls-YYYY-MM-DD.jsonl`.
-- After each run, `scripts/connector-health-report.sh` rolls up the last 14 days, rewrites this file in place, and fires alerts on degradation.
+- After each run, `scoutctl connector-health-report` rolls up the last 14 days, rewrites this file in place, and fires alerts on degradation.
 - Interactive Claude Code sessions in ~/Scout are not logged (the hook short-circuits when `SCOUT_MODE` is unset).
 
 ### Alert rules

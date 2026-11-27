@@ -1,7 +1,7 @@
 """Integration test: the rendered runners hand SCOUT_MODE to the telemetry hooks.
 
 Renders each runner template (run-scout / run-dreaming / run-research) with a
-stubbed ``scripts/claude-with-retry.sh`` that stands in for the ``claude`` child
+stubbed ``scout/scripts/claude-with-retry.sh`` that stands in for the ``claude`` child
 process. The stub records the ``SCOUT_MODE`` it inherited and then drives the
 real hooks exactly as Claude Code would from inside the session:
 
@@ -36,6 +36,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+from scout import layout
 
 REPO_ROOT = Path(__file__).resolve().parents[3]  # …/scout-plugin
 ENGINE_ROOT = REPO_ROOT / "engine"
@@ -108,11 +110,12 @@ def _render(tmpl: Path, scout_dir: Path) -> Path:
     }.items():
         text = text.replace(placeholder, value)
     assert "{{" not in text, f"unrendered placeholder left in {tmpl.name}"
-    out = scout_dir / tmpl.name.removesuffix(".tmpl")
+    out = scout_dir / layout.runner_path(tmpl.name.removesuffix(".tmpl"))
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
     out.chmod(0o755)
     # Every runner sources the session lock (#218).
-    lock_lib = scout_dir / "scripts" / "scout-lock.sh"
+    lock_lib = scout_dir / layout.script_path("scout-lock.sh")
     lock_lib.parent.mkdir(parents=True, exist_ok=True)
     lock_lib.write_text(
         (TEMPLATES / "scripts" / "scout-lock.sh.tmpl")
@@ -124,7 +127,7 @@ def _render(tmpl: Path, scout_dir: Path) -> Path:
 
 
 def _stub_claude(scout_dir: Path) -> Path:
-    """Stand-in for scripts/claude-with-retry.sh (and thereby the claude child).
+    """Stand-in for scout/scripts/claude-with-retry.sh (and thereby the claude child).
 
     Writes the inherited SCOUT_MODE (or a sentinel) to ``scout-mode.seen``, then
     drives both real hooks: connector-log with one tool call, session-tool-log
@@ -141,7 +144,7 @@ def _stub_claude(scout_dir: Path) -> Path:
     post_tool_use_hook = "import sys; from scout.hooks.connector_log import run; run(stdin=sys.stdin)"
     stop_hook = "import sys; from scout.hooks.session_tool_log import run; run(stdin=sys.stdin)"
 
-    stub = scout_dir / "scripts" / "claude-with-retry.sh"
+    stub = scout_dir / layout.script_path("claude-with-retry.sh")
     stub.parent.mkdir(parents=True, exist_ok=True)
     stub.write_text(
         "#!/bin/bash\n"
