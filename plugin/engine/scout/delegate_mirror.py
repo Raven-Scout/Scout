@@ -1101,7 +1101,7 @@ def _mirror_kb_structure(raw: Any, mirrored: Sequence[str], clean: Callable[[Any
     if not isinstance(raw, Mapping):
         return {}
     out: dict[str, Any] = {}
-    root = "knowledge-base/projects"
+    root: str | None = None  # None: the engine's default, every space's projects folder on layout v2
     if "projects_dir" in raw:
         given = clean(raw["projects_dir"])
         parts = PurePosixPath(given.strip("/")).parts if given else ()
@@ -1114,9 +1114,24 @@ def _mirror_kb_structure(raw: Any, mirrored: Sequence[str], clean: Callable[[Any
     skip = raw.get("skip_projects")
     if isinstance(skip, list):
         names = [n for n in map(clean, skip) if n and "/" not in n]
-        if names := [n for n in names if any(rel.startswith(f"{root}/{n}/") for rel in mirrored)]:
+        if names := [n for n in names if any(_project_of(rel, root) == n for rel in mirrored)]:
             out["skip_projects"] = names
     return out
+
+
+_DEFAULT_PROJECT_RE = re.compile(r"^knowledge-base/(?:[^/]+/)?projects/([^/]+)/")
+
+
+def _project_of(rel: str, root: str | None) -> str | None:
+    """The project folder ``rel`` sits in: under ``root``, or under the default (``knowledge-base/projects/`` on
+    layout v1, ``knowledge-base/<space>/projects/`` on v2)."""
+    if root is None:
+        m = _DEFAULT_PROJECT_RE.match(rel)
+        return m.group(1) if m else None
+    if not rel.startswith(root + "/"):
+        return None
+    rest = rel[len(root) + 1 :]
+    return rest.split("/", 1)[0] if "/" in rest else None
 
 
 def mirror_config(

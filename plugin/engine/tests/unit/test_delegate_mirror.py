@@ -1081,6 +1081,9 @@ def test_the_mirror_config_keeps_kb_structure_only_for_mirrored_folders(vault: P
     sammy = ["knowledge-base/projects/Sammy/Sammy.md"]  # a folder named for a hidden note: the name stays home
     assert structure("kb_structure: {skip_projects: [Sammy]}\n", sammy) is None
     assert structure("kb_structure: [projects_dir]\n", widget) is None
+    # Layout v2: the default projects folder is each space's, so a skipped project there still counts.
+    v2_widget = ["knowledge-base/work/projects/widget/widget.md"]
+    assert structure("kb_structure: {skip_projects: [widget, hidden]}\n", v2_widget) == {"skip_projects": ["widget"]}
 
 
 @pytest.mark.parametrize("allowlist", [False, True])

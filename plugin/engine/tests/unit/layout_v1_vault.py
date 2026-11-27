@@ -214,3 +214,55 @@ def build_v1_vault(vault: Path, *, spaces: str | None = None, dirty: bool = True
     if dirty:
         _w(vault, "inbox.md", "# Inbox\n\n- an uncommitted note\n")
     return vault
+
+
+# ---- the hostile vault -----------------------------------------------------------------------------------------
+#
+# The clean vault above is all committed. A real one isn't: drafts never added, ignored files that mention old
+# paths, a new file staged but not committed, the owner's own symlinks, odd file names. The move must leave every
+# file git doesn't track exactly as it was (moved with its folder, never edited, never committed), keep the
+# owner's symlinks, and commit only what it wrote. Paths below are relative to the vault, before the move.
+
+# Untracked (never added), each mentioning old paths the move rewrites in tracked files.
+HOSTILE_UNTRACKED: dict[str, str] = {
+    "knowledge-base/topics/draft-untracked.md": "# Draft\n\n[[projects/apollo/apollo]] knowledge-base/session-log.md\n",
+    "scripts/local-tool.sh": '#!/bin/bash\ncat "$SCOUT_DIR/SKILL.md" "$SCOUT_DIR/scripts/scoutctl"\n',
+    "notes [draft].md": "# A root note\n\nSee dreaming-proposals.md.\n",
+}
+# Ignored, same.
+HOSTILE_IGNORED: dict[str, str] = {
+    "drop/notes.md": "From knowledge-base/projects/apollo/apollo.md and [[projects/apollo/apollo]].\n",
+    "knowledge-base/projects/apollo/notes.local.md": "# Local\n\n[[projects/apollo/apollo]]\n",
+}
+# Tracked, with names git and globbing treat specially: the move rewrites them like any other note.
+HOSTILE_TRACKED: dict[str, str] = {
+    "knowledge-base/topics/[draft] plan.md": "# Plan\n\n[[projects/apollo/apollo]]\n",
+    "knowledge-base/topics/čeština a mezery.md": "# Čeština\n\n[[projects/apollo/apollo]]\n",
+    "knowledge-base/topics/star*.md": "# Star\n\n[[projects/apollo/apollo]]\n",
+}
+# Staged but never committed: the checkpoint before the move commits it, as any staged edit (§4.3).
+HOSTILE_STAGED: dict[str, str] = {"knowledge-base/topics/staged-new.md": "# Staged\n\n[[projects/apollo/apollo]]\n"}
+# The owner's own symlinks: (path, target outside the vault's managed files). One tracked, one not.
+HOSTILE_TRACKED_LINK = "run-dev.sh"
+HOSTILE_UNTRACKED_LINK = "knowledge-base/topics/elsewhere.md"
+
+
+def build_hostile_v1_vault(vault: Path, outside: Path, *, spaces: str | None = None) -> Path:
+    """:func:`build_v1_vault` (committed, clean) plus everything a real vault holds that git doesn't. ``outside``:
+    a folder beside the vault, for the symlinks to point into."""
+    build_v1_vault(vault, spaces=spaces, dirty=False)
+    outside.mkdir(parents=True, exist_ok=True)
+    (outside / "run.sh").write_text("#!/bin/bash\n")
+    (outside / "elsewhere.md").write_text("# Elsewhere\n")
+    gi = vault / ".gitignore"
+    gi.write_text(gi.read_text() + "*.local.md\n")
+    for rel, text in HOSTILE_TRACKED.items():
+        _w(vault, rel, text)
+    os.symlink(outside / "run.sh", vault / HOSTILE_TRACKED_LINK)
+    _git(vault, "add", "-A")
+    _git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "odd names, a symlink of mine")
+    for rel, text in {**HOSTILE_UNTRACKED, **HOSTILE_IGNORED, **HOSTILE_STAGED}.items():
+        _w(vault, rel, text)
+    os.symlink(outside / "elsewhere.md", vault / HOSTILE_UNTRACKED_LINK)
+    _git(vault, "add", "--", *HOSTILE_STAGED)
+    return vault
