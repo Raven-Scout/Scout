@@ -185,3 +185,34 @@ def test_space_registry_errors(tmp_path: Path) -> None:
         scout_config.parse_spaces([{"key": "work", "default": "yes"}])
     (tmp_path / "scout-config.yaml").write_text("spaces:\n  - work\n")
     assert scout_config.load_spaces(tmp_path) == scout_config.DEFAULT_SPACES
+
+
+def test_a_layout_deferral_whose_count_changed_is_the_same_reason() -> None:
+    from scout import update_outcomes as uo
+    from scout.scripts import self_update_run as su
+    from tests.unit.self_update_fakes import NOW
+
+    def r(detail: str) -> uo.UpdateOutcome:
+        return uo.UpdateOutcome(
+            at=NOW,
+            from_version="0.18.0",
+            target="0.19.0",
+            managed_by="install.sh",
+            result="deferred",
+            step="vault",
+            detail=f"{su.LAYOUT_DEFERRED_MARK}{detail}",
+        )
+
+    assert su.info_pushes(r("3 files are unmerged"), [r("2 files are unmerged")]) == []
+
+
+def test_retitle_finds_the_commit_helper_on_either_layout(tmp_path: Path) -> None:
+    from scout.action_items import retitle
+
+    v1 = tmp_path / "v1"
+    v1.mkdir()
+    (v1 / "SKILL.md").write_text("# s\n")
+    v2 = tmp_path / "v2"
+    (v2 / "scout" / "brain").mkdir(parents=True)
+    assert retitle.commit_helper(v1) == Path("scripts/git-safe-commit.sh")
+    assert retitle.commit_helper(v2) == Path("scout/scripts/git-safe-commit.sh")

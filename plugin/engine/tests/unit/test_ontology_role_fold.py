@@ -101,3 +101,27 @@ def test_a_registry_problem_or_a_stray_relationship_does_not_stop_the_fold(tmp_p
     alex = g.entity("Alex")
     assert alex is not None and set(alex["_roles"]) == {"work", "personal"}
     assert [r["target"] for r in g.related("Alex")] == ["Apollo"]
+
+
+def test_an_edge_from_a_private_role_note_is_marked_private(tmp_path: Path) -> None:
+    """The edge keeps its role file's label (§3.2): `related` and `traverse` mark it even when its target is a
+    normal note (review of #832)."""
+    from scout.kb.read import cmd_related, cmd_traverse
+
+    v = _vault(tmp_path)
+    _w(
+        v / "knowledge-base/personal/people/alex-personal.md",
+        '---\ntype: role\nrole_of: "[[people/alex]]"\nspace: personal\nrole: Neighbour\nrelationships:\n'
+        '  - type: works_on\n    target: "[[work/projects/garden/garden]]"\n---\n',
+    )
+    _w(v / "knowledge-base/work/projects/garden/garden.md", "---\nname: Garden\ntype: project\n---\n")
+    clear_frontmatter_cache()
+    g = _graph(v)
+    related = cmd_related(g, "Alex")
+    garden = next(ln for ln in related.lines if "Garden" in ln)
+    apollo = next(ln for ln in related.lines if "Apollo" in ln)
+    assert garden.strip().startswith("[private]") and not apollo.strip().startswith("[private]")
+    assert any(lb.get("visibility") == "private" for lb in related.labels)
+    traverse = cmd_traverse(g, "Alex", 2, None)
+    assert next(ln for ln in traverse.lines if "Garden" in ln).strip().startswith("[private]")
+    assert not next(ln for ln in traverse.lines if "Apollo" in ln).strip().startswith("[private]")

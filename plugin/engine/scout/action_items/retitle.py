@@ -49,7 +49,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from scout import paths, safe_write
+from scout import layout, paths, safe_write
 from scout.action_items import stale
 from scout.action_items.context_notes import context_note_rel
 from scout.action_items.prefetched import daily_lines
@@ -61,7 +61,14 @@ BATCH = 25
 MODEL_TIMEOUT_S = 600
 COMMIT_TIMEOUT_S = 300
 MAX_BUDGET_USD = "2"
-COMMIT_HELPER = Path("scripts") / "git-safe-commit.sh"
+COMMIT_HELPER_NAME = "git-safe-commit.sh"
+
+
+def commit_helper(vault: Path) -> Path:
+    """The vault's own commit helper, wherever its layout keeps scripts (``scout/scripts/`` on v2)."""
+    return Path(layout.for_vault(vault).script(COMMIT_HELPER_NAME))
+
+
 SESSION_LOCK = Path(".scout-logs") / ".scout-session.lock"
 
 # Removed from the model's environment: a key, a token that isn't the login's, or an endpoint. Every provider
@@ -658,7 +665,7 @@ def git_safe_commit(vault: Path, message: str, rel_paths: list[str]) -> str:
     """
     before = _head(vault)
     proc = subprocess.Popen(
-        [str(vault / COMMIT_HELPER), message, *rel_paths],
+        [str(vault / commit_helper(vault)), message, *rel_paths],
         cwd=vault,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -670,12 +677,12 @@ def git_safe_commit(vault: Path, message: str, rel_paths: list[str]) -> str:
         out, err = proc.communicate(timeout=COMMIT_TIMEOUT_S)
     except subprocess.TimeoutExpired as e:
         _stop_group(proc)
-        raise CommitTimedOut(f"{COMMIT_HELPER} ran past {COMMIT_TIMEOUT_S}s and was stopped") from e
+        raise CommitTimedOut(f"{commit_helper(vault)} ran past {COMMIT_TIMEOUT_S}s and was stopped") from e
     after = _head(vault)
     if after is not None and after != before:
         return after[:12]
     detail = (err + out).strip()[-300:]
-    raise RetitleError(f"{COMMIT_HELPER} exited {proc.returncode} and made no commit: {detail}")
+    raise RetitleError(f"{commit_helper(vault)} exited {proc.returncode} and made no commit: {detail}")
 
 
 @dataclass(frozen=True)
@@ -777,8 +784,8 @@ def _require_today(vault: Path, day: _dt.date) -> Path:
     newest = max((d for d, _p in stale.daily_files(vault)), default=None)
     if not daily.exists() or newest != day:
         raise RetitleError(f"refused: {daily.name} is not the newest daily file")
-    if not (vault / COMMIT_HELPER).exists():
-        raise RetitleError(f"refused: {COMMIT_HELPER} is missing from the vault")
+    if not (vault / commit_helper(vault)).exists():
+        raise RetitleError(f"refused: {commit_helper(vault)} is missing from the vault")
     records = str(stale.rewrites_path(vault).relative_to(vault))
     if _git(vault, "check-ignore", "-q", "--", records).returncode == 0:
         raise RetitleError(f"refused: {records} is gitignored, so its records would never be committed")

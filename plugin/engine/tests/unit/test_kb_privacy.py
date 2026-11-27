@@ -595,16 +595,36 @@ def test_missing_config_or_key_means_defaults(tmp_path: Path) -> None:
         b"\xff\xfeprivacy: {}\n",
     ],
 )
-def test_unreadable_overlay_warns_and_uses_defaults(tmp_path: Path, body: str | bytes) -> None:
+def test_unreadable_overlay_warns_and_fails_closed(tmp_path: Path, body: str | bytes) -> None:
+    """A config that can't be read loses its space registry too: every space folder reads private (review of
+    #832), so a custom private space never reads as normal while the file is broken."""
+    from scout.kb import privacy
+
     config = tmp_path / "scout-config.yaml"
     if isinstance(body, bytes):
         config.write_bytes(body)
     else:
         config.write_text(body, encoding="utf-8")
     pol = load_policy(tmp_path)
-    assert pol.warnings == ("privacy-overlay-unreadable",)
-    assert dataclasses.replace(pol, warnings=()) == load_policy(None)
+    assert pol.warnings == ("spaces-invalid", "privacy-overlay-unreadable")
+    closed = privacy.with_spaces(privacy._engine_default(), privacy._INVALID)
+    assert dataclasses.replace(pol, warnings=()) == dataclasses.replace(closed, warnings=())
     assert classify("trading/p.md", None, pol).local_only is False
+    assert classify("knowledge-base/family/x.md", None, pol).visibility == "private"
+
+
+def test_a_broken_config_keeps_a_registry_that_still_reads(tmp_path: Path) -> None:
+    """A bad value elsewhere in the file: the `spaces:` key builds alone, so its private space stays private and
+    the default space stays normal."""
+    (tmp_path / "scout-config.yaml").write_text(
+        "spaces:\n  - key: work\n    default: true\n  - key: family\n    visibility: private\n"
+        "user:\n  timezone: !!binary not-base64\n",
+        encoding="utf-8",
+    )
+    pol = load_policy(tmp_path)
+    assert "privacy-overlay-unreadable" in pol.warnings and "spaces-invalid" not in pol.warnings
+    assert classify("knowledge-base/family/x.md", None, pol).visibility == "private"
+    assert classify("knowledge-base/work/topics/x.md", None, pol).visibility == "normal"
 
 
 def test_engine_default_policy_matches_spec(policy: Policy) -> None:

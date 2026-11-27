@@ -725,8 +725,10 @@ def load_policy(vault: Path | None) -> Policy:
     try:
         text = config.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        # The registry can't be read either. The warning already makes sync and a run's commit refuse.
-        return dataclasses.replace(base, warnings=("privacy-overlay-unreadable",))
+        # The registry can't be read either: fail closed (with_spaces), and the warning makes sync and a run's
+        # commit refuse.
+        policy = with_spaces(_engine_default(), _INVALID)
+        return dataclasses.replace(policy, warnings=(*policy.warnings, "privacy-overlay-unreadable"))
     return policy_from_config_text(text)
 
 
@@ -756,14 +758,27 @@ def policy_from_config_text(text: str | None) -> Policy:
     )
 
 
+def unreadable_policy() -> Policy:
+    """The policy of a config file that can't be read at all: fail closed, with ``privacy-overlay-unreadable``."""
+    return _unreadable_policy(None)
+
+
 def _unreadable_policy(text: str | None) -> Policy:
+    """The policy of a config that doesn't load whole: its privacy block's narrowing part, and its space registry
+    when that key still builds alone. A registry that can't be read fails closed (``_INVALID``), so a custom
+    private space never reads as normal while the file is broken."""
     overlay: Any = None
+    spaces: Any = _INVALID
     if text is not None:
         try:
             overlay = load_yaml_key(text, "privacy")
         except yaml.YAMLError:
             overlay = None
-    policy = policy_from_overlay(_narrowing_overlay(overlay))
+        try:
+            spaces = _spaces_or_invalid(load_yaml_key(text, "spaces"))
+        except yaml.YAMLError:
+            spaces = _INVALID
+    policy = policy_from_overlay(_narrowing_overlay(overlay), spaces=spaces)
     return dataclasses.replace(policy, warnings=(*policy.warnings, "privacy-overlay-unreadable"))
 
 
@@ -864,8 +879,7 @@ def with_spaces(policy: Policy, spaces: Any) -> Policy:
     ``None`` means no registry (the default spaces). An invalid registry in a config that loads fails closed:
     every folder directly under ``knowledge-base/`` that isn't Scout-wide is private by default, so a typo
     can't make a private space normal, and the warning ``spaces-invalid`` says so. A config that doesn't load
-    at all gets the default spaces: its ``privacy-overlay-unreadable`` warning already stops sync and a run's
-    commit.
+    whole keeps its registry when that key builds alone, and fails closed the same way when it doesn't.
     """
     from scout.config import DEFAULT_SPACES, RESERVED_SPACE_KEYS
 

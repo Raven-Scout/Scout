@@ -49,3 +49,11 @@ def test_body_text_in_an_identity_note_is_refused(tmp_path: Path) -> None:
 def test_a_note_the_move_did_not_split_is_free_form(tmp_path: Path) -> None:
     team = "---\nname: Team\ntype: team\nlead: Alex\n---\n\n# Team\n\nNotes.\n"
     assert _stage(_repo(tmp_path), "knowledge-base/people/team.md", team) == []
+
+
+def test_a_quoted_type_is_still_an_identity_note(tmp_path: Path) -> None:
+    text = IDENTITY.replace("type: person", 'type: "person"').replace(
+        "spaces: [work]", "role: Engineer\nspaces: [work]"
+    )
+    (finding,) = _stage(_repo(tmp_path), "knowledge-base/people/alex.md", text)
+    assert finding.blocking and "role" in finding.message

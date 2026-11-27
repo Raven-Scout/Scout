@@ -27,6 +27,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
@@ -189,10 +190,16 @@ def _plugin_version(root: Path) -> str | None:
 
 
 def _last_completed_check(rows: list[UpdateOutcome]) -> datetime | None:
+    # A layout deferral is a completed check: the release was found, and what holds it back (a sidecar, unmerged
+    # paths, an old plugin entry) may not clear by itself, so it must not reopen the gate on every heartbeat.
     for row in reversed(rows):
-        if row.result != "deferred":
+        if row.result != "deferred" or _layout_deferral(row):
             return row.at
     return None
+
+
+def _layout_deferral(row: UpdateOutcome) -> bool:
+    return row.result == "deferred" and row.detail.startswith(LAYOUT_DEFERRED_MARK)
 
 
 def scheduled_gate(deps: Deps, rows: list[UpdateOutcome]) -> str | None:
@@ -386,6 +393,7 @@ def _vault_step(att: _Attempt, scoutctl: Path) -> tuple[list[str], dict[str, Any
 
 
 LAYOUT_DEFERRED_MARK = "layout move deferred: "
+_DIGITS = re.compile(r"\d+")
 LAYOUT_APPLIED_MARK = "layout move applied: "
 
 
@@ -490,7 +498,8 @@ def _finish(deps: Deps, row: UpdateOutcome, prior: list[UpdateOutcome], *, dry_r
         return Attempt(row=row, reason="dry run")
     append_outcome(deps.vault, row)
     deps.notify(row, prior)
-    return Attempt(row=row, settled=row.result != "deferred")
+    # A layout deferral settles the day too: it retries on the next day's attempt, not every heartbeat.
+    return Attempt(row=row, settled=row.result != "deferred" or _layout_deferral(row))
 
 
 # --- process handling ---------------------------------------------------------------------
@@ -644,9 +653,10 @@ def info_pushes(row: UpdateOutcome, prior: list[UpdateOutcome]) -> list[Any]:
                 f"Report: {report}. Review the spaces with /scout-update.",
             )
         )
-    if row.result == "deferred" and row.detail.startswith(LAYOUT_DEFERRED_MARK):
+    if _layout_deferral(row):
         last = next((r for r in reversed(prior) if r.detail.startswith(LAYOUT_DEFERRED_MARK)), None)
-        if last is None or last.detail != row.detail:  # once per reason, not every heartbeat
+        # once per reason, not every attempt: a count in the reason ("3 files ...") changing is the same reason
+        if last is None or _DIGITS.sub("N", last.detail) != _DIGITS.sub("N", row.detail):
             pushes.append(
                 Push(
                     finding_id="update.layout_deferred",

@@ -746,3 +746,22 @@ def test_run_ranks_meetings_and_prints_the_denominator(tmp_path, monkeypatch):
     content = (tmp_path / ".scout-cache" / "kb-filter.md").read_text()
     assert "**meetings/weekly-sync/weekly-sync.md**" in content
     assert "Scanned: 3 files across knowledge-base/, meetings/" in content
+
+
+def test_discover_skips_every_space_folder_when_the_registry_cannot_be_read(tmp_path):
+    """A config that doesn't parse must not turn a custom private space into a ranked folder (review of #832)."""
+    kb = _make_kb(tmp_path)
+    (kb / "knowledge-base.md").write_text("x")
+    for rel in ("family/x.md", "work/topics/t.md", "projects/p.md"):
+        (kb / rel).parent.mkdir(parents=True, exist_ok=True)
+        (kb / rel).write_text("x")
+    (tmp_path / "scout-config.yaml").write_text("spaces: [unclosed\n")
+    rels = {p.relative_to(tmp_path).as_posix() for p in discover_kb_files(tmp_path)}
+    assert "knowledge-base/family/x.md" not in rels and "knowledge-base/work/topics/t.md" not in rels
+    assert "knowledge-base/projects/p.md" in rels  # Scout-wide folders aren't spaces
+    # A registry that reads: only its private spaces are skipped.
+    (tmp_path / "scout-config.yaml").write_text(
+        "spaces:\n  - key: work\n    default: true\n  - key: family\n    visibility: private\n"
+    )
+    rels = {p.relative_to(tmp_path).as_posix() for p in discover_kb_files(tmp_path)}
+    assert "knowledge-base/family/x.md" not in rels and "knowledge-base/work/topics/t.md" in rels

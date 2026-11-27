@@ -12,13 +12,14 @@ import subprocess
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import yaml
 
 from scout import config as scout_config
 from scout import layout, safe_write
-from scout.layout_migrate import split_frontmatter
+from scout.layout_migrate import _is_text_file, rewrite_targets, split_frontmatter
 from scout.layout_rewrite import Ref, rewrite
 
 KB = "knowledge-base"
@@ -138,15 +139,71 @@ def move_to_space(vault: Path, rel: str, space: str, *, commit: bool = True) -> 
         raise SpaceMoveError(f"{dst} already exists")
     (vault / dst).parent.mkdir(parents=True, exist_ok=True)
     _git(vault, "mv", rel, dst)
+    originals: dict[Path, str] = {}  # every file this move edits, as it was: put back if a later step fails
+
+    def write(p: Path, text: str) -> None:
+        originals.setdefault(p, p.read_text(encoding="utf-8"))
+        safe_write.atomic_write_text(p, text)
+
+    try:
+        rewritten = _rewrite_and_relabel(vault, rel, dst, space, src_space, spaces, keys, write)
+        sha = ""
+        if commit:
+            # Only what this move touched, and only files git already tracks: an untracked file that went along
+            # with a series folder stays untracked, and an edit the app, Obsidian or a session made (or staged)
+            # meanwhile stays out of the commit.
+            paths = sorted({dst, *rewritten})
+            _git_paths(vault, "add", "-u", paths=paths)
+            msg = f"scout: move {rel} to the {space} space"
+            _git_paths(vault, "-c", "commit.gpgsign=false", "commit", "-q", "-m", msg, "--only", paths=[rel, *paths])
+            sha = _git(vault, "rev-parse", "HEAD").strip()
+    except Exception:
+        for p, text in originals.items():
+            safe_write.atomic_write_text(p, text)
+        _undo_mv(vault, rel, dst)
+        raise
+    (vault / layout.REVIEW_PENDING_REL).unlink(missing_ok=True)  # a review has run
+    return {"from": rel, "to": dst, "rewritten": sorted(set(rewritten)), "commit": sha}
+
+
+def _undo_mv(vault: Path, rel: str, dst: str) -> None:
+    """Put a ``git mv rel dst`` back (best effort: the original error is what the caller reports)."""
+    if (vault / dst).exists() and not (vault / rel).exists():
+        proc = subprocess.run(["git", "-C", str(vault), "mv", dst, rel], capture_output=True, text=True)
+        if proc.returncode != 0 and (vault / dst).exists():
+            (vault / dst).rename(vault / rel)
+
+
+def _git_paths(vault: Path, *args: str, paths: list[str]) -> str:
+    """``git <args>`` over ``paths`` from stdin, taken literally."""
+    proc = subprocess.run(
+        ["git", "-C", str(vault), "--literal-pathspecs", *args, "--pathspec-from-file=-", "--pathspec-file-nul"],
+        capture_output=True,
+        text=True,
+        input="\0".join(sorted(set(paths))) + "\0",
+        timeout=300,
+    )
+    if proc.returncode != 0:
+        raise SpaceMoveError(f"git {args[0]}: {(proc.stderr or proc.stdout).strip()}")
+    return proc.stdout
+
+
+def _rewrite_and_relabel(
+    vault: Path,
+    rel: str,
+    dst: str,
+    space: str,
+    src_space: str,
+    spaces: Any,
+    keys: set[str],
+    write: Any,
+) -> list[str]:
+    """The path rewrite over tracked files, the role note's space and its identity's spaces, the registry cell."""
     is_dir = (vault / dst).is_dir()
     refs = [Ref(rel, dst, is_dir)]
     if not is_dir and rel.endswith(".md"):
         refs = [Ref(rel, dst, False)]
     rewritten: list[str] = []
-    from types import SimpleNamespace
-
-    from scout.layout_migrate import _is_text_file, rewrite_targets  # noqa: PLC0415 - shared target list
-
     today = scout_config.today(vault).isoformat()
     view = SimpleNamespace(spaces=tuple(spaces))  # rewrite_targets reads only the plan's spaces
     for target_rel, kind in rewrite_targets(vault, view, today):  # type: ignore[arg-type]
@@ -156,14 +213,14 @@ def move_to_space(vault: Path, rel: str, space: str, *, commit: bool = True) -> 
             continue
         new = rewrite(text, refs, kind=kind, space=space, spaces=sorted(keys))
         if new != text:
-            safe_write.atomic_write_text(p, new)
+            write(p, new)
             rewritten.append(target_rel)
     # A role note: its space, and its identity's spaces.
     if not is_dir and dst.split("/")[2] in ("people", "organizations"):
         text = (vault / dst).read_text(encoding="utf-8")
         new = re.sub(r"^space:\s*\S+\s*$", f"space: {space}", text, count=1, flags=re.M)
         if new != text:
-            safe_write.atomic_write_text(vault / dst, new)
+            write(vault / dst, new)
         fm = _front(vault / dst)
         role_of = str(fm.get("role_of") or "")
         m = _WIKI.search(role_of)
@@ -177,7 +234,7 @@ def move_to_space(vault: Path, rel: str, space: str, *, commit: bool = True) -> 
                 want = sorted({str(x) for x in have if x != src_space} | {space})
                 inew = re.sub(r"^spaces:.*$", f"spaces: [{', '.join(want)}]", itext, count=1, flags=re.M)
                 if inew != itext:
-                    safe_write.atomic_write_text(identity, inew)
+                    write(identity, inew)
                     rewritten.append(identity.relative_to(vault).as_posix())
     # A meeting series: its registry row's Space cell.
     if is_dir and dst.split("/")[2] == "meetings":
@@ -192,15 +249,6 @@ def move_to_space(vault: Path, rel: str, space: str, *, commit: bool = True) -> 
                 text,
             )
             if new != text:
-                safe_write.atomic_write_text(reg, new)
+                write(reg, new)
                 rewritten.append(reg.relative_to(vault).as_posix())
-    sha = ""
-    if commit:
-        # Only what this move touched: an edit the app, Obsidian or a session made meanwhile stays out of the commit.
-        paths = sorted({dst, *rewritten})
-        _git(vault, "add", "-A", "--", *paths)
-        msg = f"scout: move {rel} to the {space} space"
-        _git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "-m", msg, "--", rel, *paths)
-        sha = _git(vault, "rev-parse", "HEAD").strip()
-    (vault / layout.REVIEW_PENDING_REL).unlink(missing_ok=True)  # a review has run
-    return {"from": rel, "to": dst, "rewritten": sorted(set(rewritten)), "commit": sha}
+    return rewritten

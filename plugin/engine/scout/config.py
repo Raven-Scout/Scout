@@ -32,7 +32,7 @@ import yaml
 
 from scout import paths
 from scout.errors import ConfigError
-from scout.yaml_safe import load_yaml, yaml_problem
+from scout.yaml_safe import load_yaml, load_yaml_key, yaml_problem
 
 # The terminal fallback, used only when neither a configured override nor the
 # host's own zone resolves (see resolve_timezone). The packaged defaults leave
@@ -433,6 +433,22 @@ def load_spaces(data_dir: Path | None = None) -> tuple[Space, ...]:
     except ConfigError as e:
         _warn(f"ignoring scout-config.yaml spaces: {e}; using work (default) and personal")
         return DEFAULT_SPACES
+
+
+def spaces_or_none(data_dir: Path | None = None) -> tuple[Space, ...] | None:
+    """The space registry, or None when the config file is there but its ``spaces:`` can't be read.
+
+    For the readers that must fail closed (privacy, the pre-filter's private-space skip): an unreadable file
+    or registry must not turn a custom private space into a normal folder, as :func:`load_spaces` would.
+    """
+    config = paths.config_path(data_dir)
+    if not config.exists():
+        return DEFAULT_SPACES
+    try:
+        raw = load_yaml_key(config.read_text(encoding="utf-8"), "spaces")
+        return parse_spaces(raw)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, ConfigError):
+        return None
 
 
 def default_space(spaces: tuple[Space, ...]) -> Space:

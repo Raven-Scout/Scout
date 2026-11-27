@@ -737,7 +737,7 @@ def _identity_note(f: StagedFile) -> list[Finding]:
     if fm is None:
         return []
     # Only a split person or organization (it lists its spaces); a team or other note beside it is free-form.
-    if not re.search(r"^type:\s*(person|organization)\s*$", fm, re.M) or not re.search(r"^spaces:", fm, re.M):
+    if not re.search(r"^type:\s*([\"']?)(person|organization)\1\s*$", fm, re.M) or not re.search(r"^spaces:", fm, re.M):
         return []
     out: list[Finding] = []
     extra = identity_keys_only(text)

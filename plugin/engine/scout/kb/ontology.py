@@ -1065,11 +1065,16 @@ class KnowledgeGraph:
             return []
         adj = self._adjacency()
         allow = set(rel_types) if rel_types else None
+        # A folded role note's edge keeps its own file's label (§3.2): a private one marks every entity reached
+        # through it, since the reach itself comes from that file.
+        edge_labels: dict[tuple[str, str, str], Any] = {
+            (r["source"], r["type"], r["target"]): r["_label"] for r in self.relationships if "_label" in r
+        }
         seen = {start}
-        queue: deque[tuple[str, int, list[tuple[str, str]]]] = deque([(start, 0, [])])
+        queue: deque[tuple[str, int, list[tuple[str, str]], Any]] = deque([(start, 0, [], None)])
         out: list[dict[str, Any]] = []
         while queue:
-            node, hops, path = queue.popleft()
+            node, hops, path, via_private = queue.popleft()
             if hops >= max_hops:
                 continue
             for rel_type, target in adj.get(node, []):
@@ -1079,16 +1084,19 @@ class KnowledgeGraph:
                     continue
                 seen.add(target)
                 new_path = [*path, (rel_type, target)]
-                out.append(
-                    {
-                        "entity": target,
-                        "hops": hops + 1,
-                        "via": rel_type,
-                        "path": new_path,
-                        "_label": self.label_of(target),
-                    }
-                )
-                queue.append((target, hops + 1, new_path))
+                edge = edge_labels.get((node, rel_type, target)) or edge_labels.get((target, rel_type, node))
+                private_edge = via_private or (edge if edge and edge.get("visibility") == "private" else None)
+                row: dict[str, Any] = {
+                    "entity": target,
+                    "hops": hops + 1,
+                    "via": rel_type,
+                    "path": new_path,
+                    "_label": self.label_of(target),
+                }
+                if private_edge is not None:
+                    row["_edge_label"] = private_edge
+                out.append(row)
+                queue.append((target, hops + 1, new_path, private_edge))
         return out
 
     def path(self, source: str, target: str, max_hops: int = 6) -> list[tuple[str, str]] | None:

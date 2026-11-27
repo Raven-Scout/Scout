@@ -264,6 +264,19 @@ def _git(
     return proc.stdout
 
 
+def _git_paths(vault: Path, *args: str, paths: Iterable[str]) -> str:
+    """``git <args>`` over ``paths`` read from stdin (no argv limit), each taken literally (no globbing)."""
+    listed = "\0".join(sorted(set(paths)))
+    return _git(
+        vault, "--literal-pathspecs", *args, "--pathspec-from-file=-", "--pathspec-file-nul", input=listed + "\0"
+    )
+
+
+def _tracked(vault: Path) -> set[str]:
+    """Every path in the index."""
+    return set(_z(_git(vault, "ls-files", "-z")))
+
+
 def _is_repo(vault: Path) -> bool:
     return (vault / ".git").exists() and subprocess.run(
         ["git", "-C", str(vault), "rev-parse", "--verify", "-q", "HEAD"], capture_output=True
@@ -1156,11 +1169,13 @@ def _index_entries(vault: Path, paths: Iterable[str]) -> dict[str, tuple[str, st
     want = sorted(set(paths))
     if not want:
         return {}
+    wanted = set(want)
     out: dict[str, tuple[str, str]] = {}
-    for rec in _z(_git(vault, "ls-files", "-s", "-z", "--", *want)):
+    for rec in _z(_git(vault, "ls-files", "-s", "-z")):  # the whole index: a large move would pass argv's limit
         meta, _, path = rec.partition("\t")
-        mode, sha, _stage = meta.split()
-        out[path] = (mode, sha)
+        if path in wanted:
+            mode, sha, _stage = meta.split()
+            out[path] = (mode, sha)
     return out
 
 
@@ -1186,14 +1201,19 @@ def _update_index(vault: Path, paths: Iterable[str]) -> None:
         _git(vault, "update-index", "--add", "--remove", "-z", "--stdin", input=listed + "\0")
 
 
-def _commit(vault: Path, message: str, *, hooks: bool) -> str:
+def _commit(vault: Path, message: str, *, hooks: bool, only: Iterable[str] | None = None) -> str:
+    """Commit the index, or with ``only`` just those paths (anything else staged meanwhile stays staged)."""
     args = ["-c", "commit.gpgsign=false"]
     if not hooks:
         args += ["-c", "core.hooksPath=/dev/null"]
     args += ["commit", "-q", "--allow-empty", "-m", message]
     if not hooks:
         args.append("--no-verify")
-    _git(vault, *args)
+    paths = sorted(set(only or ()))
+    if only is None or not paths:
+        _git(vault, *args)
+    else:
+        _git_paths(vault, *args, "--only", paths=paths)
     return _git(vault, "rev-parse", "HEAD").strip()
 
 
@@ -1254,8 +1274,12 @@ def _is_text_file(path: Path) -> str | None:
         return None
 
 
-def rewrite_targets(vault: Path, plan_: Plan, today: str) -> list[tuple[str, str]]:
-    """Every current file whose old paths the content step rewrites, with its kind (§4.10 table)."""
+def rewrite_targets(vault: Path, plan_: Plan, today: str, *, also: Iterable[str] = ()) -> list[tuple[str, str]]:
+    """Every current file whose old paths the content step rewrites, with its kind (§4.10 table).
+
+    Only files git tracks, plus ``also`` (the files the move itself created): an untracked or ignored file
+    (``inbox/drop/``, a draft the owner never added) is never edited, so it never needs committing either."""
+    keep = _tracked(vault) | set(also)
     out: list[tuple[str, str]] = []
     spaces = {s.key for s in plan_.spaces}
     for kind_dir, kind in (
@@ -1295,7 +1319,7 @@ def rewrite_targets(vault: Path, plan_: Plan, today: str) -> list[tuple[str, str
             out.append((rel, "note"))
     daily = f"action-items/action-items-{today}.md"
     out.append((daily, "note"))
-    return [(r, k) for r, k in out if (vault / r).is_file()]
+    return [(r, k) for r, k in out if r in keep and (vault / r).is_file()]
 
 
 def _brain_snapshot_matches(vault: Path) -> dict[str, bool]:
@@ -1590,15 +1614,17 @@ def apply(vault: Path, plan_: Plan, *, plugin_root: Path | None = None, today: s
             if (vault / top).is_dir() and not (vault / top).is_symlink() and not (vault / target).exists():
                 (vault / target).parent.mkdir(parents=True, exist_ok=True)
                 os.rename(vault / top, vault / target)
-                os.symlink(os.path.relpath(vault / target, vault), vault / top)
-                whole.add(top)
                 _log_progress(vault, {"dir": top})
+                os.symlink(os.path.relpath(vault / target, vault), vault / top)
+                _log_progress(vault, {"link": top})
+                whole.add(top)
         for i, m in enumerate(plan_.moves):
             if m.src.split("/", 1)[0] not in whole:
                 _rename(vault, m.src, m.dst)
                 link = file_links.get(m.src)
                 if link is not None and not (vault / m.src).exists() and not (vault / m.src).is_symlink():
                     os.symlink(os.path.relpath(vault / link, (vault / m.src).parent), vault / m.src)
+                    _log_progress(vault, {"link": m.src})
             _log_progress(vault, {"i": i})
         for rel in plan_.removes:
             with contextlib.suppress(FileNotFoundError):
@@ -1613,6 +1639,7 @@ def apply(vault: Path, plan_: Plan, *, plugin_root: Path | None = None, today: s
             lp = vault / link
             if not lp.exists() and not lp.is_symlink():
                 os.symlink(os.path.relpath(vault / target, lp.parent), lp)
+                _log_progress(vault, {"link": link})
         _log_progress(vault, {"phase": "links"})
         step = "index"
         mapping = {m.src: m.dst for m in plan_.moves}
@@ -1734,7 +1761,11 @@ def _content(vault: Path, plan_: Plan, res: ApplyResult, *, plugin_root: Path | 
     _seed_unrecorded_bases(vault, plan_, plugin_root, rw)
     _rekey_state(vault, plan_, apply_rewrite=rw)
     # Rewrite old paths (§4.10)
-    for rel, kind in rewrite_targets(vault, plan_, today):
+    created = {*res.created_homes, *(sp.identity for sp in plan_.splits)}
+    created |= {str(e["wrote"]) for e in _read_progress(vault) if e.get("as") == "created_homes" and e.get("wrote")}
+    if plan_.registry_dst:
+        created.add(plan_.registry_dst)
+    for rel, kind in rewrite_targets(vault, plan_, today, also=created):
         p = vault / rel
         maybe = _is_text_file(p)
         if maybe is None:
@@ -1803,8 +1834,10 @@ def _content(vault: Path, plan_: Plan, res: ApplyResult, *, plugin_root: Path | 
                 res.scripts_to_check.append(m.dst)
     # README, record, report (steps 11-12)
     readme = vault / "README.md"
+    wrote_readme = False
     if not readme.exists() or readme.read_text(encoding="utf-8", errors="replace").startswith(layout.README_MARKER):
         safe_write.atomic_write_text(readme, layout.render_readme(plan_.spaces, engine_version=_engine_version()))
+        wrote_readme = True
     _record_applied(vault)
     # An earlier, interrupted pass wrote files this one found already done: they go in the report and commit 2 too.
     for e in _read_progress(vault):
@@ -1816,8 +1849,10 @@ def _content(vault: Path, plan_: Plan, res: ApplyResult, *, plugin_root: Path | 
     report = render_report(plan_, res, pre=journal.get("pre", ""), commit1=_commit1_sha(vault))
     safe_write.atomic_write_text(vault / res.report_rel, report)
     _log_progress(vault, {"phase": "content"})
-    # Commit 2: every tracked change plus the files the move created (never other untracked files)
-    # Only what the move wrote: an edit the app, Obsidian or a session made meanwhile stays out of Scout's commit.
+    # Commit 2: what the move wrote, and nothing else. Tracked files it changed, plus the files it created; never
+    # another untracked or ignored file, and never an edit the app, Obsidian or a session made (or staged) meanwhile.
+    tracked = _tracked(vault)
+    created |= {*res.created_homes, res.report_rel, *(["README.md"] if wrote_readme else [])}
     touched = [
         *res.rewritten,
         *res.made_private,
@@ -1829,10 +1864,27 @@ def _content(vault: Path, plan_: Plan, res: ApplyResult, *, plugin_root: Path | 
         res.report_rel,
         "README.md",
     ]
-    tracked_state = set(_z(_git(vault, "ls-files", "-z", "--", ".scout-state", check=False)))
+    tracked_state = {t for t in tracked if t.startswith(".scout-state/")}
     touched += sorted(tracked_state)  # re-keyed bases, already renamed in the index
-    _git(vault, "add", "-A", "--", *sorted({t for t in touched if (vault / t).exists() or t in tracked_state}))
-    res.commit2 = _commit(vault, COMMIT2 + "\n\nScout-Migration: layout-v2 content", hooks=False)
+    staged = sorted({t for t in touched if (t in tracked or t in created) and ((vault / t).exists() or t in tracked)})
+    if staged:
+        _git_paths(vault, "add", "-A", paths=staged)
+    # Renamed state files' old paths go in too, so their deletion is part of this commit.
+    gone = _z(
+        _git(
+            vault,
+            "diff",
+            "--cached",
+            "--no-renames",
+            "--name-only",
+            "-z",
+            "--diff-filter=D",
+            "HEAD",
+            "--",
+            ".scout-state",
+        )
+    )
+    res.commit2 = _commit(vault, COMMIT2 + "\n\nScout-Migration: layout-v2 content", hooks=False, only=[*staged, *gone])
     _git(vault, "update-ref", layout.POST_REF, res.commit2)
     res.commit1 = res.commit1 or _commit1_sha(vault)
     _finish(vault)
@@ -1885,17 +1937,25 @@ def recover(vault: Path, *, plugin_root: Path | None = None) -> str:
     progress = _read_progress(vault)
     done = {int(e["i"]) for e in progress if "i" in e}
     # The links go first: through a folder's link its old files still resolve, and would look not yet moved.
-    for link, _target in plan_.compat_links:
+    # Only links this move made: logged, or (a crash before the log) pointing exactly where the move points it.
+    # A symlink of the owner's own at that path stays.
+    made = {str(e["link"]) for e in progress if "link" in e}
+    for link, target in plan_.compat_links:
         lp = vault / link
-        if lp.is_symlink():
+        if lp.is_symlink() and (link in made or os.readlink(lp) == os.path.relpath(vault / target, lp.parent)):
             lp.unlink()
     # A folder moved in one rename goes back in one rename.
     targets = dict(plan_.compat_links)
     for top in reversed([str(e["dir"]) for e in progress if "dir" in e]):
-        target = targets.get(top)
-        if target and (vault / target).is_dir() and not (vault / top).exists() and not (vault / top).is_symlink():
-            os.rename(vault / target, vault / top)
-            _prune_empty(vault, (vault / target).parent)
+        dir_target = targets.get(top)
+        if (
+            dir_target
+            and (vault / dir_target).is_dir()
+            and not (vault / top).exists()
+            and not (vault / top).is_symlink()
+        ):
+            os.rename(vault / dir_target, vault / top)
+            _prune_empty(vault, (vault / dir_target).parent)
     # A move can complete without its record (a crash between the rename and the log): every move whose source
     # is gone and whose destination is there counts as done.
     for i, m in enumerate(plan_.moves):
@@ -1930,7 +1990,7 @@ def recover(vault: Path, *, plugin_root: Path | None = None) -> str:
         {p for m in plan_.moves if m.tracked for p in (m.src, m.dst)} | set(plan_.removes) | {".gitignore"}
     )
     with contextlib.suppress(RuntimeError):
-        _git(vault, "reset", "-q", pre, "--", *[t for t in touched])
+        _git_paths(vault, "reset", "-q", pre, paths=touched)
     if (pre_dir / "last-assembled").is_dir():
         la = vault / ".scout-state" / "last-assembled"
         for p in (pre_dir / "last-assembled").rglob("*"):

@@ -20,7 +20,7 @@ from typer.testing import CliRunner
 
 from scout import repo_sync as rs
 from scout.cli import app
-from scout.kb.privacy import label_file, load_policy
+from scout.kb.privacy import classify, label_file, load_policy, policy_from_config_text
 from scout.scripts import privacy_migrate
 
 from .privacy_vault_helpers import CANARIES, build_privacy_vault, git, git_env
@@ -1077,7 +1077,13 @@ def test_policy_at_follows_load_policy(vault: Path) -> None:
         _commit(vault, "scout-config.yaml", "", "empty config")
         assert rs.policy_at(vault, "HEAD", blobs) == base
         _commit(vault, "scout-config.yaml", "- a list\n", "list config")
-        assert rs.policy_at(vault, "HEAD", blobs).warnings == ("privacy-overlay-unreadable",)
+        assert rs.policy_at(vault, "HEAD", blobs).warnings == ("spaces-invalid", "privacy-overlay-unreadable")
+        # The committed registry counts: a custom private space committed private stays private (review of #832).
+        _commit(vault, "scout-config.yaml", "spaces:\n  - key: work\n    default: true\n"
+                "  - key: family\n    visibility: private\n", "spaces")  # fmt: skip
+        committed = rs.policy_at(vault, "HEAD", blobs)
+        assert committed == policy_from_config_text((vault / "scout-config.yaml").read_text())
+        assert classify("knowledge-base/family/x.md", None, committed).visibility == "private"
         git(vault, "rm", "-q", "scout-config.yaml")
         git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "no config")
         assert rs.policy_at(vault, "HEAD", blobs) == base

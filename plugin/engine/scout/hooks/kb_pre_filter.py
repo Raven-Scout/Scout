@@ -113,11 +113,19 @@ def kb_roots(scout_dir: Path) -> tuple[str, ...]:
 
 
 def _private_space_dirs(scout_dir: Path) -> frozenset[str]:
-    """Each private space's folder name (``personal`` always): skipped like ``personal/`` always was."""
-    try:
-        from scout.config import load_spaces
+    """Each private space's folder name (``personal`` always): skipped like ``personal/`` always was.
 
-        return frozenset({"personal", *(s.key for s in load_spaces(scout_dir) if s.visibility == "private")})
+    A registry that can't be read fails closed, as the privacy policy does: every folder directly under
+    ``knowledge-base/`` that isn't Scout-wide is skipped, so a custom private space is never ranked."""
+    try:
+        from scout.config import RESERVED_SPACE_KEYS, spaces_or_none
+
+        spaces = spaces_or_none(scout_dir)
+        if spaces is None:
+            kb = scout_dir / "knowledge-base"
+            found = {p.name for p in kb.iterdir() if p.is_dir() and p.name not in RESERVED_SPACE_KEYS}
+            return frozenset({"personal", *found})
+        return frozenset({"personal", *(s.key for s in spaces if s.visibility == "private")})
     except Exception:  # noqa: BLE001 - a hook never raises
         return frozenset({"personal"})
 
