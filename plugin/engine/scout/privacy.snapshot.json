@@ -52,26 +52,6 @@
           "meeting",
           "thread"
         ]
-      },
-      {
-        "ceiling": "org",
-        "glob": "knowledge-base/personal/topics/**"
-      },
-      {
-        "ceiling": "org",
-        "glob": "knowledge-base/personal/projects/**"
-      },
-      {
-        "ceiling": "org",
-        "glob": "knowledge-base/personal/organizations/**"
-      },
-      {
-        "ceiling": "people",
-        "glob": "knowledge-base/personal/sources/**",
-        "kinds": [
-          "meeting",
-          "thread"
-        ]
       }
     ],
     "federation_ceilings_overlay": [],

@@ -76,7 +76,7 @@ Ask each of these in order, waiting for each answer:
 2. "What's your name? (used in commit messages and the KB)"
 3. "What's your email? (used for git config)"
 4. "Scout follows this computer's timezone (currently `<HOST_ZONE>`), so it stays right when you travel. Press enter to keep that, or name an IANA zone (e.g. `Europe/Prague`) to pin a different one." — fill `<HOST_ZONE>` from `readlink /etc/localtime | sed -E 's#^.*/zoneinfo[^/]*/##'`. Most users keep the default; record an override only if they name one.
-5. "Scout keeps what it knows in spaces, one folder each: `work` (the default) and `personal` (private by default). Want another space, for example for a club, a side project or a building you help run? (name it, or press enter for none)" — a space key is lower case letters, digits and `-`, and may not be a Scout folder name (`people`, `projects`, `meetings`, …). After the install, add each extra space to `spaces:` in `~/Scout/scout-config.yaml` (`- key: <name>` with `visibility: private` or `normal`, as the user says) and run `"$SCOUTCTL" bootstrap upgrade --no-jobs` once so its folders exist.
+5. "Scout keeps what it knows in spaces, one folder each: `work` (the default) and `personal` (private by default). Want another space, for example for a club, a side project or a building you help run? (name it, or press enter for none)". A space key is lower case letters, digits and `-`, and may not be a Scout folder name (`people`, `projects`, `meetings`, …). After the install, add each extra space to `spaces:` in `~/Scout/scout-config.yaml` (`- key: <name>` with `visibility: private` or `normal`, as the user says) and run `"$SCOUTCTL" bootstrap upgrade --no-jobs` once so its folders exist.
 
 ---
 

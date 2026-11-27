@@ -943,3 +943,15 @@ def test_overlay_for_mirror_builds_the_same_policy_bar_what_no_delegate_reads() 
         got = privacy.policy_from_overlay(mirrored)
         assert got.sync_only is None
         assert {k: got.to_json()[k] for k in _NOT_FOR_DELEGATES[3:]} == {k: default[k] for k in _NOT_FOR_DELEGATES[3:]}
+
+
+def test_only_normal_spaces_get_folder_ceilings() -> None:
+    """A private space's v1 folder had no ceiling: it gets none in v2 either (review of #832)."""
+    from scout import config as scout_config
+    from scout.kb import privacy
+
+    spaces = scout_config.parse_spaces([{"key": "work", "default": True}, {"key": "personal", "visibility": "private"}])
+    policy = privacy.with_spaces(privacy.policy_from_overlay(None), spaces)
+    assert privacy.folder_ceiling(policy, "knowledge-base/work/topics/x.md", None) == "org"
+    assert privacy.folder_ceiling(policy, "knowledge-base/personal/topics/x.md", None) == "none"
+    assert privacy.folder_ceiling(policy, "knowledge-base/personal/projects/p/p.md", None) == "none"

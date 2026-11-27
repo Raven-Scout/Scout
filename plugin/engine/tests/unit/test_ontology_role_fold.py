@@ -84,3 +84,20 @@ def test_validate_does_not_see_roles(tmp_path: Path) -> None:
     g = _graph(_vault(tmp_path))
     errors = g.validate()
     assert not any("role" in e["message"].lower() and "type" in e["message"].lower() for e in errors)
+
+
+def test_a_registry_problem_or_a_stray_relationship_does_not_stop_the_fold(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import scout.config
+
+    v = _vault(tmp_path)
+    role = v / "knowledge-base/work/people/alex-work.md"
+    role.write_text(role.read_text().replace("relationships:\n", "relationships:\n  - just text\n"))
+
+    def broken(*a: object, **k: object) -> object:
+        raise ValueError("bad registry")
+
+    monkeypatch.setattr(scout.config, "load_spaces", broken)
+    g = _graph(v)
+    alex = g.entity("Alex")
+    assert alex is not None and set(alex["_roles"]) == {"work", "personal"}
+    assert [r["target"] for r in g.related("Alex")] == ["Apollo"]

@@ -143,13 +143,13 @@ def move_to_space(vault: Path, rel: str, space: str, *, commit: bool = True) -> 
     if not is_dir and rel.endswith(".md"):
         refs = [Ref(rel, dst, False)]
     rewritten: list[str] = []
+    from types import SimpleNamespace
+
     from scout.layout_migrate import _is_text_file, rewrite_targets  # noqa: PLC0415 - shared target list
 
-    class _Plan:
-        spaces = tuple(spaces)
-
     today = scout_config.today(vault).isoformat()
-    for target_rel, kind in rewrite_targets(vault, _Plan(), today):  # type: ignore[arg-type]
+    view = SimpleNamespace(spaces=tuple(spaces))  # rewrite_targets reads only the plan's spaces
+    for target_rel, kind in rewrite_targets(vault, view, today):  # type: ignore[arg-type]
         p = vault / target_rel
         text = _is_text_file(p)
         if text is None:
@@ -196,9 +196,11 @@ def move_to_space(vault: Path, rel: str, space: str, *, commit: bool = True) -> 
                 rewritten.append(reg.relative_to(vault).as_posix())
     sha = ""
     if commit:
-        _git(vault, "add", "-u")
-        _git(vault, "add", "--", dst)
-        _git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "-m", f"scout: move {rel} to the {space} space")
+        # Only what this move touched: an edit the app, Obsidian or a session made meanwhile stays out of the commit.
+        paths = sorted({dst, *rewritten})
+        _git(vault, "add", "-A", "--", *paths)
+        msg = f"scout: move {rel} to the {space} space"
+        _git(vault, "-c", "commit.gpgsign=false", "commit", "-q", "-m", msg, "--", rel, *paths)
         sha = _git(vault, "rev-parse", "HEAD").strip()
     (vault / layout.REVIEW_PENDING_REL).unlink(missing_ok=True)  # a review has run
     return {"from": rel, "to": dst, "rewritten": sorted(set(rewritten)), "commit": sha}

@@ -857,9 +857,9 @@ _SPACE_CEILINGS: tuple[tuple[str, CeilingLevel, tuple[str, ...] | None], ...] = 
 
 def with_spaces(policy: Policy, spaces: Any) -> Policy:
     """``policy`` with the space registry's defaults (R1): each private space's folder is private by default,
-    after the owner's own entries and before the engine's, and each space's topics, projects, organizations and
-    sources get the ceiling their v1 folder has. Identity organizations (``knowledge-base/organizations/``) get
-    the old entities ceiling.
+    after the owner's own entries and before the engine's, and each normal space's topics, projects, organizations
+    and sources get the ceiling their v1 folder has (a private space's v1 folder had none, so it gets none).
+    Identity organizations (``knowledge-base/organizations/``) get the old entities ceiling.
 
     ``None`` means no registry (the default spaces). An invalid registry in a config that loads fails closed:
     every folder directly under ``knowledge-base/`` that isn't Scout-wide is private by default, so a typo
@@ -879,7 +879,9 @@ def with_spaces(policy: Policy, spaces: Any) -> Policy:
     else:
         registry = DEFAULT_SPACES if spaces is None else spaces
         vis = [(f"knowledge-base/{s.key}/**", "private") for s in registry if s.visibility == "private"]
-        keys = [s.key for s in registry]
+        # A private space gets no folder ceiling: its v1 folder had none, so a note there that opts into
+        # `visibility: normal` still federates only through a ceiling the owner adds.
+        keys = [s.key for s in registry if s.visibility != "private"]
     present = {g for g, _ in policy.visibility_defaults}
     added = [(g, v) for g, v in vis if g not in present]
     n_owner = len(policy.visibility_defaults) - len(_engine_default().visibility_defaults)

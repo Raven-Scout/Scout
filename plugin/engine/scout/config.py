@@ -431,7 +431,7 @@ def load_spaces(data_dir: Path | None = None) -> tuple[Space, ...]:
     try:
         return parse_spaces(user_value("spaces", data_dir))
     except ConfigError as e:
-        _warn(f"ignoring scout-config.yaml spaces: {e} — using work (default) and personal")
+        _warn(f"ignoring scout-config.yaml spaces: {e}; using work (default) and personal")
         return DEFAULT_SPACES
 
 

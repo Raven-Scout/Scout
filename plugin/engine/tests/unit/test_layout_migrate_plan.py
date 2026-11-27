@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -108,3 +109,103 @@ def test_a_row_with_no_series_folder_gets_a_home_file_for_its_cells(tmp_path: Pa
     assert layout_migrate.migrate_layout(vault).state == "applied"
     home = vault / "knowledge-base/work/meetings/retro/retro.md"
     assert "monthly" in home.read_text() and "Sam" in home.read_text()
+
+
+# Shaped like a real pair of v1 registries (anonymised): a dated event log above the series table, headers other
+# than "Meeting", several headings per side, an occurrence link in a one-off row, retired and note-only rows.
+_ROOT_SHAPED = """---
+type: registry
+---
+# Meetings Registry
+
+Intro text.
+
+## 2026-09-16 Team reorganisation
+
+| UTC | Series | What happened | Successor? |
+|---|---|---|---|
+| 06:45:47Z | [[team-sync]] | renamed | [[team-weekly]] |
+
+## Active Meetings
+
+| Meeting | Frequency | Day / Time | Key Attendees | Related Projects |
+|---------|-----------|-----------|---------------|------------------|
+| [[team-sync]] | Weekly | Mon 10:00 | Alex, Priya | [[apollo]] |
+| [[alex-1on1]] | Biweekly | Tue | Alex | |
+| [[meetings]] *(known, no home file)* | | | | |
+
+## How It Works
+
+The briefing reads this file.
+"""
+
+_KB_SHAPED = """# Meetings - Registry (knowledge-base copy)
+
+## Recurring Series
+
+| Series | Last known state | Lead | Notes |
+|--------|------------------|------|-------|
+| [[team-sync]] | active | Sam | moved to Mondays |
+| **Product Weekly** | active | Priya | |
+
+## 1:1s
+
+| Series | Last known state | Notes |
+|--------|------------------|-------|
+| [[alex-1on1]] | active | |
+| ~~`[[old-1on1]]`~~ | retired | |
+
+## One-off / Ad-hoc Sessions
+
+| Date | Session | Outcome |
+|------|---------|---------|
+| 2026-08-31 | [[launch-check/2026-08-31]] (Alex + Sam) | go |
+"""
+
+
+def test_registries_with_other_headers_and_headings_merge_into_the_two_tables() -> None:
+    out, clashes, extras = layout_migrate.merge_registries(
+        [("root-meetings", _ROOT_SHAPED), ("kb-meetings", _KB_SHAPED)],
+        space="work",
+        newest_side={"team-sync": "kb-meetings"},
+        header="# Meetings",
+    )
+    recurring = out.split("## Active Recurring Meetings", 1)[1].split("## One-Off Meetings", 1)[0]
+    one_off = out.split("## One-Off Meetings", 1)[1].split("## Kept from the old registries", 1)[0]
+    slugs = re.findall(r"\| \[\[work/meetings/([^/]+)/", recurring)
+    assert slugs == ["alex-1on1", "product-weekly", "team-sync"]  # no `utc`, `06-45-47z`, `series` or dates
+    assert re.findall(r"\| \[\[work/meetings/([^/]+)/", one_off) == ["launch-check"]  # the series, not the date
+    assert "| 2026-08-31 |" in one_off and "Alex + Sam" not in one_off  # names stay out of the registry
+    assert clashes == ["alex-1on1", "team-sync"]
+    # the winning side's cells, then the losing row's, marked with its registry: nothing is dropped (§4.7)
+    assert extras["team-sync"] == [
+        "Last known state: active",
+        "Lead: Sam",
+        "Notes: moved to Mondays",
+        "Frequency (from meetings/meetings.md): Weekly",
+        "Day / Time (from meetings/meetings.md): Mon 10:00",
+        "Key Attendees (from meetings/meetings.md): Alex, Priya",
+        "Related Projects (from meetings/meetings.md): [[apollo]]",
+    ]
+    assert "Session: [[launch-check/2026-08-31]] (Alex + Sam)" in extras["launch-check"]
+    assert "meetings" not in extras and "old-1on1" not in extras
+    kept = out.split("## Kept from the old registries", 1)[1]
+    for text in (
+        "Intro text.",
+        "| 06:45:47Z | [[team-sync]] | renamed |",
+        "#### How It Works",
+        "The briefing reads",
+        "~~`[[old-1on1]]`~~",
+        "[[meetings]] *(known, no home file)*",
+    ):
+        assert text in kept
+    assert "type: registry" not in out
+
+
+def test_the_no_personal_space_note_is_given_once(tmp_path: Path) -> None:
+    vault = build_v1_vault(tmp_path / "v", spaces="spaces:\n  - key: work\n    default: true\n", git=False)
+    for n in range(3):
+        (vault / f"knowledge-base/personal/note-{n}.md").parent.mkdir(parents=True, exist_ok=True)
+        (vault / f"knowledge-base/personal/note-{n}.md").write_text("# n\n")
+    notes = layout_migrate.plan(vault).notes
+    assert notes.count("no personal space is registered: knowledge-base/personal/ stays as it is") == 1

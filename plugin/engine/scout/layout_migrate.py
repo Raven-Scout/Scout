@@ -29,7 +29,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -394,10 +393,6 @@ def gather(vault: Path) -> Inventory:
 # --------------------------------------------------------------------------------------------------- planning
 
 
-def _under(rel: str, root: str) -> bool:
-    return rel == root or rel.startswith(root + "/")
-
-
 def _space_of_personal(rel: str, spaces: Sequence[Space], default: str) -> str | None:
     """Rule 1 and 2 of §4.4 for a path under knowledge-base/personal/: the space it belongs to."""
     rest = rel[len(f"{KB}/personal/") :]
@@ -423,7 +418,13 @@ def _registry_key(row: str) -> str | None:
     first = cells[0]
     m = re.search(r"\[\[([^\]|#]+)", first)
     if m:
-        return m.group(1).rstrip("\\").rstrip("/").split("/")[-1].removesuffix(".md").lower()
+        # The series is the folder: [[slug]], [[meetings/slug/slug]] or an occurrence, [[slug/2026-04-20]].
+        parts = [x for x in m.group(1).rstrip("\\").removesuffix(".md").split("/") if x]
+        if parts[:1] == [KB]:
+            parts = parts[1:]
+        if len(parts) > 1 and parts[0] == "meetings":
+            parts = parts[1:]
+        return parts[0].lower() if parts else None
     return re.sub(r"[^a-z0-9]+", "-", first.lower()).strip("-") or None
 
 
@@ -567,8 +568,9 @@ def build_plan(inv: Inventory) -> Plan:
             add(f, f"{KB}/{space}/" + f[len(f"{KB}/personal/") :], 20)
         elif "-" in first:
             prefixes[first.split("-", 1)[0]] = prefixes.get(first.split("-", 1)[0], 0) + 1
-        if space is None:
-            plan.notes.append("no personal space is registered: knowledge-base/personal/ stays as it is")
+        note = "no personal space is registered: knowledge-base/personal/ stays as it is"
+        if space is None and note not in plan.notes:
+            plan.notes.append(note)
     for key in sorted(prefixes):
         n = prefixes[key]
         if n >= 3 and scout_config.SPACE_KEY_RE.match(key) and key not in scout_config.RESERVED_SPACE_KEYS:
@@ -845,28 +847,98 @@ def identity_keys_only(text: str) -> list[str]:
 
 
 _REG_TABLES = ("Active Recurring Meetings", "One-Off Meetings")
+_KEY_COLUMNS = ("meeting", "series", "session", "name")
+_ONE_OFF_HEADING = re.compile(r"one[- ]?off|ad[- ]?hoc", re.I)
+_SEPARATOR = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$")
+_SIDE_PATHS = {"root-meetings": "meetings/meetings.md", "kb-meetings": f"{KB}/meetings/meetings.md"}
+KEPT_HEADING = "## Kept from the old registries"
 
 
-def _tables(text: str) -> dict[str, tuple[list[str], list[str]]]:
-    """Each registry table by its heading: (its header cells, its rows), header and separator rows dropped."""
-    out: dict[str, tuple[list[str], list[str]]] = {}
-    # Rows before any ``##`` heading (a registry that is one table under its title) are recurring meetings.
-    current: str | None = _REG_TABLES[0]
-    for line in text.split("\n"):
-        h = re.match(r"^#{2,3}\s+(.*?)\s*$", line)
+@dataclass
+class _RegTable:
+    """One series table of a v1 registry: which canonical table it feeds and where its key and date sit."""
+
+    one_off: bool
+    heads: list[str]
+    key_col: int
+    date_col: int | None
+    rows: list[str]
+
+
+def _head_name(cell: str) -> str:
+    return re.sub(r"[*_`]", "", cell).strip().lower()
+
+
+def _series_columns(heads: list[str]) -> tuple[int, int | None] | None:
+    """(key column, date column) when ``heads`` is a series list, else None.
+
+    A series list's first column names the series (Meeting, Series, Session, Name), or is a Date followed by one
+    (a one-off table). A table that only mentions a series further right (an event log keyed by time) is not one.
+    """
+    names = [_head_name(h) for h in heads]
+    if names and names[0] in _KEY_COLUMNS:
+        return 0, names.index("date") if "date" in names else None
+    if len(names) > 1 and names[0] == "date" and names[1] in _KEY_COLUMNS:
+        return 1, 0
+    return None
+
+
+def _registry_parts(text: str) -> tuple[list[_RegTable], list[str]]:
+    """A v1 registry's series tables, and every other line as written (frontmatter and the title dropped).
+
+    A table's header is the row right before its ``|---|`` separator. Rows before any ``##`` heading belong to
+    a recurring table. A struck-through row (``~~...~~``) is a retired series: kept as text, never a series row.
+    """
+    lines = text.split("\n")
+    i = 0
+    if lines and lines[0].strip() == "---":
+        end = next((j for j in range(1, len(lines)) if lines[j].strip() == "---"), None)
+        if end is not None:
+            i = end + 1
+    tables: list[_RegTable] = []
+    kept: list[str] = []
+    heading = ""
+    while i < len(lines):
+        line = lines[i]
+        h = re.match(r"^(#{1,6})\s+(.*?)\s*$", line)
         if h:
-            current = h.group(1)
+            if len(h.group(1)) == 1:
+                i += 1
+                continue  # the file's title: the merged registry has its own
+            heading = h.group(2)
+            kept.append(line)
+            i += 1
             continue
-        if current and line.strip().startswith("|"):
-            cells = _cells(line)
-            heads, rows = out.setdefault(current, ([], []))
-            if cells and cells[0].lower() == "meeting":
-                heads[:] = cells
-                continue
-            if not cells or set("".join(cells)) <= set("-: "):
-                continue
-            rows.append(line)
-    return out
+        is_table = line.strip().startswith("|") and i + 1 < len(lines) and _SEPARATOR.match(lines[i + 1])
+        if not is_table:
+            kept.append(line)
+            i += 1
+            continue
+        heads = _cells(line)
+        j = i + 2
+        body: list[str] = []
+        while j < len(lines) and lines[j].strip().startswith("|"):
+            body.append(lines[j])
+            j += 1
+        cols = _series_columns(heads)
+        if cols is None:
+            kept.extend(lines[i:j])
+            i = j
+            continue
+        key_col, date_col = cols
+        table = _RegTable(bool(_ONE_OFF_HEADING.search(heading)) or key_col == 1, heads, key_col, date_col, [])
+        retired = [r for r in body if "~~" in (_cells(r)[key_col] if len(_cells(r)) > key_col else "")]
+        table.rows = [r for r in body if r not in retired]
+        if retired:
+            kept.extend([line, lines[i + 1], *retired])
+        tables.append(table)
+        i = j
+    return tables, kept
+
+
+def _demote(line: str) -> str:
+    h = re.match(r"^(#{1,6})(\s.*)$", line)
+    return f"{'#' * min(6, len(h.group(1)) + 2)}{h.group(2)}" if h else line
 
 
 def merge_registries(
@@ -879,55 +951,94 @@ def merge_registries(
 ) -> tuple[str, list[str], dict[str, list[str]]]:
     """(registry text, clashing slugs, slug -> labelled extra cells for the home file) from (side, text) pairs.
 
-    Rows are keyed by their link target's slug, else the normalised meeting name, and unioned. On a clash the
-    row from the side holding the series' newest dated file wins (``newest_side[slug]``; with none known, the
-    first side's). Rows are reduced to the meeting link, the space and the calendar match pattern (§3.3:
-    ``matches[slug]``, from the series' home file); every other cell moves to the home file as
-    ``<column>: <value>``.
+    Rows are keyed by their link target's slug, else the normalised meeting name, and unioned into the recurring
+    and the one-off table, whatever their v1 heading. On a clash the row from the side holding the series'
+    newest dated file wins (``newest_side[slug]``; with none known, the first row read). Rows are reduced to the
+    meeting link, the space and the calendar match pattern (§3.3: ``matches[slug]``, from the series' home
+    file); every other cell moves to the home file as ``<column>: <value>``, a losing row's cells too, marked
+    with their registry (§4.7: nothing is dropped). Text that isn't a series row (notes, event logs, retired
+    series) is kept as written under one closing section, per source.
     """
     matches = matches or {}
-    rows: dict[str, dict[str, tuple[str, list[str], list[str]]]] = {t: {} for t in _REG_TABLES}
+    rows: dict[bool, dict[str, list[tuple[str, list[str], _RegTable]]]] = {False: {}, True: {}}
     clashes: list[str] = []
     extras: dict[str, list[str]] = {}
+    kept_by_side: list[tuple[str, list[str]]] = []
     for side, text in texts:
-        for table, (heads, lines) in _tables(text).items():
-            bucket = rows.setdefault(table, {})
-            for line in lines:
-                key = _registry_key(line)
-                if key is None:
-                    continue
+        tables, kept = _registry_parts(text)
+        kept_rows: list[str] = []
+        kept_by_side.append((side, kept))
+        for table in tables:
+            bucket = rows[table.one_off]
+            for line in table.rows:
                 cells = _cells(line)
-                if key in bucket:
-                    if key not in clashes:
-                        clashes.append(key)
-                    if newest_side.get(key) != side:
-                        continue
-                bucket[key] = (side, cells, list(heads))
+                key = _registry_key("| " + cells[table.key_col] + " |") if len(cells) > table.key_col else None
+                if key is None or key == "meetings":
+                    kept_rows.append(line)  # no series to key it by, or the registry itself: kept as text
+                    continue
+                entries = bucket.setdefault(key, [])
+                if entries and key not in clashes:
+                    clashes.append(key)
+                entries.append((side, cells, table))
+        if kept_rows:
+            kept += ["", "Rows with no series of their own:", "", *kept_rows]
 
-    def keep(key: str, cells: list[str], heads: list[str], skip: int) -> None:
-        for n, c in enumerate(cells[skip:], start=skip):
-            if not c or c in ("—", "-"):
+    def winner(key: str, entries: list[tuple[str, list[str], _RegTable]]) -> int:
+        want = newest_side.get(key)
+        return next((n for n, e in enumerate(entries) if e[0] == want), 0)
+
+    def keep(key: str, cells: list[str], table: _RegTable, skip: set[int], source: str | None) -> None:
+        seen = set(extras.get(key, []))
+        for n, c in enumerate(cells):
+            if n in skip or not c or c in ("—", "-"):
                 continue
-            label = heads[n] if n < len(heads) and heads[n] else f"Column {n + 1}"
-            extras.setdefault(key, []).append(f"{label}: {c.replace(chr(92) + '|', '|')}")
+            label = table.heads[n] if n < len(table.heads) and table.heads[n] else f"Column {n + 1}"
+            if source:
+                label = f"{label} (from {source})"
+            item = f"{label}: {c.replace(chr(92) + '|', '|')}"
+            if item not in seen:
+                extras.setdefault(key, []).append(item)
+                seen.add(item)
+
+    def emit(one_off: bool) -> list[str]:
+        out: list[str] = []
+        for key, entries in sorted(rows[one_off].items()):
+            w = winner(key, entries)
+            _side, cells, table = entries[w]
+            cell = _meeting_cell(cells[table.key_col], key, space)
+            if one_off:
+                date = cells[table.date_col] if table.date_col is not None and len(cells) > table.date_col else ""
+                out.append(f"| {cell} | {space} | {date} |")
+            else:
+                out.append(f"| {cell} | {space} | {matches.get(key, '')} |")
+            skip = {table.date_col} if one_off and table.date_col is not None else set()
+            if _bare_link(cells[table.key_col]):
+                skip.add(table.key_col)
+            keep(key, cells, table, skip, None)
+            for n, (side, other, t) in enumerate(entries):
+                if n != w:
+                    keep(
+                        key,
+                        other,
+                        t,
+                        {t.key_col} if _bare_link(other[t.key_col]) else set(),
+                        _SIDE_PATHS.get(side, side),
+                    )
+        return out
 
     out = [header.rstrip(), "", "## Active Recurring Meetings", ""]
-    out += ["| Meeting | Space | Calendar match |", "|---------|-------|----------------|"]
-    for key, (_side, cells, heads) in sorted(rows.get("Active Recurring Meetings", {}).items()):
-        out.append(f"| {_meeting_cell(cells[0], key, space)} | {space} | {matches.get(key, '')} |")
-        keep(key, cells, heads, 1)
-    out += ["", "## One-Off Meetings", "", "| Meeting | Space | Date |", "|---------|-------|------|"]
-    for key, (_side, cells, heads) in sorted(rows.get("One-Off Meetings", {}).items()):
-        date = cells[1] if len(cells) > 1 else ""
-        out.append(f"| {_meeting_cell(cells[0], key, space)} | {space} | {date} |")
-        keep(key, cells, heads, 2)
-    for table, bucket in rows.items():
-        if table in _REG_TABLES or not bucket:
-            continue
-        out += ["", f"## {table}", "", "| Meeting | Space |", "|---------|-------|"]
-        for key, (_side, cells, heads) in sorted(bucket.items()):
-            out.append(f"| {_meeting_cell(cells[0], key, space)} | {space} |")
-            keep(key, cells, heads, 1)
+    out += ["| Meeting | Space | Calendar match |", "|---------|-------|----------------|", *emit(False)]
+    out += ["", "## One-Off Meetings", "", "| Meeting | Space | Date |", "|---------|-------|------|", *emit(True)]
+    sections = []
+    for side, kept in kept_by_side:
+        while kept and not kept[0].strip():
+            kept = kept[1:]
+        while kept and not kept[-1].strip():
+            kept = kept[:-1]
+        if kept:
+            sections += ["", f"### From `{_SIDE_PATHS.get(side, side)}`", "", *(_demote(x) for x in kept)]
+    if sections:
+        out += ["", KEPT_HEADING, "", "What the old registries held besides their series rows, as it was.", *sections]
     return "\n".join(out) + "\n", sorted(clashes), extras
 
 
@@ -948,9 +1059,20 @@ def _calendar_matches(series_dir: Path) -> dict[str, str]:
     return out
 
 
+def _bare_link(cell: str) -> bool:
+    """True when ``cell`` is one wikilink and nothing else: the merged row's link says all it said."""
+    return bool(re.fullmatch(r"\[\[[^\]]+\]\]", cell.strip()))
+
+
 def _meeting_cell(cell: str, slug: str, space: str) -> str:
+    """The merged row's link to the series home. Its label is the link's alias, the slug for a link with none, or
+    the cell's own text when it names the series without a link; text after a link stays out (it can carry
+    attendees, which belong in the home file)."""
     m = re.search(r"\[\[([^\]|#\\]+)\\?(?:\|([^\]]*))?\]\]", cell)
-    label = (m.group(2) if m and m.group(2) else re.sub(r"\[\[|\]\]", "", cell)).strip() or slug
+    if m:
+        label = (m.group(2) or "").strip() or slug
+    else:
+        label = re.sub(r"[*_`]", "", cell).strip() or slug
     return f"[[{space}/meetings/{slug}/{slug}\\|{label}]]"
 
 
@@ -1189,9 +1311,9 @@ def _brain_snapshot_matches(vault: Path) -> dict[str, bool]:
         snap = snap_dir / name
         out[name] = bool(
             prov
-            and prov.snapshot
+            and prov.sha256
             and snap.is_file()
-            and prov.snapshot == brain_merge.sha256_text(snap.read_text(encoding="utf-8"))
+            and prov.sha256 == brain_merge.sha256_text(snap.read_text(encoding="utf-8"))
         )
     return out
 
@@ -1205,6 +1327,8 @@ def _rekey_state(vault: Path, plan_: Plan, *, apply_rewrite: Any) -> list[str]:
     tracked_state = set(_z(_git(vault, "ls-files", "-z", "--", ".scout-state", check=False)))
     for base_dir in (vault_drift.SNAPSHOT_DIR, vault_drift.LEGACY_SNAPSHOT_DIR):
         for src, dst in pairs:
+            if base_dir == vault_drift.LEGACY_SNAPSHOT_DIR and dst.startswith(layout.V2["brain_dir"] + "/"):
+                continue  # brain_merge's own snapshots, keyed by file name on every layout: they stay put
             s = vault / base_dir / src
             if s.is_file() and not s.is_symlink():
                 d = vault / base_dir / dst
@@ -1449,6 +1573,8 @@ def apply(vault: Path, plan_: Plan, *, plugin_root: Path | None = None, today: s
         before_untracked = set(_z(_git(vault, "ls-files", "-o", "-z", "--exclude-standard")))
         gi = vault / ".gitignore"
         old_gi = gi.read_text(encoding="utf-8") if gi.exists() else ""
+        # What recovery puts back: the file as it was on disk (tracked or not), or nothing.
+        safe_write.atomic_write_text(pre_dir / "gitignore.json", json.dumps({"text": old_gi if gi.exists() else None}))
         new_gi = _gitignore_rewrite(old_gi, plan_.refs, [a for a, _ in plan_.compat_links])
         if new_gi != old_gi:
             safe_write.atomic_write_text(gi, new_gi)
@@ -1520,6 +1646,14 @@ def _engine_version() -> str:
     return scout.__version__
 
 
+_WROTE_LISTS = ("rewritten", "made_private", "created_homes", "edited_homes")
+
+
+def _log_wrote(vault: Path, kind: str, rel: str) -> None:
+    """Record a file the content step wrote, so a pass that finishes an interrupted one commits it too (§4.9)."""
+    _log_progress(vault, {"wrote": rel, "as": kind})
+
+
 def _content(vault: Path, plan_: Plan, res: ApplyResult, *, plugin_root: Path | None, today: str) -> None:
     """Steps 8-14: repeatable, so a crash here is finished by :func:`recover`."""
     journal = json.loads(_journal(vault).read_text(encoding="utf-8"))
@@ -1564,6 +1698,7 @@ def _content(vault: Path, plan_: Plan, res: ApplyResult, *, plugin_root: Path | 
                 home.parent.mkdir(parents=True, exist_ok=True)
                 safe_write.atomic_write_text(home, f"# {slug}\n")
                 res.created_homes.append(home.relative_to(vault).as_posix())
+                _log_wrote(vault, "created_homes", res.created_homes[-1])
             body = home.read_text(encoding="utf-8")
             marker = "## From the old meetings registry"
             if marker in body:
@@ -1571,6 +1706,7 @@ def _content(vault: Path, plan_: Plan, res: ApplyResult, *, plugin_root: Path | 
             add = "\n".join(f"- {c}" for c in cells)
             safe_write.atomic_write_text(home, body.rstrip("\n") + f"\n\n{marker}\n\n{add}\n")
             res.edited_homes.append(home.relative_to(vault).as_posix())
+            _log_wrote(vault, "edited_homes", res.edited_homes[-1])
     # Identity and role split (§4.6)
     for s in plan_.splits:
         role_path = vault / s.role
@@ -1608,6 +1744,7 @@ def _content(vault: Path, plan_: Plan, res: ApplyResult, *, plugin_root: Path | 
         if new != text:
             safe_write.atomic_write_text(p, new)
             res.rewritten.append(rel)
+            _log_wrote(vault, "rewritten", rel)
         if kind == "config":
             res.config_left = unplaced_globs(new, [r for r in plan_.refs if r.is_dir])
     # Brain snapshots: rewritten in place; provenance re-recorded only where it matched before (§4.8)
@@ -1629,7 +1766,7 @@ def _content(vault: Path, plan_: Plan, res: ApplyResult, *, plugin_root: Path | 
                     safe_write.atomic_write_text(p, new)
             if matched.get(name) and (snap_dir / name).is_file():
                 records[name] = dataclasses.replace(
-                    records[name], snapshot=brain_merge.sha256_text((snap_dir / name).read_text(encoding="utf-8"))
+                    records[name], sha256=brain_merge.sha256_text((snap_dir / name).read_text(encoding="utf-8"))
                 )
         if records:
             safe_write.atomic_write_text(snap_dir / brain_merge.PROVENANCE_FILE, brain_merge.dumps_provenance(records))
@@ -1650,12 +1787,14 @@ def _content(vault: Path, plan_: Plan, res: ApplyResult, *, plugin_root: Path | 
         if vis == "private" and post.get(dst) == "normal":
             _force_private(vault / dst)
             res.made_private.append(dst)
+            _log_wrote(vault, "made_private", dst)
         if vis == "normal" and post.get(dst) == "private":
             res.more_private.append(dst)
     for s in plan_.splits:
         if s.private_origin and post_ids.get(s.identity) == "normal":
             _force_private(vault / s.identity)
             res.made_private.append(s.identity)
+            _log_wrote(vault, "made_private", s.identity)
     # Scripts that locate files relative to themselves
     for m in plan_.moves:
         if m.row in (2, 3):
@@ -1667,6 +1806,12 @@ def _content(vault: Path, plan_: Plan, res: ApplyResult, *, plugin_root: Path | 
     if not readme.exists() or readme.read_text(encoding="utf-8", errors="replace").startswith(layout.README_MARKER):
         safe_write.atomic_write_text(readme, layout.render_readme(plan_.spaces, engine_version=_engine_version()))
     _record_applied(vault)
+    # An earlier, interrupted pass wrote files this one found already done: they go in the report and commit 2 too.
+    for e in _read_progress(vault):
+        if e.get("as") in _WROTE_LISTS and e.get("wrote"):
+            lst = getattr(res, e["as"])
+            if e["wrote"] not in lst:
+                lst.append(e["wrote"])
     res.report_rel = f"{layout.V2['reports_dir']}/{today}-layout-v2.md"
     report = render_report(plan_, res, pre=journal.get("pre", ""), commit1=_commit1_sha(vault))
     safe_write.atomic_write_text(vault / res.report_rel, report)
@@ -1737,22 +1882,41 @@ def recover(vault: Path, *, plugin_root: Path | None = None) -> str:
         )
         return "finished"
     pre = journal["pre"]
-    done = {int(e["i"]) for e in _read_progress(vault) if "i" in e}
-    # A move can complete without its record (a crash between the rename and the log, or a folder moved in one
-    # rename): every move whose source is gone and whose destination is there counts as done.
-    for i, m in enumerate(plan_.moves):
-        src, dst = vault / m.src, vault / m.dst
-        if i not in done and (dst.exists() or dst.is_symlink()) and (not src.exists() or src.is_symlink()):
-            done.add(i)
+    progress = _read_progress(vault)
+    done = {int(e["i"]) for e in progress if "i" in e}
+    # The links go first: through a folder's link its old files still resolve, and would look not yet moved.
     for link, _target in plan_.compat_links:
         lp = vault / link
         if lp.is_symlink():
             lp.unlink()
+    # A folder moved in one rename goes back in one rename.
+    targets = dict(plan_.compat_links)
+    for top in reversed([str(e["dir"]) for e in progress if "dir" in e]):
+        target = targets.get(top)
+        if target and (vault / target).is_dir() and not (vault / top).exists() and not (vault / top).is_symlink():
+            os.rename(vault / target, vault / top)
+            _prune_empty(vault, (vault / target).parent)
+    # A move can complete without its record (a crash between the rename and the log): every move whose source
+    # is gone and whose destination is there counts as done.
+    for i, m in enumerate(plan_.moves):
+        src, dst = vault / m.src, vault / m.dst
+        if i not in done and (dst.exists() or dst.is_symlink()) and not (src.exists() or src.is_symlink()):
+            done.add(i)
     for i in sorted(done, reverse=True):
         m = plan_.moves[i]
         if (vault / m.dst).exists() or (vault / m.dst).is_symlink():
             _rename(vault, m.dst, m.src)
-    restore = [r for r in plan_.removes if not (vault / r).exists()] + [".gitignore"]
+    pre_dir = vault / layout.MIGRATION_STATE_DIR / "pre"
+    restore = [r for r in plan_.removes if not (vault / r).exists()]
+    try:
+        old_gi = json.loads((pre_dir / "gitignore.json").read_text(encoding="utf-8"))["text"]
+    except (OSError, ValueError, KeyError, TypeError):
+        restore.append(".gitignore")  # no saved copy (the move stopped before its gitignore step): from the pre ref
+    else:
+        if old_gi is None:
+            (vault / ".gitignore").unlink(missing_ok=True)
+        else:
+            safe_write.atomic_write_text(vault / ".gitignore", old_gi)
     for rel in restore:
         if (
             subprocess.run(["git", "-C", str(vault), "cat-file", "-e", f"{pre}:{rel}"], capture_output=True).returncode
@@ -1767,7 +1931,6 @@ def recover(vault: Path, *, plugin_root: Path | None = None) -> str:
     )
     with contextlib.suppress(RuntimeError):
         _git(vault, "reset", "-q", pre, "--", *[t for t in touched])
-    pre_dir = vault / layout.MIGRATION_STATE_DIR / "pre"
     if (pre_dir / "last-assembled").is_dir():
         la = vault / ".scout-state" / "last-assembled"
         for p in (pre_dir / "last-assembled").rglob("*"):
@@ -2077,7 +2240,3 @@ def deferral(vault: Path) -> dict[str, Any] | None:
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
-
-
-def warn(msg: str) -> None:
-    print(f"layout: {msg}", file=sys.stderr)

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 
-from scout.config import DEFAULT_SPACES, Space, default_space
+from scout.config import Space
 
 SCHEMA_VERSION = 1
 MIGRATION_ID = "layout-v2"
@@ -256,10 +256,6 @@ def legacy_rel(key: str) -> str:
     return V1.paths[key]
 
 
-def spaces_default(spaces: Iterable[Space] = DEFAULT_SPACES) -> Space:
-    return default_space(tuple(spaces))
-
-
 # ---- which layout a vault has -----------------------------------------------------------------------------
 
 
@@ -290,13 +286,15 @@ def for_vault(vault: Path) -> Layout:
 
 
 def migration_state(vault: Path, applied: Iterable[str] = ()) -> str:
-    """``applied``, ``interrupted`` (a journal is left), ``deferred`` (the last attempt deferred) or ``pending``."""
+    """``applied``, ``interrupted`` (a journal is left), ``deferred`` (the last attempt deferred) or ``pending``.
+
+    A v2 vault reads as applied whether ``applied`` lists the move or not: an install writes v2 directly, and the
+    disk decides the layout (§4.1).
+    """
     if (vault / JOURNAL_REL).exists():
         return "interrupted"
-    if layout_version(vault) == 2 and MIGRATION_ID in set(applied):
-        return "applied"
     if layout_version(vault) == 2:
-        return "applied"  # moved and seeded (an install writes v2 directly)
+        return "applied"
     if (vault / DEFERRAL_REL).exists():
         return "deferred"
     return "pending"

@@ -113,3 +113,55 @@ def test_kill_between_the_commits_finishes_forward(tmp_path: Path, monkeypatch: 
     assert not layout.move_in_progress(vault)
     assert "Scout-Migration: layout-v2 content" in _git(vault, "log", "-1", "--format=%b")
     assert (vault / "knowledge-base/people/alex-example.md").read_text().count("spaces: [work]") == 1
+
+
+@pytest.mark.parametrize("gitignore", [True, False])
+def test_a_failure_on_the_first_file_move_puts_the_moved_folders_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gitignore: bool
+) -> None:
+    """scripts/ and hooks/ move in one rename each before any file move is logged: recovery reverses those renames
+    (review of #832), and a .gitignore the move created goes away again."""
+    vault = build_v1_vault(tmp_path / "v", dirty=False)
+    if not gitignore:
+        _git(vault, "rm", "-q", "--cached", ".gitignore")
+        (vault / ".gitignore").unlink()
+        _git(vault, "commit", "-qm", "no gitignore")
+    before = _snapshot(vault)
+    status = _git(vault, "status", "--porcelain")
+
+    def fail(*a: object, **k: object) -> None:
+        raise OSError("first rename fails")
+
+    monkeypatch.setattr(layout_migrate, "_rename", fail)
+    out = layout_migrate.migrate_layout(vault)
+    assert out.state == "deferred" and "reversed" in out.reason
+    assert (vault / "scripts/heartbeat.sh").is_file() and not (vault / "scripts").is_symlink()
+    assert not (vault / "scout/scripts").exists() and not (vault / "scout/hooks").exists()
+    assert _snapshot(vault) == before
+    # the deferral record is the only new entry
+    after = _git(vault, "status", "--porcelain").splitlines()
+    assert sorted(after) == sorted([*status.splitlines(), "?? .scout-state/migrations/"])
+
+
+def test_finishing_forward_commits_what_the_interrupted_pass_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash late in the content step: the pass that finishes it finds the rewrites and new home files already
+    done, and commit 2 still carries them (review of #832)."""
+    vault = build_v1_vault(tmp_path / "v", dirty=False)
+    reg = vault / "meetings/meetings.md"
+    reg.write_text(reg.read_text() + "| [[meetings/retro/retro\\|Retro]] | monthly | Fri | Sam | |\n")
+    _git(vault, "commit", "-qam", "retro")
+    status = _git(vault, "status", "--porcelain")
+    _kill_at(monkeypatch, "_record_applied")
+    with pytest.raises(Killed):
+        layout_migrate.migrate_layout(vault)
+    monkeypatch.undo()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
+    assert layout_migrate.recover(vault) == "finished"
+    assert _git(vault, "status", "--porcelain") == status
+    committed = _git(vault, "show", "--name-only", "--format=", "HEAD").split()
+    assert "knowledge-base/work/meetings/retro/retro.md" in committed
+    assert "scout/brain/SKILL.md" in committed
+    report = next((vault / "reports").glob("*-layout-v2.md")).read_text()
+    assert "Files with path updates: 0." not in report
