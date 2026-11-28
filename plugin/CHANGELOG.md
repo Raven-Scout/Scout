@@ -5,10 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/).
 
 Don't edit this file in a PR: add a fragment under [`changelog.d/`](changelog.d/README.md).
-`scripts/release.sh prepare` writes the fragments into each release's section. `## [Unreleased]` only holds
-entries from PRs opened before fragments existed; prepare moves them too.
-
-## [Unreleased]
+`scripts/release.sh prepare` writes them into each release's section.
 
 ## [0.18.24] - 2026-11-25
 

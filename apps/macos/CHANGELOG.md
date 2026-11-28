@@ -3,10 +3,7 @@
 Scout's app and plugin share one version and one release (`vX.Y.Z`), cut with `scripts/release.sh`. Each
 release's notes combine this file's section with [`plugin/CHANGELOG.md`](../../plugin/CHANGELOG.md).
 Don't edit this file in a PR: add a fragment under [`changelog.d/`](changelog.d/README.md).
-`scripts/release.sh prepare` writes the fragments into each release's section. `## [Unreleased]` only holds
-entries from PRs opened before fragments existed; prepare moves them too.
-
-## [Unreleased]
+`scripts/release.sh prepare` writes them into each release's section.
 
 ## [0.18.24] - 2026-11-25
 

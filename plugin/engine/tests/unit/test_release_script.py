@@ -73,7 +73,7 @@ def test_prepare_bumps_every_version_file_and_both_changelogs(tmp_path):
     assert _git(r.root, "status", "--porcelain", "--untracked-files=no") == ""
     for rel in ("plugin/CHANGELOG.md", "apps/macos/CHANGELOG.md"):
         text = (r.root / rel).read_text()
-        assert text.index("## [Unreleased]") < text.index("## [0.15.0] - ")
+        assert "## [0.15.0] - " in text and "[Unreleased]" not in text
 
 
 def _fragments(r, files: dict[str, str], *, branch="main"):
@@ -95,27 +95,26 @@ _SEVERAL = {
 }
 
 
-def test_prepare_assembles_fragments_after_the_unreleased_entries(tmp_path):
-    """Both changelogs, several sections, and the transition: the seed's `[Unreleased]` entries come first."""
+def test_prepare_assembles_the_fragments_of_both_changelogs(tmp_path):
+    """Several sections in both changelogs, beside the seed's own fragments, ordered by file name."""
     r = make_repo(tmp_path)
     _fragments(r, _SEVERAL)
     done = r.run("prepare", "0.15.0", extra_env={"SKIP_RELEASE": "1"})
     assert done.returncode == 0, done.stderr
     plugin = release_notes.extract_section((r.root / "plugin/CHANGELOG.md").read_text(encoding="utf-8"), "0.15.0")
     assert plugin == (
-        "### Added\n- a plugin thing\n- plugin feature A\n\n"
+        "### Added\n- plugin feature A\n- a plugin thing\n\n"
         "### Fixed\n- plugin fix A\n  - its detail\n- plugin fix B\n\n"
         "### Security\n- plugin hardening"
     )
     app = release_notes.extract_section((r.root / "apps/macos/CHANGELOG.md").read_text(encoding="utf-8"), "0.15.0")
-    assert app == "### Added\n- an app thing\n- app feature E\n\n### Removed\n- app removal"
+    assert app == "### Added\n- app feature E\n- an app thing\n\n### Removed\n- app removal"
     for rel in ("plugin/CHANGELOG.md", "apps/macos/CHANGELOG.md"):
-        text = (r.root / rel).read_text(encoding="utf-8")
-        assert release_notes.extract_section(text, "Unreleased") == ""
-        assert text.index("## [Unreleased]") < text.index("## [0.15.0] - ")
+        assert "[Unreleased]" not in (r.root / rel).read_text(encoding="utf-8")
     # The release commit deletes every fragment it assembled, and only those; the READMEs stay.
     deleted = _git(r.root, "show", "--name-only", "--diff-filter=D", "--format=", "HEAD").split()
-    assert sorted(deleted) == sorted(_SEVERAL)
+    seeds = ["plugin/changelog.d/seed.added.md", "apps/macos/changelog.d/seed.added.md"]
+    assert sorted(deleted) == sorted([*_SEVERAL, *seeds])
     assert _git(r.root, "ls-files", "plugin/changelog.d", "apps/macos/changelog.d").split() == [
         "apps/macos/changelog.d/README.md",
         "plugin/changelog.d/README.md",
@@ -125,22 +124,37 @@ def test_prepare_assembles_fragments_after_the_unreleased_entries(tmp_path):
     assert "- plugin fix B" in notes and "- app removal" in notes and "- a plugin thing" in notes
 
 
-def test_prepare_with_only_fragments_and_an_empty_unreleased(tmp_path):
+def test_prepare_writes_the_section_above_the_previous_release(tmp_path):
     r = make_repo(tmp_path)
     for rel in ("plugin/CHANGELOG.md", "apps/macos/CHANGELOG.md"):
-        (r.root / rel).write_text("# Changelog\n\n## [Unreleased]\n\n## [0.14.0] - 2026-01-01\n\n- old\n")
+        (r.root / rel).write_text("# Changelog\n\nProse.\n\n## [0.14.0] - 2026-01-01\n\n- old\n")
+    _git(r.root, "rm", "-q", "apps/macos/changelog.d/seed.added.md")
     _fragments(r, {"plugin/changelog.d/only.fixed.md": "- the only fix\n"})
     done = r.run("prepare", "0.15.0", extra_env={"SKIP_RELEASE": "1"})
     assert done.returncode == 0, done.stderr
     plugin = (r.root / "plugin/CHANGELOG.md").read_text(encoding="utf-8")
+    date = plugin.split("## [0.15.0] - ")[1].split("\n")[0]
     assert plugin == (
-        "# Changelog\n\n## [Unreleased]\n\n## [0.15.0] - "
-        + plugin.split("## [0.15.0] - ")[1].split("\n")[0]
-        + "\n\n### Fixed\n- the only fix\n\n## [0.14.0] - 2026-01-01\n\n- old\n"
+        f"# Changelog\n\nProse.\n\n## [0.15.0] - {date}\n\n### Added\n- a plugin thing\n\n"
+        "### Fixed\n- the only fix\n\n## [0.14.0] - 2026-01-01\n\n- old\n"
     )
     app = (r.root / "apps/macos/CHANGELOG.md").read_text(encoding="utf-8")
     assert release_notes.extract_section(app, "0.15.0") == ""  # an empty app section is allowed, as before
     assert release_notes.extract_section(app, "0.14.0") == "- old"
+
+
+def test_prepare_refuses_an_unreleased_heading_before_branching(tmp_path):
+    """An old PR that re-adds `## [Unreleased]`: its entries would be skipped, so prepare stops on main."""
+    r = make_repo(tmp_path)
+    log = r.root / "apps/macos/CHANGELOG.md"
+    log.write_text("# Changelog\n\n## [Unreleased]\n\n### Fixed\n- an old-style entry\n", encoding="utf-8")
+    _fragments(r, {})
+    head = _git(r.root, "rev-parse", "HEAD")
+    done = r.run("prepare", "0.15.0", extra_env={"SKIP_RELEASE": "1"})
+    assert done.returncode != 0
+    assert "apps/macos/CHANGELOG.md: has a '## [Unreleased]' heading" in done.stderr
+    assert _git(r.root, "rev-parse", "--abbrev-ref", "HEAD") == "main" and _git(r.root, "rev-parse", "HEAD") == head
+    assert _git(r.root, "branch", "--list", "release/*") == ""
 
 
 def test_prepare_refuses_a_malformed_fragment_before_branching(tmp_path):
@@ -149,7 +163,7 @@ def test_prepare_refuses_a_malformed_fragment_before_branching(tmp_path):
     head = _git(r.root, "rev-parse", "HEAD")
     done = r.run("prepare", "0.15.0", extra_env={"SKIP_RELEASE": "1"})
     assert done.returncode != 0
-    assert "bad.fixes.md: unknown section 'fixes'" in done.stderr and "does not parse" in done.stderr
+    assert "bad.fixes.md: unknown section 'fixes'" in done.stderr and "the changelog check failed" in done.stderr
     assert _git(r.root, "rev-parse", "--abbrev-ref", "HEAD") == "main" and _git(r.root, "rev-parse", "HEAD") == head
     assert _git(r.root, "branch", "--list", "release/*") == "" and _git(r.root, "status", "--porcelain") == ""
     assert (r.root / "plugin/changelog.d/ok.fixed.md").exists()

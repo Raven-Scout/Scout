@@ -191,9 +191,10 @@ cmd_prepare() {
   for rel in plugin/CHANGELOG.md apps/macos/CHANGELOG.md; do
     if grep -q "^## \[$new\]" "$REPO_ROOT/$rel"; then die "$rel already has a [$new] section"; fi
   done
-  # Every changelog.d/ fragment must parse before anything changes; promote writes them into [$new].
+  # Every changelog.d/ fragment must parse, and no [Unreleased] heading may be back, before anything
+  # changes; promote writes the fragments into [$new].
   "$PY" -m scout.scripts.changelog --repo-root "$REPO_ROOT" check >/dev/null \
-    || die "a changelog fragment does not parse (above); fix it on main first"
+    || die "the changelog check failed (above); fix it on main first"
   [ "${SCOUT_RELEASE_SKIP_LINT:-0}" = 1 ] || run_lint
   git -C "$REPO_ROOT" checkout -q -b "$branch"
   vers set "$new" >/dev/null

@@ -50,12 +50,11 @@ first.** The two have different languages, test runners, and release flows.
   (format: `plugin/changelog.d/README.md`). `scripts/release.sh prepare`
   assembles them into `## [X.Y.Z]` and deletes them. If the slug is generic or
   reused, add a short random suffix, and never edit a fragment main already
-  has. Never add to `## [Unreleased]` (it is kept only for PRs opened before
-  fragments, and goes once they merge) and never touch a `## [X.Y.Z]` section
-  main already has: `contract` runs `python -m scout.scripts.changelog check`
-  and fails on a bad fragment and, on PRs and in the merge queue (not on the
-  push to main), on a changed existing fragment or a changed versioned
-  section. Two exceptions: a PR into `release/vX.Y.Z` edits
+  has. There is no `## [Unreleased]` section; never add one, and never touch a
+  `## [X.Y.Z]` section main already has: `contract` runs
+  `python -m scout.scripts.changelog check` and fails on a bad fragment or an
+  `[Unreleased]` heading and, on PRs and in the merge queue (not on the push
+  to main), on a changed existing fragment or a changed versioned section. Two exceptions: a PR into `release/vX.Y.Z` edits
   `[X.Y.Z]` directly and adds no fragment (one there would never reach X.Y.Z),
   and a deliberate fix to a published entry ends a commit message with the
   trailer `Changelog-Edit-Released: X.Y.Z <why>`.
