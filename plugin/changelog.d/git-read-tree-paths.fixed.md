@@ -92,3 +92,18 @@
   repository search now reads config files as git parses them (`git config --file … --list`), so comments,
   quotes and continued lines in `core.worktree` count, and it finds bare repositories and git folders. The shell
   pre-filter sends every git call to the gate.
+- **Review round 7 of the run's git allowlist.** The engine-change flow's clone must be one `git clone` made: its
+  own `.git` folder, only the config keys a clone and `push -u` write (no push refspec, pushurl, `url.*` rewrite or
+  `core.hooksPath`), no hook, no alternate into the vault or copy of its objects; and a push sends a branch that
+  descends from `origin/main`, adds no root commit and changes only paths under folders `origin/main` has, none a
+  KB path. A run's shell writes inside a `.git` below `~/.scout-worktrees` are refused, by resolved path and in any
+  letter case. A branch or refspec with a `$` left after substitution is refused, and the clone's source must be
+  the engine checkout's own origin (`$ROOT`), with no URL rewrite. A repository other than the vault's that holds
+  its history (a fetch from it, an alternate, a copy of `.git`) is refused, and so is one with a hook git would run
+  for the call (`post-index-change` on `add` and `status`, …), in its `hooks/` or `core.hooksPath`. A names-only
+  `git show` of a blob, by any id (`67de3`, `<id>^{blob}`), is refused; `git diff` outside a repository, or with a
+  path outside its work tree, is judged by the files it compares. `log -S/-G/--pickaxe-all` is refused unless
+  every pathspec is outside the KB (they pick commits by a note's text). A `PATH` change may only reorder the run's
+  own PATH folders or add fixed system ones (`/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`, `/opt/homebrew/bin`), in
+  every spelling (`path[1,0]=`, `${PATH::=…}`; `${(P)…}` is refused). `source`/`.` of stdin or a pipe is judged as
+  a shell running that text.

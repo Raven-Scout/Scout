@@ -121,6 +121,13 @@ class GitRead:
     cloned: list[str] = field(default_factory=list)
     # An engine form that is also one the vault's repository allows (a plain `git commit -m`): either place will do.
     vault_ok: bool = False
+    # The revs a names-only `show` prints (`git show --stat <rev>`): a blob among them prints its content, so the
+    # gate asks git what each is (object_type).
+    objects: list[str] = field(default_factory=list)
+    # A read the gate refuses when it can't bound it (`log -S/-G`: an oracle on the text of what it searches).
+    strict: bool = False
+    # The branch an engine push sends (`push -u origin scout/<name>`), for the gate's history checks.
+    engine_ref: str = ""
 
 
 def split_global(args: list[str]) -> tuple[list[str], str | None, str | None, int]:
@@ -276,12 +283,16 @@ def parse(args: list[str]) -> GitRead | None:
             _collect(sub, sub_args, read)
             # A bare object id may be a blob (`git show --stat <blob>` prints it): any file, so recorded.
             # A rev from a substitution (`$(git rev-parse HEAD:x)`) may be one too.
-            blob = sub == "show" and any(OBJECT_ID.match(w) or "$" in w or "`" in w for w in read.maybe_paths)
+            # A rev from a substitution (`$(git rev-parse HEAD:x)`) may be a blob the gate can't name: recorded.
+            dynamic = sub == "show" and any("$" in w or "`" in w for w in read.maybe_paths)
+            if sub == "show" and not dynamic:
+                # Any other rev may be a blob too (`git show --stat 67de3`, `<id>^{blob}`): the gate asks git.
+                read.objects = list(read.maybe_paths)
             read.pathspecs, read.maybe_paths = [], []
-            if blob:
+            if dynamic:
                 read.unbounded = "repo"
                 return read
-            return read if read.trees or read.files else None
+            return read if read.trees or read.files or read.objects else None
         read.unbounded = "repo"
     elif sub in _PATCH_WHEN_ASKED:
         asked = _patch(sub_args) or any(a == "-L" or a.startswith("-L") for a in sub_args)
@@ -386,13 +397,109 @@ def find_repo(start: Path, git_dir: Path | None, work_tree: Path | None) -> tupl
     return top, common, unsure
 
 
+_SAFE_GIT_ENV = {
+    "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_NO_REPLACE_OBJECTS": "1",
+    "GIT_TERMINAL_PROMPT": "0",
+    "LC_ALL": "C",
+}
+
+
+def git_out(git_dir: Path, args: list[str]) -> str | None:
+    """``git --git-dir=<git_dir> <args>``'s output (stripped), or None when it fails: read-only object and ref
+    queries the gate makes itself, with no work tree, hooks, fsmonitor, pager or the caller's config."""
+    import subprocess
+
+    try:
+        done = subprocess.run(
+            ["git", f"--git-dir={git_dir}", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", *args],
+            env={**_SAFE_GIT_ENV, "HOME": os.environ.get("HOME", "/nonexistent")},
+            capture_output=True, timeout=5, check=False,
+        )  # fmt: skip
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.decode("utf-8", "replace").strip() if done.returncode == 0 else None
+
+
+def object_type(git_dir: Path, rev: str) -> str | None:
+    """What ``rev`` names in a repository, tags peeled (``blob``, ``tree``, ``commit``), else None."""
+    if rev.startswith("-"):
+        return None
+    return git_out(git_dir, ["cat-file", "-t", f"{rev}^{{}}"])
+
+
+_VAULT_ROOTS: dict[str, list[str]] = {}
+
+
+def holds_history(common: Path, vault_common: Path) -> bool:
+    """Whether another repository holds the vault's history: an alternate into the vault's object store (or its
+    objects folder linked to it), or the vault's first commit in its object store (a fetch, a `cp -R .git`)."""
+    objects = common / "objects"
+    if same_folder(objects, vault_common / "objects"):
+        return True
+    for name in ("alternates", "http-alternates"):
+        try:
+            lines = (objects / "info" / name).read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            target = Path(os.path.expanduser(line))
+            target = (target if target.is_absolute() else objects / target).resolve()
+            if rel_to(vault_common, target) is not None or not target.exists():
+                return True  # into the vault, or a folder the gate can't see yet
+    key = str(vault_common)
+    if key not in _VAULT_ROOTS:
+        roots = git_out(vault_common, ["rev-list", "--max-parents=0", "HEAD"])
+        _VAULT_ROOTS[key] = roots.split() if roots else []
+    return any(git_out(common, ["cat-file", "-e", root]) is not None for root in _VAULT_ROOTS[key])
+
+
+# The hooks git runs for each subcommand a run may use: a repository that isn't the vault's must have none of them.
+_HOOKS_BY_SUB = {
+    "add": ("post-index-change",),
+    "status": ("post-index-change",),
+    "commit": (
+        "pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change",
+        "reference-transaction", "pre-auto-gc",
+    ),
+    "switch": ("post-checkout", "post-index-change", "reference-transaction"),
+    "checkout": ("post-checkout", "post-index-change", "reference-transaction"),
+    "push": ("pre-push", "reference-transaction"),
+}  # fmt: skip
+
+
+def hooks_run(common: Path, top: Path | None, sub: str, entries: list[tuple[str, str]], *, strict: bool) -> str | None:
+    """A hook git would run for ``git <sub>`` in another repository (its ``core.hooksPath``, else ``hooks/``), else
+    None. ``strict`` (an engine clone): any hook, or a ``core.hooksPath`` at all, counts."""
+    paths = [v for k, v in entries if k == "core.hookspath"]
+    if paths and strict:
+        return "core.hooksPath"
+    if paths:
+        folder = Path(os.path.expanduser(paths[-1]))
+        if not folder.is_absolute():
+            folder = (top or common) / folder
+    else:
+        folder = common / "hooks"
+    try:
+        names = [p.name for p in folder.iterdir() if not p.name.endswith(".sample")]
+    except OSError:
+        return None
+    wanted = names if strict else [n for n in names if n in _HOOKS_BY_SUB.get(sub, ())]
+    return f"a {wanted[0]} hook" if wanted else None
+
+
 # Values of command keys that run only the tools a person installs for every repository: Git LFS's filters, and
 # fsmonitor's switch for git's own daemon.
 _SAFE_COMMANDS = re.compile(r"^\s*(?:git-lfs|git lfs)\s")
 _BOOLEANS = {"true", "false", "yes", "no", "on", "off", "1", "0", ""}
 
 
-def config_runs(common: Path, sub: str) -> str | None:
+def config_runs(common: Path, sub: str, top: Path | None = None) -> str | None:
     """The first key in another repository's config that may run a command for ``git <sub>`` (a run's allowed
     forms run its fsmonitor, filters, textconv and external diff; ``remote`` its transports and credential
     helpers), else None. A run can't write the vault's own config, but it can write one of a repository it builds
@@ -401,13 +508,17 @@ def config_runs(common: Path, sub: str) -> str | None:
     from scout.kb.live_run import _COMMAND_KEY_SUFFIXES, _COMMAND_KEYS
 
     files = [common / "config", common / "config.worktree", *sorted(common.glob("worktrees/*/config.worktree"))]
+    every: list[tuple[str, str]] = []
     for config in files:
         if not config.is_file():
             continue
         entries = read_config(config)
         if entries is None:
             return "an unreadable config"
+        every += entries
         for key, value in entries:
+            if key == "core.hookspath":
+                continue  # where its hooks are: judged by the hooks git would run (hooks_run)
             if key.startswith("includeif."):
                 return key
             if key.startswith("credential.") or key.endswith(".helper") or key.startswith("protocol."):
@@ -419,7 +530,7 @@ def config_runs(common: Path, sub: str) -> str | None:
             runs = key in _COMMAND_KEYS or key.endswith(_COMMAND_KEY_SUFFIXES) or key.startswith("pager.")
             if runs and not _SAFE_COMMANDS.match(value) and not key.endswith(".path"):
                 return key
-    return None
+    return hooks_run(common, top, sub, every, strict=False)
 
 
 def _core_worktree(git_dir: Path, common: Path) -> tuple[Path | None, bool]:

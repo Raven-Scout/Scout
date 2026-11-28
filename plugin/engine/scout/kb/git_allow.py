@@ -218,7 +218,7 @@ def _option(
 # origin is Scout's (review of #817, round 6; the owner's call: the flow stays, narrowly).
 SCOUT_REMOTES = ("https://github.com/Raven-Scout/Scout.git", "git@github.com:Raven-Scout/Scout.git")
 WORKTREES = ".scout-worktrees"
-_ENGINE_BRANCH = re.compile(r"^scout/[A-Za-z0-9._$-]+(?:/[A-Za-z0-9._$-]+)*$")
+_ENGINE_BRANCH = re.compile(r"^scout/[A-Za-z0-9_-][A-Za-z0-9._-]*(?:/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$")
 CLONE, WORKTREE, PUSH = "clone", "worktree", "push"
 ENGINE_SUBCOMMANDS = ("clone", "switch", "checkout", "commit", "push")
 

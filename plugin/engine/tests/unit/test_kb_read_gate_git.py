@@ -787,15 +787,13 @@ RUN_USAGE = [
     "git commit -q -F - <<'EOF'\nkb: fix PATH and GIT_DIR handling\nEOF",
     "git commit -m 'fix the path check for GIT_DIR' -- docs/a.md",
     "git -C docs commit -q -m x",
-    "git log -S widget --oneline",
+    "git log -S widget --oneline -- docs",
     "git log -Gwidget -i --oneline -- docs",
-    "git log --pickaxe-all -S x --stat",
+    "git log --pickaxe-all -S x --stat -- docs scripts",
     "git log -i --grep=fix -F --all-match --oneline",
     "git log --regexp-ignore-case --fixed-strings --grep=x --oneline",
-    'export PATH="$HOME/.local/bin:$PATH"; git log --oneline',
     "PATH=/usr/bin:$PATH git status",
-    "path=(~/.local/bin $path); git status",
-    "PATH+=:/tmp/x; git status",
+    "PATH=/opt/homebrew/bin:/usr/bin:/bin:$PATH git status",
     "echo $PATH; git status",
     # replay at 66b7b9a8: commit --only/--include, and words that only look like PATH's
     "cd ~/Vault; git commit -q --only -m 'kb: one\n\nand the body' -- docs/a.md; git log --oneline -1;"
@@ -936,6 +934,62 @@ def test_round_6_forms_are_refused(home: Path, command: str) -> None:
     _denied(_run(home, command))
 
 
+ROUND_7 = [
+    # pickaxe over paths the gate can't bound outside the KB: an oracle on a note's text
+    "git log -S x --oneline",
+    "git log -G x --format=%B -n1",
+    "git log --pickaxe-all -S x --stat",
+    "git log -SKBSECRET --oneline",
+    "git log -i -G 'x' --oneline",
+    "git log -S x --oneline -- knowledge-base",
+    "git log -G '^secret$' --format=format:HIT -- knowledge-base/a.md",
+    "git -C action-items log -S x --oneline -- context",
+    # PATH: only the run's own folders, reordered, or fixed system ones
+    "PATH+=:/tmp/x; git status",
+    "PATH=/usr/local/bin:$PATH git status",
+    "PATH=~/out/bin:$PATH git status",
+    "path[1]=/tmp; git status",
+    "path[1,0]=/tmp; git status",
+    ": ${PATH::=/tmp:$PATH}; git status",
+    ": ${PATH:=/tmp}; git status",
+    "n=PATH; : ${(P)n::=/tmp}; git status",
+    "export PATH=$PATH:$UNSET_X; git status",
+    # source of a shell's text: its quotes and here-documents are commands
+    "source /dev/stdin <<'EOF'\nexport GIT_EXTERNAL_DIFF='sh -c x'\ngit diff HEAD~1 -- docs/a.md\nEOF",
+    ". /dev/stdin <<'EOF'\nexport GIT_EXTERNAL_DIFF='sh -c x'\nEOF\ngit diff HEAD~1 -- docs/a.md",
+    "source /dev/fd/0 <<'EOF'\nexport GIT_EXTERNAL_DIFF='sh -c x'\nEOF\ngit diff -- docs/a.md",
+    "source <(printf '%s\\n' 'export GIT_EXTERNAL_DIFF=\"sh -c x\"'); git diff HEAD~1 -- docs/a.md",
+    # a diff outside a repository, or with a path outside its work tree, reads the files
+    "git -C ~/plain diff ~/Vault/docs ~/Vault/action-items",
+    "git -C ~/plain diff /dev/null ~/Vault/action-items/context/x.md",
+    "git -C ~/plain diff --stat /dev/null ~/Vault/knowledge-base/a.md",
+    "git -C ~ diff ~/plain Vault",
+    "git diff /dev/null knowledge-base/a.md",
+    "git -C ~/plain diff /dev/null ~",  # a folder above the vault
+    "git -C ~/plain diff $UNSET_X ~/Vault/docs",
+]
+
+
+@pytest.mark.parametrize("command", ROUND_7)
+def test_round_7_forms_are_refused(home: Path, command: str) -> None:
+    _denied(_run(home, command))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'export PATH="$HOME/.local/bin:$PATH"; git log --oneline',  # the run's own PATH already has it
+        "path=(~/.local/bin $path); git status",
+        "PATH=/usr/bin:/bin:$PATH git status",
+        "git diff --stat /dev/null",
+        "git -C ~/plain diff ~/plain/a ~/plain/b",
+    ],
+)
+def test_a_path_reorder_and_ordinary_diffs_are_allowed(home: Path, command: str) -> None:
+    run_path = f"{home}/.local/bin:/usr/bin:/bin"
+    assert _run(home, command, env={"PATH": run_path}) is None
+
+
 def test_the_allowlist_refuses_every_other_subcommand_and_option() -> None:
     """Completeness: any subcommand git knows but the allowlist doesn't list, any option a listed subcommand
     doesn't list (or a prefix of one it does), and any short letter it doesn't list is refused."""
@@ -1038,6 +1092,25 @@ PHASE_CLONE = (
 )
 
 
+def _scout_clone(home: Path, name: str, origin: str) -> Path:
+    """A clone of a stand-in for Scout's repository in ~/.scout-worktrees, its origin set to ``origin`` (no network:
+    the gate only reads what a clone of Scout's would hold), with a ``scout/<name>`` branch that changes a file."""
+    bare = home / "scout.git"
+    if not bare.exists():
+        seed = home / "seed"
+        _repo(seed, ("plugin/x.md", "docs/a.md"))
+        _git(home, "clone", "-q", "--bare", str(seed), str(bare))
+    clone = home / ".scout-worktrees" / name
+    clone.parent.mkdir(exist_ok=True)
+    _git(home, "clone", "-q", str(bare), str(clone))
+    _git(clone, "remote", "set-url", "origin", origin)
+    _git(clone, "switch", "-q", "-c", f"scout/{name}")
+    (clone / "plugin" / "x.md").write_text("better\n")
+    _git(clone, "commit", "-q", "-am", "plugin: a clearer rule")
+    _git(clone, "switch", "-q", "main")
+    return clone
+
+
 @pytest.fixture
 def engine_home(home: Path) -> Path:
     """``home`` with an engine checkout whose origin is Scout's (named in engine.json), and two clones in
@@ -1048,10 +1121,8 @@ def engine_home(home: Path) -> Path:
     state = home / ".local" / "state" / "scout"
     state.mkdir(parents=True)
     (state / "engine.json").write_text(json.dumps({"engine_root": str(root)}))
-    for name, url in (("done", SCOUT_REMOTE), ("fork", "https://example.com/x.git")):
-        clone = home / ".scout-worktrees" / name
-        _repo(clone, ("plugin/x.md",))
-        _git(clone, "remote", "add", "origin", url)
+    _scout_clone(home, "done", SCOUT_REMOTE)
+    _scout_clone(home, "fork", "https://example.com/x.git")
     return home
 
 
@@ -1125,6 +1196,15 @@ ENGINE_REFUSED = [
     "git push -u origin scout/x",  # the vault
     "for b in scout/a scout/b; do git -C ~/.scout-worktrees/done switch -c $b; done",  # more than one value
     "git -C ~/.scout-worktrees/done/.. commit -q -m x",  # the folder of clones, no clone
+    # round 7: refspecs with a `$` left, writes into a clone's .git
+    "git -C ~/.scout-worktrees/done push -q -u origin scout/done$_",
+    "git -C ~/.scout-worktrees/done push -u origin scout/$UNSET_X",
+    "printf '#!/bin/sh\\n' > ~/.scout-worktrees/done/.git/./hooks/post-checkout",
+    "printf x > ~/.scout-worktrees/done/.GIT/hooks/pre-commit",
+    "echo ~/Vault/.git/objects >> ~/.scout-worktrees/done/.git/objects/info/alternates",
+    "git -C ~/Vault rev-parse HEAD > ~/.scout-worktrees/done/.git/refs/heads/scout/a",
+    "printf '[remote \"origin\"]\\n\\tpush = x\\n' >> ~/.scout-worktrees/done/.git//config",
+    "cp -R ~/other/.git ~/.scout-worktrees/done/.git/x",
 ]
 
 
@@ -1141,10 +1221,62 @@ def test_the_engine_clone_is_refused_when_the_engine_or_vault_origin_isnt_scouts
     _denied(_run(engine_home, clone.format(u=SCOUT_REMOTE)))
 
 
+def test_a_clone_that_isnt_a_plain_clone_of_scouts_is_refused(engine_home: Path) -> None:
+    """Round 7: the engine flow's checks of the clone itself, each set up by the owner's git (as earlier calls of a
+    run's could not: their writes into a clone's .git are refused)."""
+    wt = engine_home / ".scout-worktrees"
+    done = wt / "done"
+    push = "git -C ~/.scout-worktrees/{} push -u origin scout/{}"
+    # a push refspec, push.default or a branch merging elsewhere
+    _git(done, "config", "remote.origin.push", "+refs/heads/scout/*:refs/heads/main")
+    assert "doesn't write" in _denied(_run(engine_home, push.format("done", "done")))
+    _git(done, "config", "--unset", "remote.origin.push")
+    _git(done, "config", "branch.scout/done.merge", "refs/heads/main")
+    assert "doesn't write" in _denied(_run(engine_home, push.format("done", "done")))
+    _git(done, "config", "--unset", "branch.scout/done.merge")
+    assert _run(engine_home, push.format("done", "done")) is None
+    # hooks
+    hook = done / ".git" / "hooks" / "post-checkout"
+    hook.write_text("#!/bin/sh\n")
+    assert "hook" in _denied(_run(engine_home, "git -C ~/.scout-worktrees/done switch -c scout/b"))
+    hook.unlink()
+    # alternates into the vault
+    alternates = done / ".git" / "objects" / "info" / "alternates"
+    alternates.write_text(str(engine_home / "Vault" / ".git" / "objects") + "\n")
+    assert "vault's history" in _denied(_run(engine_home, push.format("done", "done")))
+    alternates.unlink()
+    # a branch with a root of its own, one that doesn't descend from origin/main, one that adds a KB path
+    vault_head = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=done, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    orphan = subprocess.run(
+        ["git", "commit-tree", vault_head, "-m", "x"], cwd=done, capture_output=True, text=True, check=True,
+        env={**os.environ, "GIT_AUTHOR_NAME": "A", "GIT_AUTHOR_EMAIL": "a@example.com",
+             "GIT_COMMITTER_NAME": "A", "GIT_COMMITTER_EMAIL": "a@example.com"},
+    ).stdout.strip()  # fmt: skip
+    _git(done, "branch", "scout/orphan", orphan)
+    assert "descend" in _denied(_run(engine_home, push.format("done", "orphan")))
+    _git(done, "switch", "-q", "-c", "scout/kb")
+    (done / "knowledge-base").mkdir()
+    (done / "knowledge-base" / "a.md").write_text("x\n")
+    _git(done, "add", "knowledge-base/a.md")
+    _git(done, "commit", "-q", "-m", "x")
+    assert "outside Scout's folders" in _denied(_run(engine_home, push.format("done", "kb")))
+    # a .git file naming a folder elsewhere, a clone source from a folder of the run's
+    gitfile = wt / "g"
+    gitfile.mkdir()
+    (gitfile / ".git").write_text(f"gitdir: {done / '.git'}\n")
+    assert "its own folder" in _denied(_run(engine_home, "git -C ~/.scout-worktrees/g switch -c scout/g"))
+    literal = 'git clone -q "$(git -C {} remote get-url origin)" ~/.scout-worktrees/n'.format(engine_home / "engine")
+    _denied(_run(engine_home, literal))
+    _git(engine_home / "engine", "config", f"url.{engine_home / 'Vault'}.insteadOf", SCOUT_REMOTE)
+    _denied(_run(engine_home, PHASE_CLONE))
+
+
 def test_a_clone_whose_config_runs_commands_is_refused(engine_home: Path) -> None:
     clone = engine_home / ".scout-worktrees" / "done"
     _git(clone, "config", "core.fsmonitor", "sh -c 'cat ~/Vault/act*/cont*/x.md'")
-    assert "config runs commands" in _denied(_run(engine_home, "git -C ~/.scout-worktrees/done commit -q -m x"))
+    assert "core.fsmonitor" in _denied(_run(engine_home, "git -C ~/.scout-worktrees/done commit -q -m x"))
 
 
 def test_other_refusals_dont_mention_the_wrap(home: Path) -> None:
@@ -1196,27 +1328,62 @@ def test_a_path_change_that_puts_another_git_first_is_refused(home: Path) -> Non
         "sh -c 'PATH=$HOME/out/bin:$PATH git log --oneline'",
     ):
         assert "another git" in _denied(_run(home, command)) or GIT_FORMS_MESSAGE in _denied(_run(home, command))
-    assert _run(home, "PATH=$PATH:~/out/bin git log --oneline") is None  # after the system git
+    _denied(_run(home, "PATH=$PATH:~/out/bin git log --oneline"))  # a folder of the run's, even after
 
 
-def test_a_foreign_repository_holding_the_vaults_history_is_judged_by_the_paths_it_names(home: Path) -> None:
+def test_a_foreign_repository_holding_the_vaults_history_is_refused(home: Path) -> None:
+    """Round 7: a repository that fetched the vault's history (or holds an alternate into its objects, or a copy of
+    them) prints KB content through any rev or blob id, so the gate refuses every call there."""
     r = home / "fetched"
     r.mkdir()
     _git(r, "init", "-q")
     _git(r, "fetch", "-q", str(home / "Vault"), "main")
     for command in (
-        "git -C ~/fetched show FETCH_HEAD:action-items/context/x.md",
         "git -C ~/fetched show FETCH_HEAD:knowledge-base/a.md",
-        "git -C ~/fetched diff FETCH_HEAD -- knowledge-base/a.md",
-        "git -C ~/fetched/. show FETCH_HEAD:./knowledge-base.md",
-    ):
-        _denied(_run(home, command))
-    for command in (
+        "git -C ~/fetched show FETCH_HEAD",
         "git -C ~/fetched log --oneline FETCH_HEAD",
-        "git -C ~/fetched log --stat FETCH_HEAD -- docs",
-        "git -C ~/fetched show FETCH_HEAD:docs/a.md",
         "git -C ~/fetched diff --stat FETCH_HEAD",
     ):
+        assert "vault's history" in _denied(_run(home, command)), command
+    alt = home / "alt"
+    _git(home, "init", "-q", "alt")
+    (alt / ".git" / "objects" / "info" / "alternates").write_text(str(home / "Vault" / ".git" / "objects") + "\n")
+    assert "vault's history" in _denied(_run(home, "git -C ~/alt show --stat HEAD"))
+    _git(home, "clone", "-q", "--no-local", str(home / "Vault"), str(home / "copy"))
+    assert "vault's history" in _denied(_run(home, "git -C ~/copy status"))
+    assert _run(home, "git -C ~/other log --oneline") is None  # a repository of its own
+
+
+def test_a_foreign_repositorys_hooks_for_the_call_refuse_it(home: Path) -> None:
+    """Round 7: `add` and `status` write the index, which runs a post-index-change hook; a hand-built repository's
+    hooks are the run's own. Hooks for other calls don't matter (`log` runs none)."""
+    hook = home / "other" / ".git" / "hooks" / "post-index-change"
+    hook.write_text("#!/bin/sh\ncat ~/Vault/action-items/context/x.md\n")
+    hook.chmod(0o755)
+    assert "post-index-change" in _denied(_run(home, "git -C ~/other add docs/a.md"))
+    assert "post-index-change" in _denied(_run(home, "git -C ~/other status"))
+    assert _run(home, "git -C ~/other log --oneline") is None
+    hook.unlink()
+    elsewhere = home / "hooks"
+    elsewhere.mkdir()
+    (elsewhere / "post-index-change").write_text("#!/bin/sh\n")
+    _git(home / "other", "config", "core.hooksPath", str(elsewhere))
+    assert "post-index-change" in _denied(_run(home, "git -C ~/other status"))
+
+
+def test_a_names_only_show_of_a_blob_is_refused(home: Path) -> None:
+    """Round 7: `git show --stat <blob>` prints the blob, however short or suffixed the id."""
+    blob = subprocess.run(
+        ["git", "rev-parse", "HEAD:knowledge-base/a.md"], cwd=home / "Vault", capture_output=True, text=True,
+        check=True,
+    ).stdout.strip()  # fmt: skip
+    for rev in (blob, blob[:5], blob[:7], f"{blob}^{{blob}}", f"{blob}^{{}}"):
+        for flags in ("--stat", "-s", "--no-patch", "--name-only", "--format=%H --stat"):
+            _denied(_run(home, f"git show {flags} {rev}"))
+    commit = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"], cwd=home / "Vault", capture_output=True, text=True, check=True
+    ).stdout.strip()
+    for command in (f"git show --stat {commit}", "git show --stat HEAD^{tree}", "git show -s HEAD", "git show --stat"):
         assert _run(home, command) is None, command
 
 
@@ -1291,7 +1458,6 @@ def test_find_repo_finds_a_bare_repository_and_a_git_folder(tmp_path: Path) -> N
         ("git diff HEAD~1", "diff"),
         ("git show HEAD", "show"),
         ("git -C action-items diff", "diff"),
-        ("git show --stat 0123abcd", "show"),  # an object id may be a blob
     ],
 )
 def test_a_whole_repository_read_is_recorded_with_its_subcommand(home: Path, command: str, subcommand: str) -> None:
@@ -1402,7 +1568,7 @@ def test_parse_sorts_a_calls_words(args: str, trees: list, pathspecs: list, mayb
     "args",
     [
         "status", "status -s", "log --oneline", "log --stat", "diff --stat", "diff --name-only HEAD",
-        "show --name-status HEAD", "show -s HEAD", "cat-file -t HEAD", "cat-file -e HEAD:x", "cat-file commit HEAD",
+        "cat-file -t HEAD", "cat-file -e HEAD:x", "cat-file commit HEAD",
         "add x", "commit -m x", "stash", "stash show", "stash list", "ls-files", "ls-tree HEAD", "rev-parse HEAD",
         "push", "fetch", "-C a status", "request-pull HEAD . HEAD", "merge-file a b c",
     ],

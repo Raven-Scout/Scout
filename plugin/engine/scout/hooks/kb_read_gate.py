@@ -585,6 +585,10 @@ def _decide_bash(
             return f"{GIT_FORM} (git {read.sub}: {found[7:]})"
         if found is not None and found.startswith("config:"):
             return f"{GIT_FORM} (a repository whose config runs commands: {found[7:]})"
+        if found == "holds:":
+            return f"{GIT_FORM} (a repository holding the vault's history)"
+        if read.strict and found in ("unresolved", "whole"):
+            return KB_READ  # `log -S/-G` over paths the gate can't bound: an oracle on the KB's text
         if found == "unresolved":
             if DENY_UNRESOLVED_GIT_READS:
                 return UNRESOLVED_READ
@@ -628,6 +632,7 @@ def _decide_bash(
             embedded=embedded,
             home=env.get("HOME"),
             command_word=command_word,
+            run_path=env.get("PATH"),
         )
         or even_dollar_escape(command)
     )
@@ -749,7 +754,7 @@ def _git_reads_kb(
     found = _git_tree_reads_kb(read, where, vault, env, resolve, text_of)
     if read.vault_only:
         return None if found is None else "outside"  # None: the vault's repository, for sure
-    if found == "kb" or (found or "").startswith("config:"):
+    if found in ("kb", "holds:") or (found or "").startswith("config:"):
         return found
     if not read.reads:
         return None
@@ -801,6 +806,13 @@ def _names_vault(command: str, vault: Path, env: Mapping[str, str]) -> bool:
     return any(sp.casefold() in text for sp in spellings)
 
 
+def _expand_home(text: str, env: Mapping[str, str]) -> str:
+    """``text`` with a leading ``~``, ``$HOME`` or ``${HOME}`` as the run's HOME (``env``), not the hook's own."""
+    from scout.kb import hook_paths
+
+    return hook_paths._expand(text, env)
+
+
 def _engine_repo(read: GitRead, folder: str | None, vault: Path, env: Mapping[str, str]) -> str | None:
     """Whether a form of the engine-change flow (``read.engine``) runs where it may: in a repository whose top is
     under ~/.scout-worktrees and has no tie to the vault's (not it, not in or above the vault), whose config runs no
@@ -828,14 +840,88 @@ def _engine_repo(read: GitRead, folder: str | None, vault: Path, env: Mapping[st
         or git_read.rel_to(repo[0], home_vault) is not None
     ):
         return "engine:the vault's repository"
-    runs = git_read.config_runs(repo[1], read.sub)
-    if runs is not None:
-        return f"config:{runs}"
-    entries = git_read.read_config(repo[1] / "config") or []
-    urls = [v for k, v in entries if k in ("remote.origin.url", "remote.origin.pushurl")]
-    redirected = any(k.startswith("url.") for k, _ in entries)
-    if redirected or not urls or any(u not in git_allow.SCOUT_REMOTES for u in urls):
+    # Its own .git folder (no .git file naming one elsewhere, no linked worktree), as `git clone` makes it.
+    if not (repo[0] / ".git").is_dir() or not git_read.same_folder(repo[1], repo[0] / ".git"):
+        return "engine:a repository whose .git isn't its own folder"
+    if any((repo[1] / name).exists() for name in ("config.worktree", "worktrees", "commondir")):
+        return "engine:a repository with linked worktrees"
+    entries = git_read.read_config(repo[1] / "config")
+    if entries is None:
+        return "engine:an unreadable config"
+    odd = _engine_config_odd(entries)
+    if odd is not None:
+        return f"engine:a config key a clone doesn't write ({odd})"
+    if not any(k == "remote.origin.url" for k, _ in entries):
         return "engine:a repository whose origin isn't Scout's"
+    hook = git_read.hooks_run(repo[1], repo[0], read.sub, entries, strict=True)
+    if hook is not None:
+        return f"engine:a repository with {hook}"
+    if ours is not None and git_read.holds_history(repo[1], ours[1]):
+        return "engine:a repository holding the vault's history"
+    if read.engine == git_allow.PUSH:
+        return _engine_push(repo[1], read.engine_ref)
+    return None
+
+
+# What `git clone` writes into a repository's config (and `push -u` adds): any other key is no clone of Scout's.
+_CLONE_CONFIG = {
+    "core.repositoryformatversion", "core.filemode", "core.bare", "core.logallrefupdates", "core.ignorecase",
+    "core.precomposeunicode", "core.symlinks",
+}  # fmt: skip
+
+
+def _engine_config_odd(entries: list[tuple[str, str]]) -> str | None:
+    """The first key of an engine clone's config that `git clone` and `git push -u` don't write, or that holds
+    another value than theirs (review of #817, round 7: no push refspec, pushurl, url rewrite or hooksPath)."""
+    from scout.kb import git_allow
+
+    for key, value in entries:
+        if key in _CLONE_CONFIG:
+            if key == "core.bare" and value.lower() not in ("false", "no", "off", "0"):
+                return key
+            continue
+        if key == "remote.origin.url":
+            if value not in git_allow.SCOUT_REMOTES:
+                return key
+            continue
+        if key == "remote.origin.fetch":
+            if value != "+refs/heads/*:refs/remotes/origin/*":
+                return key
+            continue
+        m = re.fullmatch(r"branch\.(.+)\.(remote|merge)", key)
+        if m is not None:
+            want = "origin" if m[2] == "remote" else f"refs/heads/{m[1]}"
+            if value.lower() != want.lower():
+                return key
+            continue
+        return key
+    return None
+
+
+def _engine_push(git_dir: Path, branch: str) -> str | None:
+    """Whether a push of ``branch`` sends only Scout's own history plus the run's commits: the branch descends from
+    origin/main, adds no root commit, and changes only paths under the folders origin/main already has, none a
+    KB path. "engine:<why>" when it doesn't."""
+    from scout.kb import git_read
+
+    if not branch or not re.fullmatch(r"scout/[A-Za-z0-9._/-]+", branch) or ".." in branch:
+        return "engine:a branch the gate can't read"
+    base, head = "refs/remotes/origin/main", f"refs/heads/{branch}"
+    if git_read.git_out(git_dir, ["rev-parse", "--verify", "-q", base]) is None:
+        return "engine:a clone with no origin/main"
+    if git_read.git_out(git_dir, ["rev-parse", "--verify", "-q", head]) is None:
+        return None  # no such branch: git refuses the push
+    if git_read.git_out(git_dir, ["merge-base", "--is-ancestor", base, head]) is None:
+        return "engine:a branch that doesn't descend from origin/main"
+    if git_read.git_out(git_dir, ["rev-list", "--max-parents=0", f"{base}..{head}"]):
+        return "engine:a branch with a history of its own"
+    top = set((git_read.git_out(git_dir, ["ls-tree", "--name-only", base]) or "").splitlines())
+    changed = git_read.git_out(git_dir, ["diff", "--name-only", "--no-renames", base, head])
+    if changed is None:
+        return "engine:a branch the gate can't compare"
+    for path in changed.splitlines():
+        if path.split("/", 1)[0] not in top or is_kb_path(path):
+            return "engine:a branch that adds files outside Scout's folders"
     return None
 
 
@@ -880,10 +966,36 @@ def _git_tree_reads_kb(
     if isinstance(git_dir, str) or isinstance(work_tree, str):
         return "unresolved"
     repo = git_read.find_repo(here, git_dir, work_tree)
+
+    def disk_diff() -> str | None:
+        """``git diff <a> <b>`` outside a repository, or with a path outside its work tree, compares the files on
+        disk, as ``--no-index`` does (review of #817, round 7): each path is judged as a folder reader's."""
+        for word in [*read.maybe_paths, *read.pathspecs]:
+            text = text_of(word)
+            if text is None:
+                return "unresolved"
+            target = paths.resolve_path(here / _expand_home(text, env))
+            rel = _vault_rel(vault, target)
+            if rel is None:
+                if vault.resolve().is_relative_to(target):
+                    return "kb"  # a folder above the vault
+            elif rel == "." or is_kb_path(rel) or any(d.startswith(rel + "/") for d in KB_DIRS):
+                return "kb"
+        return None
+
     if repo is None:
         if read.vault_only:  # git refuses a write with no repository; the vault's folder is fine (and isn't one yet)
             return None if git_read.rel_to(paths.resolve_path(vault), here) is not None else "outside"
-        return None  # not a repository: git reads nothing of a tree
+        return disk_diff() if read.sub == "diff" else None  # else not a repository: git reads nothing of a tree
+    if read.sub == "diff" and read.reads:
+        for word in [*read.maybe_paths, *read.pathspecs]:
+            text = text_of(word)
+            target = None if text is None else paths.resolve_path(here / _expand_home(text, env))
+            if target is not None and os.path.lexists(target) and git_read.rel_to(repo[0], target) is None:
+                found = disk_diff()  # a path outside the work tree: git compares the files
+                if found is not None:
+                    return found
+                break
     home = paths.resolve_path(vault)
     ours = git_read.find_repo(home, None, None)
     vault_at: str | None  # the vault's place below the repository's top, "" when it is the top
@@ -894,9 +1006,11 @@ def _git_tree_reads_kb(
     else:
         if read.vault_only:
             return "outside"
-        runs = git_read.config_runs(repo[1], read.sub)
+        runs = git_read.config_runs(repo[1], read.sub, repo[0])
         if runs is not None:
             return f"config:{runs}"
+        if ours is not None and git_read.holds_history(repo[1], ours[1]):
+            return "holds:"  # an alternate into the vault's objects, or a copy of them (review of #817, round 7)
         # Another repository whose work tree is the vault, or in or above it (`core.worktree`, `--work-tree`):
         # its index and history hold the vault's files at the same places (review of #817, round 5).
         vault_at = git_read.rel_to(repo[0], home)
@@ -998,6 +1112,15 @@ def _git_tree_reads_kb(
         bounded = True
         if tree is not None and (covers(tree) if whole_trees else in_kb(tree)):
             return "kb"
+    for word in read.objects:  # a names-only show: a blob among its revs prints the blob (review of #817, round 7)
+        text = text_of(word)
+        if text is None:
+            unresolved = True
+            continue
+        if not in_git_dir and os.path.lexists(here / _expand_home(text, env)):
+            continue  # a path: names only
+        if not foreign and git_read.object_type(repo[1], text) == "blob":
+            return "kb"
     excluded: list[str] = []
     included = False
     for word, sure in [*((w, True) for w in read.pathspecs), *((w, False) for w in read.maybe_paths)]:
@@ -1010,7 +1133,7 @@ def _git_tree_reads_kb(
             if left is not None and not git_read.WILD.search(left):
                 excluded.append(left.casefold())
             continue  # an exclusion reads nothing itself
-        on_disk = not in_git_dir and os.path.lexists(here / os.path.expanduser(text))  # .git/HEAD is no path
+        on_disk = not in_git_dir and os.path.lexists(here / _expand_home(text, env))  # .git/HEAD is no path
         if not sure and not (git_read.WILD.search(text) or on_disk):
             continue  # a rev (`HEAD~3`, `main`), as git takes a word that names no file
         tree = git_read.tree_path(text, prefix, pathspec=True)

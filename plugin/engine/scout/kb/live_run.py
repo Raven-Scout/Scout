@@ -1182,7 +1182,7 @@ _COMMAND_KEYS = {
     "core.fsmonitor", "core.sshcommand", "core.pager", "core.editor", "core.attributesfile", "core.askpass",
     "credential.helper", "init.templatedir", "sequence.editor", "diff.external", "gpg.program",
     "uploadpack.packobjectshook", "receive.procreceiverefs", "core.gitproxy", "gc.recentobjectshook",
-    "core.alternaterefscommand", "interactive.difffilter",
+    "core.alternaterefscommand", "interactive.difffilter", "core.hookspath",
 }  # fmt: skip
 # Any key that ends so names a command or program git runs, whatever section it is in (`remote.x.uploadpack`,
 # `browser.x.cmd`, `sendemail.tocmd`, `gpg.ssh.defaultkeycommand`, `mergetool.x.path`): checked against `git help
@@ -1447,7 +1447,7 @@ MAX_DEPTH = 6
 _STATE: dict[str, Any] = {
     "checked": 0, "secrets": 0, "reads": 0, "literal": 0, "vars": {}, "bodies": [], "unparsed": False, "capped": False,
     "parsing": False, "fs_changed": "", "links": [], "expanded": set(), "lists": [], "git_env": False,
-    "command": "", "home": None, "engine_clones": [], "texts": [],
+    "command": "", "home": None, "engine_clones": [], "texts": [], "run_path": "",
     "words": {}, "functions": {}, "calls": 0, "literals": 0,
     "defining": False, "aliased": set(), "sourced": False, "locals": [], "escaped": [], "body_depths": [],
 }  # fmt: skip
@@ -1959,6 +1959,23 @@ def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | No
         return None
     read = git_read.parse([_unshield(w) for w in git])
     if read is None:
+        # `log -S/-G/--pickaxe-all` picks commits by the text of what it searches: an oracle on a KB note's text
+        # (`log -G '^secret' -- note`). Judged as the content read it stands for, and refused unless every
+        # pathspec is outside the KB (review of #817, round 7).
+        plain = [_unshield(w) for w in git]
+        at_ = git_read.split_global(plain)[3]
+        if (
+            at_ < len(plain)
+            and raw_read.fold(plain[at_]) == "log"
+            and any(
+                w in ("--pickaxe-all", "-S", "-G") or (w[:2] in ("-S", "-G") and not w.startswith("--"))
+                for w in plain[at_ + 1 :]
+            )
+        ):
+            read = git_read.parse([*plain[: at_ + 1], "-p", *plain[at_ + 1 :]])
+            if read is not None:
+                read.strict = True
+    if read is None:
         # It prints no file's contents: only its repository is judged, by its config (git_read.config_runs).
         chdirs, git_dir_, work_tree_, at = git_read.split_global([_unshield(w) for w in git])
         if at >= len(git):
@@ -1970,10 +1987,11 @@ def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | No
         engine = _engine_kind(sub, git[at + 1 :])
         engine = engine if engine in (git_allow.WORKTREE, git_allow.PUSH) else ""
         commit = sub == "commit" and _vault_commit(git[at + 1 :])  # allowed in the vault's repository
+        ref = ((_plain_args(git[at + 1 :]) or [""])[-1]) if engine == git_allow.PUSH else ""
         read = git_read.GitRead(
             sub=sub, chdirs=chdirs, git_dir=git_dir_, work_tree=work_tree_, reads=False,
             vault_only=(sub == "config" and git_allow.config_write(rest)) or (commit and not engine),
-            vault_ok=commit and bool(engine), engine=engine,
+            vault_ok=commit and bool(engine), engine=engine, engine_ref=ref,
             files=git_allow.commit_files(rest) if engine or commit else [], cloned=list(_STATE["engine_clones"]),
         )  # fmt: skip
     elif stripped.fed:  # `… | xargs git cat-file -p`: its objects or paths come from stdin, which the gate can't see
@@ -2046,7 +2064,8 @@ def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | No
                     sub=read.sub, git_dir=gd, work_tree=wt, trees=lists[0], pathspecs=lists[1],
                     maybe_paths=lists[2], unbounded=read.unbounded, fs_changed=_STATE["fs_changed"],
                     links=list(_STATE["links"]), reads=read.reads, vault_only=read.vault_only,
-                    engine=read.engine, cloned=read.cloned, vault_ok=read.vault_ok,
+                    engine=read.engine, cloned=read.cloned, vault_ok=read.vault_ok, objects=read.objects,
+                    strict=read.strict, engine_ref=read.engine_ref,
                 )  # fmt: skip
                 found = _GIT_READ(one, where)
                 if found is not None:
@@ -2242,10 +2261,26 @@ _WATCHED_START = re.compile(
 )
 
 
+_SOURCE = re.compile(r"(?:^|[\s;&|(){}])(?:builtin\s+|command\s+)?(?:source|\.)\s+(\S+)")
+
+
+def _sources_text(text: str) -> bool:
+    """Whether ``text`` sources anything but a plain file (stdin, a pipe, a substitution, a variable)."""
+    for m in _SOURCE.finditer(text):
+        arg = m[1].strip("\"'")
+        if not re.fullmatch(r"[A-Za-z0-9_./~+-]+", arg) or arg.startswith("/dev/") or arg == "-":
+            return True
+    return False
+
+
 def _scanned_texts() -> list[tuple[str, str]]:
     """Each command the walk has read so far (the outer one, and each ``sh -c``, ``eval``, substitution and
     here-document fed to a shell, as its own), without here-document bodies, and the same with quoted text
     blanked but for words that start with a watched name: ``(text, masked)``, at the same positions."""
+    if any(_sources_text(text) for text in _STATE["texts"]):
+        # `source /dev/stdin <<EOF`, `. <(printf …)`: the shell runs that text, quotes and here-documents too
+        # (review of #817, round 7): every text is read as it is.
+        return [(text, text) for text in _STATE["texts"]]
     out = []
     for text in _STATE["texts"]:
         text = _split_heredocs(text)[0]
@@ -2259,60 +2294,74 @@ def _scanned_texts() -> list[tuple[str, str]]:
     return out
 
 
+# Folders a run may put in PATH besides the ones already there: fixed system ones only (/usr/local/bin is the user's
+# on an Intel Mac's Homebrew).
+_SAFE_PATH_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin", "/opt/homebrew/bin")
+
+
 def _path_keeps_git(command: str, masked: str | None = None) -> bool:
-    """Whether every change the command makes to PATH (or zsh's ``path``) leaves a bare ``git`` running the system's
-    git (review of #817, round 7: a run's prelude prepends ``~/.local/bin``). Each folder put before the old value
-    must be one the gate can read; a ``git`` in it must be a system one; and a folder with none must not be named
-    elsewhere in the command (which could make one there first). Appending is fine. PATH set any other way
-    (``read``, ``typeset``, ``export PATH`` alone) is refused."""
+    """Whether every change the command makes to PATH (or zsh's ``path``) only reorders the folders the run's PATH
+    already has or adds fixed system folders (:data:`_SAFE_PATH_DIRS`): never a folder of its own, which could hold
+    a planted ``git``, ``ssh`` or a hook's ``python3`` (review of #817, round 7). Assignments in every spelling count
+    (``PATH=``, ``PATH+=``, ``path=(…)``, ``path[1,0]=``, ``${PATH::=…}``, ``${PATH:=…}``, ``${PATH=…}``); PATH set any
+    other way (``read``, ``typeset``, ``export PATH`` alone, ``${(P)…}``) is refused."""
     home = (_STATE["home"] or "").rstrip("/")
-    for m in _PATH_WORD.finditer(command if masked is None else masked):
-        word, start = m[0], m.start()
-        if command[max(0, start - 1) : start] == "$" or command[max(0, start - 2) : start] == "${":
-            continue  # a read of it
-        op = re.match(r"\+?=", command[m.end() :])
-        if op is None:
-            # Not an assignment: it counts only as a setter's argument (`export PATH`, `read -r PATH`, `typeset
-            # path`, `for path in …`); anywhere else it is a word of data (`grep path`, `git log -- path`).
-            segment = re.split(r"[;&|\n(){}`]", (command if masked is None else masked)[:start])[-1]
-            if _PATH_SETTER.search(segment):
-                return False
-            continue
-        rest = command[m.end() + len(op[0]) :]
-        if op[0] == "+=":
-            continue  # appended: after every folder git is found in now
-        if word == "path":
-            group = re.match(r"\(([^()]*)\)", rest)
-            if group is None:
-                return False
-            entries: list[str] = group[1].split()
-            old: tuple[str, ...] = ("$path", "${path}", "$path[@]", "${path[@]}")
-        else:
-            value = re.match(r'"([^"]*)"|\'([^\']*)\'|([^\s;&|()]*)', rest)
-            text = (
-                (value[1] if value[1] is not None else value[2] if value[2] is not None else value[3]) if value else ""
-            )
-            entries, old = text.split(":"), ("$PATH", "${PATH}")
+    allowed = {os.path.normpath(d) for d in (_STATE.get("run_path") or "").split(":") if d.startswith("/")}
+    allowed |= set(_SAFE_PATH_DIRS)
+    text = command if masked is None else masked
+    if "${(P)" in command or "${(P" in command:
+        return False
+
+    def fine(entries: list[str], old: tuple[str, ...]) -> bool:
         for raw in entries:
-            if raw in old:
-                break  # the old value: git resolves as it did
+            raw = raw.strip("\"'")
+            if not raw or raw in old:
+                continue  # the old value
             folder = raw
             for start_ in ("~/", "$HOME/", "${HOME}/"):
                 if folder.startswith(start_) and home:
                     folder = home + "/" + folder[len(start_) :]
-            if folder in ("~", "$HOME", "${HOME}") and home:
-                folder = home
             if _dynamic(folder) or not folder.startswith("/"):
                 return False
-            git = os.path.join(folder, "git")
-            if os.path.lexists(git):
-                if not _system_git(git):
+            if os.path.normpath(folder) not in allowed:
+                return False
+        return True
+
+    for m in _PATH_WORD.finditer(text):
+        word, start = m[0], m.start()
+        if command[max(0, start - 2) : start] == "${":
+            param = re.match(r"(?::?:?=|=)([^}]*)\}", command[m.end() :])
+            if param is not None:  # `${PATH::=…}`: an assignment
+                if not fine(param[1].split(":" if word == "PATH" else None), ("$PATH", "${PATH}", "$path")):
                     return False
-                break  # the system's git, first
-            if command.count(raw) > 1 or (folder != raw and command.count(folder) > 0):
-                return False  # a folder the command also names: it may put a git there first
+            continue  # else a read of it
+        if command[max(0, start - 1) : start] == "$":
+            continue  # a read of it
+        rest = command[m.end() :]
+        index = re.match(r"\[[^\]]*\]", rest)
+        if index is not None:
+            rest = rest[index.end() :]
+        op = re.match(r"\+?=", rest)
+        if op is None:
+            # Not an assignment: it counts only as a setter's argument (`export PATH`, `read -r PATH`, `typeset
+            # path`, `for path in …`); anywhere else it is a word of data (`grep path`, `git log -- path`).
+            segment = re.split(r"[;&|\n(){}`]", text[:start])[-1]
+            if _PATH_SETTER.search(segment) or index is not None:
+                return False
+            continue
+        rest = rest[len(op[0]) :]
+        if word == "path":
+            group = re.match(r"\(([^()]*)\)", rest)
+            values = group[1].split() if group else [re.match(r"[^\s;&|()]*", rest)[0]]  # type: ignore[index]
+            if not fine(values, ("$path", "${path}", "$path[@]", "${path[@]}")):
+                return False
         else:
-            return False  # PATH replaced, and no system git found in it
+            value = re.match(r'"([^"]*)"|\'([^\']*)\'|([^\s;&|()]*)', rest)
+            raw = (
+                (value[1] if value[1] is not None else value[2] if value[2] is not None else value[3]) if value else ""
+            )
+            if not fine(raw.split(":"), ("$PATH", "${PATH}")):
+                return False
     return True
 
 
@@ -2457,7 +2506,7 @@ def _engine_kind(sub: str, args: list[str], *, record: bool = False) -> str | No
             break
     else:
         return None
-    if not rest or any(part in ("", ".", "..") for part in rest.rstrip("/").split("/")):
+    if not rest or "$" in rest or any(part in ("", ".", "..") for part in rest.rstrip("/").split("/")):
         return None
     if record:
         _STATE["engine_clones"].append(f"{home.rstrip('/')}/{git_allow.WORKTREES}/{rest}")
@@ -2787,6 +2836,9 @@ def _shell_stdin_program(words: list[str]) -> bool:
     """``sh``, ``bash -s``, ``zsh`` with no ``-c`` and no script: it runs its stdin as commands."""
     while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS or _program(words[0]) in _PREFIX):
         words = words[1:]
+    if words and words[0] in ("source", ".") and len(words) > 1:
+        # `source /dev/stdin <<EOF`, `. /dev/fd/0`: the shell runs its stdin (review of #817, round 7)
+        return words[1] in ("/dev/stdin", "/dev/fd/0", "-") or words[1].startswith("/proc/self/fd/0")
     if not words or _program(words[0]) not in _SHELLS:
         return False
     args = words[1:]
@@ -3870,6 +3922,7 @@ def run_escape(
     embedded: list[str] | None = None,
     home: str | None = None,
     command_word: Callable[[str], str | None] | None = None,
+    run_path: str | None = None,
 ) -> str | None:
     """Whether a run's shell command gets around the commit hook's checks: "env" (changes SCOUT_MODE/SCOUT_READER
     or clears the environment), "detach" (backgrounds or hands work to another process), else the name of the form
@@ -3919,6 +3972,7 @@ def run_escape(
             texts=[],
             command=command,
             home=home,
+            run_path=run_path or "",
             engine_clones=[],
         )
         _STATE.update(
@@ -4023,19 +4077,21 @@ def _engine_output(body: str) -> str | None:
     if m is None:
         return None
     if m[3]:
-        root: str | None = m[3]
-    else:
-        command = _STATE["command"]
-        sets = re.findall(r"(?<![\w${])ROOT(?!\w)", command)
-        ok = len(sets) == 1 and re.search(r'(?<![\w$])ROOT="?\$\(' + re.escape(_ENGINE_ROOT_BODY) + r"\)", command)
-        root = _engine_root() if ok else None
+        return None  # only the engine checkout's own origin (review of #817, round 7: a folder of the run's)
+    command = _STATE["command"]
+    sets = re.findall(r"(?<![\w${])ROOT(?!\w)", command)
+    ok = len(sets) == 1 and re.search(r'(?<![\w$])ROOT="?\$\(' + re.escape(_ENGINE_ROOT_BODY) + r"\)", command)
+    root = _engine_root() if ok else None
     if root is None:
         return None
     fallback = m[4] if m[4] in git_allow.SCOUT_REMOTES else None
     repo = git_read.find_repo(Path(root), None, None)
     if repo is None:
         return fallback  # `git -C` fails: the fallback is printed
-    urls = [v for k, v in git_read.read_config(repo[1] / "config") or [] if k == "remote.origin.url"]
+    entries = git_read.read_config(repo[1] / "config")
+    if entries is None or any(k.startswith("url.") for k, _ in entries):
+        return None  # a URL rewrite may send Scout's URL elsewhere
+    urls = [v for k, v in entries if k == "remote.origin.url"]
     if not urls:
         return fallback
     return urls[-1] if urls[-1] in git_allow.SCOUT_REMOTES else None

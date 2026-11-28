@@ -157,21 +157,39 @@ def home_state(tmp_path: Path):
 
 
 def test_path_keeps_git(home_state: Path) -> None:
+    """Round 7: a PATH change may only reorder the run's own PATH folders or add fixed system ones."""
     keeps = live_run._path_keeps_git
-    assert keeps("PATH=~:$PATH") is True  # home holds no git
-    assert keeps("PATH=$HOME:$PATH") is True
-    assert keeps("PATH=/usr/bin:/bin") is True  # replaced, and the system git comes first
-    assert keeps("PATH=/nonexistent-folder") is False  # replaced, and no git found
-    assert keeps("path=x") is False  # no array: the gate can't follow it
-    assert keeps("PATH=relative:$PATH") is False
-    assert keeps("PATH+=:/x") is True
+    live_run._STATE.update(run_path=f"{home_state}/.local/bin:/usr/bin:/bin")
+    assert keeps("PATH=~/.local/bin:$PATH") is True
+    assert keeps("PATH=$HOME/.local/bin:$PATH") is True
+    assert keeps("PATH=/usr/bin:/bin") is True
+    assert keeps("PATH=/opt/homebrew/bin:$PATH") is True
+    assert keeps("path=(/usr/sbin $path)") is True
     assert keeps("echo ${PATH}") is True
     assert keeps("grep path x") is True
+    assert keeps("PATH=/nonexistent-folder") is False
+    assert keeps("PATH=/usr/local/bin:$PATH") is False
+    assert keeps("PATH=relative:$PATH") is False
+    assert keeps("PATH+=:/x") is False
+    assert keeps("path=x") is False
+    assert keeps("path[1]=/x") is False
+    assert keeps("path[1]=/usr/bin") is True
+    assert keeps(": ${PATH::=/x:$PATH}") is False
+    assert keeps(": ${PATH:=/usr/bin}") is True
+    assert keeps(": ${(P)n::=/x}") is False
     assert keeps("export PATH") is False
-    (home_state / "git").write_text("#!/bin/sh\n")
-    assert keeps("PATH=~:$PATH") is False  # a git that isn't the system's
+    assert keeps("export PATH='/usr/bin:$PATH'") is True
     assert live_run._system_git("/usr/bin/git") is True
+    (home_state / "git").write_text("#!/bin/sh\n")
     assert live_run._system_git(str(home_state / "git")) is False
+
+
+def test_sources_text() -> None:
+    assert live_run._sources_text("source /dev/stdin <<EOF") is True
+    assert live_run._sources_text(". <(printf x)") is True
+    assert live_run._sources_text("source $F") is True
+    assert live_run._sources_text("source scripts/env.sh") is False
+    assert live_run._sources_text("git -C . log") is False
 
 
 def test_engine_kind_needs_a_home(home_state: Path) -> None:
@@ -184,8 +202,8 @@ def test_engine_kind_needs_a_home(home_state: Path) -> None:
 
 def test_engine_output_without_an_engine_json(home_state: Path) -> None:
     assert live_run._engine_root() is None
-    assert live_run._engine_output("git -C /nonexistent remote get-url origin || echo " + SCOUT) == SCOUT
-    assert live_run._engine_output("git -C /nonexistent remote get-url origin") is None
+    # Round 7: only the engine checkout's own origin, by $ROOT; a literal folder is the run's to choose.
+    assert live_run._engine_output("git -C /nonexistent remote get-url origin || echo " + SCOUT) is None
     assert live_run._engine_output('git -C "$ROOT" remote get-url origin') is None  # no ROOT from engine.json
     assert live_run._engine_output("ls") is None
     live_run._STATE.update(home=None)
@@ -208,3 +226,75 @@ def test_engine_repo_refuses_what_isnt_a_clone_of_its_own(tmp_path: Path) -> Non
     inside = wt / "Vault"
     inside.mkdir()
     assert "vault's repository" in (gate._engine_repo(read, str(wt), inside, env) or "")
+
+
+def test_engine_config_odd() -> None:
+    odd = gate._engine_config_odd
+    assert odd([("core.bare", "false"), ("remote.origin.url", SCOUT)]) is None
+    assert odd([("core.bare", "true")]) == "core.bare"
+    assert odd([("remote.origin.url", "https://example.com/x.git")]) == "remote.origin.url"
+    assert odd([("remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")]) == "remote.origin.fetch"
+    assert odd([("branch.scout/a.remote", "elsewhere")]) == "branch.scout/a.remote"
+    assert odd([("branch.scout/a.merge", "refs/heads/scout/a")]) is None
+    assert odd([("push.default", "upstream")]) == "push.default"
+
+
+def _init(path: Path) -> Path:
+    subprocess.run(["git", "init", "-q", str(path)], check=True, capture_output=True)
+    return path / ".git"
+
+
+def test_engine_push_checks(tmp_path: Path) -> None:
+    git_dir = _init(tmp_path / "r")
+    assert "can't read" in (gate._engine_push(git_dir, "main") or "")
+    assert "can't read" in (gate._engine_push(git_dir, "scout/../main") or "")
+    assert "no origin/main" in (gate._engine_push(git_dir, "scout/a") or "")
+
+
+def test_engine_repo_refuses_linked_worktrees_and_odd_configs(tmp_path: Path) -> None:
+    read = git_read.GitRead(sub="commit", reads=False, engine=git_allow.WORKTREE)
+    env = {"HOME": str(tmp_path)}
+    vault = tmp_path / "Vault"
+    vault.mkdir()
+    clone = tmp_path / ".scout-worktrees" / "c"
+    git_dir = _init(clone)
+    (git_dir / "worktrees").mkdir()
+    assert "linked worktrees" in (gate._engine_repo(read, str(clone), vault, env) or "")
+    (git_dir / "worktrees").rmdir()
+    (git_dir / "config").write_text("[core\n")
+    assert "unreadable" in (gate._engine_repo(read, str(clone), vault, env) or "")
+    (git_dir / "config").write_text("[core]\n\tbare = false\n")
+    assert "origin isn't Scout's" in (gate._engine_repo(read, str(clone), vault, env) or "")
+
+
+def test_git_read_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import shutil
+
+    git_dir = _init(tmp_path / "r")
+    assert git_read.object_type(git_dir, "-x") is None
+    assert git_read.object_type(git_dir, "HEAD") is None  # no commit yet
+    hooks = tmp_path / "h"
+    hooks.mkdir()
+    (hooks / "post-index-change").write_text("")
+    strict = git_read.hooks_run(git_dir, None, "add", [("core.hookspath", str(hooks))], strict=True)
+    assert strict == "core.hooksPath"
+    assert git_read.hooks_run(git_dir, tmp_path, "add", [("core.hookspath", "h")], strict=False) is not None
+    assert git_read.hooks_run(git_dir, tmp_path, "log", [("core.hookspath", "h")], strict=False) is None
+    vault_git = _init(tmp_path / "v")
+    other = _init(tmp_path / "o")
+    info = other / "objects" / "info"
+    info.mkdir(parents=True, exist_ok=True)
+    (info / "alternates").write_text("# a comment\n\n")
+    assert git_read.holds_history(other, vault_git) is False
+    (info / "alternates").write_text(str(tmp_path / "not-yet") + "\n")
+    assert git_read.holds_history(other, vault_git) is True
+    linked = _init(tmp_path / "l")
+    shutil.rmtree(linked / "objects")
+    (linked / "objects").symlink_to(vault_git / "objects")
+    assert git_read.holds_history(linked, vault_git) is True
+
+    def broken(*_a: object, **_k: object) -> None:
+        raise OSError("no git")
+
+    monkeypatch.setattr(subprocess, "run", broken)
+    assert git_read.git_out(git_dir, ["rev-parse", "HEAD"]) is None
