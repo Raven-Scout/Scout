@@ -1,0 +1,1 @@
+- A scheduled run's commits work again on layout v2: `git-safe-commit.sh` handed the commit to the broker through `scripts/scoutctl`, which a v2 vault doesn't have. It now runs the `scoutctl` beside it.
