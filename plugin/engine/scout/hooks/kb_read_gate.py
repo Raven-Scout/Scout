@@ -1144,10 +1144,7 @@ def _git_tree_reads_kb(
         if tree is not None and (covers(tree) if whole_trees else in_kb(tree)):
             return "kb"
     for word in read.objects:  # a names-only show: a blob among its revs prints the blob (review of #817, round 7)
-        text = text_of(word)
-        if text is None:
-            unresolved = True
-            continue
+        text = text_of(word) or word  # its revs hold no `$` (parse records a show with one as whole-repo)
         if not in_git_dir and os.path.lexists(here / _expand_home(text, env)):
             continue  # a path: names only
         if not foreign and git_read.object_type(repo[1], text) == "blob":

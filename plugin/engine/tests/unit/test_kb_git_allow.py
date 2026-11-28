@@ -298,3 +298,34 @@ def test_git_read_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(subprocess, "run", broken)
     assert git_read.git_out(git_dir, ["rev-parse", "HEAD"]) is None
+
+
+def _commit(repo: Path, *args: str) -> str:
+    env = {
+        **__import__("os").environ,
+        "GIT_AUTHOR_NAME": "A", "GIT_AUTHOR_EMAIL": "a@example.com",
+        "GIT_COMMITTER_NAME": "A", "GIT_COMMITTER_EMAIL": "a@example.com",
+    }  # fmt: skip
+    done = subprocess.run(["git", *args], cwd=repo, env=env, check=True, capture_output=True, text=True)
+    return done.stdout.strip()
+
+
+def test_engine_push_history(tmp_path: Path) -> None:
+    repo = tmp_path / "r"
+    git_dir = _init(repo)
+    (repo / "plugin").mkdir()
+    (repo / "plugin" / "x.md").write_text("x\n")
+    _commit(repo, "add", "-A")
+    _commit(repo, "commit", "-q", "-m", "init")
+    _commit(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    assert gate._engine_push(git_dir, "scout/none") is None  # no such branch: git refuses the push itself
+    # A branch that merges a root of its own into origin/main: it descends, but brings a history in.
+    tree = _commit(repo, "rev-parse", "HEAD^{tree}")
+    root = _commit(repo, "commit-tree", tree, "-m", "elsewhere")
+    merged = _commit(repo, "commit-tree", tree, "-p", "HEAD", "-p", root, "-m", "merge")
+    _commit(repo, "branch", "scout/merged", merged)
+    assert "history of its own" in (gate._engine_push(git_dir, "scout/merged") or "")
+    _commit(repo, "switch", "-q", "-c", "scout/ok")
+    (repo / "plugin" / "x.md").write_text("y\n")
+    _commit(repo, "commit", "-q", "-am", "better")
+    assert gate._engine_push(git_dir, "scout/ok") is None

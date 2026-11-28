@@ -1029,6 +1029,7 @@ def test_round_7_forms_are_refused(home: Path, command: str) -> None:
         "PATH=/usr/bin:/bin:$PATH git status",
         "git diff --stat /dev/null",
         "git -C ~/plain diff ~/plain/a ~/plain/b",
+        "git diff --stat ~/plain docs/a.md",  # a path outside the work tree: the files, none in the KB
     ],
 )
 def test_a_path_reorder_and_ordinary_diffs_are_allowed(home: Path, command: str) -> None:

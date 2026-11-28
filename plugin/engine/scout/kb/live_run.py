@@ -1943,17 +1943,8 @@ def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | No
     if not stripped.words:
         return None
     head = stripped.words[0]
-    if "$" in head or "`" in head:  # `G=git; $G archive HEAD`: the program is a variable's value
-        before = words[: len(words) - len(stripped.words)]
-        for alt in _substitute(head)[:MAX_CHECKED_PATHS]:
-            if "$" in alt or "`" in alt:
-                if git_read.parse([_unshield(w) for w in stripped.words[1:]]) is not None:
-                    return _GIT_READ(git_read.GitRead(sub=stripped.words[1], trees=[SUBST]), cwd)  # unresolved
-                continue
-            found = _git_read([*before, alt, *stripped.words[1:]], cwd, oldpwd)
-            if found is not None:
-                return found
-        return None
+    if "$" in head or "`" in head:
+        return None  # a program built at run time: the command-word walk (#823) fills it in first, or records it
     git = _git_words(stripped.words)
     if git is None:
         return None
@@ -2393,16 +2384,7 @@ def _git_allowlist_form(words: list[str]) -> str | None:
         return None
     head = stripped.words[0]
     if _dynamic(head):
-        for alt in _substitute(head)[:MAX_CHECKED_PATHS]:
-            if _dynamic(alt):
-                after = _unshield(stripped.words[1]) if len(stripped.words) > 1 else ""
-                if raw_read.fold(after) in _GIT_KNOWN_SUBCOMMANDS:
-                    return f"{GIT_FORM} (a program the gate can't read)"
-                continue
-            found = _git_allowlist_form([alt, *stripped.words[1:]])
-            if found is not None:
-                return found
-        return None
+        return None  # a program built at run time: the command-word walk (#823) fills it in first, or records it
     name = raw_read.fold(_program(_unshield(head)))
     if name == "git":
         args = stripped.words[1:]
@@ -2414,8 +2396,6 @@ def _git_allowlist_form(words: list[str]) -> str | None:
         for at, word in enumerate(stripped.words[1:], 1):
             inner = raw_read.fold(_program(_unshield(word)))
             if inner == "git" or (inner.startswith("git-") and inner[4:] in _GIT_KNOWN_SUBCOMMANDS):
-                if name in ("xargs", "parallel"):
-                    return f"{GIT_FORM} (words from {name})"  # its input becomes git's options
                 return _git_allowlist_form(stripped.words[at:])
         return None
     else:
