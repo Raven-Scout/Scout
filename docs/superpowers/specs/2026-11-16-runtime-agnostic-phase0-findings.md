@@ -708,3 +708,268 @@ runtime_id="antigravity")`. Its only carve-out under `~/.gemini` is `~/.gemini/a
   - whether agy was signed in;
   - any Keychain prompt;
   - the exact `/usage` text, scrubbed, which becomes 2B's `classify_failure` fixture.
+
+### 7.4 Keeping a run's shell away from agy's API (the 7.2 gate): design, for Jordan's OK
+
+The 7.2 investigation card (plan decision 11), agy 1.5.16, no model and no real login.
+- **[bin]** here also covers the protobuf descriptors and Go symbol names embedded in the binary.
+- **[run]** covers only `agy --help`, `agy changelog`, `agy agentapi --help` and one SBPL compile check. All ran
+  in a throwaway `HOME` under a loopback-only diagnostic profile.
+- The session's permission check declined agy's warm first start against the fake, and an SBPL behaviour test
+  that used only system tools. I retried neither.
+- So every measurement that needs agy running is **[pending]**, and the harness for them is ready (§7.4.2).
+
+#### 7.4.1 What 7.2 didn't have
+
+- **A second, documented API on the same address** **[bin]**.
+  - agy also serves `jetski.product.v1.ConversationService`: `CreateConversation` (an initial prompt starts a
+    turn), `ListConversations`, `GetConversation`, `UpdateConversation` and `DeleteConversation`.
+  - A built-in skill, `conversations`, documents it for "shell commands, scripts, plugins, and automations".
+    It uses the same two variables and the header `x-antigravity-csrf-token`.
+  - So a shell child starting, renaming or deleting conversations is a designed feature, not a leak.
+  - 7.2 didn't probe this service. Whether the `run_command` principal may call it is **[pending]**.
+- **A client that needs no variable in the command** **[run]**.
+  - `agy agentapi` has `new-conversation [--model …] <prompt>`, `send-message <recipient_id> <content>` and
+    `get-conversation-metadata <id>`. It reads the address and token from its own environment.
+  - The data dir's `bin/agentapi` shim runs it (§7.1), and built-in plugin code calls it the same way.
+  - A command such as `agentapi new-conversation "…"` names no `ANTIGRAVITY_` variable, so 2A's text deny
+    doesn't match it. The same goes for calling the shim by its fixed path, `~/.gemini/antigravity-cli/bin/agentapi`.
+  - Whether the shim is on a child's `PATH` is **[pending]**.
+- **The token's scope is an experiment flag** **[bin]**.
+  - The check is `CsrfInterceptor.isScopedEnforcementEnabled`, behind `enable-scoped-csrf-tokens`. That flag is
+    `true` in the binary's embedded experiment defaults.
+  - agy fetches experiment flags from its server config (`FetchConfigResponse.ExperimentConfig`). So the
+    scope can change for an account with no new agy version, and 2E.2's per-version probe wouldn't see it.
+  - A run can't change the flag itself: `SetMendelFlagOverrides` is refused to `run_command` (§7.2). It can
+    read the flags, though: `GetMendelFlags` answered 200 with the experiment config in 2A's enumeration.
+- **A discovery file with a token** **[bin]**.
+  - While it runs, the server writes a discovery file (`writeDiscoveryFile`, a struct of `pid`, `httpsPort`,
+    `httpPort`, `lspPort`, `lsVersion` and `csrfToken`). It deletes the file at exit, which is why 2A's after-run
+    listing doesn't show it.
+  - Its path and its token's principal are **[pending]**.
+  - If it sits in the data dir and holds the server's own token, a run that reads it reaches the 142 methods
+    refused to `run_command` too: `RunCommand`, `WriteFile`, `SetUserSettings`, `InstallCascadePlugin` and the rest.
+- **The variables come with agy's host shell injection** **[bin]**.
+  - agy sources a file before each command: `{ [ -f F ] && . F; } 2>/dev/null`.
+  - It fails the call ("failed to build host shell injection") when it can't write the shim (§7.1).
+  - Scout doesn't own that step.
+- **Agent messages have an on-disk store** **[bin]**. An "undelivered" directory with markers lives in the data
+  dir. Whether a file a run writes there gets delivered into a conversation is **[pending]**.
+- **What the API adds beyond what the shell can already do.** A shell child runs in the same sandbox as agy,
+  so the kernel boundary holds for anything the API starts. What the API adds is:
+  1. **Reads** of other conversations, the owner's and earlier runs'. The data-dir files expose the same
+     (§7.2).
+  2. **Changes that outlast the run.** Owner conversations renamed or deleted through `ConversationService`
+     **[pending]**, or anything the discovery-file token allows.
+  3. **Model-driven tool calls that may skip the PreToolUse hook** (question 1). The hook is where Tier L's raw
+     KB-read deny, 2D's local-only withholding and the write gate live.
+
+#### 7.4.2 Question 1: do API-started conversations reach the hook? **[pending]**
+
+- **Not answered.** The probe needs agy running. This session's permission check declined agy's warm start,
+  the step before the probe, and I didn't retry it or work around it.
+- **The harness is ready**, outside any temp dir and outside the repo:
+  - the real run profile from `scout.sandbox.profile.build_profile` for a throwaway `HOME`, plus a diagnostic
+    loopback-only rule;
+  - the gemini-provider fake, which scripts tool calls per conversation, keyed by a marker in the last user
+    message;
+  - a logging hook that denies any call naming a marker and `auto_approve`s the rest;
+  - a probe that the run's own `run_command` child executes.
+- **The probe drives these routes:**
+  - `CreateConversation` with a prompt;
+  - `StartCascade`, then `SendUserCascadeMessage`;
+  - `SendUserCascadeMessage` into the run's own conversation;
+  - `ForkConversation`;
+  - `SendAgentMessage`.
+- Each child conversation then runs an allowed and a denied `run_command`, and an allowed and a denied
+  `write_file`.
+- **It records:**
+  - each route's HTTP code;
+  - the hook's log, by `conversationId`;
+  - which marker files exist;
+  - each child's `runState`;
+  - the server's listeners (`lsof`).
+- **The design below doesn't wait on the answer if candidate b2 holds.** Then no process in a run reaches the
+  server, and question 1 only matters for owner sessions.
+- If b2 fails, question 1 decides whether a per-run `HOME` alone is enough. It is enough only if every route's
+  tool calls hit the hook, with the same verdicts.
+
+#### 7.4.3 The candidates, measured as far as allowed
+
+**a. A per-run `HOME` with no owner conversations.**
+- **What it takes away.** Everything a run could read or tamper with in agy's state, through the API and in
+  the files alike: `conversations/`, `brain/`, `conversation_summaries.db`, the message store and other runs'
+  transcripts.
+  - Settings, plugin and message-store changes stay inside a throwaway `HOME`.
+  - The discovery file becomes the run's own server's.
+- **What it doesn't stop.**
+  - Starting conversations (question 1).
+  - A read of the real `~/.gemini/antigravity-cli` by its absolute path. That needs a new kernel **read**
+    deny on the account home's `.gemini/antigravity-cli` for agy runs, like the one on `~/.scout-secrets`.
+  - The account home also loses its data-dir carve-out. Today `AGENT_DATA_DIRS` applies "relative to every
+    home". With a per-run `HOME`, it must apply under the run's `HOME` only.
+- **What goes in.**
+  - A template `HOME`, made outside the sandbox by `agent-runtime install` and by the per-version probe. That is
+    the same first start that decision 8 already moves out of runs.
+  - Its `.gemini/config/` holds `.migrated`, `config.json`, `mcp_config.json`, `projects/default-cli-project.json`
+    and Scout's `hooks.json` block.
+  - Its data dir holds only the unpacked `builtin/` (still re-denied), `cache/onboarding.json` and
+    `installation_id`. Nothing comes from the owner's data dir.
+  - Each run gets an APFS clone (`cp -c`, near constant time) under a Scout state dir outside any temp dir, so
+    the PATH rule holds. The session reader copies the transcript JSONL it needs, and then the clone is removed.
+- **What else moves with `HOME`.**
+  - Every child sees the per-run `HOME`: git's global config, `gh`, Scout's own config, `~/.scout-secrets`
+    (the Telegram files) and Python's user site. `ssh` takes the home from the password database, so it isn't
+    affected.
+  - Symlinks in the template keep these working. The kernel judges the resolved path, so a protected target
+    stays protected.
+  - The exact list needs a pass over the last 50 scheduled runs.
+  - `hook_paths.homes(env)` already handles a `HOME` that isn't the account home.
+- **Sign-in: [pending]**, by the card's rule.
+  - agy keeps the token in the macOS Keychain through go-keyring, with a file fallback **[bin, cl]**.
+  - A fresh `HOME` reads as signed out (§1.7), and the reason isn't known. It is either a non-secret account
+    index under `HOME`, or a Keychain key that includes something per-`HOME`.
+  - If it is the index, copying the index into the template should do.
+  - If not, the owner signs in once inside the template, which may put a second token in the Keychain.
+  - If that token falls back to a file inside the template, a run could read it, so the file would need a
+    read deny too.
+  - This is the riskiest unknown in (a).
+- **Variant a′: move only the data dir.**
+  - `ANTIGRAVITY_APP_DATA_DIR` reaches children, and `JETSKI_APP_DATA_DIR` is in the binary too **[bin]**.
+  - If agy honours either as an input, Scout relocates just the data dir. `HOME`, the hooks config and the
+    sign-in stay as they are, and nothing else moves.
+  - **[pending]**: `agy changelog` with both set wrote nothing anywhere, which is inconclusive. A warm `-p` run
+    decides it.
+
+**b. Denying shell children the server's port.**
+- **A tighter layer for children is not possible.**
+  - macOS refuses `sandbox_apply` inside a sandbox (§0.5, §1.5 **[run]**, exit 71). That holds whether agy
+    applies the second layer, or a wrapper Scout puts in agy's place.
+  - A broker outside the sandbox could run each command under a tighter profile. But that means replacing
+    agy's shell: its persistent terminals, its pty and the host shell injection. The children would also stop
+    being agy's descendants. That is big and fragile, so it isn't recommended.
+- **A per-process rule leaks.**
+  - SBPL accepts `(process-path …)` in a `network-outbound` rule **[run: compile check]**. Whether it matches
+    per process is **[pending]**, because the behaviour test was declined.
+  - Even if it does match, a child can exec agy itself (`agy agentapi …`, which is what the shim does) and
+    carry agy's path.
+  - Denying the exec of agy's path would probably also deny the runner's own first exec of it. That is
+    **[pending]** on the same declined test.
+- **b2: no loopback TCP for the whole agy run, agy included.**
+  - Only what agy itself needs is allowed. The server's ports are random, and that doesn't matter here.
+  - In a real run the model is remote (`*.googleapis.com:443`). The spike's fake gets one allowed port.
+  - b2 works **only if** agy makes no loopback connection of its own. That means its CLI front end and
+    in-process server, the hook runner, `run_command`'s host injection and `write_file`. **[pending]**: this is
+    the key measurement.
+  - A unix-socket listener needs the same treatment. **[pending]**: the probe's `lsof` shows it.
+  - **It covers** every route above, from every process in the run: `curl`, `agentapi`, the discovery-file
+    token and `ConversationService` alike.
+  - **It doesn't cover** the data-dir files. That is (a)'s part.
+  - **It costs** agy runs any loopback MCP server. None is configured today.
+
+**c. An agy option that keeps the token out of children, or unscopes the methods.**
+- **None found** **[run, cl, bin]**. There is nothing in `agy --help`, or in the changelog's 1,370 lines.
+  - agy's settings live in `~/.gemini/antigravity-cli/settings.json`, which the run profile already re-denies.
+  - The nearest switches are experiment flags with embedded defaults, which agy's server config can override:
+    `enable-scoped-csrf-tokens`, `enable-conversation-scoped-permissions`, `enable-product-api-skill`,
+    `enable-rpc-sandbox-proxy` and `enable-rpc-sandbox-proxy-allow-all`.
+- **agy's own terminal sandbox does block the port.** The `conversations` skill tells the agent to rerun outside
+  it on "Port … not allowed for HTTP". But that sandbox runs only with `--sandbox`, which can't start inside
+  Scout's (§1.5).
+- **Unsetting the variables is not Scout's to do, and it isn't a boundary.**
+  - They arrive with the host shell injection (§7.4.1), and the injection file is agy's.
+  - Whether `run_command` survives without them is **[pending]**.
+  - On macOS a same-user process can, as a rule, read another process's environment (`KERN_PROCARGS2`) unless
+    the sandbox denies `process-info*`. That wasn't measured here.
+  - The discovery file and the injection file are on disk too.
+- **It costs nothing, and it gives Scout nothing to rely on.** It is worth an upstream request: an option not to
+  give `run_command` children server credentials, or a principal that refuses the conversation methods.
+
+**d. Others.**
+- Extend the hook's text deny to `agentapi` and to invocations of agy's own binary. It is a speed bump like 2A's,
+  and cheap.
+- Read-deny the discovery file once its path is known. With b2 it is belt and braces; without b2 it matters.
+
+#### 7.4.4 The data dir (question 3)
+
+| | Owner's conversations through the API | Owner's files (`conversations/`, `brain/`) | New conversations | Discovery-file token |
+|---|---|---|---|---|
+| a. per-run `HOME` (or a′) | gone | gone from agy's dir; the real dir needs the new read deny | still possible | the run's own server only |
+| b2. no loopback | unreachable | **open** | unreachable | unusable |
+| c. agy option | none found | open | none found | none found |
+| 2A's text deny | speed bump | open | speed bump (`agentapi` passes) | speed bump |
+
+- Only a (or a′), with the account-home read deny, keeps a run out of other conversations' files.
+- Only b2 keeps a run from starting conversations without depending on question 1.
+
+#### 7.4.5 Recommendation
+
+**Use a′ if agy honours the data-dir variable, else a. Add b2 and the account-home read deny. Keep 2A's text
+deny (decision 5), and extend it to `agentapi`.**
+
+- **Lift the 7.2 gate only when these [pending] rows are [run]**, all with no model:
+  - **b2:** under a no-loopback profile, a warm `agy -p` runs `run_command` and `write_file`, and both reach
+    the hook. The kernel refuses every probe route.
+  - **a′ or a:** the run's conversations land in the per-run dir, and none of the owner's are visible.
+  - **Sign-in** works for the chosen variant. That comes from docs or the owner's own check, never from this card.
+  - **Question 1** is answered, for the record and for owner sessions.
+- **If b2 fails** because agy needs loopback itself, lift the gate only with (a) or (a′) **and** question 1
+  answered "every route hits the hook with the same verdicts". If question 1 is no, agy stays blocked, and the
+  upstream request is the way out.
+- **What it costs Scout:**
+  - **Protected paths.**
+    - A new read-denied tree for agy runs: the account home's `.gemini/antigravity-cli`.
+    - The account home's carve-out goes, so all of the real `~/.gemini` is write-denied in an agy run.
+    - The template dir is a protected tree, written only by `install` and the probe.
+    - The discovery file gets a read deny once its path is known.
+  - **Profile.**
+    - `AGENT_DATA_DIRS` applies under the run's `HOME` only.
+    - A no-loopback network rule for runtime `antigravity`.
+    - Claude runs' profile stays byte-identical.
+  - **Runner.**
+    - It clones the template before an agy run and removes the clone after.
+    - A failed clone skips the run, as a failed shim restore does (decision 10).
+    - The shim check moves into the clone.
+  - **Adapter.**
+    - `Launch.env` gets `HOME` or the data-dir variable.
+    - `sandbox_paths` names the run's data dir.
+    - `install` and the probe maintain the template.
+  - **Kernel rows** (`tests/integration/test_run_sandbox_kernel.py`): `test_agy_run_cant_reach_loopback`,
+    `test_agy_run_cant_read_the_owners_agy_data`, `test_agy_run_cant_write_the_owners_gemini_dir`,
+    `test_agy_run_home_config_is_not_writable` and `test_agy_run_home_builtin_is_not_writable`.
+  - **Unit tests:** `test_a_run_gets_a_fresh_agy_home`, `test_the_run_home_is_removed_after_the_run`,
+    `test_a_failed_home_clone_skips_the_run`, `test_the_run_home_is_outside_temp_dirs` and
+    `test_the_text_deny_covers_agentapi`.
+  - **2D.1:** the kernel, not a gate, then meets `test_a_run_cant_read_or_write_another_agy_conversation`.
+
+#### 7.4.6 For Jordan
+
+1. **The no-model measurements: Jordan runs them himself** (2026-11-25).
+   - The coordinator reviews the scripts first.
+   - A first try stopped at a Google sign-in prompt, because the spike's scripts lacked the gemini-provider
+     `--settings` flag. Nothing was signed in and nothing left loopback.
+   - The scripts now refuse to start without that flag, and fail loudly if agy prints a sign-in URL.
+2. **a′ or a, and where the per-run homes live:** decided after the measurements.
+3. **No loopback at all for agy runs, so no localhost MCP servers in them:** accepted (Jordan, 2026-11-25).
+4. **An upstream request to Google:** drafted in §7.4.7, for Jordan to file himself.
+5. **A kernel read deny on local-only paths for non-Anthropic runs:** yes (Jordan, 2026-11-25). It is plan task
+   2D.4, because 2D's hook and CLI gates match command text and so aren't a boundary.
+
+#### 7.4.7 Draft upstream request (for Jordan to file; generic, no Scout or vault detail)
+
+> **Feature request: an option to keep the local server's credentials out of agent shell commands**
+>
+> When the agent runs a shell command, the command's environment gets the local server's address and a CSRF
+> token (`ANTIGRAVITY_LS_ADDRESS`, `ANTIGRAVITY_CSRF_TOKEN`, and the `agentapi` helper). The token is scoped,
+> but it can still create, message, fork and delete conversations and read other conversations' trajectories.
+> That is useful interactively. But when the CLI runs headless as a sandboxed automation, it lets a command the
+> model wrote start agent work and read history outside the tool-call hooks the operator configured.
+>
+> Please add one of these, as a setting or a flag that `--settings` accepts:
+> 1. an option not to put the server's address, token or `agentapi` into shell commands' environment at all;
+>    or
+> 2. an option to scope the shell token to no server methods.
+>
+> Please also document whether conversations started through the API run their tool calls through the
+> configured `PreToolUse` hooks. Whichever exists, it would ideally be enforced locally, not only through a
+> server-side experiment flag, so that a headless operator can rely on it across versions.
