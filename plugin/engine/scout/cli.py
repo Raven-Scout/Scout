@@ -1982,7 +1982,8 @@ def kb_edit(
 
     All operations, on every note, apply or nothing is written. Exit 1 = an operation didn't fit (a count, a
     heading, an anchor, a hunk) or a note changed meanwhile; 2 = bad --ops or not a note; 3 = refused (the reader,
-    the write gate, a privacy label it would change, or a scheduled run's --repo naming another vault).
+    the write gate, a privacy label it would change, or a scheduled run's --repo naming another vault); 4 = a
+    write failed after some notes were written (files[].written says which): Read them before running it again.
     """
     args = _kb_args("edit", dict(locals()))
 

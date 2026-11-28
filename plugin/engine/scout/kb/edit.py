@@ -36,6 +36,7 @@ from __future__ import annotations
 import contextlib
 import datetime
 import difflib
+import functools
 import json
 import os
 import re
@@ -81,7 +82,7 @@ _FIELD = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _HUNK = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 SCOPE = ("knowledge-base/", "action-items/context/")  # the vault-relative folders kb edit changes notes in
-REGEX_SECONDS = 2.0  # how long one regex op may run before it fails (a pattern that backtracks without end)
+SEARCH_SECONDS = 2.0  # how long a regex op, or a patch hunk's search for its place, may run before it fails
 
 
 class OpFailed(Exception):
@@ -245,11 +246,13 @@ class _TimedOut(Exception):
     pass
 
 
-def _limited(i: int, run: Callable[[], Any]) -> Any:
-    """``run()``, stopped after :data:`REGEX_SECONDS` (SIGALRM, which the regex engine checks). Off the main
-    thread, where no alarm can be set, it runs unlimited."""
+def _limited(i: int, op: str, why: str, run: Callable[[], Any]) -> Any:
+    """``run()``, stopped after :data:`SEARCH_SECONDS` (SIGALRM, which the regex engine and the interpreter both
+    check) as ``OpFailed(i, op, why)``. A timer the caller had set is put back with the time it had left (fired
+    right after, if it ran out meanwhile). Off the main thread, where no alarm can be set, it runs unlimited."""
     import signal
     import threading
+    import time
 
     if threading.current_thread() is not threading.main_thread() or not hasattr(signal, "setitimer"):
         return run()  # pragma: no cover - the CLI runs on the main thread, on macOS and Linux
@@ -258,16 +261,20 @@ def _limited(i: int, run: Callable[[], Any]) -> Any:
         raise _TimedOut
 
     old = signal.signal(signal.SIGALRM, alarm)
+    left, interval = signal.getitimer(signal.ITIMER_REAL)
+    start = time.monotonic()
     try:
-        signal.setitimer(signal.ITIMER_REAL, REGEX_SECONDS)
+        signal.setitimer(signal.ITIMER_REAL, SEARCH_SECONDS)
         try:
             return run()
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
     except _TimedOut:
-        raise OpFailed(i, "regex", f"the pattern ran over {REGEX_SECONDS:g} s on this note; simplify it") from None
+        raise OpFailed(i, op, why) from None
     finally:
         signal.signal(signal.SIGALRM, old)
+        if left > 0:
+            signal.setitimer(signal.ITIMER_REAL, max(left - (time.monotonic() - start), 1e-6), interval)
 
 
 # ----- applying them ---------------------------------------------------------------------
@@ -308,10 +315,11 @@ def _replace(i: int, text: str, op: Mapping[str, Any]) -> tuple[str, str, int | 
 
 def _regex(i: int, text: str, op: Mapping[str, Any]) -> tuple[str, str, int | None]:
     rx = re.compile(op["pattern"], _regex_flags(op.get("flags", "")))
-    found: int = _limited(i, lambda: sum(1 for _ in rx.finditer(text)))
+    slow = f"the pattern ran over {SEARCH_SECONDS:g} s on this note; simplify it"
+    found: int = _limited(i, "regex", slow, lambda: sum(1 for _ in rx.finditer(text)))
     _expect(i, "regex", op, found)
     try:
-        new: str = _limited(i, lambda: rx.sub(op["new"], text, count=1 if op.get("first") else 0))
+        new: str = _limited(i, "regex", slow, lambda: rx.sub(op["new"], text, count=1 if op.get("first") else 0))
     except (re.error, IndexError) as e:
         raise OpFailed(i, "regex", f"the replacement template doesn't fit the pattern ({e})") from None
     return new, _done(found, op), found
@@ -547,6 +555,11 @@ def _matches_at(lines: Sequence[str], at: int, old: Sequence[str]) -> bool:
     return all(lines[at + k].rstrip("\r\n") == old[k].rstrip("\r") for k in range(len(old)))
 
 
+def _places(lines: Sequence[str], start: int, old: Sequence[str]) -> list[int]:
+    """Every line index at or after ``start`` where ``old`` matches."""
+    return [p for p in range(start, len(lines) - len(old) + 1) if _matches_at(lines, p, old)]
+
+
 def _patch(i: int, text: str, op: Mapping[str, Any]) -> tuple[str, str, int | None]:
     hunks = _parse_diff(i, op["diff"])
     lines = text.splitlines(keepends=True)
@@ -561,7 +574,8 @@ def _patch(i: int, text: str, op: Mapping[str, Any]) -> tuple[str, str, int | No
         elif stated >= floor and _matches_at(lines, stated, hunk.old):
             at = stated
         else:
-            places = [p for p in range(floor, len(lines) - len(hunk.old) + 1) if _matches_at(lines, p, hunk.old)]
+            slow = f"the search for hunk {h}'s place ran over {SEARCH_SECONDS:g} s; give its right line number"
+            places = _limited(i, "patch", slow, functools.partial(_places, lines, floor, hunk.old))
             if len(places) != 1:
                 where = "anywhere" if not places else f"in {len(places)} places"
                 raise OpFailed(i, "patch", f"hunk {h}'s old lines aren't at its line and match {where}")
@@ -838,9 +852,10 @@ def cmd_edit(
         lines += out
     wrote = sum(1 for p in plans if p.wrote)
     if error is not None:
-        lines.append(f"the write failed ({error}): {count(wrote, 'note')} written, the rest left as they were")
+        tail = "; exit 4: Read the written notes before running it again" if wrote else ""
+        lines.append(f"the write failed ({error}): {count(wrote, 'note')} written, the rest left as they were{tail}")
     denied = sum(1 for p in plans if p.denied)
-    code = 3 if denied else (1 if blocked else 0)
+    code = 3 if denied else (4 if wrote and blocked else (1 if blocked else 0))  # 4: some notes written
     data: dict[str, Any] = {"written": wrote > 0, "check": check, "files": rows}
     if error is not None:
         data["error"] = error

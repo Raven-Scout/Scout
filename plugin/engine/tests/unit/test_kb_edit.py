@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 import pytest
 from typer.testing import CliRunner
@@ -688,7 +689,7 @@ def test_a_note_named_twice_in_the_map_is_refused_not_dropped() -> None:
 
 
 def test_a_regex_that_backtracks_without_end_fails_in_time(kb_repo, monkeypatch) -> None:
-    monkeypatch.setattr(kb_edit, "REGEX_SECONDS", 0.2)
+    monkeypatch.setattr(kb_edit, "SEARCH_SECONDS", 0.2)
     kb_repo.write(NOTE, "a" * 40 + "b\n")
     result = run_ops(kb_repo.root, NOTE, [{"op": "regex", "pattern": "(a+)+$", "new": "x"}])
     assert result.exit_code == 1 and "ran over 0.2 s" in result.stdout
@@ -701,6 +702,33 @@ def test_the_regex_time_limit_leaves_no_alarm_behind() -> None:
     before = signal.getsignal(signal.SIGALRM)
     apply_ops("abc\n", [{"op": "regex", "pattern": "b", "new": "x"}])
     assert signal.getsignal(signal.SIGALRM) is before and signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+
+
+def test_a_callers_timer_is_put_back_with_the_time_it_had_left() -> None:
+    import signal
+
+    fired: list[int] = []
+    old = signal.signal(signal.SIGALRM, lambda *_: fired.append(1))
+    try:
+        signal.setitimer(signal.ITIMER_REAL, 30, 5)
+        apply_ops("abc\n", [{"op": "regex", "pattern": "b", "new": "x"}])
+        left, interval = signal.getitimer(signal.ITIMER_REAL)
+        assert 25 < left <= 30 and interval == 5 and not fired
+        signal.setitimer(signal.ITIMER_REAL, 0.01)  # one that runs out during the op fires right after it
+        assert kb_edit._limited(1, "regex", "slow", lambda: time.sleep(0.05) or 7) == 7 and not fired
+        time.sleep(0.05)
+        assert fired == [1]
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old)
+
+
+def test_a_patch_hunk_search_over_repeated_lines_fails_in_time(monkeypatch) -> None:
+    monkeypatch.setattr(kb_edit, "SEARCH_SECONDS", 0.05)
+    note = "x\n" * 200_000
+    diff = "@@ -1,41 +1,41 @@\n" + " x\n" * 40 + "-y\n+z\n"
+    with pytest.raises(OpFailed, match="hunk 1's place ran over 0.05 s"):
+        apply_ops(note, [{"op": "patch", "diff": diff}])
 
 
 def test_ops_limits() -> None:
@@ -849,7 +877,9 @@ def test_a_rename_failing_part_way_says_which_notes_were_written(run_vault, monk
         return real(*args, **kwargs)
 
     monkeypatch.setattr(kb_edit.os, "replace", second_fails)
-    data = json.loads(_scheduled(run_vault, "--ops", "-", "--json", ops=TWO).stdout)
+    result = _scheduled(run_vault, "--ops", "-", "--json", ops=TWO)
+    data = json.loads(result.stdout)
+    assert result.exit_code == 4  # not 1: a run must not retry an append it already made
     assert [f["written"] for f in data["files"]] == [True, False] and data["written"] is True
     assert text(run_vault).endswith("x\n") and text(run_vault, CONTEXT).endswith("Status: waiting\n")
     assert not _temps(run_vault / "action-items/context")

@@ -10,8 +10,10 @@
     runs' scripts changed 2 or 3 notes.
   - All operations, on every note, apply or nothing is written (exit 1, naming the op and why): every new text
     goes to a synced temp file beside its note first, and the renames happen only once all are ready and no
-    note has changed meanwhile. Folders are opened from the vault down without following a symlink. A regex
-    op stops after 2 s. `--check` reports without writing.
+    note has changed meanwhile. If a rename still fails part-way, it exits 4 and says which notes were
+    written, so a run reads them before running it again. Folders are opened from the vault down without
+    following a symlink. A regex op, and a patch's search for where a hunk goes, stops after 2 s. `--check`
+    reports without writing.
   - It prints counts and status only: never the note's text, a pattern, a heading or an `--ops` key. The
     operations come only on stdin (`--ops -`), at most 1 MiB, and a key named twice is refused.
   - A scheduled run edits only the vault in `SCOUT_DATA_DIR`, which must hold `scout-config.yaml`; a `--repo`
