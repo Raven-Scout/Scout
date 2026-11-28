@@ -947,7 +947,9 @@ def find_mentions(text: str, terms: PrivateTerms, *, allow_markers: bool) -> lis
             allowed[i] = {m.group(1).casefold() for m in _MARKER.finditer(ln)}
         text = _MARKER.sub(lambda m: " " * len(m.group(0)), text)  # keeps every offset
         lines = text.split("\n")
-    slugs = {note.path: note.slug.casefold() for note in terms.notes}
+    # Only a marker can excuse a hit, so without markers no slug is looked up (building this map for every
+    # note cost more than the scan of a short text).
+    slugs = {note.path: note.slug.casefold() for note in terms.notes} if allow_markers else None
     hits = _hits(text, terms)
     demarked, spans = _demarked(text)  # once more without markup, mapped back to text's lines
     if demarked != text:
@@ -964,7 +966,7 @@ def find_mentions(text: str, terms: PrivateTerms, *, allow_markers: bool) -> lis
     out: set[int] = set()
     for path, first, last in hits:
         span = range(first, last + 1)
-        if all(slugs[path] in allowed[n] for n in span):
+        if all(slugs is not None and slugs[path] in allowed[n] for n in span):
             continue
         out.update(n + 1 for n in span)
     return sorted(out)
