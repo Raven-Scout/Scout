@@ -479,6 +479,116 @@ def _cmd_track_r_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_track_s_build(args: argparse.Namespace) -> int:
+    """Build Track S set-recall items (hindsight meeting prep, masked links, computed sets) from a vault."""
+    import json
+
+    from .track_s import (
+        build_computed_items,
+        build_link_recovery_items,
+        build_meeting_prep_items,
+        summarize_set_items,
+        write_set_items,
+    )
+
+    vault = Path(args.vault).expanduser().resolve()
+    if not (vault / "knowledge-base").is_dir() or not (vault / ".git").exists():
+        print(f"eval: {vault} is not a git vault with a knowledge-base/ directory", file=sys.stderr)
+        return 2
+    families = args.family or ["meeting-prep", "mask", "questions"]
+    try:
+        items = []
+        if "meeting-prep" in families:
+            items += build_meeting_prep_items(
+                vault,
+                ref=args.ref,
+                since=date.fromisoformat(args.since) if args.since else None,
+                max_items=args.max_items,
+            )
+        if "mask" in families:
+            items += build_link_recovery_items(
+                vault, ref=args.ref, fraction=args.fraction, max_edits=args.max_edits, seed=args.seed
+            )
+        if "questions" in families:
+            items += build_computed_items(
+                vault, ref=args.ref, reader=args.reader, max_per_family=args.max_items, seed=args.seed
+            )
+        written = write_set_items(Path(args.out), items)
+    except (PermissionError, ValueError, subprocess.CalledProcessError) as exc:
+        print(f"eval: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps({"written": str(written), **summarize_set_items(items)}, indent=2))
+    return 0
+
+
+def _cmd_track_s_run(args: argparse.Namespace) -> int:
+    """Run Track S items interleaved across KB arms and report set recall against the decision rule."""
+    from scout.errors import ScoutError
+
+    from .plan import DEFAULT_MODEL, MAX_WITHOUT_MANY
+    from .runner import LoginRequired
+    from .track_r_golden import refuse_public_repo_destination
+    from .track_r_runner import parse_track_r_arms
+    from .track_s import format_track_s_summary, load_set_items, run_track_s
+
+    try:
+        arm_specs = parse_track_r_arms(args.arms)
+        refuse_public_repo_destination(Path(args.results))
+        items_path = Path(args.items).expanduser().resolve()
+        preview = load_set_items(items_path)
+    except (OSError, PermissionError, ValueError) as exc:
+        print(f"eval: {exc}", file=sys.stderr)
+        return 2
+    vault_repo = Path(args.vault).expanduser().resolve()
+    if not (vault_repo / "knowledge-base").is_dir():
+        print(f"eval: {vault_repo} has no knowledge-base/ directory", file=sys.stderr)
+        return 2
+    if args.family:
+        preview = [it for it in preview if it.family in set(args.family)]
+    if args.limit is not None:
+        preview = preview[: max(0, args.limit)]
+    if not preview:
+        print("eval: no Track S items matched the requested filters", file=sys.stderr)
+        return 2
+    real_claude = args.claude or shutil.which("claude")
+    if not real_claude:
+        print("eval: no claude on PATH (or pass --claude PATH)", file=sys.stderr)
+        return 2
+    model = "opus" if args.opus else DEFAULT_MODEL
+    sessions = len(preview) * len(arm_specs) * args.reps
+    if sessions > MAX_WITHOUT_MANY and not args.many:
+        print(f"eval: {sessions} sessions is more than {MAX_WITHOUT_MANY}; pass --many", file=sys.stderr)
+        return 2
+    arm_desc = ", ".join(f"{a.id} ({a.slug})" for a in arm_specs)
+    print(
+        f"Will start {sessions} read-only Track S sessions ({len(preview)} items × [{arm_desc}] × "
+        f"{args.reps} reps, interleaved) on {model} via your Claude login."
+    )
+    if not args.yes:
+        input("Press Enter to start, Ctrl-C to cancel: ")
+    try:
+        report = run_track_s(
+            items_path,
+            vault_repo=vault_repo,
+            arm_specs=arm_specs,
+            results_root=Path(args.results),
+            real_claude=real_claude,
+            model=model,
+            budget=args.budget,
+            timeout_s=args.timeout,
+            reader=args.reader,
+            families=args.family,
+            limit=args.limit,
+            reps=args.reps,
+            extra_pythonpath=args.extra_pythonpath,
+        )
+    except (LoginRequired, PermissionError, RuntimeError, ScoutError, ValueError) as exc:
+        print(f"eval: {exc}", file=sys.stderr)
+        return 2
+    print("\n" + format_track_s_summary(report))
+    return 0
+
+
 def _cmd_compare(args: argparse.Namespace) -> int:
     if getattr(args, "arms", None):
         return _cmd_compare_arms(args)
@@ -783,6 +893,50 @@ def main(argv: list[str] | None = None) -> int:
     tr_run.add_argument("--claude", help=argparse.SUPPRESS)
     tr_run.add_argument("--cli-version", help=argparse.SUPPRESS)
     tr_run.set_defaults(func=_cmd_track_r_run)
+    ts = sub.add_parser(
+        "track-s-build",
+        help="build Track S set-recall items (meeting prep, masked links, computed sets) into an owner-only JSONL",
+    )
+    ts.add_argument("--vault", required=True, help="source Scout vault git repo")
+    ts.add_argument("--out", required=True, help="local output JSONL path outside the public repo")
+    ts.add_argument(
+        "--family",
+        action="append",
+        choices=["meeting-prep", "mask", "questions"],
+        help="which builder to run (repeatable; default all three)",
+    )
+    ts.add_argument("--ref", default="HEAD", help="vault ref to build from (default HEAD)")
+    ts.add_argument("--since", help="meeting prep: only meetings on or after YYYY-MM-DD")
+    ts.add_argument("--max-items", type=int, default=20, help="meeting prep and each computed family: item cap")
+    ts.add_argument("--fraction", type=float, default=0.07, help="mask: share of maskable links to hide")
+    ts.add_argument("--max-edits", type=int, default=120, help="mask: cap on masked links")
+    ts.add_argument("--seed", type=int, default=20261128, help="seed for masking and sampling")
+    ts.add_argument("--reader", default="autonomous", help="reader whose view the computed gold uses")
+    ts.set_defaults(func=_cmd_track_s_build)
+    ts_run = sub.add_parser(
+        "track-s-run",
+        help="run Track S items interleaved across KB arms and score set recall",
+    )
+    ts_run.add_argument("--items", required=True, help="local Track S JSONL from track-s-build")
+    ts_run.add_argument("--vault", required=True, help="source Scout vault git repo")
+    ts_run.add_argument("--arms", default="a,r,b,bf,c", help="comma-separated arms (default a,r,b,bf,c)")
+    ts_run.add_argument(
+        "--results",
+        default=str(Path.home() / ".scout-worktrees" / "relatedb-eval-data" / "runs"),
+        help="owner-only local results root outside any public repo",
+    )
+    ts_run.add_argument("--family", action="append", help="filter to a Track S family (repeatable)")
+    ts_run.add_argument("--limit", type=int, help="run only the first N matching items")
+    ts_run.add_argument("--reps", type=int, default=1, help="samples per item and arm (default 1)")
+    ts_run.add_argument("--reader", default="autonomous", help="Scout reader identity (default autonomous)")
+    ts_run.add_argument("--budget", default="0.60", help="max USD budget per session (default 0.60)")
+    ts_run.add_argument("--timeout", type=int, default=300, help="timeout seconds per session (default 300)")
+    ts_run.add_argument("--opus", action="store_true", help="use Opus instead of the default Sonnet")
+    ts_run.add_argument("--many", action="store_true", help="allow more than 10 sessions")
+    ts_run.add_argument("--yes", action="store_true", help="don't wait for Enter after printing the plan")
+    ts_run.add_argument("--extra-pythonpath", help="extra PYTHONPATH (e.g. relate-db site-packages)")
+    ts_run.add_argument("--claude", help=argparse.SUPPRESS)
+    ts_run.set_defaults(func=_cmd_track_s_run)
     args = parser.parse_args(argv)
     return int(args.func(args))
 

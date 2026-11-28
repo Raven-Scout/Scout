@@ -9,6 +9,16 @@ integration strategies:
   ``kb link-gaps``, ``kb search --ranked``).
 - **Arm C (``c`` / ``relate-precompute``):** ``RelateBackend`` with engine-side
   ``graph_context`` precompute in ``session-context.json`` and no new phase verbs.
+
+Three more arms separate "the model didn't use the graph" from "the graph didn't help"
+(the 2026-11-28 eval plan, after the 30-item pilot tied):
+
+- **Arm R (``r`` / ``files-ranked``):** ``FilesBackend`` plus only ``kb search --ranked``. The
+  pilot's whole Arm B gain came from ranked search, which needs no ``relate-db``.
+- **Arm BF (``bf`` / ``relate-verbs-forced``):** Arm B, told to call the matching graph verb
+  before any other KB read: the ceiling when uptake is not the limit.
+- **Arm O (``o`` / ``files-oracle``):** ``FilesBackend`` with the item's gold notes named in the
+  prompt: if even this doesn't beat Arm A, retrieval is not the bottleneck.
 """
 
 from __future__ import annotations
@@ -29,6 +39,7 @@ class ArmSpec:
     backend_kind: str
     precompute_graph_context: bool
     brain_overlay: str | None = None
+    oracle: bool = False
 
 
 ARM_B_BRAIN_OVERLAY = (
@@ -44,7 +55,37 @@ ARM_B_BRAIN_OVERLAY = (
     "- `scripts/scoutctl kb link-gaps --scope knowledge-base/projects/<slug>/` "
     "for body-linked entity pairs missing a typed frontmatter edge.\n"
     '- `scripts/scoutctl kb search "<terms>" --ranked` '
-    '(optional `--project "<project>"`) for full-text ranked note retrieval.\n'
+    '(optional `--project "<project>"`) for full-text ranked note retrieval.\n\n'
+    "Use them at the step that needs them:\n\n"
+    "- Meeting prep: `scripts/scoutctl kb neighbors` on each attendee (`--depth 2`) to find the "
+    "projects, decisions and open threads they share.\n"
+    "- Propagating a decision: `scripts/scoutctl kb backlinks` on the notes of each entity the "
+    "decision touches, so every note that should change is found.\n"
+    "- Missing links and orphans: `scripts/scoutctl kb link-gaps` for the scope you are checking.\n"
+    "- Conflicting claims: `scripts/scoutctl kb neighbors` on the entity to list every note about "
+    "it, then compare what each says and its `as_of` date.\n"
+    '- "What does this affect": `scripts/scoutctl kb neighbors "<entity>" --rels '
+    "depends_on,dependency_of,blocks,blocked_by` and `scripts/scoutctl kb paths` between the two ends.\n"
+)
+
+ARM_BF_BRAIN_OVERLAY = (
+    ARM_B_BRAIN_OVERLAY + "\nBefore any other knowledge-base read, call the graph verb above that matches the step, "
+    "and start from its results.\n"
+)
+
+ARM_R_BRAIN_OVERLAY = (
+    "## Ranked KB Lookup\n\n"
+    '- `scripts/scoutctl kb search "<terms>" --ranked` '
+    '(optional `--project "<project>"`) returns the best-matching notes first, instead of in '
+    "path order. Prefer it over plain `kb search` when looking for notes about a topic.\n"
+)
+
+ARM_C_BRAIN_OVERLAY = (
+    "## Precomputed Graph Context\n\n"
+    "`.scout-cache/session-context.json` has a `graph_context` key: for each active project, "
+    "the people linked to it, its best-ranked notes and backlinks, and links that are missing. "
+    "Read it before meeting prep, before propagating a decision, and before looking for missing "
+    "links or conflicting claims, and start from the notes it lists.\n"
 )
 
 ARM_A = ArmSpec(
@@ -71,7 +112,35 @@ ARM_C = ArmSpec(
     description="RelateBackend + engine graph_context precompute in session-context.json",
     backend_kind="relate",
     precompute_graph_context=True,
+    brain_overlay=ARM_C_BRAIN_OVERLAY,
+)
+
+ARM_R = ArmSpec(
+    id="r",
+    slug="files-ranked",
+    description="FilesBackend + kb search --ranked only (no relate-db)",
+    backend_kind="files",
+    precompute_graph_context=False,
+    brain_overlay=ARM_R_BRAIN_OVERLAY,
+)
+
+ARM_BF = ArmSpec(
+    id="bf",
+    slug="relate-verbs-forced",
+    description="RelateBackend + graph verbs, called before any other KB read",
+    backend_kind="relate",
+    precompute_graph_context=False,
+    brain_overlay=ARM_BF_BRAIN_OVERLAY,
+)
+
+ARM_O = ArmSpec(
+    id="o",
+    slug="files-oracle",
+    description="FilesBackend with the item's gold notes named in the prompt (retrieval ceiling)",
+    backend_kind="files",
+    precompute_graph_context=False,
     brain_overlay=None,
+    oracle=True,
 )
 
 KNOWN_ARMS: dict[str, ArmSpec] = {
@@ -81,6 +150,12 @@ KNOWN_ARMS: dict[str, ArmSpec] = {
     "relate-verbs": ARM_B,
     "c": ARM_C,
     "relate-precompute": ARM_C,
+    "r": ARM_R,
+    "files-ranked": ARM_R,
+    "bf": ARM_BF,
+    "relate-verbs-forced": ARM_BF,
+    "o": ARM_O,
+    "files-oracle": ARM_O,
 }
 
 BRAIN_FILES = ("SKILL.md", "DREAMING.md", "RESEARCH.md", "RESPOND.md")

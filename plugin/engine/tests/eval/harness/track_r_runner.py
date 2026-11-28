@@ -30,7 +30,7 @@ import statistics
 import subprocess
 import sys
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +54,14 @@ from .checks.track_r import (
     strip_backend_revealing_text,
 )
 from .claude_shim import SHIM
-from .metrics import SampleMetrics, graph_verb_calls, parse_stream, verb_uptake_rate
+from .metrics import (
+    SampleMetrics,
+    graph_context_reads,
+    graph_verb_breakdown,
+    graph_verb_calls,
+    parse_stream,
+    verb_uptake_rate,
+)
 from .runner import LoginRequired, _kill_group, _stop_runner
 from .runner_env import ENGINE, build_env
 from .track_r_golden import GoldenItem, load_golden_set, refuse_public_repo_destination
@@ -216,6 +223,17 @@ def extract_cited_paths(answer: str, vault: Path) -> list[str]:
     return out
 
 
+def oracle_hint(gold_paths: Sequence[str]) -> str:
+    """The Arm O prompt block: the notes that hold the answer, named up front (a retrieval ceiling)."""
+    if not gold_paths:
+        return ""
+    listed = "\n".join(f"- `{p}`" for p in gold_paths)
+    return (
+        "\n\nThe notes that hold what you need are listed below. Read them with "
+        f"`scripts/scoutctl kb read <path>` first:\n{listed}"
+    )
+
+
 def build_track_r_prompt(item: GoldenItem, arm: ArmSpec) -> str:
     """Construct the read-only Track R Q&A prompt for ``item`` under ``arm``."""
     base_kb = (
@@ -225,6 +243,7 @@ def build_track_r_prompt(item: GoldenItem, arm: ArmSpec) -> str:
         '`scripts/scoutctl kb name-lookup "<name>"`.'
     )
     overlay = f"\n\n{arm.brain_overlay.strip()}" if arm.brain_overlay else ""
+    overlay += oracle_hint(item.gold_paths) if arm.oracle else ""
     return (
         "You are answering a read-only Track R evaluation question from the Scout vault in your current "
         "working directory.\n"
@@ -330,6 +349,7 @@ def _build_offline_session_contexts(
     need_relate: bool,
     need_arm_c: bool,
     as_of_sha: str,
+    query_hint: str | None = None,
 ) -> tuple[str, str]:
     full = reader in FULL_READERS
     labels = visibility_map(wt, reader, ["knowledge-base/**"], who="track-r-runner")
@@ -362,7 +382,7 @@ def _build_offline_session_contexts(
         labels,
         full=full,
         reader=reader,
-        query_hint=items_txt[:400],
+        query_hint=(query_hint or items_txt)[:400],
         backend=rel_backend,
         graph=graph,
     )
@@ -380,6 +400,8 @@ def _prepare_worktree(
     reader: str,
     need_relate: bool,
     need_arm_c: bool,
+    mutate: Callable[[Path], None] | None = None,
+    query_hint: str | None = None,
 ) -> _PreparedWorktree:
     dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     is_git_wt = False
@@ -405,6 +427,9 @@ def _prepare_worktree(
         cand = (dest / rel_excl).resolve()
         if cand.is_relative_to(dest.resolve()) and cand.is_file():
             cand.unlink()
+    if mutate is not None:
+        # Applied before any snapshot or session context is built, so every arm sees the same vault.
+        mutate(dest)
 
     _install_worktree_scoutctl(dest)
     (dest / ".scout-cache").mkdir(mode=0o700, exist_ok=True)
@@ -420,6 +445,7 @@ def _prepare_worktree(
         need_relate=need_relate,
         need_arm_c=need_arm_c,
         as_of_sha=as_of_sha,
+        query_hint=query_hint,
     )
     return _PreparedWorktree(
         path=dest,
@@ -470,6 +496,35 @@ def _run_one_qa_session(
     reader: str,
     extra_pythonpath: str | None,
 ) -> tuple[str, list[str], SampleMetrics | None, dict[str, Any] | None]:
+    return run_eval_session(
+        f"track-r-{item.id}-{arm.id}",
+        build_track_r_prompt(item, arm),
+        arm,
+        prep=prep,
+        sample_dir=sample_dir,
+        real_claude=real_claude,
+        model=model,
+        budget=budget,
+        timeout_s=timeout_s,
+        reader=reader,
+        extra_pythonpath=extra_pythonpath,
+    )
+
+
+def run_eval_session(
+    name: str,
+    prompt: str,
+    arm: ArmSpec,
+    *,
+    prep: _PreparedWorktree,
+    sample_dir: Path,
+    real_claude: str,
+    model: str,
+    budget: str,
+    timeout_s: int,
+    reader: str,
+    extra_pythonpath: str | None,
+) -> tuple[str, list[str], SampleMetrics | None, dict[str, Any] | None]:
     _stage_arm_on_worktree(prep, arm)
     sample_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(sample_dir, 0o700)
@@ -504,7 +559,6 @@ def _run_one_qa_session(
         SCOUT_KB_GRAPH_CONTEXT="1" if arm.precompute_graph_context else "0",
         SCOUT_EVAL_EXTRA_ALLOW_WRITE=os.pathsep.join([str(wt / ".scout-cache"), str(wt / ".scout-logs")]),
     )
-    prompt = build_track_r_prompt(item, arm)
     safe_write.atomic_write_text(sample_dir / "prompt.txt", prompt, mode=0o600)
 
     timed_out = False
@@ -514,7 +568,7 @@ def _run_one_qa_session(
             [
                 str(SHIM),
                 "--name",
-                f"track-r-{item.id}-{arm.id}",
+                name,
                 "--max-budget-usd",
                 budget,
                 "-p",
@@ -733,6 +787,8 @@ def run_track_r(
                         **grade,
                         "tool_calls": metrics.tool_call_count if metrics is not None else 0,
                         "graph_verb_calls": graph_verb_calls(calls),
+                        "graph_verb_breakdown": graph_verb_breakdown(calls),
+                        "graph_context_reads": graph_context_reads(calls),
                         "verb_uptake": verb_uptake_rate([calls]) if calls else 0.0,
                         "input_tokens": metrics.input_tokens if metrics is not None else 0,
                         "output_tokens": metrics.output_tokens if metrics is not None else 0,

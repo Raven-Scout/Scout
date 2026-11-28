@@ -295,3 +295,55 @@ def verb_uptake_rate(samples_calls: Sequence[Sequence[ToolCall]]) -> float:
         return 0.0
     used = sum(1 for calls in samples_calls if graph_verb_calls(calls) > 0)
     return used / len(samples_calls)
+
+
+# One name per verb, so a report can tell ranked search (which needs no graph engine) apart
+# from the traversal verbs. ``path`` is the older spelling of ``paths``.
+_VERB_NAME_RE = re.compile(r"\bscoutctl\s+kb\s+(neighbors|paths|path|traverse|related|backlinks|link-gaps|search)\b")
+GRAPH_VERB_NAMES = ("search-ranked", "neighbors", "paths", "traverse", "related", "backlinks", "link-gaps")
+_SESSION_CONTEXT = "session-context.json"
+_GRAPH_CONTEXT_KEY = re.compile(r"graph_context")
+
+
+def graph_verb_breakdown(calls: Sequence[ToolCall]) -> dict[str, int]:
+    """Count each graph verb a sample called, keyed by :data:`GRAPH_VERB_NAMES` (gate-denied calls excluded)."""
+    out = dict.fromkeys(GRAPH_VERB_NAMES, 0)
+    for c in calls:
+        if not is_graph_verb_call(c):
+            continue
+        m = _VERB_NAME_RE.search(str(c.input.get("command", "")))
+        if m is None:
+            continue
+        verb = m.group(1)
+        if verb == "search":
+            verb = "search-ranked"
+        elif verb == "path":
+            verb = "paths"
+        out[verb] += 1
+    return out
+
+
+def traversal_verb_calls(calls: Sequence[ToolCall]) -> int:
+    """Graph verb calls other than ``kb search --ranked``: the ones only a graph answers."""
+    return sum(n for verb, n in graph_verb_breakdown(calls).items() if verb != "search-ranked")
+
+
+def graph_context_reads(calls: Sequence[ToolCall]) -> int:
+    """Calls that opened ``session-context.json`` (a ``Read``, or a Bash command naming it) without being denied.
+
+    A Bash command that names the file only counts when it also names ``graph_context`` or reads
+    the whole file (no key filter), so a ``jq .project_knowledge`` probe isn't credited to Arm C.
+    """
+    n = 0
+    for c in calls:
+        if c.is_error or c.gate is not None or c.denied:
+            continue
+        if c.name == "Read" and str(c.input.get("file_path", "")).endswith(_SESSION_CONTEXT):
+            n += 1
+        elif c.name == "Bash":
+            cmd = str(c.input.get("command", ""))
+            if _SESSION_CONTEXT not in cmd:
+                continue
+            if _GRAPH_CONTEXT_KEY.search(cmd) or not re.search(r"\bjq\b|\[\s*['\"]\w+['\"]\s*\]", cmd):
+                n += 1
+    return n
