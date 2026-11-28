@@ -273,7 +273,10 @@ BUILT = [
 @pytest.mark.parametrize(
     ("command", "category"),
     [
-        ('sed "r $(echo knowledge-base/a.md)" docs/a.md', "command_output"),  # a path the shell fills in
+        (
+            'sed "r $(head -1 docs/a.md)" docs/a.md',
+            "command_output",
+        ),  # a path the shell fills in (an echo'd one is placed)
         ("awk 'BEGIN{getline l < ENVIRON[\"F\"]; print l}'", "unset_variable"),  # F set neither here nor in the run
     ],
 )

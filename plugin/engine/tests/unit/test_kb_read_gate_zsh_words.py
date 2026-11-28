@@ -327,7 +327,6 @@ def test_a_ugrep_only_form_reaches_python_and_is_judged_as_written_plainly(
 
 
 @pytest.mark.parametrize(("command", "where", "plain"), AS_UGREP)
-@pytest.mark.xfail(strict=True, reason="the run's grep is ugrep: denied once #820 models it; drop this mark then")
 def test_a_ugrep_only_form_is_denied(home: Path, command: str, where: str, plain: str) -> None:
     assert _denied(_gate(home, command, where))
     assert _denied(_gate(home, plain, where))
@@ -398,12 +397,11 @@ def test_an_ordinary_command_is_still_allowed(home: Path, command: str) -> None:
 @pytest.mark.parametrize(
     "command",
     [
-        "grep -n x file.py",
+        # (No grep here: every run grep goes to Python, the run's grep being ugrep: test_kb_read_gate_shell_shadows.)
         "ls plugin",
         "ls docs",
         "git status",
         "cat 'docs/a.md'",
-        'grep -n "a b" file.py',
         "ls docs\nls\tplugin",  # JSON's \n and \t are no backslash in the command
         "git log --format='%h %s' -3",
     ],

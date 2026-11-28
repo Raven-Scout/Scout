@@ -240,15 +240,27 @@ COMMAND_WORDS = (
 # pattern checks below compare prefilter.sh against the frozen pattern with these applied, and the
 # end-to-end runs accept a difference only on a command the edit is about.
 ALIAS_REASON = "the search tools' other names (ug, fdfind, ack-grep) are recursive reads too (#791)"
+GREP_REASON = (
+    "a run's bare grep is the shell snapshot's ugrep, which reads a folder it's given without -r and recurses"
+    " for -NUM, --depth, --index or a glob with a /: every grep goes to Python"
+)
+GREP_ALT = "[ef]?grep[^;&|]* (-[A-Za-z]*[rR]|--(dereference-)?recursive|-d *recurse|--directories=recurse)"
 PATTERN_EDITS: tuple[tuple[str, str, str], ...] = (
     (
         "(rg|find|tree|du|ag|ack|fd|ugrep)",
         "(rg|find|tree|du|ag|ack|ack-grep|fd|fdfind|ugrep|ug)",
         ALIAS_REASON,
     ),
+    (
+        GREP_ALT,
+        GREP_ALT + r"|(^|[^A-Za-z0-9_.-]|\\[nt])[ef]?grep([^A-Za-z0-9_./-]|$)",
+        GREP_REASON,
+    ),
 )
 # A command that names one of those aliases where the word list looks for a program.
 ALIAS_WORD = re.compile(r"(^|[^A-Za-z0-9_.-]|\\[nt])(ack-grep|fdfind|ug)([^A-Za-z0-9_./-]|$)")
+# A command with a grep in it: every one goes to Python now.
+GREP_WORD = re.compile(r"(^|[^A-Za-z0-9_.-]|\\[nt])[ef]?grep([^A-Za-z0-9_./-]|$)")
 
 
 def _edited(pattern: str) -> str:
@@ -274,6 +286,8 @@ def _intended(case: Case) -> str | None:
         return INTENDED_DIFFERENCES[case.id]
     if case.entry == "kb-read-gate" and ALIAS_WORD.search(case.payload):
         return ALIAS_REASON
+    if case.entry == "kb-read-gate" and GREP_WORD.search(case.payload):
+        return GREP_REASON
     if case.entry in PAYLOAD_CWD and not case.payload.lstrip().startswith("{"):
         return NO_CWD_TO_READ
     return None
@@ -1065,7 +1079,9 @@ def test_bash_corpus_matches_the_old_pattern_plus_the_expansions_exactly() -> No
     assert old < new  # the widening widened
     # The intended edits move a line only towards Python, and only for a command they are about.
     assert old <= edited, sorted(corpus[n - 1] for n in old - edited)
-    assert [corpus[n - 1] for n in edited - old if not ALIAS_WORD.search(values[n - 1])] == []
+    assert [
+        corpus[n - 1] for n in edited - old if not (ALIAS_WORD.search(values[n - 1]) or GREP_WORD.search(values[n - 1]))
+    ] == []
     assert edited - old  # the corpus does hold the aliases
     # The corpus exercises both answers, or the comparison above proves little.
     assert len(old) > 300 and len(values) - len(new) > 300
@@ -1269,7 +1285,8 @@ def test_the_old_filter_let_the_reviews_forms_through() -> None:
 
 
 def test_harmless_neighbours_stay_in_the_shell(world: World) -> None:
-    assert [c for c in NOT_EXPANSIONS if _judged(world, c)] == []
+    # A grep goes to Python for its own reason now (GREP_REASON), whatever the expansions say.
+    assert [c for c in NOT_EXPANSIONS if _judged(world, c) and not GREP_WORD.search(c)] == []
 
 
 @pytest.mark.parametrize("shell", ["sh", "/bin/bash"])

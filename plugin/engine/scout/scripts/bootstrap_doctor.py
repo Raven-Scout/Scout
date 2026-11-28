@@ -1624,6 +1624,13 @@ def run_doctor(
         probe_warnings, probe_notes = _check_gate_probe(vault=vault)
         warnings.extend(protection(probe_warnings))
         notes.extend(probe_notes)
+        # Which programs Claude Code's shell snapshot runs for a run's grep and find, against what the gate models.
+        if "claude-code" in runtimes:
+            from scout.kb import shell_shadows
+
+            shadow_warnings, shadow_notes = shell_shadows.check(home)
+            warnings.extend(protection(shadow_warnings))
+            notes.extend(shadow_notes)
         # Whether those runs are kept from writing what decides which gates run (OS write sandbox, Phase 1c).
         sandbox_warnings, sandbox_notes = _check_run_sandbox(vault=vault, home=home)
         warnings.extend(protection(sandbox_warnings))
