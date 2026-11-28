@@ -10,13 +10,13 @@ working directory > ``~/Scout``.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
 import typer
 
 from scout.errors import LabError
+from scout.lab.model import HANDLE_RE, RESERVED_HANDLE
 
 app = typer.Typer(help="The Lab: research threads, questions and experiments.", no_args_is_help=True)
 question_app = typer.Typer(help="Questions on a thread.", no_args_is_help=True)
@@ -30,8 +30,8 @@ app.add_typer(evidence_app, name="evidence")
 app.add_typer(timeline_app, name="timeline")
 app.add_typer(experiment_app, name="experiment")
 
-_HANDLE_RE = re.compile(r"[A-Za-z][A-Za-z0-9._-]*")
-_RESERVED_HANDLE = "scout"
+_HANDLE_RE = HANDLE_RE
+_RESERVED_HANDLE = RESERVED_HANDLE
 
 _AuthorOpt = typer.Option(..., "--author", help="Handle of the person acting ([A-Za-z][A-Za-z0-9._-]*; not 'scout').")
 _ReasonOpt = typer.Option(None, "--reason", help="Why (recorded on the timeline).")
@@ -438,11 +438,19 @@ def cli_experiment_plan(
     question: list[str] = typer.Option(..., "--question", help="A question ID this answers (repeatable)."),
     file: Path = typer.Option(..., "--file", help="UTF-8 markdown body (## Hypothesis, ## Method, ## Data)."),
     cap: float | None = typer.Option(None, "--cap", help="Cost cap in USD."),
+    timeout_hours: float | None = typer.Option(None, "--timeout-hours", help="Longest the run may take, in hours."),
+    model: list[str] = typer.Option([], "--model", help="A model to fetch, as REPO@REVISION (repeatable)."),
+    disk_budget: int | None = typer.Option(None, "--disk-budget", help="Disk the run may use, in bytes."),
 ) -> None:
     """Plan an experiment; prints 'ok <slug> plan <EID>'."""
     from scout.lab import experiments
 
-    exp = experiments.plan(_vault(ctx), slug, short, title, list(question), _read_text(file), cap)
+    exp = experiments.plan(
+        _vault(ctx), slug, short, title, list(question), _read_text(file), cap,
+        timeout_hours=timeout_hours,
+        models=[experiments.parse_model_flag(m) for m in model],
+        disk_budget_bytes=disk_budget,
+    )  # fmt: skip
     _ok(slug, f"plan {exp.eid}")
 
 
@@ -480,6 +488,9 @@ def cli_experiment_run(
     timeout: int | None = typer.Option(
         None, "--timeout", min=1, help="Seconds; only lowers the owner's timeout, never raises it."
     ),
+    detach: bool = typer.Option(
+        False, "--detach", help="Start it under a supervisor and return; `lab experiment collect` reads the result."
+    ),
 ) -> None:
     """Run a running experiment's script in the experiment sandbox.
 
@@ -489,16 +500,63 @@ def cli_experiment_run(
     until the owner sets `"experiments_enabled": true` in its config.json. Exits with the script's exit;
     2 refused; 4 not run (no broker answered, or experiments are off); 5 this run's experiments are used.
     The last stderr line is `experiment ran: exit <n>`, `experiment refused: <reason>` or
-    `experiment not run: <reason>`.
+    `experiment not run: <reason>`. With --detach (off until the owner sets `detached_max_hours` and
+    `max_detached`) it is `experiment started: detached` once the supervisor is running; the deadline is the
+    plan's `timeout_hours`, at most the owner's `detached_max_hours`.
     """
     import os
 
     from scout.sandbox import broker
 
     env = {**os.environ, "SCOUT_DATA_DIR": str(_vault(ctx))}
-    code = broker.client_experiment(slug, eid, list(command), env=env, timeout_s=timeout)
+    if detach:
+        code = broker.client_experiment(slug, eid, list(command), env=env, timeout_s=timeout, detach=True)
+    else:
+        code = broker.client_experiment(slug, eid, list(command), env=env, timeout_s=timeout)
     if code:
         raise typer.Exit(code)
+
+
+@experiment_app.command("collect")
+def cli_experiment_collect(
+    ctx: typer.Context,
+    slug: str = typer.Argument(...),
+    eid: str = typer.Argument(..., metavar="EID"),
+) -> None:
+    """Where a detached experiment stands.
+
+    In a scheduled run the run's broker answers; in the owner's own session this process reads the owner's
+    record. The last stderr line is `experiment ran: exit <n>` (the script's exit and output tails follow the
+    attached run's), `experiment running: <elapsed> of <deadline>` (exit 0) or `experiment not run: <reason>`
+    (exit 4). A supervisor that is gone without a result (a restart, a kill) has its script's processes swept
+    first and is then `not run`.
+    """
+    import os
+
+    from scout.sandbox import broker
+
+    env = {**os.environ, "SCOUT_DATA_DIR": str(_vault(ctx))}
+    code = broker.client_collect(slug, eid, env=env)
+    if code:
+        raise typer.Exit(code)
+
+
+@experiment_app.command("stop")
+def cli_experiment_stop(
+    ctx: typer.Context,
+    slug: str = typer.Argument(...),
+    eid: str = typer.Argument(..., metavar="EID"),
+    author: str = _AuthorOpt,
+) -> None:
+    """Owner verb: stop a detached experiment without vetoing it; its outcome is `stopped by the owner`."""
+    import os
+
+    from scout.lab import runs
+
+    signalled = runs.request_stop(_vault(ctx), slug, eid, os.environ, _handle(author))
+    _ok(slug, f"stop {eid}")
+    if not signalled:
+        typer.echo(runs.STOP_PENDING, err=True)
 
 
 @experiment_app.command("call")

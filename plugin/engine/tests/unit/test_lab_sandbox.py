@@ -125,6 +125,35 @@ def test_profile_refuses_a_path_sbpl_cant_carry(tmp_path: Path) -> None:
             sandbox.experiment_profile(tmp_path, tmp_path / ".tmp", Path("/tmp/s"), [], [], env={}, deny_access=[bad])
 
 
+def test_profile_allows_the_named_revision_only(tmp_path: Path) -> None:
+    """The weights cache (spec §6.4) sits under the owner's home, which is denied by default (R32): the named revision
+    of a model comes back to read, nothing else under the cache does, and none of it may be written."""
+    from scout.lab import weights
+
+    env = {"HOME": str(tmp_path / "home")}
+    root = weights.cache_root(env)
+    named, other = root / "a" / "b" / ("1" * 40), root / "a" / "b" / ("2" * 40)
+    for folder in (named, other):
+        folder.mkdir(parents=True)
+        (folder / "x.safetensors").write_bytes(b"w")
+    exp = tmp_path / "exp"
+    (exp / ".tmp").mkdir(parents=True)
+    rules = sandbox.experiment_file_rules(exp, exp / ".tmp", [], env=env, weights_dirs=[named])
+    real = os.path.realpath
+    assert profile.decide(rules, real(named / "x.safetensors"), "read") == "allow"
+    assert profile.decide(rules, real(other / "x.safetensors"), "read") == "deny"
+    assert profile.decide(rules, real(root / "index.json"), "read") == "deny"
+    for path in (named / "x.safetensors", named / "new.bin", other / "x.safetensors", root / "index.json"):
+        assert profile.decide(rules, real(path), "write") == "deny", path
+        assert profile.decide(rules, real(path), "unlink") == "deny", path
+    text = sandbox.experiment_profile(exp, exp / ".tmp", Path("/tmp/s"), [], [], env=env, weights_dirs=[named])
+    # The kernel's text says the same: denied to write after the write allow-backs, read back after the home deny.
+    write_deny, read_back = text.index(f'(subpath "{real(named)}")'), text.rindex(f'(subpath "{real(named)}")')
+    assert text.index("(allow file-write*") < write_deny < text.index(f'(subpath "{real(tmp_path / "home")}")')
+    assert text.index(f'(subpath "{real(tmp_path / "home")}")') < read_back
+    assert text.rindex("(allow file-read-data", 0, read_back) > text.index(f'(subpath "{real(tmp_path / "home")}")')
+
+
 def test_committed_files_are_sealed_after_every_allow(tmp_path: Path) -> None:
     """R34: each op is denied after the experiment folder's allow-backs, file-read-data by name (a rule naming the
     operation wins over a later file-read* one)."""
@@ -138,6 +167,58 @@ def test_committed_files_are_sealed_after_every_allow(tmp_path: Path) -> None:
     for op in sandbox.SEALED_OPS:
         form = text.index(f"(deny {op}\n  (literal {profile._quote(sealed)})")
         assert form > last_allow, op
+
+
+# --- the owner's GPU switch (spec §6.4, §14b; ruling P2-R11) -------------------------------------------------------
+
+# The experiment profile as it was rendered before the GPU switch existed, for the inputs of _fixed_profile, with
+# the test's temp folder spelled <TMP>: the gpu-on profile must still be exactly this.
+TODAYS_PROFILE = h.FIXTURES / "experiment-profile-gpu-on.sb"
+AGX_DENY = '(deny iokit-open-user-client (iokit-user-client-class "AGXDeviceUserClient"))'
+
+
+def _fixed_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **kw: object) -> str:
+    """A profile whose every varying path is under ``tmp_path`` (its HOME and the account's included), with that
+    folder spelled ``<TMP>``."""
+    from scout.kb import hook_paths
+
+    for name in ("home", "account", "exp/.tmp", "kb/private", "vault", "state", "sock"):
+        (tmp_path / name).mkdir(parents=True, exist_ok=True)
+    (tmp_path / "kb" / "p.md").write_text("x")
+    (tmp_path / "probe").write_text("")
+    monkeypatch.setattr(hook_paths, "account_home", lambda: tmp_path / "account")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    exp = tmp_path / "exp"
+    text = sandbox.experiment_profile(
+        exp, exp / ".tmp", tmp_path / "sock" / "m.sock", [tmp_path / "kb" / "p.md", tmp_path / "kb" / "private"], [],
+        env={"HOME": str(tmp_path / "home"), "PATH": "/usr/bin:/bin"}, probe_file=tmp_path / "probe",
+        allow_reads=[tmp_path / "vault"], deny_read_dirs=[tmp_path / "state"], deny_access=[exp / "run.py"],
+        **kw,  # type: ignore[arg-type]
+    )  # fmt: skip
+    return text.replace(os.path.realpath(tmp_path), "<TMP>")
+
+
+def test_gpu_on_profile_is_todays(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the owner's GPU switch on, nothing is added: allow-default already lets PyTorch's Metal backend run."""
+    assert _fixed_profile(tmp_path, monkeypatch, gpu=True) == TODAYS_PROFILE.read_text(encoding="utf-8")
+
+
+def test_gpu_off_adds_only_the_agx_deny(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Off (the engine default, and what a caller that says nothing gets): today's profile and one line, last."""
+    assert sandbox.GPU_OFF_RULES == (AGX_DENY,)
+    today = TODAYS_PROFILE.read_text(encoding="utf-8")
+    assert _fixed_profile(tmp_path, monkeypatch, gpu=False) == today + AGX_DENY + "\n"
+    assert _fixed_profile(tmp_path, monkeypatch) == today + AGX_DENY + "\n"
+
+
+def test_gpu_rules_open_no_files_or_network() -> None:
+    """The switch's rules only ever take away: no allow, and nothing about files, the network, exec or services."""
+    assert sandbox.GPU_OFF_RULES
+    assert not hasattr(sandbox, "GPU_RULES")  # nothing is opened for the GPU (§14b)
+    for rule in sandbox.GPU_OFF_RULES:
+        assert rule.startswith("(deny ") and "(allow" not in rule, rule
+        for op in ("file-", "network", "process-exec", "mach-lookup", "signal", "process-info"):
+            assert op not in rule, (op, rule)
 
 
 # --- against the kernel ------------------------------------------------------------------------

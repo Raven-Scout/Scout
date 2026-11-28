@@ -231,3 +231,128 @@ def test_propose_close_prints_ok_and_writes_the_comment(vault: Path) -> None:
     assert result.exit_code == 0, result.output
     assert result.stdout.strip() == "ok summary-drift propose-close"
     assert "Proposing to close: all questions answered" in _front(vault)
+
+
+# --- detached runs (spec §6.4) ---------------------------------------------------------------------------------
+
+
+def _detached_record(vault: Path, outcome: dict[str, object] | None = None) -> Path:
+    import os
+
+    from scout.lab import runs
+
+    path = runs.record_path(vault, "summary-drift", "E2", os.environ)
+    started, deadline = "2026-11-21T10:00:00+00:00", "2026-11-21T22:00:00+00:00"
+    runs.write(path, runs.RunRecord(started, deadline, os.getpid(), outcome=outcome))
+    return path
+
+
+def test_collect_without_a_broker_reads_the_record(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _detached_record(vault, {"status": "ran", "exit": 0, "stdout_tail": "result\n", "stderr_tail": ""})
+    code, out, err = _main(monkeypatch, capsys, "experiment", "collect", "summary-drift", "E2")
+    assert code == 0 and "result" in out
+    assert err.rstrip("\n").splitlines()[-1] == "experiment ran: exit 0"
+    _detached_record(vault, {"status": "not run", "reason": "stopped by the owner"})
+    code, _, err = _main(monkeypatch, capsys, "experiment", "collect", "summary-drift", "E2")
+    assert code == 4 and err.rstrip("\n").splitlines()[-1] == "experiment not run: stopped by the owner"
+
+
+def test_collect_in_a_scheduled_run_without_a_broker_is_not_run(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _detached_record(vault, {"status": "ran", "exit": 0})
+    monkeypatch.setenv("SCOUT_MODE", "research")
+    code, _, err = _main(monkeypatch, capsys, "experiment", "collect", "summary-drift", "E2")
+    assert code == 4 and err.rstrip("\n").splitlines()[-1].startswith("experiment not run: ")
+
+
+def test_stop_signals_the_supervisor(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+    import signal
+
+    from scout.lab import runner as lab_runner
+    from scout.lab import runs
+
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(runs, "_kill", lambda pid, sig: sent.append((pid, sig)))
+    path = _detached_record(vault)
+    with lab_runner._run_lock(vault, "summary-drift", "E2", os.environ):  # the "supervisor" holds its run lock
+        result = _run("experiment", "stop", "summary-drift", "E2", "--author", "alex")
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == "ok summary-drift stop E2"
+    assert (os.getpid(), signal.SIGTERM) in sent
+    assert runs.stop_path(path).is_file()  # what makes the supervisor's SIGTERM the owner's stop
+
+
+def test_stop_without_a_live_supervisor_is_refused(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from scout.lab import runs
+
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(runs, "_kill", lambda pid, sig: sent.append((pid, sig)))
+    code, _, err = _main(monkeypatch, capsys, "experiment", "stop", "summary-drift", "E2", "--author", "alex")
+    assert code == 2 and "no detached run" in err
+    _detached_record(vault)  # no outcome, but nothing holds the lock: gone
+    code, _, err = _main(monkeypatch, capsys, "experiment", "stop", "summary-drift", "E2", "--author", "alex")
+    assert code == 2 and "isn't running" in err and sent == []
+    code, _, err = _main(monkeypatch, capsys, "experiment", "stop", "summary-drift", "E2", "--author", "scout")
+    assert code == 2
+
+
+def test_stop_that_cant_write_its_request_is_refused_cleanly(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import os
+
+    from scout.lab import runner as lab_runner
+    from scout.lab import runs
+
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(runs, "_kill", lambda pid, sig: sent.append((pid, sig)))
+    path = _detached_record(vault)
+    runs.stop_path(path).mkdir()  # the stop request can't be written there
+    with lab_runner._run_lock(vault, "summary-drift", "E2", os.environ):
+        code, _, err = _main(monkeypatch, capsys, "experiment", "stop", "summary-drift", "E2", "--author", "alex")
+    assert code == 2 and "cannot write the stop request" in err and "Traceback" not in err
+    assert all(sig == 0 for _, sig in sent)  # nothing was stopped
+
+
+def test_a_stop_whose_signal_fails_is_pending(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The stop request is written, so the supervisor stops at its next poll even when SIGTERM can't reach it."""
+    import os
+
+    from scout.lab import runner as lab_runner
+    from scout.lab import runs
+
+    def kill(pid: int, sig: int) -> None:
+        if sig:
+            raise PermissionError("not permitted")
+
+    monkeypatch.setattr(runs, "_kill", kill)
+    path = _detached_record(vault)
+    with lab_runner._run_lock(vault, "summary-drift", "E2", os.environ):
+        code, out, err = _main(monkeypatch, capsys, "experiment", "stop", "summary-drift", "E2", "--author", "alex")
+    assert code == 0, err
+    assert out.strip() == "ok summary-drift stop E2"
+    assert "the stop is pending: the supervisor will stop at its next check" in err
+    assert runs.stop_path(path).is_file()
+
+
+def test_run_detach_reaches_the_client(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scout.sandbox import broker
+
+    seen: dict[str, object] = {}
+
+    def fake_client(slug: str, eid: str, argv: list[str], env: object = None, **kw: object) -> int:
+        seen.update(kw)
+        return 0
+
+    monkeypatch.setattr(broker, "client_experiment", fake_client)
+    result = _run("experiment", "run", "summary-drift", "E2", "--detach", "--", "./run.sh")
+    assert result.exit_code == 0, result.output
+    assert seen == {"timeout_s": None, "detach": True}

@@ -6,6 +6,7 @@
   "schema_version": 1,
   "threads": [
     {
+      "checkpoint_bytes": 0,
       "counts": {
         "answered": 1,
         "dropped": 1,
@@ -18,7 +19,8 @@
         "planned": [
           "E2"
         ],
-        "running": []
+        "running": [],
+        "running_detail": []
       },
       "last_run": "2026-11-21T01:11",
       "path": "knowledge-base/lab/summary-drift/summary-drift.md",

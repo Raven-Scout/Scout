@@ -65,3 +65,73 @@ def test_contract_carries_no_absolute_paths(tmp_path: Path) -> None:
     for doc in docs:
         text = json.dumps(doc)
         assert str(vault) not in text and "/Users/" not in text
+
+
+def test_contract_checkpoint_bytes(tmp_path: Path) -> None:
+    """Every thread row carries ``checkpoint_bytes`` (0 for the fixture thread, which has no checkpoints), and
+    the canonical fixture the app reads says so."""
+    canonical = json.loads(CANONICAL_LIST.read_text(encoding="utf-8"))
+    assert [t["checkpoint_bytes"] for t in canonical["threads"]] == [0]
+    vault = _vault(tmp_path)
+    folder = paths.thread_dir(vault, "summary-drift") / "experiments" / "summary-drift-E1-baseline" / "checkpoints"
+    (folder / "deep").mkdir(parents=True)
+    (folder / "a.bin").write_bytes(b"x" * 1000)
+    (folder / "deep" / "b.bin").write_bytes(b"y" * 234)
+    (folder / "link.bin").symlink_to(folder / "a.bin")  # a link is neither followed nor counted
+    other = paths.thread_dir(vault, "summary-drift") / "experiments" / "summary-drift-E1-baseline" / "out.bin"
+    other.write_bytes(b"z" * 77)  # not under checkpoints/: not counted
+    [row] = summary.lab_list(vault, None, full=True, now=NOW)["threads"]
+    assert row["checkpoint_bytes"] == 1000 + 234
+
+
+def test_checkpoint_bytes_leave_out_what_a_partial_reader_may_not_see(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    thread = paths.thread_dir(vault, "summary-drift")
+    for eid_dir, size in (("summary-drift-E1-baseline", 100), ("summary-drift-E2-section-hash", 50)):
+        folder = thread / "experiments" / eid_dir / "checkpoints"
+        folder.mkdir(parents=True)
+        (folder / "w.bin").write_bytes(b"x" * size)
+        os.link(folder / "w.bin", folder / "same-inode.bin")  # one inode: counted once
+    front = "knowledge-base/lab/summary-drift/summary-drift.md"
+    e1 = "knowledge-base/lab/summary-drift/experiments/summary-drift-E1-baseline.md"
+    e2 = "knowledge-base/lab/summary-drift/experiments/summary-drift-E2-section-hash.md"
+    both = summary.lab_list(vault, {front: "normal", e1: "normal", e2: "normal"}, full=False, now=NOW)
+    assert both["threads"][0]["checkpoint_bytes"] == 150
+    partial = summary.lab_list(vault, {front: "normal", e1: "normal", e2: "private"}, full=False, now=NOW)
+    assert partial["threads"][0]["checkpoint_bytes"] == 100
+    full = summary.lab_list(vault, None, full=True, now=NOW)
+    assert full["threads"][0]["checkpoint_bytes"] == 150
+
+
+CANONICAL_DETACHED = FIXTURES / "contract" / "lab-list-detached.json"
+
+
+def test_contract_running_detached(tmp_path: Path) -> None:
+    """A running experiment carries ``detached``, ``elapsed`` and ``deadline`` in ``running_detail``; the canonical
+    copy with one detached run is ``lab-list-detached.json``."""
+    from datetime import timedelta
+
+    from scout.lab import runs
+
+    vault = _vault(tmp_path / "vault")
+    front = paths.front_page(vault, "summary-drift")
+    text = front.read_text(encoding="utf-8")
+    running = text.replace("· planned · runs after 2026-11-21 13:00", "· running · started 2026-11-21 10:55")
+    assert running != text
+    front.write_text(running, encoding="utf-8")
+    env = {"HOME": str(tmp_path / "home")}
+    started = NOW - timedelta(hours=1, minutes=5)
+    rec = runs.RunRecord(started.isoformat(), (started + timedelta(hours=12)).isoformat(), 1)
+    runs.write(runs.record_path(vault, "summary-drift", "E2", env), rec)
+    labels = {rel: "normal" for rel in SEEN}
+    doc = summary.lab_list(vault, labels, full=False, now=NOW, env=env)
+    [row] = doc["threads"]
+    assert row["experiments"]["running"] == ["E2"]
+    assert row["experiments"]["running_detail"] == [
+        {"eid": "E2", "detached": True, "elapsed": "1h05m", "deadline": "12h00m", "finished": False}
+    ]
+    _check_or_regen(CANONICAL_DETACHED, _text(doc))
+    attached = summary.lab_list(vault, labels, full=False, now=NOW, env={"HOME": str(tmp_path / "other")})
+    assert attached["threads"][0]["experiments"]["running_detail"] == [
+        {"eid": "E2", "detached": False, "elapsed": None, "deadline": None, "finished": None}
+    ]

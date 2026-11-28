@@ -7,11 +7,13 @@ all gates into a pure decide() function for testability.
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from scout.lab import ops, paths, summary
 from scout.scripts.heartbeat import (
     DEFAULT_OFF_PEAK_END,
     DEFAULT_OFF_PEAK_START,
@@ -21,8 +23,7 @@ from scout.scripts.heartbeat import (
     in_off_peak,
     load_config,
     read_tracker_stats,
-    research_queue_has_open,
-    research_queue_has_unchecked,
+    research_wanted,
 )
 
 # ----- helpers ------------------------------------------------------------
@@ -132,79 +133,77 @@ def test_in_off_peak_default_window() -> None:
     assert not in_off_peak(22, cfg)
 
 
-# ----- research queue ---------------------------------------------------
+# ----- research_wanted (lab state) ----------------------------------------
+
+LAB_FIXTURES = Path(__file__).parent.parent / "fixtures" / "lab"
 
 
-def test_research_queue_has_unchecked_true(tmp_path: Path) -> None:
-    q = tmp_path / "research-queue.md"
-    q.write_text("# queue\n- [x] done\n- [ ] todo\n")
-    assert research_queue_has_unchecked(q)
+def _proposal(vault: Path, slug: str, *, status: str = "proposed", visibility: str = "normal") -> None:
+    """A thread with no comments or experiments, in the given status."""
+    ops.propose(vault, slug, f"Thread {slug}", "Does it hold?", ["Why?"], [("a.md", "why")], visibility)
+    if status != "proposed":
+        front = paths.front_page(vault, slug)
+        front.write_text(front.read_text(encoding="utf-8").replace("status: proposed", f"status: {status}", 1))
 
 
-def test_research_queue_has_unchecked_false(tmp_path: Path) -> None:
-    q = tmp_path / "research-queue.md"
-    q.write_text("# queue\n- [x] done only\n")
-    assert not research_queue_has_unchecked(q)
+def _five_proposals(vault: Path) -> None:
+    for n in range(5):
+        _proposal(vault, f"idea-{n}")
 
 
-def test_research_queue_has_unchecked_missing_file(tmp_path: Path) -> None:
-    assert not research_queue_has_unchecked(tmp_path / "absent.md")
+def test_research_wanted_without_a_lab_dir(tmp_path: Path) -> None:
+    assert research_wanted(tmp_path) is True
 
 
-# ----- research queue (per-file, status frontmatter) --------------------
+def test_research_not_wanted_with_five_open_proposals_and_nothing_else(tmp_path: Path) -> None:
+    _five_proposals(tmp_path)
+    assert research_wanted(tmp_path) is False
 
 
-def _write_queue_item(vault: Path, name: str, status: str) -> Path:
-    queue_dir = vault / "knowledge-base" / "research-queue"
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    item = queue_dir / name
-    item.write_text(f"---\ntitle: {name}\nstatus: {status}\npriority: high\ndate: 2026-06-10\n---\n\n# {name}\nbody\n")
-    return item
+def test_research_wanted_below_the_proposal_limit(tmp_path: Path) -> None:
+    for n in range(4):
+        _proposal(tmp_path, f"idea-{n}")
+    assert research_wanted(tmp_path) is True
 
 
-def test_research_queue_has_open_true_for_open_item(tmp_path: Path) -> None:
-    _write_queue_item(tmp_path, "2026-06-10-x.md", "open")
-    assert research_queue_has_open(tmp_path)
+def test_research_wanted_for_a_normal_active_thread(tmp_path: Path) -> None:
+    _proposal(tmp_path, "running", status="active")
+    _five_proposals(tmp_path)
+    assert research_wanted(tmp_path) is True
 
 
-def test_research_queue_has_open_true_for_in_progress_item(tmp_path: Path) -> None:
-    _write_queue_item(tmp_path, "2026-06-10-y.md", "in-progress")
-    assert research_queue_has_open(tmp_path)
+def test_research_wanted_for_an_unanswered_comment_in_a_private_paused_thread(tmp_path: Path) -> None:
+    _five_proposals(tmp_path)
+    shutil.copytree(LAB_FIXTURES / "summary-drift", paths.thread_dir(tmp_path, "summary-drift"))
+    front = paths.front_page(tmp_path, "summary-drift")
+    text = front.read_text(encoding="utf-8")
+    front.write_text(
+        text.replace("status: active", "status: paused", 1).replace("visibility: normal", "visibility: private", 1)
+    )
+    assert research_wanted(tmp_path) is True
 
 
-def test_research_queue_has_open_false_when_all_done_or_dropped(tmp_path: Path) -> None:
-    _write_queue_item(tmp_path, "2026-06-10-a.md", "done")
-    _write_queue_item(tmp_path, "2026-06-10-b.md", "dropped")
-    assert not research_queue_has_open(tmp_path)
+def test_private_active_thread_alone_does_not_want_research(tmp_path: Path) -> None:
+    _proposal(tmp_path, "quiet", status="active", visibility="private")
+    _five_proposals(tmp_path)
+    assert research_wanted(tmp_path) is False
 
 
-def test_research_queue_has_open_false_when_dir_empty(tmp_path: Path) -> None:
-    (tmp_path / "knowledge-base" / "research-queue").mkdir(parents=True)
-    assert not research_queue_has_open(tmp_path)
+def test_research_wanted_honours_the_configured_proposal_limit(tmp_path: Path) -> None:
+    _five_proposals(tmp_path)
+    (tmp_path / "scout-config.yaml").write_text("lab:\n  max_open_proposals: 6\n")
+    assert research_wanted(tmp_path) is True
 
 
-def test_research_queue_has_open_falls_back_to_legacy_file(tmp_path: Path) -> None:
-    # No per-file dir; legacy single-file with an unchecked line.
-    (tmp_path / "knowledge-base").mkdir(parents=True)
-    (tmp_path / "knowledge-base" / "research-queue.md").write_text("# queue\n- [ ] todo\n")
-    assert research_queue_has_open(tmp_path)
+def test_lab_read_error_allows_research(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def boom(*_a: object, **_k: object) -> dict:
+        raise ValueError("unreadable")
 
-
-def test_research_queue_has_open_false_when_nothing_present(tmp_path: Path) -> None:
-    assert not research_queue_has_open(tmp_path)
-
-
-def test_research_queue_has_open_dir_open_item_wins_over_completed_legacy(tmp_path: Path) -> None:
-    _write_queue_item(tmp_path, "2026-06-10-z.md", "open")
-    (tmp_path / "knowledge-base" / "research-queue.md").write_text("# queue\n- [x] done\n")
-    assert research_queue_has_open(tmp_path)
-
-
-def test_research_queue_has_open_false_when_dir_resolved_despite_legacy_unchecked(tmp_path: Path) -> None:
-    # all per-file items resolved; legacy file still has an unchecked line — dir is authoritative
-    _write_queue_item(tmp_path, "2026-06-10-a.md", "done")
-    (tmp_path / "knowledge-base" / "research-queue.md").write_text("# queue\n- [ ] legacy todo\n")
-    assert not research_queue_has_open(tmp_path)
+    monkeypatch.setattr(summary, "lab_list", boom)
+    assert research_wanted(tmp_path) is True
+    assert capsys.readouterr().err == "heartbeat: lab unreadable (ValueError); research allowed\n"
 
 
 # ----- decide() ----------------------------------------------------------
@@ -222,7 +221,7 @@ def _base_decide_args(tmp_path: Path) -> dict:
         "budget_ok": True,
         "session_already_running": False,
         "uncommitted_vault_changes": False,
-        "research_queue_open": False,
+        "research_wanted": False,
         "research_runner": _executable_runner(tmp_path, "run-research.sh"),
         "dreaming_runner": _executable_runner(tmp_path, "run-dreaming.sh"),
     }
@@ -297,7 +296,7 @@ def test_decide_picks_research_when_eligible(tmp_path: Path) -> None:
         hours_since_dreaming=5,
         hours_since_research=30,  # >= 24 trigger
     )
-    args["research_queue_open"] = True
+    args["research_wanted"] = True
     decision = decide(**args)
     assert decision.action == "launch"
     assert decision.session_type == "research"

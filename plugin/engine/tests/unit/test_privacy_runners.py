@@ -255,31 +255,6 @@ def test_kb_filter_in_an_interactive_session_reads_as_owner_and_labels(
     assert f"- [private] {BILLING}" in _kb_filter(vault).splitlines()
 
 
-# ----- heartbeat research queue ------------------------------------------------------
-
-
-def _queue_item(vault: Path, name: str, *, visibility: str | None = None, status: str = "open") -> None:
-    d = vault / "knowledge-base" / "research-queue"
-    d.mkdir(parents=True, exist_ok=True)
-    vis = f"visibility: {visibility}\n" if visibility else ""
-    (d / f"{name}.md").write_text(f"---\nstatus: {status}\n{vis}---\n\n# {name}\n", encoding="utf-8")
-
-
-def test_research_queue_ignores_a_private_open_item(vault: Path) -> None:
-    _queue_item(vault, "q-private", visibility="private")
-    _queue_item(vault, "q-done", status="done")
-    assert hb.research_queue_has_open(vault) is False
-    _queue_item(vault, "q-normal")
-    assert hb.research_queue_has_open(vault) is True
-
-
-def test_legacy_research_queue_file_that_is_private_counts_as_empty(vault: Path) -> None:
-    (vault / "knowledge-base" / "research-queue.md").write_text(
-        "---\nvisibility: private\n---\n\n- [ ] look into something\n", encoding="utf-8"
-    )
-    assert hb.research_queue_has_open(vault) is False
-
-
 # ----- drift: vault-local runners and KB readers -------------------------------------
 
 

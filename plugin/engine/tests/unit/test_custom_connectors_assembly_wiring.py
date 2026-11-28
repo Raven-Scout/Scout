@@ -168,7 +168,7 @@ def test_research_places_custom_lookups_before_deep_research(tmp_path: Path):
     assert custom_at < research.index("# PHASE 2: DEEP RESEARCH")
     # commit-notify sorts first alphabetically, so it stays above the lookups.
     assert custom_at > research.index("# PHASE 4: COMMIT & NOTIFY")
-    for later in ("# PHASE 3: KNOWLEDGE INTEGRATION", "# PHASE 1: SELECT RESEARCH TARGETS"):
+    for later in ("# PHASE 3: KNOWLEDGE INTEGRATION", "# PHASE 2E: EXPERIMENTS", "# PHASE 1: THE LAB"):
         assert custom_at < research.index(later)
 
 

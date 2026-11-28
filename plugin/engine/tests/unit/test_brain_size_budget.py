@@ -66,7 +66,27 @@ PLUGIN_ROOT = Path(__file__).parent.parent.parent.parent
 #   critical-blocks check naming governance files (+~100). RESEARCH +~440: the trailer rule and the dm-sent record.
 #   RESPOND +~100: privacy's dm-sent record only; the trailer rule is its own section, kept out of respond runs, which
 #   never change Scout itself. (Measured against main's phases at 895a11b2: 47,464 / 21,743 / 7,615 / 6,044.)
-PINS = {"SKILL": 48_138, "DREAMING": 23_954, "RESEARCH": 8_057, "RESPOND": 6_147}
+# 2026-11-25 (Lab plan 2, task 10): RESEARCH re-pinned to its measure (+~1,926). research-targets.md now chooses the
+# run's work from the lab (owner comments, due experiments, 1–2 threads, proposals, refusals) in place of the
+# research queue (+~109 net), and the new lab-experiments.md (+~1,819) is the only place a run learns to run, collect,
+# finish and plan sandboxed experiments and to read each broker status line. Spec §6, §6.4 and §7 require both.
+# (Measured after review trims: base phases at 4efb64a5 assemble to 8,055, 2 under the old pin; the parts sum to it.)
+# 2026-11-25 (Lab plan 2, task 11): RESEARCH re-pinned by this task's added text only (+423, measured 9,982 →
+# 10,405). knowledge-integration.md's Step 3d, updating each thread worked (understanding, questions, evidence, one
+# timeline entry), and Step 3c's research→Scout route (+~185, net of a tighter 3a/3b); commit-notify.md's lab wrap in
+# both Step 4d sections (threads, approvals, comments still waiting, experiments, checkpoint bytes, the Slack privacy
+# rule) and the lab paths in Step 4a (+~169, net of the old entity list and a shorter timestamp line);
+# deep-research.md's thread targets (+~17); research-targets.md's `[for research]` inbox source and its exits (+~56,
+# net of two trimmed lines). Spec §7 and §11 require all of it. The review fixes after it (the rendered
+# `{{USER_HANDLE}}`, the `[for research]` exits) were trimmed to fit: RESEARCH measures 10,406. SKILL (+~60,
+# inbox-processing.md's route into the lab) stays inside its headroom.
+# 2026-11-25 (Lab plan 2, final review): RESEARCH lowered to its measure (10,406 → 10,253). Trims that keep every
+# rule: lab-experiments.md's folder and lifecycle restatement, one-line In/Out of bounds, the shorter not-run lines
+# and the inverted collect rule; research-targets.md's Step 1a field list, Step 1f's entity scoring on one line and
+# the lab-lock rationale. Net of the review's additions: a collected `not run` is final except three exact retry
+# answers, a `killed: <flag>` line and each model's repo, revision and sha256s go in the Result, and a missing
+# `lab.python` is not run. SKILL (48,201) stays over its literal pin, inside its headroom.
+PINS = {"SKILL": 48_138, "DREAMING": 23_954, "RESEARCH": 10_253, "RESPOND": 6_147}
 GROWTH = 0.05
 SHRINK = 0.10
 

@@ -178,7 +178,7 @@ def _args(tmp_path: Path, **over: object) -> dict:
         "budget_ok": True,
         "session_already_running": False,
         "uncommitted_vault_changes": False,
-        "research_queue_open": False,
+        "research_wanted": False,
         "research_runner": _executable(tmp_path, "run-research.sh"),
         "dreaming_runner": _executable(tmp_path, "run-dreaming.sh"),
     }
@@ -211,7 +211,7 @@ def test_the_reason_names_both_operands_when_both_fire(tmp_path: Path) -> None:
 
 def test_the_research_reason_names_the_operand_too(tmp_path: Path) -> None:
     stats = TrackerStats(minutes_since_last_session=300, hours_since_dreaming=5, hours_since_research=30)
-    decision = decide(**_args(tmp_path, stats=stats, research_queue_open=True))
+    decision = decide(**_args(tmp_path, stats=stats, research_wanted=True))
     assert decision.session_type == "research"
     assert decision.reason.endswith(", trigger=signal_hours")
 
@@ -254,6 +254,49 @@ def test_a_user_edit_still_reads_as_pending_work(git_vault: Path) -> None:
     (git_vault / ".scout-state").mkdir()
     (git_vault / ".scout-state" / "last-fire.json").write_text("{}\n")
     (git_vault / "notes.md").write_text("x\n")
+    assert hb.vault_has_uncommitted_changes(git_vault) is True
+
+
+def _lab_thread(vault: Path) -> Path:
+    """A committed thread with a committed experiment script; returns the experiment's folder."""
+    thread = vault / "knowledge-base" / "lab" / "t"
+    folder = thread / "experiments" / "t-E1-probe"
+    folder.mkdir(parents=True)
+    (thread / "t.md").write_text("# t\n")
+    (thread / "experiments" / "t-E1-probe.md").write_text("# E1\n")
+    (folder / "run.py").write_text("print(1)\n")
+    ident = ["-c", "user.name=Alex", "-c", "user.email=alex@example.com"]
+    subprocess.run(["git", "-C", str(vault), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(vault), *ident, "commit", "-qm", "lab: t"], check=True)
+    return folder
+
+
+@pytest.mark.parametrize("rel", ["out.txt", ".tmp/scratch.bin", "sub/deep/out.csv", "run-20261125-0100.log"])
+def test_a_detached_runs_outputs_do_not_read_as_pending_work(git_vault: Path, rel: str) -> None:
+    """A detached experiment writes outputs in its folder for hours; the run that finishes it commits them. Until
+    then they mustn't keep the tree dirty, or the heartbeat fires a paid session every gate."""
+    folder = _lab_thread(git_vault)
+    (folder / rel).parent.mkdir(parents=True, exist_ok=True)
+    (folder / rel).write_text("x\n")
+    (folder / "run.py").write_text("print(2)\n")  # a tracked file in the folder, rewritten, is the run's too
+    assert hb.vault_has_uncommitted_changes(git_vault) is False
+
+
+def test_a_new_experiment_folder_does_not_read_as_pending_work(git_vault: Path) -> None:
+    _lab_thread(git_vault)
+    fresh = git_vault / "knowledge-base" / "lab" / "t" / "experiments" / "t-E2-new"
+    fresh.mkdir()
+    (fresh / "out.txt").write_text("x\n")
+    assert hb.vault_has_uncommitted_changes(git_vault) is False
+
+
+@pytest.mark.parametrize(
+    "rel",
+    ["knowledge-base/lab/t/t.md", "knowledge-base/lab/t/experiments/t-E1-probe.md", "knowledge-base/notes.md"],
+)
+def test_lab_edits_outside_an_experiment_folder_still_read_as_pending_work(git_vault: Path, rel: str) -> None:
+    _lab_thread(git_vault)
+    (git_vault / rel).write_text("changed\n")
     assert hb.vault_has_uncommitted_changes(git_vault) is True
 
 

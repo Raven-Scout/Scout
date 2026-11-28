@@ -30,6 +30,7 @@ import yaml
 from scout import config as scout_config
 from scout import custom_connectors, safe_write, yaml_blocks
 from scout.errors import ConfigError
+from scout.lab.model import owner_handle
 from scout.plural import noun
 from scout.scripts import brain_merge, vault_drift
 from scout.scripts.bootstrap_doctor import DoctorReport, run_doctor
@@ -291,6 +292,8 @@ def _template_vars(cfg: BootstrapConfig) -> dict[str, str]:
         "INSTANCE_NAME": cfg.instance_name,
         "INSTANCE_NAME_LOWER": cfg.instance_name_lower,
         "USER_NAME": cfg.user_name,
+        # The handle the app signs the owner's comments with, so a run never folds the name itself.
+        "USER_HANDLE": owner_handle(cfg.user_name),
         "USER_EMAIL": cfg.user_email,
         "USER_SLACK_ID": cfg.connector_inputs.get("user_slack_id", ""),
         "GITHUB_USERNAME": cfg.connector_inputs.get("github_username", ""),

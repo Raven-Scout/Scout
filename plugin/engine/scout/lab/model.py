@@ -2,8 +2,53 @@
 
 from __future__ import annotations
 
+import math
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
+
+# A comment author's handle, as `scoutctl lab --author` takes it; `scout` is Scout's own.
+HANDLE_RE = re.compile(r"[A-Za-z][A-Za-z0-9._-]*")
+RESERVED_HANDLE = "scout"
+_HANDLE_FALLBACK = "user"
+# Latin letters NFKD leaves whole; the app's ICU `Latin-ASCII` transform spells them out.
+_LATIN_ASCII = str.maketrans(
+    {
+        "ß": "ss", "ẞ": "SS", "Ł": "L", "ł": "l", "Ø": "O", "ø": "o", "Æ": "AE", "æ": "ae", "Œ": "OE",
+        "œ": "oe", "Đ": "D", "đ": "d", "Þ": "Th", "þ": "th", "Ð": "D", "ð": "d", "ı": "i", "Ħ": "H", "ħ": "h",
+    }
+)  # fmt: skip
+
+
+def owner_handle(name: str) -> str:
+    """The handle the app signs the owner's comments with (``CommentAuthor.handle`` in the macOS app).
+
+    Spell letters out as ASCII, then keep letters, digits, ``.`` and ``_``: a run of whitespace and dashes is one
+    ``-``, and anything before the first letter is dropped. An empty result is ``user``. Other scripts, which the app
+    transliterates through ICU, fall back to ``user`` here. The result always matches :data:`HANDLE_RE` and is never
+    ``scout`` (that would be refused, so it falls back too).
+    """
+    decomposed = unicodedata.normalize("NFKD", name.translate(_LATIN_ASCII))
+    folded = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    out: list[str] = []
+    pending_dash = False
+    for ch in folded:
+        if ch.isspace() or ch == "-":
+            pending_dash = bool(out)
+            continue
+        is_letter = ch.isascii() and ch.isalpha()
+        if not (is_letter or (ch.isascii() and ch.isdigit()) or ch in "._"):
+            continue
+        if not out and not is_letter:
+            continue
+        if pending_dash:
+            out.append("-")
+            pending_dash = False
+        out.append(ch)
+    handle = "".join(out)
+    return _HANDLE_FALLBACK if not handle or handle.lower() == RESERVED_HANDLE else handle
+
 
 THREAD_STATUSES = ("proposed", "active", "paused", "closed", "rejected")
 QUESTION_STATUSES = ("open", "answered", "dropped")
@@ -125,6 +170,41 @@ class TimelineEntry:
     bullets: list[str]
 
 
+MODEL_REPO_RE = r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*"
+MODEL_REVISION_RE = r"[0-9a-f]{40}"
+
+
+@dataclass(frozen=True)
+class ModelRef:
+    """A model repo pinned to one commit: ``repo`` is ``owner/name``, ``revision`` a 40-hex commit."""
+
+    repo: str
+    revision: str
+
+
+def timeout_hours_of(value: object) -> float | None:
+    """``value`` as a timeout in hours when it is a positive, finite number (not a bool), else None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return float(value) if math.isfinite(value) and value > 0 else None
+    except OverflowError:
+        return None
+
+
+def disk_budget_of(value: object) -> int | None:
+    """``value`` as a disk budget in bytes when it is a positive integer (not a bool), else None."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def model_repo_ok(repo: object) -> bool:
+    return isinstance(repo, str) and re.fullmatch(MODEL_REPO_RE, repo) is not None
+
+
+def model_revision_ok(revision: object) -> bool:
+    return isinstance(revision, str) and re.fullmatch(MODEL_REVISION_RE, revision) is not None
+
+
 @dataclass
 class Experiment:
     slug: str
@@ -135,3 +215,6 @@ class Experiment:
     sections: dict[str, str]
     problems: list[Problem] = field(default_factory=list)
     visibility: str = "private"  # as :attr:`Thread.visibility`
+    timeout_hours: float | None = None  # frontmatter ``timeout_hours`` when positive and finite
+    models: list[ModelRef] = field(default_factory=list)  # the valid entries of frontmatter ``models``
+    disk_budget_bytes: int | None = None  # frontmatter ``disk_budget_bytes`` when a positive integer

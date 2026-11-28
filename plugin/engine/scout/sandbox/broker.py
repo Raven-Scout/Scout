@@ -21,6 +21,11 @@ in the vault's git dir and every read in the secrets dirs (:func:`scout.sandbox.
   with :func:`scout.lab.runner.run_experiment`, from the commit it checked, since ``sandbox-exec`` can't nest
   inside the run's own sandbox. An experiment request is never queued; a refused one doesn't use the run's
   allowance. The verb is off until the owner sets ``"experiments_enabled": true`` in ``config.json``.
+- With ``"detach": true`` (``lab experiment run --detach``, spec §6.4) the same checks pass the run to a supervisor
+  (:func:`start_detached`, :mod:`scout.lab.supervise`) that outlives the run; off until the owner sets
+  ``detached_max_hours`` and ``max_detached``. A later run's ``lab experiment collect`` asks the
+  ``experiment-status`` verb (:func:`experiment_status`), which reads the owner's record and sweeps a supervisor
+  that is gone without a result.
 """
 
 from __future__ import annotations
@@ -41,20 +46,21 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from scout import plural, safe_write
 from scout.kb import hook_paths
+from scout.lab.model import ModelRef
 
 PROTOCOL = 1
 ENV_SOCKET = "SCOUT_RUN_BROKER"
 SOCKET_NAME = "b.sock"
 QUEUE_DIR = Path(".scout-state") / "broker-queue"
 FAILED_DIR = "failed"
-VERBS = ("commit", "telegram", "experiment")
+VERBS = ("commit", "telegram", "experiment", "experiment-status")
 # What a client may queue for the drain. An experiment is never queued: it runs live or not at all.
 QUEUE_VERBS = ("commit", "telegram")
 # Where the wrapper and `broker profile` say whether this run's brokers are on, next to .claude-sign-in.json.
@@ -79,6 +85,25 @@ EXIT_LIMIT = 5  # notify telegram: refused by the broker's limits
 EXIT_QUEUED = 6  # git-safe-commit: queued, it lands after the session (no SHA yet)
 EXIT_NOT_RUN = 4  # scoutctl lab experiment run: no broker to run it, or experiments are off
 EXPERIMENTS_OFF = "experiments are off in the owner's config"  # LabLimits.experiments_enabled
+# Detached runs (spec §6.4): the owner's switches, the one-at-a-time rule, and what a collect says about a supervisor
+# that is gone without recording an outcome.
+MODELS_DETACHED = "an experiment that names models runs detached"  # its weights are fetched at start (P2-h)
+# The longest a detached run may be: only its probe file is refreshed, and macOS deletes /tmp files untouched for
+# 3 days, which would take the meter socket, the profile and the stdout/stderr files with them.
+DETACHED_MAX_HOURS = 72
+DETACHED_OFF = "detached runs are off in the owner's config"  # detached_max_hours or max_detached is 0
+DETACHED_BUSY = "a detached experiment is already running"
+SUPERVISOR_GONE = "the supervisor stopped without a result"
+NO_DETACHED_RUN = "no detached run of this experiment was started"
+SURVIVED_SWEEP = "a process the experiment started survived the sweep; check ps"
+OVERRAN = "the supervisor ran past its deadline"
+PYTHON_MISSING = "the owner's lab.python is missing"  # set in the owner's config, but not an executable file
+# What a run's client says when there is no broker to ask: nothing about the experiment, so a collect retries.
+NO_BROKER_ANSWER = "this run's broker didn't answer"
+COLLECT_NEEDS_BROKER = "collecting a detached experiment needs the run broker"
+# How long past its deadline a live supervisor may still be before a collect stops it (a fetch ignoring should_stop).
+OVERRUN_GRACE = timedelta(minutes=10)
+SUPERVISOR_KILL_WAIT_S = 10.0
 
 MAX_MESSAGE_CHARS = 10_000
 MAX_PATHS = 500
@@ -229,6 +254,30 @@ class LabLimits:
     max_total_bytes: int = 512 * 1024 * 1024
     # Descriptors the script may hold open (the gate's `ulimit -n`): dataset loaders and the like need hundreds.
     max_open_files: int = 1024
+    # ML experiments (spec §6.4); each is off or unset until the owner sets it.
+    detached_max_hours: float = 0  # the longest a detached run may take; 0 = detached runs are off
+    max_detached: int = 0  # detached runs at once; 0 = off
+    gpu: bool = False  # only JSON `true` turns the GPU on
+    max_memory_bytes: int = 0  # 0 = half of the Mac's memory (resolved where it is used)
+    disk_free_floor_bytes: int = 15_000_000_000  # free space below which a run is stopped; may be 0
+    weights_max_bytes: int = 0  # the most model weights one run may fetch; 0 = no fetching
+    python: str | None = None  # the interpreter experiments run under: an absolute path to an executable file
+    # The owner's lab.python as configured (an absolute path), usable or not: set but missing never means unset.
+    python_set: str | None = None
+
+
+# What an experiment's note asks for besides its command (spec §6.4), when it names no disk budget.
+DEFAULT_DISK_BUDGET_BYTES = 512 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class ExperimentPlan:
+    """What the committed note asks for: its timeout in hours, the models to fetch (each pinned to a commit) and
+    its disk budget in bytes, already clamped to the owner's ``max_total_bytes``."""
+
+    timeout_hours: float | None
+    models: tuple[ModelRef, ...]
+    disk_budget_bytes: int
 
 
 def _finite(value: float) -> bool:
@@ -244,8 +293,11 @@ def load_lab_limits(env: Mapping[str, str]) -> LabLimits:
     missing or malformed file, or a value out of bounds, means the default. ``experiments_per_run`` is a positive
     integer; the others are finite positive numbers, except ``notice_hours``, which may be 0. ``max_processes``,
     ``max_total_bytes`` and ``max_open_files`` are positive integers too, the bytes up to 1 TiB and the files up to
-    65536.
-    ``experiments_enabled`` is on only when it is exactly ``true``."""
+    65536. The ML keys (spec §6.4) are numbers from 0: ``detached_max_hours`` up to 72, ``max_detached`` an
+    integer up to 8, and ``max_memory_bytes``, ``disk_free_floor_bytes`` and ``weights_max_bytes`` integers up to
+    1 TiB; ``python`` is an absolute path to an existing executable file, else None (``python_set`` keeps an absolute
+    path either way, so a moved or deleted interpreter isn't read as unset).
+    ``experiments_enabled`` and ``gpu`` are on only when exactly ``true``."""
     defaults = LabLimits()
     try:
         data = json.loads((owner_dir(env) / CONFIG_NAME).read_text(encoding="utf-8"))
@@ -272,7 +324,27 @@ def load_lab_limits(env: Mapping[str, str]) -> LabLimits:
         max_processes=number("max_processes", integer=True),
         max_total_bytes=number("max_total_bytes", integer=True, most=1 << 40),
         max_open_files=number("max_open_files", integer=True, most=65536),
+        detached_max_hours=float(number("detached_max_hours", zero=True, most=DETACHED_MAX_HOURS)),
+        max_detached=number("max_detached", integer=True, zero=True, most=8),
+        gpu=block.get("gpu") is True,
+        max_memory_bytes=number("max_memory_bytes", integer=True, zero=True, most=1 << 40),
+        disk_free_floor_bytes=number("disk_free_floor_bytes", integer=True, zero=True, most=1 << 40),
+        weights_max_bytes=number("weights_max_bytes", integer=True, zero=True, most=1 << 40),
+        python=_executable(block.get("python")),
+        python_set=_absolute(block.get("python")),
     )
+
+
+def _absolute(value: object) -> str | None:
+    """``value`` when it is an absolute path, whether or not anything is there, else None."""
+    return value if isinstance(value, str) and os.path.isabs(value) else None
+
+
+def _executable(value: object) -> str | None:
+    """``value`` when it is an absolute path to an existing executable file, else None."""
+    if isinstance(value, str) and os.path.isabs(value) and os.path.isfile(value) and os.access(value, os.X_OK):
+        return value
+    return None
 
 
 # The owner's vetoes, one JSON row each ({"slug", "eid", "at", "vault"}), in the owner folder, which a run can't
@@ -372,6 +444,65 @@ def _control(text: str) -> bool:
     return any(ord(c) < 0x20 or c == "\x7f" for c in text)
 
 
+LAB_COMMIT_MAX_FILE_BYTES = 10 * 1024 * 1024
+LAB_DIR_REL = "knowledge-base/lab"
+
+
+def _staged_paths(vault: Path, named: Sequence[str], env: Mapping[str, str]) -> list[str]:
+    """The vault-relative files ``git add -- <named>`` would stage, NUL-separated so no file name can split or hide:
+    the untracked files git doesn't ignore (``ls-files --others --exclude-standard``, nested .gitignore files
+    included) and the tracked files that changed (``--modified``). Each name is the pathspec ``:(icase,literal)``
+    so a case variant matches on a case-insensitive volume, and a name that matches nothing lists nothing (exit 0).
+    Fails closed: any git failure is a :class:`Refused`."""
+    base = commit_env(vault, env, None)
+    base.pop("GIT_LITERAL_PATHSPECS", None)  # it turns every magic pathspec off, :(icase) included
+    specs = [f":(icase,literal){n}" for n in named]
+    out: list[str] = []
+    for flags in (("--others", "--exclude-standard"), ("--modified",)):
+        try:
+            done = subprocess.run(
+                ["git", "-C", str(vault), "-c", "core.quotePath=false", "ls-files", "-z", *flags, "--", *specs],
+                env=base,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError):
+            done = None
+        if done is None or done.returncode != 0:
+            raise Refused(EXIT_REFUSED, "couldn't ask git what this commit would stage; not committed")
+        out.extend(os.fsdecode(raw) for raw in done.stdout.split(b"\0") if raw)
+    return out
+
+
+def _refuse_large_lab_files(vault: Path, named: Sequence[str], env: Mapping[str, str]) -> None:
+    """A commit that would stage a regular file over :data:`LAB_COMMIT_MAX_FILE_BYTES` under ``knowledge-base/lab/``
+    is refused (exit 2). Weights and other big outputs belong in an experiment's ``checkpoints/`` folder, which the
+    vault's .gitignore leaves out. What would be staged is git's answer (:func:`_staged_paths`), so naming a folder
+    is no way round the rule; paths compare case-folded (a case-insensitive volume reads ``Knowledge-Base/Lab`` as
+    the lab folder). Each file is checked with ``lstat``, no link followed."""
+    lab = hook_paths._norm(LAB_DIR_REL)
+    norms = [hook_paths._norm(n) for n in named]
+    if not any(n == lab or n.startswith(lab + "/") or lab.startswith(n + "/") for n in norms):
+        return  # nothing named is, holds or sits inside the lab folder
+    vault_real = os.path.realpath(str(vault))
+    for rel in _staged_paths(vault, named, env):
+        if not hook_paths._norm(rel).startswith(lab + "/"):
+            continue
+        try:
+            st = os.lstat(os.path.join(vault_real, rel))
+        except OSError:
+            continue
+        if stat.S_ISREG(st.st_mode) and st.st_size > LAB_COMMIT_MAX_FILE_BYTES:
+            shown = rel.encode("unicode_escape").decode("ascii") if not rel.isprintable() else rel
+            raise Refused(
+                EXIT_REFUSED,
+                f"'{shown}' is {st.st_size} bytes, over the {LAB_COMMIT_MAX_FILE_BYTES // (1024 * 1024)} MiB a lab "
+                "file may be in a commit; put large outputs (weights, caches) under the experiment's checkpoints/ "
+                "folder, which is never committed",
+            )
+
+
 def validate_commit(req: Mapping[str, Any], vault: Path, env: Mapping[str, str]) -> tuple[str, list[str], str | None]:
     """(message, paths relative to the vault, override) for a commit request, or :class:`Refused` (exit 2).
 
@@ -424,6 +555,7 @@ def validate_commit(req: Mapping[str, Any], vault: Path, env: Mapping[str, str])
         if form is not None:
             raise Refused(EXIT_REFUSED, f"'{p}' is protected ({form}); a scheduled run doesn't commit it")
         out.append(rel)
+    _refuse_large_lab_files(vault, out, env)
     return msg, out, override
 
 
@@ -675,8 +807,8 @@ def validate_experiment(
     limits: LabLimits,
     now: datetime,
     env: Mapping[str, str] | None = None,
-) -> tuple[str, str, list[str], float, str]:
-    """(slug, EID, argv, cap, commit) for an experiment request, or :class:`Refused` (exit 2).
+) -> tuple[str, str, list[str], float, str, ExperimentPlan]:
+    """(slug, EID, argv, cap, commit, plan) for an experiment request, or :class:`Refused` (exit 2).
 
     The experiment's note is read as committed at HEAD, never from the worktree (a run can rewrite that), and
     HEAD is resolved once, to the ``commit`` every check reads and the runner runs the scripts from (ruling R30:
@@ -693,7 +825,8 @@ def validate_experiment(
     - ``argv`` doesn't run a committed file of the experiment's folder (:func:`_committed_command`, R26)
 
     The argv returned is the one to run (a script run directly as ``./<path>``). The cap is the committed note's,
-    clamped to the owner's maximum.
+    clamped to the owner's maximum. The plan (:class:`ExperimentPlan`) is read from the same committed note: its
+    disk budget is clamped to the owner's ``max_total_bytes`` and defaults to 512 MiB.
     """
     from scout.lab import paths as lab_paths
     from scout.lab import runner as lab_runner
@@ -805,7 +938,19 @@ def validate_experiment(
     raw = head.frontmatter.get("cost_cap_usd")
     if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not _finite(raw) or raw <= 0:
         raise Refused(EXIT_REFUSED, f"{note.name} at HEAD has cost_cap_usd {raw!r}; it must be a number above 0")
-    return slug, eid, argv, min(float(raw), limits.max_cost_cap_usd), commit
+    fm = head.frontmatter
+    for key, parsed in (("timeout_hours", head.timeout_hours), ("disk_budget_bytes", head.disk_budget_bytes)):
+        if key in fm and parsed is None:
+            raise Refused(EXIT_REFUSED, f"{note.name} at HEAD has {key} {fm[key]!r}; it must be a number above 0")
+    if "models" in fm and (not isinstance(fm["models"], list) or len(fm["models"]) != len(head.models)):
+        raise Refused(
+            EXIT_REFUSED,
+            f"{note.name} at HEAD has a malformed models entry; each needs repo (owner/name) and revision "
+            "(a full 40-character commit hash)",
+        )
+    budget = min(head.disk_budget_bytes or DEFAULT_DISK_BUDGET_BYTES, limits.max_total_bytes)
+    plan = ExperimentPlan(head.timeout_hours, tuple(head.models), budget)
+    return slug, eid, argv, min(float(raw), limits.max_cost_cap_usd), commit, plan
 
 
 # -- carrying it out -----------------------------------------------------------------------------------------------
@@ -1083,7 +1228,18 @@ class Broker:
             return self.telegram(req)
         if verb == "experiment":
             return self.experiment(req)
+        if verb == "experiment-status":
+            return self.experiment_status(req)
         return Reply(EXIT_REFUSED, "broker: unknown verb\n", kind=REFUSED)
+
+    def experiment_status(self, req: Mapping[str, Any]) -> Reply:
+        """Where a detached run stands (:func:`experiment_status`). Read-only but for the one sweep of a supervisor
+        that is gone and the outcome it then records; it runs nothing and doesn't count against the run's
+        allowance."""
+        slug, eid = req.get("slug"), req.get("eid")
+        if not _experiment_named(slug, eid):
+            return Reply(EXIT_REFUSED, "experiment refused: bad thread slug or experiment ID\n", kind=REFUSED)
+        return experiment_status(self.vault, str(slug), str(eid), self.env, self.clock())
 
     def experiment(self, req: Mapping[str, Any]) -> Reply:
         """Run one experiment for this run, outside its sandbox, under the experiment sandbox (lab Task 10)."""
@@ -1098,11 +1254,32 @@ class Broker:
             return Reply(EXIT_LIMIT, f"experiment refused: this run has run its {ran}\n", kind=RUN_LIMIT)
         try:
             requested = _requested_timeout(req)
-            slug, eid, argv, cap, commit = validate_experiment(req, self.vault, self.lab_limits, self.clock(), self.env)
+            detach = _requested_detach(req)
+            slug, eid, argv, cap, commit, plan = validate_experiment(
+                req, self.vault, self.lab_limits, self.clock(), self.env
+            )
         except Refused as r:
             # A refused request ran nothing, so it keeps the run's allowance; the notice bounds its retries.
             return Reply(r.exit_code, f"experiment refused: {_one_line(r.reason)}\n", kind=REFUSED)
+        if plan.models and not detach:
+            return Reply(EXIT_REFUSED, f"experiment refused: {MODELS_DETACHED}\n", kind=REFUSED)
+        if (missing := _python_missing(self.lab_limits, argv)) is not None:
+            return missing
         timeout_s = min(requested, self.lab_limits.timeout_s) if requested is not None else self.lab_limits.timeout_s
+        # A launch that would leave the volume under the owner's floor is not a run: it keeps the run's allowance.
+        floor = self.lab_limits.disk_free_floor_bytes
+        free = runner.free_bytes(self.vault)
+        if floor > 0 and (free is None or free - plan.disk_budget_bytes < floor):
+            return Reply(EXIT_NOT_RUN, f"experiment not run: {runner.FLOOR_REASON}\n", kind=REFUSED)
+        if (uncollected := _uncollected(self.vault, slug, eid, self.env)) is not None:
+            return uncollected  # an attached or a detached run alike would start over an unswept script
+        if detach:
+            # A detached start uses the run's allowance; a refusal, or a supervisor that didn't start, keeps it.
+            checked = (slug, eid, argv, cap, commit, plan)
+            reply = start_detached(self.vault, self.env, self.lab_limits, checked, requested)
+            if not reply.kind:
+                self.experiments_run += 1
+            return reply
         # Counted once the runner is called, whatever it answers: a script that ran and then failed a check
         # (a survivor of the kill sweep) still ran.
         self.experiments_run += 1
@@ -1117,9 +1294,16 @@ class Broker:
                 env=self.env,
                 commit=commit,
                 max_processes=self.lab_limits.max_processes,
-                max_total_bytes=self.lab_limits.max_total_bytes,
+                max_total_bytes=plan.disk_budget_bytes,
                 max_open_files=self.lab_limits.max_open_files,
+                disk_free_floor_bytes=floor,
+                max_memory_bytes=self.lab_limits.max_memory_bytes,
+                python=self.lab_limits.python,
+                gpu=self.lab_limits.gpu,
             )
+        except runner.DiskFloorError:  # the free space moved since the check above: not run, allowance kept
+            self.experiments_run -= 1
+            return Reply(EXIT_NOT_RUN, f"experiment not run: {runner.FLOOR_REASON}\n", kind=REFUSED)
         except LabError as e:
             return Reply(e.exit_code, f"experiment refused: {_one_line(e)}\n", kind=REFUSED)
         return _outcome_reply(outcome)
@@ -1473,9 +1657,25 @@ def client_telegram(fields: Mapping[str, Any], env: Mapping[str, str] | None = N
 EXPERIMENT_CLIENT_SLACK_S = 60.0
 
 
+# What killed a run, in the order a ``killed:`` line names them (the outcome's and the run log's flags).
+KILL_FLAGS = ("timed_out", "over_memory", "over_disk_floor", "over_bytes", "over_processes", "stopped")
+
+
+def _killed(flag: Callable[[str], object], err: str) -> str:
+    """``err`` (a stderr tail), then one ``killed: <flag>, …`` line when a limit, the timeout or a stop killed the run,
+    so the run reads it just before the status line; ``err`` alone when nothing did."""
+    flags = [name for name in KILL_FLAGS if flag(name)]
+    if not flags:
+        return err
+    lead = err if not err or err.endswith("\n") else err + "\n"
+    return f"{lead}killed: {', '.join(flags)}\n"
+
+
 def _outcome_reply(outcome: Any) -> Reply:
-    """A :class:`scout.lab.runner.RunOutcome` as the run reads it: the script's exit and its output's tails."""
-    return Reply(outcome.exit, outcome.stderr_tail, outcome.stdout_tail, ran=True)
+    """A :class:`scout.lab.runner.RunOutcome` as the run reads it: the script's exit and its output's tails, and what
+    killed it (:func:`_killed`)."""
+    err = _killed(lambda name: getattr(outcome, name, None), outcome.stderr_tail)
+    return Reply(outcome.exit, err, outcome.stdout_tail, ran=True)
 
 
 def _requested_timeout(req: Mapping[str, Any]) -> int | None:
@@ -1488,25 +1688,240 @@ def _requested_timeout(req: Mapping[str, Any]) -> int | None:
     return value
 
 
+def _requested_detach(req: Mapping[str, Any]) -> bool:
+    """Whether the run asks for a detached run (``"detach": true``); absent is false, anything else is refused."""
+    value = req.get("detach", False)
+    if not isinstance(value, bool):
+        raise Refused(EXIT_REFUSED, "detach must be true or false")
+    return value
+
+
+def _python_missing(limits: LabLimits, argv: Sequence[str]) -> Reply | None:
+    """``not run`` when ``argv`` starts with ``python3`` (which means the owner's ``lab.python`` once it is set) and the
+    owner set one that is no longer an executable file: running PATH's ``python3`` instead would be another
+    interpreter, without the owner's packages. Nothing ran and the allowance is kept; the run retries it."""
+    from scout.lab.runner import OWNER_PYTHON_NAME
+
+    if limits.python is None and limits.python_set and argv and argv[0] == OWNER_PYTHON_NAME:
+        return Reply(EXIT_NOT_RUN, f"experiment not run: {PYTHON_MISSING}\n", kind=REFUSED)
+    return None
+
+
+def _experiment_named(slug: object, eid: object) -> bool:
+    from scout.lab.model import EID_RE, SLUG_RE
+
+    if not isinstance(slug, str) or not isinstance(eid, str):
+        return False
+    return bool(re.match(SLUG_RE, slug) and re.fullmatch(EID_RE, eid))
+
+
+def detached_deadline_s(plan: ExperimentPlan, limits: LabLimits, requested: int | None = None) -> float:
+    """A detached run's deadline in seconds: the plan's ``timeout_hours`` clamped to the owner's
+    ``detached_max_hours`` (the owner's maximum when the plan names none), lowered further by the run's own
+    ``timeout_s`` when it gave one."""
+    hours = limits.detached_max_hours
+    if plan.timeout_hours is not None:
+        hours = min(plan.timeout_hours, hours)
+    seconds = hours * 3600
+    return float(min(seconds, requested)) if requested is not None else float(seconds)
+
+
+def start_detached(
+    vault: Path,
+    env: Mapping[str, str],
+    limits: LabLimits,
+    checked: tuple[str, str, list[str], float, str | None, ExperimentPlan],
+    requested: int | None,
+) -> Reply:
+    """Start a validated experiment detached (spec §6.4): refused when the owner's config has detached runs off or
+    ``max_detached`` of this vault's are alive; else :func:`scout.lab.supervise.start`. A reply with no ``kind`` is
+    a start (``experiment started: detached``); one with a ``kind`` ran nothing."""
+    from scout.errors import LabError
+    from scout.lab import runs, supervise
+
+    slug, eid, argv, cap, commit, plan = checked
+    # Config and capacity answers, not faults of the experiment's (ruling P2-R8): not run, the allowance kept.
+    if limits.detached_max_hours <= 0 or limits.max_detached <= 0:
+        return Reply(EXIT_NOT_RUN, f"experiment not run: {DETACHED_OFF}\n", kind=REFUSED)
+    if len(runs.live(vault, env)) >= limits.max_detached:
+        return Reply(EXIT_NOT_RUN, f"experiment not run: {DETACHED_BUSY}\n", kind=REFUSED)
+    run_limits = replace(limits, max_total_bytes=plan.disk_budget_bytes)
+    try:
+        supervise.start(
+            vault, slug, eid, argv, commit=commit, cap_usd=cap, deadline_s=detached_deadline_s(plan, limits, requested),
+            limits=run_limits, env=env, models=plan.models,
+        )  # fmt: skip
+    except supervise.SupervisorNotStarted as e:  # transient: nothing ran, the run retries it (as P2-R8)
+        return Reply(EXIT_NOT_RUN, f"experiment not run: {_one_line(e)}\n", kind=REFUSED)
+    except LabError as e:
+        return Reply(e.exit_code, f"experiment refused: {_one_line(e)}\n", kind=REFUSED)
+    return Reply(0, "experiment started: detached\n")
+
+
+def _recorded_reply(outcome: Mapping[str, Any]) -> Reply:
+    """A recorded outcome as the run reads it: the script's exit and its output's tails when it ran; else
+    ``experiment not run: <reason>`` (after the tails of a script that was stopped). Either way, what killed it
+    (:func:`_killed`) comes just before the status line."""
+    out = str(outcome.get("stdout_tail") or "")
+    err = _killed(outcome.get, str(outcome.get("stderr_tail") or ""))
+    code = outcome.get("exit")
+    if outcome.get("status") == "ran" and isinstance(code, int) and not isinstance(code, bool):
+        return Reply(code, err, out, ran=True)
+    reason = _one_line(outcome.get("reason") or "the run recorded no reason")
+    lead = err if not err or err.endswith("\n") else err + "\n"
+    return Reply(EXIT_NOT_RUN, f"{lead}experiment not run: {reason}\n", out, kind=REFUSED)
+
+
+def _sweep_record(record: Any) -> str:
+    """Kill what a gone supervisor's script left (the runner's sweep, by the record's ``marker``, its probe file, and
+    ``outside``, the folder the script's sandbox may not write), then remove the supervisor's private temp folder.
+
+    ``"clean"``: the sweep found nothing left. ``"probe file gone"``: there is nothing to sweep by, which means a
+    restart (it clears /tmp, and ends every process that held the profile). ``"survivors"``: a process holding the
+    profile is still alive after the sweep, or the kernel couldn't be asked; the caller must not record an outcome."""
+    from scout.lab import runner, sandbox
+
+    if not runner._marker_ok(record.marker):
+        return "probe file gone"
+    try:
+        probe = sandbox.SandboxProbe()
+    except (OSError, AttributeError):
+        return "survivors"
+    if not runner._sweep(probe, record.marker, record.outside):
+        return "survivors"
+    folder = os.path.dirname(record.marker)
+    if os.path.basename(folder).startswith("scout-lab-") and os.path.dirname(folder) in ("/tmp", "/private/tmp"):
+        shutil.rmtree(folder, ignore_errors=True)
+    return "clean"
+
+
+def _uncollected(vault: Path, slug: str, eid: str, env: Mapping[str, str]) -> Reply | None:
+    """A not-run reply when an earlier detached run of the experiment has no recorded outcome: a killed supervisor's
+    script may still be running in the experiment's folder, and only a collect sweeps it."""
+    from scout.lab import runs
+
+    record = runs.read(runs.record_path(vault, slug, eid, env))
+    if record is None or record.outcome is not None:
+        return None
+    if runs.alive(vault, slug, eid, record, env):
+        why = f"a detached run of {eid} is still running"
+    else:
+        why = f"an earlier detached run of {eid} hasn't been collected; collect it first"
+    return Reply(EXIT_NOT_RUN, f"experiment not run: {why}\n", kind=REFUSED)
+
+
+def _settle_gone(
+    vault: Path, slug: str, eid: str, env: Mapping[str, str], record: Any, now: datetime, reason: str
+) -> Reply:
+    """A record whose supervisor is gone: under the run lock, sweep (when the gate had opened) and record ``reason``
+    as the outcome, unless the sweep can't confirm nothing is left (then nothing is recorded and the next collect
+    sweeps again). When another run of the experiment holds the lock, it is running."""
+    from scout.errors import LabError
+    from scout.lab import runner, runs
+
+    path = runs.record_path(vault, slug, eid, env)
+    hold = contextlib.ExitStack()
+    try:
+        hold.enter_context(runner._run_lock(vault, slug, eid, env))
+    except runner.RunLockBusy:  # busy when tried, whatever it is a moment later
+        return Reply(0, f"experiment running: another run of {eid} holds it\n")
+    except LabError as e:
+        return Reply(EXIT_NOT_RUN, f"experiment not run: {_one_line(e)}\n", kind=REFUSED)
+    with hold:
+        fresh = runs.read(path) or record
+        if fresh.outcome is not None:  # written meanwhile, by a supervisor that has now let the lock go
+            return _recorded_reply(fresh.outcome)
+        swept = _sweep_record(fresh) if fresh.marker and fresh.outside else "no script started"
+        if swept == "survivors":
+            return Reply(EXIT_NOT_RUN, f"experiment not run: {SURVIVED_SWEEP}\n", kind=REFUSED)
+        outcome = {"status": "not run", "reason": reason, "swept": swept, "finished": now.isoformat()}
+        runs.write(path, replace(fresh, outcome=outcome))
+    return _recorded_reply(outcome)
+
+
+def _stop_overrun(vault: Path, slug: str, eid: str, env: Mapping[str, str], record: Any) -> bool:
+    """SIGKILL a supervisor that is alive past its deadline and its grace, then wait for its lock to go. Only once the
+    pid is proven the record's supervisor (:func:`scout.lab.runs.is_supervisor`: it has the run-lock file open and
+    started no later than the record); else nothing is signalled and False is returned."""
+    from scout.lab import runs
+
+    if not runs.is_supervisor(vault, slug, eid, record, env):
+        return False
+    with contextlib.suppress(OSError):
+        runs._kill(record.pid, signal.SIGKILL)
+    lock = runs.lock_path(vault, slug, eid, env)
+    deadline = time.monotonic() + SUPERVISOR_KILL_WAIT_S
+    while runs.lock_held(lock) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return True
+
+
+def experiment_status(vault: Path, slug: str, eid: str, env: Mapping[str, str], now: datetime) -> Reply:
+    """Where the detached run of ``slug`` ``eid`` stands, as one status line (``lab experiment collect``):
+
+    - the recorded outcome: ``experiment ran: exit <n>`` (the reply is the script's) or ``experiment not run: …``;
+    - a live supervisor: ``experiment running: <elapsed> of <deadline>`` (``HhMm``); one still alive more than
+      :data:`OVERRUN_GRACE` past its deadline is SIGKILLed, only once its pid is proven the supervisor's
+      (:func:`scout.lab.runs.is_supervisor`), and settled as gone, ``not run: the supervisor ran past its deadline``.
+      A pid that can't be proven is never signalled: the record is settled as a gone supervisor's;
+    - a supervisor that is gone with no outcome (:func:`_settle_gone`): the runner's sweep when the gate had opened,
+      then ``experiment not run: the supervisor stopped without a result``, recorded as the outcome, so a second
+      collect gives the same answer without sweeping again. A sweep that can't confirm nothing is left records
+      nothing and answers ``experiment not run: a process the experiment started survived the sweep; check ps``, so
+      the next collect sweeps again;
+    - another run of the experiment holding its lock: ``experiment running: another run of <EID> holds it``.
+
+    The sweep runs under the experiment's run lock, so it can't race a supervisor starting."""
+    from scout.lab import runs
+
+    record = runs.read(runs.record_path(vault, slug, eid, env))
+    if record is None:
+        return Reply(EXIT_NOT_RUN, f"experiment not run: {NO_DETACHED_RUN}\n", kind=REFUSED)
+    if record.outcome is not None:
+        return _recorded_reply(record.outcome)
+    started, deadline = runs.parse_time(record.started), runs.parse_time(record.deadline)
+    if runs.alive(vault, slug, eid, record, env):
+        if deadline is None or now <= deadline + OVERRUN_GRACE:
+            if started is None or deadline is None:
+                return Reply(0, "experiment running: 0h00m of 0h00m\n")
+            elapsed, total = (now - started).total_seconds(), (deadline - started).total_seconds()
+            return Reply(0, f"experiment running: {runs.hhmm(elapsed)} of {runs.hhmm(total)}\n")
+        if _stop_overrun(vault, slug, eid, env, record):
+            return _settle_gone(vault, slug, eid, env, record, now, OVERRAN)
+        # Not provably its supervisor (a reused pid): treated as gone, and nothing is signalled.
+        return _settle_gone(vault, slug, eid, env, record, now, SUPERVISOR_GONE)
+    return _settle_gone(vault, slug, eid, env, record, now, SUPERVISOR_GONE)
+
+
 def _one_line(reason: object) -> str:
     """A reason on one line (a status line is read as the last line of stderr)."""
     return " ".join(str(reason).split())
 
 
+_STATUS_PREFIXES = ("experiment refused: ", "experiment not run: ", "experiment started: ", "experiment running: ")
+
+
 def _emit_experiment(reply: Reply) -> int:
-    """Print an experiment reply, then the one status line a run reads last (``experiment ran|refused|not run``)."""
+    """Print an experiment reply, then the one status line a run reads last (``experiment ran|refused|not run``, and
+    for detached runs ``experiment started|running``)."""
     code = _emit(reply)
     if reply.ran:
         print(f"experiment ran: exit {reply.exit}", file=sys.stderr)
         return code
     last = reply.stderr.rstrip("\n").rsplit("\n", 1)[-1] if reply.stderr.strip() else ""
-    if not last.startswith(("experiment refused: ", "experiment not run: ")):
+    if not last.startswith(_STATUS_PREFIXES):
         print(f"experiment not run: {_one_line(last) or 'the broker answered without running it'}", file=sys.stderr)
     return code
 
 
 def client_experiment(
-    slug: str, eid: str, argv: Sequence[str], env: Mapping[str, str] | None = None, *, timeout_s: int | None = None
+    slug: str,
+    eid: str,
+    argv: Sequence[str],
+    env: Mapping[str, str] | None = None,
+    *,
+    timeout_s: int | None = None,
+    detach: bool = False,
 ) -> int:
     """``scoutctl lab experiment run``: the run's broker runs it, or, in the owner's own session, this process.
 
@@ -1515,7 +1930,8 @@ def client_experiment(
     and run here, under the owner's limits; the owner's ``experiments_enabled`` switch gates only the broker, not
     this. ``timeout_s`` can only lower the owner's timeout. The last line on
     stderr is always one of ``experiment ran: exit <n>``, ``experiment refused: <reason>`` or
-    ``experiment not run: <reason>``.
+    ``experiment not run: <reason>``. With ``detach`` (spec §6.4) the run is handed to a supervisor and the last
+    line is ``experiment started: detached`` (or a refusal); ``timeout_s`` then only lowers its deadline.
     """
     env = os.environ if env is None else env
     limits = load_lab_limits(env)
@@ -1528,10 +1944,12 @@ def client_experiment(
         req: dict[str, Any] = {"v": PROTOCOL, "verb": "experiment", "slug": slug, "eid": eid, "argv": list(argv)}
         if timeout_s is not None:
             req["timeout_s"] = timeout_s
+        if detach:
+            req["detach"] = True
         try:
             return _emit_experiment(call(sock, req, timeout=effective + EXPERIMENT_CLIENT_SLACK_S))
         except Unreachable:
-            print("experiment not run: this run's broker didn't answer", file=sys.stderr)
+            print(f"experiment not run: {NO_BROKER_ANSWER}", file=sys.stderr)
             return EXIT_NOT_RUN
     if env.get("SCOUT_MODE"):
         print("experiment not run: experiments need the run broker", file=sys.stderr)
@@ -1541,12 +1959,21 @@ def client_experiment(
 
     vault = _vault(env)
     try:
-        slug, eid, args, cap, commit = validate_experiment(
+        slug, eid, args, cap, commit, plan = validate_experiment(
             {"slug": slug, "eid": eid, "argv": list(argv)}, vault, limits, datetime.now(UTC), env
         )
     except Refused as r:
         print(f"experiment refused: {_one_line(r.reason)}", file=sys.stderr)
         return r.exit_code
+    if plan.models and not detach:
+        print(f"experiment refused: {MODELS_DETACHED}", file=sys.stderr)
+        return EXIT_REFUSED
+    if (missing := _python_missing(limits, args)) is not None:
+        return _emit_experiment(missing)
+    if (uncollected := _uncollected(vault, slug, eid, env)) is not None:
+        return _emit_experiment(uncollected)
+    if detach:
+        return _emit_experiment(start_detached(vault, env, limits, (slug, eid, args, cap, commit, plan), timeout_s))
     try:
         outcome = runner.run_experiment(
             vault,
@@ -1558,13 +1985,46 @@ def client_experiment(
             env=env,
             commit=commit,
             max_processes=limits.max_processes,
-            max_total_bytes=limits.max_total_bytes,
+            max_total_bytes=plan.disk_budget_bytes,
             max_open_files=limits.max_open_files,
+            disk_free_floor_bytes=limits.disk_free_floor_bytes,
+            max_memory_bytes=limits.max_memory_bytes,
+            python=limits.python,
+            gpu=limits.gpu,
         )
+    except runner.DiskFloorError:
+        print(f"experiment not run: {runner.FLOOR_REASON}", file=sys.stderr)
+        return EXIT_NOT_RUN
     except LabError as e:
         print(f"experiment refused: {_one_line(e)}", file=sys.stderr)
         return e.exit_code
     return _emit_experiment(_outcome_reply(outcome))
+
+
+EXPERIMENT_STATUS_TIMEOUT_S = 120.0  # a status may sweep a gone supervisor's processes first
+
+
+def client_collect(slug: str, eid: str, env: Mapping[str, str] | None = None) -> int:
+    """``scoutctl lab experiment collect``: where a detached run stands, from the run's broker (``experiment-status``)
+    or, in the owner's own session (no broker, no scheduled run), from the record directly. The last line on stderr
+    is ``experiment ran: exit <n>``, ``experiment running: <elapsed> of <deadline>`` or ``experiment not run:
+    <reason>``; the exit is the script's, 0 while it runs, 4 not run."""
+    env = os.environ if env is None else env
+    sock = env.get(ENV_SOCKET, "")
+    if sock:
+        req = {"v": PROTOCOL, "verb": "experiment-status", "slug": slug, "eid": eid}
+        try:
+            return _emit_experiment(call(sock, req, timeout=EXPERIMENT_STATUS_TIMEOUT_S))
+        except Unreachable:
+            print(f"experiment not run: {NO_BROKER_ANSWER}", file=sys.stderr)
+            return EXIT_NOT_RUN
+    if env.get("SCOUT_MODE"):
+        print(f"experiment not run: {COLLECT_NEEDS_BROKER}", file=sys.stderr)
+        return EXIT_NOT_RUN
+    if not _experiment_named(slug, eid):
+        print("experiment refused: bad thread slug or experiment ID", file=sys.stderr)
+        return EXIT_REFUSED
+    return _emit_experiment(experiment_status(_vault(env), slug, eid, env, datetime.now(UTC)))
 
 
 # -- the queue -----------------------------------------------------------------------------------------------------

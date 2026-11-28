@@ -39,7 +39,7 @@ Scout keeps a **Wishlist** of improvements and works it down on its own — pick
 
 ### It goes and finds what it's missing
 
-A **research queue** lets Scout expand its own knowledge between briefings — scoring which entities are stale or thin, rotating across your projects so it doesn't fixate on one, then digging via web search, docs, and your tools. Leave a note anywhere in the vault (an inline `//==<< … >>==//` comment) and the next run picks it up and prioritizes it.
+The **Research Lab** lets Scout expand its own knowledge between briefings — working research threads you approve, answering your comments on them, proposing new threads where entities are stale or thin, then digging via web search, docs, and your tools. Leave a note anywhere in the vault (an inline `//==<< … >>==//` comment) and the next run picks it up and prioritizes it.
 
 ### It asks you — sparingly — for what only you know
 
@@ -186,7 +186,7 @@ Self-improvement loop:
 
 Knowledge expansion:
 
-1. **Target selection** — Checks the research queue for explicitly queued topics. If empty, scores KB entities by research need (recently interacted, thin context, high priority).
+1. **Target selection** — Answers your comments on Lab threads first, runs due experiments, then works one or two threads in depth. With room for more threads, scores KB entities by research need (recently interacted, thin context, high priority) and proposes new ones for you to approve.
 2. **Deep research** — Web search, documentation reading, GitHub activity scanning, internal tool queries. Different research depth guidelines for people, organizations, projects, and technologies.
 3. **Knowledge integration** — Updates entity files, extends the knowledge graph with new relationships, creates new entity files for discovered entities. Validates against the ontology schema.
 4. **Commit & notify** — Commits findings, updates the session log, sends a concise summary to the user.
@@ -217,7 +217,7 @@ Before each meeting, Scout generates a prep file with context from the last sess
 - Meeting notes → the relevant meeting's home file
 - Action items → today's action items
 - Personal tasks → knowledge graph entities
-- Ideas → research queue
+- Ideas → a comment on a matching Research Lab thread, or a proposal for a new one
 
 ## Pre-Session Hooks
 
@@ -466,8 +466,7 @@ scout-plugin/
     people/                 -- Person entity files
     personal/               -- Personal task and family entity files
     projects/               -- Project files (index: projects/projects.md)
-    research-queue/         -- Queued research topics (one file per topic)
-    research-queue.md       -- Research run log (thin)
+    lab/                    -- The Research Lab: one folder per thread (front page, experiments)
     scout-mistake-audit.md  -- Error-pattern log written by dreaming
     review-queue.md         -- Claims waiting on user verification
   action-items/             -- Daily action items
@@ -489,7 +488,7 @@ The assembled skill files are self-contained — they don't reference the plugin
 - **Choose the model each slot runs on**: every scheduled run uses Opus unless you say otherwise. Give a slot its own model with `model: sonnet` in `schedule.yaml` (or in the Schedules tab in the Mac app), and set the default for every other run with `scoutctl model set-default sonnet` (stored as `models.default` in `scout-config.yaml`). A slot's own model wins, then `models.default`, then Opus; `SCOUT_MODEL` in the environment overrides all three for a manual run. Values are `opus`, `sonnet`, `haiku` (which follow the latest model in each family) or a full `claude-…` model ID. `scoutctl model show` lists what each slot will use and why. Each run's log starts with `=== model: … ===`, and `.scout-logs/run-outcomes.jsonl` records the model per run. A cheaper model uses less of your plan but may miss things Opus catches: try a light slot (a midday consolidation, say) first, and compare with the eval harness before switching a briefing.
 - **Add KB files**: Create new project folders following the convention `projects/<name>/<name>.md`. Scout will pick them up on the next run.
 - **Extend the ontology**: Add new entity types and relationships in `knowledge-base/ontology/schema.yaml`. The parser validates against this schema.
-- **Queue research topics**: Add a file to `knowledge-base/research-queue/` (e.g. `knowledge-base/research-queue/<date>-<topic-slug>.md`) with frontmatter (`title`, `status: open`, `priority`, `date`) describing what to research. Scout picks it up during research sessions.
+- **Steer research**: Research sessions work the Lab's threads (`knowledge-base/lab/<slug>/`). Comment on a thread, or put a `Q:` comment on one (`scoutctl lab comment <slug> --author <your handle> --text 'Q: …'`), and the next research session answers it. For something new, add an `idea:` or `research:` line to `inbox.md`: Scout adds it as a comment on a matching thread, or marks it `[for research]`, and a research session proposes a thread from it for you to approve.
 - **Adjust cross-checks**: The cross-check logic in `SKILL.md` scales with connectors — add or remove verification points as needed.
 - **Re-assemble**: After plugin updates, run `/scout-update` — it regenerates skill files from the new phase modules with a 3-way merge that keeps your edits, writing a `*.md.proposed-merge` sidecar for you to review wherever it can't merge safely.
 
@@ -629,8 +628,8 @@ Connect it on claude.ai (or `gh auth login` for GitHub), add its key (`slack`, `
 **I want to customize the skill file.**
 Edit `SKILL.md`, `DREAMING.md`, or `RESEARCH.md` directly in your Scout directory. `/scout-update` 3-way merges plugin improvements into your edited files; wherever it can't merge safely it leaves a `*.md.proposed-merge` sidecar for you to review instead of overwriting, and the rest of the upgrade still runs. Once the file is the version you want, `scoutctl bootstrap resolve SKILL.md` records it so later plugin changes merge into it. A skill file you never edited simply takes the new version; the plugin never overwrites your edits.
 
-**How do I queue research topics?**
-Add a file to `knowledge-base/research-queue/` (e.g. `knowledge-base/research-queue/<date>-<topic-slug>.md`) with frontmatter (`title`, `status: open`, `priority`, `date`) describing what to research. Scout picks it up during the next research session.
+**How do I ask for research?**
+Research sessions work the Lab's threads (`knowledge-base/lab/<slug>/`). Leave a comment on a thread, or a `Q:` comment on one (`scoutctl lab comment <slug> --author <your handle> --text 'Q: …'`), and the next research session answers it. To start something new, add an `idea:` or `research:` line to `inbox.md`. Scout adds it as a comment on a matching thread, or marks it `[for research]`; a research session then proposes a thread from it, which you approve or reject.
 
 **How do I add personal tasks?**
 Create a file in `knowledge-base/personal/task-<name>.md` with YAML frontmatter including `type: task`, `domain: personal`, `status: open`, and optionally `deadline`, `priority`, and `completion_signal`. Scout will surface these in daily action items.

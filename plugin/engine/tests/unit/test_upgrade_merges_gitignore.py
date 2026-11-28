@@ -10,6 +10,7 @@ added, nothing is removed.
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -138,3 +139,23 @@ def test_upgrade_with_an_undecodable_gitignore_leaves_it_and_still_finishes(
     assert gitignore.read_bytes() == raw
     assert "0.4.1" in (vault / "scout-config.yaml").read_text(encoding="utf-8")
     assert ".gitignore" in capsys.readouterr().err
+
+
+def test_gitignore_template_excludes_checkpoints(vault: Path) -> None:
+    """Checkpoints (weights) and the runner's scratch dir stay out of git: the merged template ignores an
+    experiment's checkpoints/ and .tmp/ folders, and nothing else in it."""
+    rel = "knowledge-base/lab/t/experiments/t-E1-x/checkpoints/a.safetensors"
+    tmp = "knowledge-base/lab/t/experiments/t-E1-x/.tmp/scratch.bin"
+    other = "knowledge-base/lab/t/experiments/t-E1-x/results.md"
+    gitignore = vault / ".gitignore"
+    gitignore.write_text("secrets.env\n", encoding="utf-8")
+    upgrade(_config(vault, version="0.4.1"))
+    for name in (rel, tmp, other):
+        (vault / name).parent.mkdir(parents=True, exist_ok=True)
+        (vault / name).write_text("x", encoding="utf-8")
+    subprocess.run(["git", "-C", str(vault), "init", "-q"], check=True)
+
+    def ignored(name: str) -> bool:
+        return subprocess.run(["git", "-C", str(vault), "check-ignore", "-q", name]).returncode == 0
+
+    assert ignored(rel) and ignored(tmp) and not ignored(other)

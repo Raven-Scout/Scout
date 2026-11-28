@@ -12,14 +12,25 @@ import datetime as _dt
 import math
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from scout import config, plural
 from scout.errors import LabError
 from scout.lab import ops, paths, writer
-from scout.lab.model import EID_RE, Comment, Experiment, Thread, TimelineEntry
+from scout.lab.model import (
+    EID_RE,
+    Comment,
+    Experiment,
+    ModelRef,
+    Thread,
+    TimelineEntry,
+    disk_budget_of,
+    model_repo_ok,
+    model_revision_ok,
+    timeout_hours_of,
+)
 from scout.lab.parser import fenced, h2_name, parse_experiment, split_lines
 
 _SHORT_RE = re.compile(r"^[a-z0-9-]{1,32}\Z")
@@ -120,6 +131,41 @@ def holds(thread: Thread, exp: Experiment) -> list[Comment]:
 # --- plan ------------------------------------------------------------------------------
 
 
+def parse_model_flag(value: str) -> ModelRef:
+    """``REPO@REVISION`` (split on the last ``@``) as a :class:`ModelRef`; :class:`LabError` naming ``value``
+    when it isn't ``owner/name@<40-hex commit>``."""
+    repo, at, revision = value.rpartition("@")
+    if not at or not model_repo_ok(repo) or not model_revision_ok(revision):
+        raise LabError(f"bad model {value!r}; use REPO@REVISION, as owner/name@<40-character commit hash>")
+    return ModelRef(repo, revision)
+
+
+def _ml_frontmatter(
+    timeout_hours: float | None, models: Sequence[ModelRef], disk_budget_bytes: int | None
+) -> list[str]:
+    """The note's optional ML frontmatter lines, refusing a value the parser wouldn't read back."""
+    out: list[str] = []
+    if timeout_hours is not None:
+        if timeout_hours_of(timeout_hours) is None:
+            raise LabError(f"timeout is {timeout_hours!r} hours; it must be a finite number greater than 0")
+        shown = f"{timeout_hours:.12f}".rstrip("0")
+        shown += "0" if shown.endswith(".") else ""
+        if float(shown) <= 0:
+            raise LabError(f"timeout is {timeout_hours!r} hours; it is too small to write")
+        out.append(f"timeout_hours: {shown}")
+    if disk_budget_bytes is not None:
+        if disk_budget_of(disk_budget_bytes) is None:
+            raise LabError(f"disk budget is {disk_budget_bytes!r} bytes; it must be a whole number greater than 0")
+        out.append(f"disk_budget_bytes: {disk_budget_bytes}")
+    if models:
+        out.append("models:")
+    for m in models:
+        if not model_repo_ok(m.repo) or not model_revision_ok(m.revision):
+            raise LabError(f"bad model {m.repo}@{m.revision}; use owner/name and a 40-character commit hash")
+        out += [f"  - repo: {m.repo}", f'    revision: "{m.revision}"']  # quoted: an all-digit hash is a number to YAML
+    return out
+
+
 def plan(
     vault: Path,
     slug: str,
@@ -129,8 +175,15 @@ def plan(
     body_md: str,
     cap_usd: float | None = None,
     now: _dt.datetime | None = None,
+    *,
+    timeout_hours: float | None = None,
+    models: Sequence[ModelRef] | None = None,
+    disk_budget_bytes: int | None = None,
 ) -> Experiment:
-    """Plan an experiment: write its note and put ``planned · runs after <not_before>`` on the front page."""
+    """Plan an experiment: write its note and put ``planned · runs after <not_before>`` on the front page.
+
+    ``timeout_hours``, ``models`` (repos pinned to a commit) and ``disk_budget_bytes`` are the optional ML fields
+    (spec §6.4); each is written to the note's frontmatter only when given."""
     paths.check_slug(slug)
     if not _SHORT_RE.match(short):
         raise LabError(f"bad experiment short name '{short}'; use 1-32 of a-z, 0-9 and '-'")
@@ -148,6 +201,7 @@ def plan(
         cap = float(cap_usd)
     else:
         cap = _lab_setting(vault, "experiment_cost_cap_usd", 1.0, positive=True)
+    ml_lines = _ml_frontmatter(timeout_hours, models or [], disk_budget_bytes)
     notice = _lab_setting(vault, "experiment_notice_hours", 6.0, positive=False)
     planned = _moment(vault, now)
     not_before = planned + _dt.timedelta(hours=notice)
@@ -187,6 +241,7 @@ def plan(
                 f"planned: {planned.strftime(_FM_TIME)}",
                 f"not_before: {not_before.strftime(_FM_TIME)}",
                 f"cost_cap_usd: {cap:.2f}",
+                *ml_lines,
                 f"visibility: {writer._scalar(thread.visibility)}",
                 "---",
                 body_md.strip(),

@@ -305,7 +305,7 @@ def test_list_leaves_the_hidden_experiment_out_of_its_id_lists(tmp_path: Path) -
     vault = _private_e2(tmp_path)
     labels = visibility_map(vault, "elsewhere", ["knowledge-base/**"])
     [row] = summary.lab_list(vault, labels, full=False, now=NOW)["threads"]
-    assert row["experiments"] == {"planned": [], "running": [], "due": [], "held": []}
+    assert row["experiments"] == {"planned": [], "running": [], "due": [], "held": [], "running_detail": []}
     [row] = summary.lab_list(vault, None, full=True, now=NOW)["threads"]
     assert row["experiments"]["due"] == ["E2"] and row["experiments"]["held"] == ["E2"]
 

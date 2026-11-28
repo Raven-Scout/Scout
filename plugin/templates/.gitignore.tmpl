@@ -19,6 +19,11 @@ __pycache__/
 *.bak.*
 *.proposed-merge
 
+# An experiment's checkpoints (weights, caches): large, regenerable, never committed (spec §6.4).
+knowledge-base/lab/*/experiments/*/checkpoints/
+# The runner's scratch dir in an experiment's folder: a detached run's lives for hours.
+knowledge-base/lab/*/experiments/*/.tmp/
+
 # Local Python environment for vault-side scripts
 .venv/
 

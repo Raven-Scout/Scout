@@ -99,6 +99,151 @@ def test_a_path_outside_what_a_run_may_commit_is_refused(vault: Path, paths: lis
     assert reason in err.value.reason
 
 
+def _lab_file(vault: Path, rel: str, size: int) -> None:
+    path = vault / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as f:
+        f.truncate(size)  # sparse: no disk used
+
+
+BIG = 11 * 1024 * 1024
+EXP = "knowledge-base/lab/t/experiments/t-E1-x"
+CHECKPOINTS_IGNORE = "knowledge-base/lab/*/experiments/*/checkpoints/\n"  # the template's line
+
+
+def test_commit_refuses_a_large_lab_file(vault: Path) -> None:
+    rel = f"{EXP}/out.bin"
+    _lab_file(vault, rel, BIG)
+    with pytest.raises(broker.Refused) as err:
+        broker.validate_commit(_commit([rel]), vault, _env())
+    assert err.value.exit_code == broker.EXIT_REFUSED
+    assert rel in err.value.reason and "checkpoints/" in err.value.reason
+
+
+def test_commit_allows_a_lab_file_at_the_limit(vault: Path) -> None:
+    rel = f"{EXP}/out.bin"
+    _lab_file(vault, rel, broker.LAB_COMMIT_MAX_FILE_BYTES)
+    assert broker.validate_commit(_commit([rel]), vault, _env())[1] == [rel]
+
+
+def test_commit_allows_a_large_file_elsewhere(vault: Path) -> None:
+    """The 10 MiB rule is the lab's only: a large file outside knowledge-base/lab/ passes."""
+    _lab_file(vault, "notes/big.bin", BIG)
+    _lab_file(vault, "knowledge-base/projects/big.bin", BIG)
+    named = ["notes/big.bin", "knowledge-base/projects/big.bin"]
+    assert broker.validate_commit(_commit(named), vault, _env())[1] == named
+
+
+@pytest.mark.parametrize("named", [EXP, "knowledge-base/lab/t", "knowledge-base/lab"])
+def test_naming_a_folder_with_a_large_lab_file_is_refused(vault: Path, named: str) -> None:
+    """``git add -- <dir>`` stages every file in it: the rule covers what the commit would stage."""
+    _lab_file(vault, f"{EXP}/out.bin", BIG)
+    with pytest.raises(broker.Refused) as err:
+        broker.validate_commit(_commit([named]), vault, _env())
+    assert f"{EXP}/out.bin" in err.value.reason and "checkpoints/" in err.value.reason
+
+
+def test_a_folder_whose_large_file_is_in_checkpoints_is_allowed(vault: Path) -> None:
+    (vault / ".gitignore").write_text(CHECKPOINTS_IGNORE, encoding="utf-8")
+    _lab_file(vault, f"{EXP}/checkpoints/a.safetensors", BIG)
+    _lab_file(vault, f"{EXP}/results.md", 10)
+    assert broker.validate_commit(_commit([EXP]), vault, _env())[1] == [EXP]
+
+
+def test_a_nested_gitignore_that_unignores_checkpoints_makes_them_count(vault: Path) -> None:
+    (vault / ".gitignore").write_text(CHECKPOINTS_IGNORE, encoding="utf-8")
+    _lab_file(vault, f"{EXP}/checkpoints/a.safetensors", BIG)
+    (vault / EXP / ".gitignore").write_text("!checkpoints/\n", encoding="utf-8")
+    with pytest.raises(broker.Refused) as err:
+        broker.validate_commit(_commit([EXP]), vault, _env())
+    assert f"{EXP}/checkpoints/a.safetensors" in err.value.reason
+
+
+def test_a_case_variant_of_a_large_lab_file_is_refused(vault: Path) -> None:
+    """On a case-insensitive volume ``Knowledge-Base/Lab/..`` is the lab folder; the rule compares case-folded."""
+    _lab_file(vault, f"{EXP}/out.bin", BIG)
+    with pytest.raises(broker.Refused) as err:
+        broker.validate_commit(_commit(["Knowledge-Base/Lab/t/experiments/t-E1-x/out.bin"]), vault, _env())
+    assert "out.bin" in err.value.reason
+
+
+def test_a_large_lab_file_with_a_newline_in_its_name_is_refused(vault: Path) -> None:
+    _lab_file(vault, f"{EXP}/nl\nx.bin", BIG)
+    with pytest.raises(broker.Refused) as err:
+        broker.validate_commit(_commit([EXP]), vault, _env())
+    assert "nl\\nx.bin" in err.value.reason  # shown on one line, with the newline spelled out
+
+
+def test_a_large_lab_file_named_with_quotes_is_found(vault: Path) -> None:
+    _lab_file(vault, f'{EXP}/"w".bin', BIG)
+    with pytest.raises(broker.Refused) as err:
+        broker.validate_commit(_commit([EXP]), vault, _env())
+    assert '"w".bin' in err.value.reason
+
+
+def test_naming_a_missing_path_beside_a_large_lab_folder_is_still_refused(vault: Path) -> None:
+    """git-safe-commit drops a path that doesn't exist and adds the rest: the check can't skip on a missing one."""
+    _lab_file(vault, f"{EXP}/out.bin", BIG)
+    with pytest.raises(broker.Refused) as err:
+        broker.validate_commit(_commit([EXP, "missing.md"]), vault, _env())
+    assert f"{EXP}/out.bin" in err.value.reason
+
+
+def test_naming_an_ignored_path_beside_a_large_lab_folder_is_still_refused(vault: Path) -> None:
+    (vault / ".gitignore").write_text("ignored.md\n", encoding="utf-8")
+    (vault / "ignored.md").write_text("x\n", encoding="utf-8")
+    _lab_file(vault, f"{EXP}/out.bin", BIG)
+    with pytest.raises(broker.Refused) as err:
+        broker.validate_commit(_commit([EXP, "ignored.md"]), vault, _env())
+    assert f"{EXP}/out.bin" in err.value.reason
+
+
+def test_a_tracked_lab_file_that_grew_is_refused(vault: Path) -> None:
+    rel = f"{EXP}/out.bin"
+    _lab_file(vault, rel, 10)
+    env = {**os.environ, "GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@b.c", "GIT_COMMITTER_NAME": "a",
+           "GIT_COMMITTER_EMAIL": "a@b.c"}  # fmt: skip
+    subprocess.run(["git", "-C", str(vault), "add", "--", rel], check=True, env=env)
+    subprocess.run(["git", "-C", str(vault), "commit", "-qm", "x", "--no-verify"], check=True, env=env)
+    _lab_file(vault, rel, BIG)
+    with pytest.raises(broker.Refused):
+        broker.validate_commit(_commit([EXP]), vault, _env())
+
+
+def test_when_git_cannot_answer_the_commit_is_refused(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _lab_file(vault, f"{EXP}/out.md", 10)
+
+    def broken(*_a: Any, **_k: Any) -> Any:
+        raise OSError("no git")
+
+    monkeypatch.setattr(broker.subprocess, "run", broken)
+    with pytest.raises(broker.Refused, match="couldn't ask git"):
+        broker.validate_commit(_commit([EXP]), vault, _env())
+
+
+def test_a_large_lab_link_is_not_followed(vault: Path, tmp_path: Path) -> None:
+    big = tmp_path / "big.bin"
+    with big.open("wb") as f:
+        f.truncate(BIG)
+    (vault / EXP).mkdir(parents=True)
+    (vault / EXP / "link.bin").symlink_to(big)
+    assert broker.validate_commit(_commit([EXP]), vault, _env())[1] == [EXP]
+
+
+def test_a_commit_naming_nothing_in_the_lab_never_asks_git(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = subprocess.run
+    asked: list[list[str]] = []
+
+    def watch(cmd: list[str], *a: Any, **k: Any) -> Any:
+        if "add" in cmd:
+            asked.append(cmd)
+        return real(cmd, *a, **k)
+
+    monkeypatch.setattr(broker.subprocess, "run", watch)
+    assert broker.validate_commit(_commit(["notes/a.md"]), vault, _env())[1] == ["notes/a.md"]
+    assert asked == []
+
+
 def test_a_link_out_of_the_vault_is_refused(vault: Path, tmp_path: Path) -> None:
     (tmp_path / "elsewhere.md").write_text("x\n")
     (vault / "notes" / "link.md").symlink_to(tmp_path / "elsewhere.md")

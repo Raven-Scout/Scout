@@ -530,3 +530,15 @@ def kb_repo(tmp_path: Path) -> KbRepo:
     shutil.copytree(_kb_repo_template(), repo.root, symlinks=True)
     repo.git("update-index", "-q", "--refresh")
     return repo
+
+
+@pytest.fixture(autouse=True)
+def _plenty_of_free_disk(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The lab and broker tests don't depend on this machine's free disk: the owner's default floor is 15 GB, so a
+    nearly full test machine would fail runs that have nothing to do with the floor. The floor tests set their own
+    ``free_bytes`` over this one."""
+    name = request.module.__name__
+    if "lab" in name or "broker" in name:
+        from scout.lab import runner
+
+        monkeypatch.setattr(runner, "free_bytes", lambda _vault: 1 << 50)

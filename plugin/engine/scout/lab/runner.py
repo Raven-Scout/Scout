@@ -53,6 +53,12 @@ What it holds the script to, and why each piece is where it is:
   SQLite temp stores leave no name to walk), and kills the run past ``lab.max_total_bytes`` (``over_bytes``; a
   folder the runner can't list, or a live holder whose files the kernel won't list, counts as over). Either kill
   goes through the timeout's kill path, and the run log records both flags.
+  Two more totals ride the same polls and the same kill path (spec §6.4). The **free-disk floor**
+  (``lab.disk_free_floor_bytes``): before launch ``free_bytes(vault) - budget`` must stay at or over the floor
+  (:class:`DiskFloorError`, the script never runs), and at every poll the volume's free bytes must too, whatever
+  filled the disk (``over_disk_floor``). **Memory** (``lab.max_memory_bytes``, 0 = half of the Mac's): the sum of
+  the physical footprints (:func:`footprint_bytes`, GPU allocations included) of the processes holding this
+  run's sandbox is held to the limit (``over_memory``). The run log records both flags beside the others.
 - **The script can't stop its supervisor.** The profile lets it signal only processes holding its own
   sandbox, so it can't freeze or kill the runner (which would leave its own setsid children
   unswept). A runner killed from outside (by the owner, or the OS) still leaves them: then
@@ -82,12 +88,27 @@ What it holds the script to, and why each piece is where it is:
   kernel refuses the script's own ``ln`` of a sealed file, checked on macOS 26). Reading it would have to be in
   the committed script, which the owner sees during the notice. A worktree copy swapped for a symlink after the
   profile is rendered also escapes: the kernel matches the link's target, which the profile didn't name.
+- **A detached run uses this runner whole** (spec §6.4, ruling P2-h): its supervisor (:mod:`scout.lab.supervise`)
+  holds the run lock for its whole life (:func:`hold_run_lock`), learns the sweep's probe file and outside folder
+  through ``on_started`` before the gate opens (so a later collect can sweep the script if the supervisor dies), and
+  stops the run through ``should_stop`` (the owner's veto or stop, its wall-clock deadline). The run log then says
+  ``detached: true`` and why it ``stopped``.
+- **Model weights are read-only** (spec §6.4): a detached run's supervisor fetches the weights an experiment names
+  into the owner's cache (:mod:`scout.lab.weights`) before the gate opens and passes them here; the profile allows
+  back each named revision folder to read and denies it to write, the script gets ``$SCOUT_LAB_WEIGHTS_DIR`` (the
+  cache's root) and the run log lists every file's repo, revision and sha256. The owner's Hugging Face token is
+  never in the script's environment (:func:`script_env` builds it from nothing).
+- **The owner's Python** (``lab.python``, spec §6.4): ``python3`` in a validated argv runs that interpreter
+  (:func:`owner_python_argv`); its install prefix, and its venv's folder when it is one, are allowed back to read.
+- **The GPU** (``lab.gpu``, spec §6.4): off unless the caller passes the owner's switch on; off, the profile denies
+  the GPU (:data:`scout.lab.sandbox.GPU_OFF_RULES`), and a run with it on says ``gpu: on`` in its log.
 - **The experiment's status is left alone.** The run finishes or abandons it.
 """
 
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import datetime as _dt
 import fcntl
 import hashlib
@@ -103,11 +124,12 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import threading
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
 from scout import config, plural, safe_write
 from scout import paths as vault_paths
@@ -118,6 +140,8 @@ from scout.lab import paths, sandbox
 from scout.lab.meter import ENV_METER, MeterServer
 from scout.lab.model import EID_RE, SLUG_RE
 from scout.lab.parser import parse_experiment
+from scout.lab.weights import FLOOR_REASON as _WEIGHTS_FLOOR_REASON
+from scout.lab.weights import Fetched
 from scout.sandbox import broker, profile
 
 ENV_EXPERIMENT_DIR = "SCOUT_LAB_EXPERIMENT_DIR"
@@ -159,6 +183,12 @@ _GATE = (
 )
 # How often the runner checks a running script's totals (processes and bytes).
 _POLL_S = 1.0
+# What "half of the Mac's memory" is when the Mac won't say how much it has (a conservative fixed limit).
+FALLBACK_MEMORY_BYTES = 8 * 1024**3
+FLOOR_REASON = _WEIGHTS_FLOOR_REASON  # "free disk would fall below the floor", a weights fetch's too
+ENV_WEIGHTS_DIR = "SCOUT_LAB_WEIGHTS_DIR"
+PYVENV_CFG = "pyvenv.cfg"
+OWNER_PYTHON_NAME = "python3"  # the argv[0] lab.python stands in for
 # Apple's git, whichever PATH finds first: /usr/bin/git is a shim that starts one of the other two.
 KNOWN_GITS = (
     "/usr/bin/git",
@@ -183,6 +213,78 @@ class RunOutcome:
     timed_out: bool
     over_bytes: bool = False  # the folder and its scratch dir held more than max_total_bytes (W4)
     over_processes: bool = False  # the sandbox held more than max_processes processes at a poll (W4)
+    over_disk_floor: bool = False  # the volume's free bytes fell under the owner's floor at a poll (spec §6.4)
+    over_memory: bool = False  # the processes' physical footprints together passed the memory limit at a poll
+    stopped: str | None = None  # why the caller's ``should_stop`` ended the run (a detached run's supervisor, §6.4)
+
+
+class RunLockBusy(LabError):
+    """Another run of the experiment holds its run lock ("already running")."""
+
+
+class DiskFloorError(LabError):
+    """Launching would leave the volume under the owner's free-disk floor: the experiment was not run. Exit 4 (not
+    run), not 2 (refused), and the run broker doesn't count it against the run's allowance."""
+
+    exit_code = 4
+
+    def __init__(self) -> None:
+        super().__init__(FLOOR_REASON)
+
+
+def free_bytes(vault: Path) -> int | None:
+    """Bytes free to this user on the volume holding ``vault`` (``f_bavail * f_frsize`` of the resolved path);
+    None when the volume can't be read."""
+    try:
+        st = os.statvfs(os.path.realpath(vault))
+    except OSError:
+        return None
+    return st.f_bavail * st.f_frsize
+
+
+def physical_memory_bytes() -> int:
+    """The Mac's physical memory (``hw.memsize``); :data:`FALLBACK_MEMORY_BYTES` when it can't be read."""
+    try:
+        total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (ValueError, OSError, AttributeError):
+        return FALLBACK_MEMORY_BYTES
+    return total if total > 0 else FALLBACK_MEMORY_BYTES
+
+
+def memory_limit(max_memory_bytes: int) -> int:
+    """The memory limit a run is held to: the owner's, or (0) half of :func:`physical_memory_bytes`."""
+    return max_memory_bytes if max_memory_bytes > 0 else physical_memory_bytes() // 2
+
+
+_RUSAGE_INFO_V4 = 4
+_RUSAGE_BUF_BYTES = 512  # rusage_info_v4 is 304 bytes; room to spare
+_PHYS_FOOTPRINT_OFFSET = 16 + 7 * 8  # ri_uuid[16], then ri_user_time .. ri_resident_size, then ri_phys_footprint
+_rusage: Callable[[int, int, Any], int] | None = None
+
+
+def footprint_bytes(pid: int) -> int | None:
+    """The physical footprint of process ``pid`` (``ri_phys_footprint`` from libproc's ``proc_pid_rusage``; the
+    figure Activity Monitor calls Memory, GPU allocations included). None when the call fails: a process that
+    vanished, or one the kernel won't report."""
+    global _rusage
+    try:
+        if _rusage is None:
+            lib = ctypes.CDLL(sandbox._LIBPROC, use_errno=True)
+            fn = lib.proc_pid_rusage
+            fn.restype = ctypes.c_int
+            fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+            _rusage = fn
+        buf = ctypes.create_string_buffer(_RUSAGE_BUF_BYTES)
+        if _rusage(pid, _RUSAGE_INFO_V4, buf) != 0:
+            return None
+        return int.from_bytes(buf.raw[_PHYS_FOOTPRINT_OFFSET : _PHYS_FOOTPRINT_OFFSET + 8], "little")
+    except (OSError, AttributeError):
+        return None
+
+
+def _holders_footprint(holders: set[int]) -> int:
+    """The footprints of ``holders`` added up; one that vanished counts 0."""
+    return sum(footprint_bytes(pid) or 0 for pid in holders)
 
 
 # --- checks ----------------------------------------------------------------------------
@@ -465,10 +567,47 @@ def _is_shim(real: str) -> bool:
     return SHIMS_DIR in path.parts[:-1] or path.name == VOLTA_SHIM
 
 
-def _allow_reads(vault: Path, source: Mapping[str, str], extra: Sequence[str]) -> list[Path]:
+def _owner_python_roots(python: str, homes: Sequence[str]) -> list[str]:
+    """What to allow back for the owner's ``lab.python``: the interpreter it runs (:func:`_interpreter_root` of its
+    resolved path), and, when it is a venv's (``<venv>/bin/python3`` beside ``<venv>/pyvenv.cfg``), the venv's folder,
+    where its packages are. Only an interpreter in a folder named ``bin`` makes one, and never a folder that is a home
+    folder or above one, as spelled or resolved."""
+    out = [_interpreter_root(os.path.realpath(python), homes)]
+    bin_dir = os.path.dirname(os.path.abspath(python))
+    if os.path.basename(bin_dir) != "bin":
+        return out
+    spelled = os.path.dirname(bin_dir)
+    venv = os.path.realpath(spelled)
+    too_wide = any(_within(h, folder) for h in homes for folder in (venv, spelled))
+    if os.path.isfile(os.path.join(venv, PYVENV_CFG)) and venv != "/" and not too_wide:
+        out.append(venv)
+    return out
+
+
+def check_owner_python(python: str | None) -> None:
+    """Raises :class:`LabError` unless ``python`` is None or an absolute path to an executable file that isn't a
+    version manager's shim."""
+    if python is None:
+        return
+    if not os.path.isabs(python) or not os.path.isfile(python) or not os.access(python, os.X_OK):
+        raise LabError(f"the owner's lab.python {python!r} isn't an executable file; not run")
+    if _is_shim(os.path.realpath(python)):
+        raise LabError(f"the owner's lab.python {python} is a version-manager shim; name the real interpreter")
+
+
+def owner_python_argv(argv: Sequence[str], python: str | None) -> list[str]:
+    """``argv`` with a leading ``python3`` replaced by the owner's ``lab.python`` when it is set. The broker has
+    already checked ``python3`` against its allowlist of interpreters; nothing else is replaced."""
+    if python is not None and argv and argv[0] == OWNER_PYTHON_NAME:
+        return [python, *argv[1:]]
+    return list(argv)
+
+
+def _allow_reads(vault: Path, source: Mapping[str, str], extra: Sequence[str], python: str | None = None) -> list[Path]:
     """What a script may read under a home folder (ruling R32): the vault, the engine and the interpreter
     running it, the vault's Claude Code session transcripts (spec §6.3), the allowlisted interpreters the run's
-    PATH finds, and ``extra`` (the runner's snapshot of the experiment's scripts).
+    PATH finds, the owner's ``lab.python`` (:func:`_owner_python_roots`), and ``extra`` (the runner's snapshot of
+    the experiment's scripts).
 
     Raises :class:`LabError` when the script's PATH finds a version-manager shim first for an allowlisted
     interpreter (:func:`_is_shim`): a shim reads its manager's settings under the home folder, which the sandbox
@@ -492,6 +631,8 @@ def _allow_reads(vault: Path, source: Mapping[str, str], extra: Sequence[str]) -
             found = shutil.which(name, path=value)
             if found is not None:
                 out.append(_interpreter_root(os.path.realpath(found), homes))
+    if python is not None:
+        out += _owner_python_roots(python, homes)
     seen: list[Path] = []
     for path in out:
         if Path(path) not in seen:
@@ -509,11 +650,33 @@ def run_lock_path(vault: Path, slug: str, eid: str, env: Mapping[str, str]) -> P
     return _owner_file(vault, slug, eid, env, ".lock")
 
 
+# Run locks a supervisor holds for its whole life (:func:`hold_run_lock`): lock path -> the thread holding it.
+_HELD_FOR_LIFE: dict[str, int] = {}
+
+
+@contextlib.contextmanager
+def hold_run_lock(vault: Path, slug: str, eid: str, env: Mapping[str, str]) -> Iterator[None]:
+    """Hold the experiment's run lock across more than the run itself (a detached run's supervisor, spec §6.4: from
+    before its weights fetch until its outcome is recorded). :func:`run_experiment` called from the same thread
+    inside it runs under this hold rather than refusing itself; any other run is refused ("already running")."""
+    key = str(run_lock_path(vault, slug, eid, env))
+    with _run_lock(vault, slug, eid, env):
+        _HELD_FOR_LIFE[key] = threading.get_ident()
+        try:
+            yield
+        finally:
+            _HELD_FOR_LIFE.pop(key, None)
+
+
 @contextlib.contextmanager
 def _run_lock(vault: Path, slug: str, eid: str, env: Mapping[str, str]) -> Iterator[None]:
     """Hold the experiment's run lock, or raise :class:`LabError` at once when another run of it holds the lock.
-    The lock file is write-only (0200), like the broker's own locks: a run can't open it to hold it."""
+    The lock file is write-only (0200), like the broker's own locks: a run can't open it to hold it. Already held
+    by this thread through :func:`hold_run_lock`, it is used as it is."""
     path = run_lock_path(vault, slug, eid, env)
+    if _HELD_FOR_LIFE.get(str(path)) == threading.get_ident():
+        yield
+        return
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o200)
     except OSError as exc:
@@ -522,7 +685,7 @@ def _run_lock(vault: Path, slug: str, eid: str, env: Mapping[str, str]) -> Itera
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise LabError(f"experiment {slug} {eid} is already running") from None
+            raise RunLockBusy(f"experiment {slug} {eid} is already running") from None
         yield  # closing the file below lets the lock go
     finally:
         os.close(fd)
@@ -884,19 +1047,30 @@ def _log_body(
     max_processes: int,
     max_total_bytes: int,
     nproc: int,
+    floor: int,
+    mem_limit: int,
+    detached: bool,
+    deadline: _dt.datetime,
+    ml: _ML,
 ) -> str:
     return "\n".join(
         [
             f"started: {started.strftime('%Y-%m-%d %H:%M')}",
             f"finished: {finished.strftime('%Y-%m-%d %H:%M')}",
+            f"detached: {'true' if detached else 'false'}",
+            f"deadline: {deadline.strftime('%Y-%m-%d %H:%M')}",
             f"argv: {json.dumps(list(argv), ensure_ascii=False)}",
             f"exit: {outcome.exit}",
             f"timed_out: {'true' if outcome.timed_out else 'false'}",
+            f"stopped: {outcome.stopped or 'no'}",
             f"over_processes: {'true' if outcome.over_processes else 'false'} (limit {max_processes}; "
             f"the kernel refuses forks past {nproc} of the owner's processes)",
             f"over_bytes: {'true' if outcome.over_bytes else 'false'} (cap {max_total_bytes} bytes)",
+            f"over_disk_floor: {'true' if outcome.over_disk_floor else 'false'} (floor {floor} bytes free)",
+            f"over_memory: {'true' if outcome.over_memory else 'false'} (limit {mem_limit} bytes)",
             f"spent_usd: {outcome.spent_usd:.4f} (this run {max(outcome.spent_usd - spent_before, 0.0):.4f}, "
             f"cap {cap_usd:.2f})",
+            *ml.log_lines(),
             "--- stdout (tail) ---",
             outcome.stdout_tail.rstrip("\n"),
             "--- stderr (tail) ---",
@@ -923,6 +1097,14 @@ def run_experiment(
     max_processes: int = broker.LabLimits.max_processes,
     max_total_bytes: int = broker.LabLimits.max_total_bytes,
     max_open_files: int = broker.LabLimits.max_open_files,
+    disk_free_floor_bytes: int = broker.LabLimits.disk_free_floor_bytes,
+    max_memory_bytes: int = 0,
+    on_started: Callable[[str, str], None] | None = None,
+    should_stop: Callable[[], str | None] | None = None,
+    weights: Sequence[Fetched] = (),
+    weights_root: Path | None = None,
+    python: str | None = None,
+    gpu: bool = False,
 ) -> RunOutcome:
     """Run ``argv`` for experiment ``eid`` of thread ``slug`` under the experiment sandbox.
 
@@ -943,6 +1125,27 @@ def run_experiment(
     ``max_processes`` and ``max_total_bytes`` are the owner's totals for the run (see the module docstring); a run
     killed for either still returns its outcome, with ``over_processes`` or ``over_bytes`` set. ``max_open_files``
     is the descriptors the script may hold open (the gate's ``ulimit -n``).
+
+    ``max_total_bytes`` is the experiment's disk budget (the broker passes the plan's, clamped to the owner's
+    maximum). ``disk_free_floor_bytes`` (default 15 GB; 0 = none) is the free space the volume must keep: a launch
+    that would leave less raises :class:`DiskFloorError`, and a run that sees less at a poll is killed
+    (``over_disk_floor``). ``max_memory_bytes`` is the processes' physical footprint together (0 = half of the
+    Mac's memory); past it the run is
+    killed (``over_memory``).
+
+    Two hooks serve a detached run's supervisor (spec §6.4; :mod:`scout.lab.supervise`), and mark the run log
+    ``detached: true``. ``on_started(marker, outside)`` is called once the gate's kernel checks have passed, before
+    the gate opens: ``marker`` is the sweep's probe file and ``outside`` the folder the sandbox may not write, the two
+    paths :func:`_sweep` needs to find the script's processes if this process dies. When it raises, the gate never
+    opens. ``should_stop()`` is asked at every poll; a reason it returns kills the run through the timeout's kill path
+    and is the outcome's ``stopped``.
+
+    ``weights`` are the model files the supervisor fetched into the cache at ``weights_root``
+    (:func:`scout.lab.weights.fetch`): each named revision folder is allowed back to read only, the script gets
+    ``$SCOUT_LAB_WEIGHTS_DIR`` (``weights_root``) and the run log lists every file. ``python`` is the owner's
+    ``lab.python``: a leading ``python3`` in ``argv`` runs it (:func:`owner_python_argv`). ``gpu`` is the owner's
+    ``lab.gpu``: only ``True`` leaves the GPU open (:func:`scout.lab.sandbox.experiment_profile`). Raises
+    :class:`LabError` when a revision folder isn't a real folder of the cache, or ``python`` isn't an executable file.
     """
     source = os.environ if env is None else env
     if not argv:
@@ -958,8 +1161,13 @@ def run_experiment(
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise LabError(f"{name} is {value!r}; it must be a whole number greater than 0")
+    for name, value in (("free disk floor", disk_free_floor_bytes), ("max memory", max_memory_bytes)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise LabError(f"{name} is {value!r}; it must be a whole number, 0 or more")
     if commit is not None and not _SHA_RE.match(commit):
         raise LabError(f"{commit!r} is not a commit id")
+    check_owner_python(python)
+    ml = _ML(tuple(weights), weights_dirs(weights, weights_root), python, gpu is True)
     note, private = _running_note(vault, slug, eid)  # checks the slug and EID the lock file is named by
     with _run_lock(vault, slug, eid, source):
         exp_rel = paths.experiment_dir(note).relative_to(vault).as_posix()
@@ -970,7 +1178,16 @@ def run_experiment(
             if not profile.available():
                 raise LabError("experiments need macOS sandbox-exec, which isn't available here; not run")
             source_tree = None if commit is None else (commit, exp_rel)
-            totals = (max_processes, max_total_bytes, max_open_files)
+            free = free_bytes(vault)
+            if disk_free_floor_bytes > 0 and (free is None or free - max_total_bytes < disk_free_floor_bytes):
+                raise DiskFloorError
+            totals = (
+                max_processes,
+                max_total_bytes,
+                max_open_files,
+                disk_free_floor_bytes,
+                memory_limit(max_memory_bytes),
+            )
             return _run(
                 vault,
                 slug,
@@ -985,9 +1202,87 @@ def run_experiment(
                 claude_argv,
                 source_tree,
                 totals,
+                (on_started, should_stop),
+                ml,
             )
         finally:
             os.close(exp_fd)
+
+
+@dataclass(frozen=True)
+class _ML:
+    """What an ML experiment adds to a run (spec §6.4): the cached weights, their revision folders (resolved) and
+    the cache's root, the owner's Python, and the owner's GPU switch."""
+
+    weights: tuple[Fetched, ...] = ()
+    dirs: tuple[tuple[str, ...], str | None] = ((), None)  # (revision folders, root), as weights_dirs returns
+    python: str | None = None
+    gpu: bool = False
+
+    def log_lines(self) -> list[str]:
+        lines = [f"python: {self.python}"] if self.python else []
+        if self.gpu:
+            lines.append("gpu: on")
+        folders, root = self.dirs
+        if root is not None:
+            lines.append(f"weights_dir: {root}")
+        for f in self.weights:
+            folder = os.path.join(root or "", f.repo, f.revision)
+            real = os.path.realpath(f.path)
+            name = real[len(folder) + 1 :] if real.startswith(folder + os.sep) else Path(f.path).name
+            lines.append(f"weights: {f.repo}@{f.revision} {name} sha256:{f.sha256} ({f.size} bytes)")
+        return lines
+
+
+def weights_dirs(weights: Sequence[Fetched], root: Path | None) -> tuple[tuple[str, ...], str | None]:
+    """The resolved revision folders ``weights`` are in, and the cache's resolved root (None without weights).
+    Raises :class:`LabError` unless each is a real folder ``<root>/<repo>/<revision>`` (no link on the way) holding
+    its files."""
+    from scout.lab.model import model_repo_ok, model_revision_ok
+
+    if not weights:
+        return (), None
+    if root is None:
+        raise LabError("model weights were given without the cache that holds them; not run")
+    root_real = os.path.realpath(root)
+    out: list[str] = []
+    for f in weights:
+        if not model_repo_ok(f.repo) or not model_revision_ok(f.revision):
+            raise LabError(f"{f.repo!r}@{f.revision!r} isn't a model pinned to a commit; not run")
+        folder = os.path.join(root_real, f.repo, f.revision)
+        if os.path.realpath(folder) != folder or not os.path.isdir(folder):
+            raise LabError(f"the weights for {f.repo}@{f.revision} aren't in the cache; not run")
+        if not os.path.realpath(f.path).startswith(folder + os.sep) or not os.path.isfile(f.path):
+            raise LabError(f"a weights file of {f.repo}@{f.revision} isn't in its cache folder; not run")
+        if folder not in out:
+            out.append(folder)
+    return tuple(out), root_real
+
+
+def script_env(
+    source: Mapping[str, str],
+    tmp_real: str,
+    sock: Path,
+    exp_real: str,
+    src: str | None,
+    weights_root: Path | str | None,
+) -> dict[str, str]:
+    """The script's whole environment, built from nothing: ``PATH``, ``HOME`` and ``LANG`` of ``source``, its
+    scratch dir, the meter's socket and its folders. Nothing else of ``source`` (a token, ``HF_TOKEN``) reaches it."""
+    env = {
+        "PATH": source.get("PATH") or "/usr/bin:/bin",
+        "HOME": source.get("HOME") or str(Path.home()),
+        "LANG": source.get("LANG") or "en_US.UTF-8",
+        "TMPDIR": tmp_real,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        ENV_METER: str(sock),
+        ENV_EXPERIMENT_DIR: exp_real,
+    }
+    if src is not None:
+        env[ENV_SOURCE_DIR] = src  # the committed scripts; the working folder stays exp_real
+    if weights_root is not None:
+        env[ENV_WEIGHTS_DIR] = os.path.realpath(weights_root)
+    return env
 
 
 # --- the committed scripts (ruling R30) --------------------------------------------------
@@ -1087,9 +1382,13 @@ def _run(
     source: Mapping[str, str],
     claude_argv: Sequence[str],
     source_tree: tuple[str, str] | None,
-    totals: tuple[int, int, int],
+    totals: tuple[int, int, int, int, int],
+    hooks: tuple[Callable[[str, str], None] | None, Callable[[], str | None] | None] = (None, None),
+    ml: _ML | None = None,
 ) -> RunOutcome:
-    max_processes, max_total_bytes, max_open_files = totals
+    ml = ml or _ML()
+    max_processes, max_total_bytes, max_open_files, floor, mem_limit = totals
+    on_started, should_stop = hooks
     _clear(exp_fd, TMP_NAME)
     os.mkdir(TMP_NAME, 0o700, dir_fd=exp_fd)
     tmp_real = os.path.join(exp_real, TMP_NAME)
@@ -1103,6 +1402,7 @@ def _run(
             _snapshot(vault, *source_tree, src)
             run_argv = _from_snapshot(argv, src)
             committed = _committed_files(vault, *source_tree, exp_real)
+        run_argv = owner_python_argv(run_argv, ml.python)
         sock = Path(os.path.realpath(private_dir)) / "m.sock"
         # The sweep's fingerprint: only this run's profile may write it, and the script can't remove it.
         marker = os.path.join(os.path.realpath(private_dir), "probe")
@@ -1125,9 +1425,11 @@ def _run(
                 deny_execs,
                 env=source,
                 probe_file=Path(marker),
-                allow_reads=_allow_reads(vault, source, [] if src is None else [src]),
+                allow_reads=_allow_reads(vault, source, [] if src is None else [src], ml.python),
                 deny_read_dirs=deny_dirs,
                 deny_access=committed,
+                weights_dirs=[Path(d) for d in ml.dirs[0]],
+                gpu=ml.gpu,
             )
         except profile.ProfileError as exc:
             raise LabError(f"cannot build the experiment sandbox: {exc}") from None
@@ -1174,20 +1476,11 @@ def _run(
         spent_before = server._spent()[0]
         server.start()
 
-        child_env = {
-            "PATH": source.get("PATH") or "/usr/bin:/bin",
-            "HOME": source.get("HOME") or str(Path.home()),
-            "LANG": source.get("LANG") or "en_US.UTF-8",
-            "TMPDIR": tmp_real,
-            "PYTHONDONTWRITEBYTECODE": "1",
-            ENV_METER: str(sock),
-            ENV_EXPERIMENT_DIR: exp_real,
-        }
-        if src is not None:
-            child_env[ENV_SOURCE_DIR] = src  # the committed scripts; the working folder stays exp_real
+        child_env = script_env(source, tmp_real, sock, exp_real, src, ml.dirs[1])
         out_path, err_path = os.path.join(private_dir, "stdout"), os.path.join(private_dir, "stderr")
         started = config.now(vault)
-        timed_out = over_bytes = over_processes = False
+        timed_out = over_bytes = over_processes = over_disk_floor = over_memory = False
+        stopped: str | None = None
         clean = False
         nproc = _nproc_limit(max_processes)  # counted last thing before the launch
         with _new_file(out_path) as out_f, _new_file(err_path) as err_f:
@@ -1227,6 +1520,8 @@ def _run(
                             "sandbox_check gave the wrong answer about the sandboxed script before it started; "
                             "its processes couldn't be found afterwards, so it was not run"
                         )
+                    if on_started is not None and proc.poll() is None:
+                        on_started(marker, outside)  # the sweep's paths, recorded before the script can run
                     if proc.poll() is None:
                         with contextlib.suppress(BrokenPipeError):  # sandbox-exec failed meanwhile: its exit says so
                             os.write(gate_w, b"go\n")  # the gate opens: the script runs
@@ -1253,6 +1548,15 @@ def _run(
                         if len(holders) > max_processes:
                             over_processes = True
                             break
+                        if floor > 0 and ((free := free_bytes(vault)) is None or free < floor):
+                            over_disk_floor = True
+                            break
+                        if _holders_footprint(holders) > mem_limit:
+                            over_memory = True
+                            break
+                        if should_stop is not None and (reason := should_stop()):
+                            stopped = reason
+                            break
                         continue
                     # The script exited: its last writes, and the unlinked files of anything it left running.
                     over_bytes = over(_holders(probe, marker, outside))
@@ -1271,9 +1575,25 @@ def _run(
             timed_out=timed_out,
             over_bytes=over_bytes,
             over_processes=over_processes,
+            over_disk_floor=over_disk_floor,
+            over_memory=over_memory,
+            stopped=stopped,
         )
         body = _log_body(
-            argv, started, config.now(vault), outcome, spent_before, cap_usd, max_processes, max_total_bytes, nproc
+            argv,
+            started,
+            config.now(vault),
+            outcome,
+            spent_before,
+            cap_usd,
+            max_processes,
+            max_total_bytes,
+            nproc,
+            floor,
+            mem_limit,
+            on_started is not None,
+            started + _dt.timedelta(seconds=timeout_s),
+            ml,
         )
         if not clean:
             body += "survivors: a process holding this experiment's sandbox was still alive after the sweep\n"

@@ -12,11 +12,20 @@ see). A left-out experiment is gone from every part of the document: ``lab show`
 replies and unanswered comments counted on its line. ``lab show`` counts them in ``private_experiments``, as
 ``lab.md`` counts private threads; it is 0 for a full reader. An experiment with no note is kept, with
 ``frontmatter`` null.
+
+``lab list`` gives each thread ``checkpoint_bytes``: the bytes under the ``checkpoints/`` folders of the experiments
+the reader may see (those folders are never committed). A left-out experiment's checkpoints don't count.
+
+``lab list``'s ``experiments.running_detail`` has one entry per ``running`` EID, in the same order: ``detached``
+(whether the owner's folder holds a detached run's record for it, :mod:`scout.lab.runs`), and for a detached one
+``elapsed`` and ``deadline`` (both ``HhMm``, from its start) and ``finished`` (its supervisor recorded an outcome,
+which ``lab experiment collect`` reads). For one that isn't detached they are null.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
+import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -125,6 +134,37 @@ def _unanswered(thread: Thread, hidden: set[str]) -> int:
     return sum(1 for target, _ in thread.unanswered_owner_comments() if target not in hidden)
 
 
+def _running_detail(
+    vault: Path, slug: str, eids: list[str], now: _dt.datetime, env: Mapping[str, str]
+) -> list[dict[str, Any]]:
+    """Each running experiment's detached run, if any (the module docstring). Reads the owner's records only."""
+    from scout.lab import runs
+
+    out: list[dict[str, Any]] = []
+    for eid in eids:
+        try:
+            record = runs.read(runs.record_path(vault, slug, eid, env))
+        except LabError:
+            record = None
+        started = None if record is None else runs.parse_time(record.started)
+        deadline = None if record is None else runs.parse_time(record.deadline)
+        if record is None or started is None or deadline is None:
+            out.append({"eid": eid, "detached": False, "elapsed": None, "deadline": None, "finished": None})
+            continue
+        finished = runs.parse_time(str((record.outcome or {}).get("finished") or "")) if record.outcome else None
+        end = finished if finished is not None else now
+        out.append(
+            {
+                "eid": eid,
+                "detached": True,
+                "elapsed": runs.hhmm((end - started).total_seconds()),
+                "deadline": runs.hhmm((deadline - started).total_seconds()),
+                "finished": record.outcome is not None,
+            }
+        )
+    return out
+
+
 def _experiment_ids(vault: Path, thread: Thread, now: _dt.datetime, hidden: set[str]) -> dict[str, list[str]]:
     """``planned``, ``running``, ``due`` and ``held``: the due experiments that the owner has a comment waiting
     on, on the experiment's line or on any question it lists. Scout answers those before it runs them. The
@@ -150,9 +190,43 @@ def _experiment_ids(vault: Path, thread: Thread, now: _dt.datetime, hidden: set[
     return {"planned": planned, "running": running, "due": due, "held": held}
 
 
-def _summary(vault: Path, thread: Thread, now: _dt.datetime, hidden: set[str]) -> dict[str, Any]:
+def _checkpoint_bytes(vault: Path, thread: Thread, hidden: set[str]) -> int:
+    """The bytes of the regular files under the ``checkpoints/`` folder of each of the thread's experiments the
+    reader may see (``hidden`` ones are left out, like everywhere else), each inode once and no link followed or
+    counted. Those folders are never committed, so the wrap can say what they hold."""
+    total = 0
+    seen: set[tuple[int, int]] = set()
+    stack: list[Path] = []
+    for e in thread.experiments:
+        note = None if e.eid in hidden else paths.experiment_note(vault, thread.slug, e.eid)
+        if note is not None:
+            stack.append(paths.experiment_dir(note) / "checkpoints")
+    while stack:
+        folder = stack.pop()
+        try:
+            if folder.is_symlink():
+                continue
+            with os.scandir(folder) as it:
+                for entry in it:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        st = entry.stat(follow_symlinks=False)
+                        if (st.st_dev, st.st_ino) not in seen:
+                            seen.add((st.st_dev, st.st_ino))
+                            total += st.st_size
+        except OSError:
+            continue
+    return total
+
+
+def _summary(
+    vault: Path, thread: Thread, now: _dt.datetime, hidden: set[str], env: Mapping[str, str] | None = None
+) -> dict[str, Any]:
     questions = _questions(thread)
     last_run = thread.frontmatter.get("last_run")
+    ids: dict[str, Any] = dict(_experiment_ids(vault, thread, now, hidden))
+    ids["running_detail"] = _running_detail(vault, thread.slug, ids["running"], now, os.environ if env is None else env)
     return {
         "slug": thread.slug,
         "path": _rel(vault, paths.front_page(vault, thread.slug)),
@@ -168,13 +242,14 @@ def _summary(vault: Path, thread: Thread, now: _dt.datetime, hidden: set[str]) -
         },
         "unanswered_comments": _unanswered(thread, hidden),
         "scout_replies": _scout_replies(thread, hidden),
-        "experiments": _experiment_ids(vault, thread, now, hidden),
+        "experiments": ids,
         "last_run": None if last_run is None else _json(last_run),
         "problems": len(thread.problems),
+        "checkpoint_bytes": _checkpoint_bytes(vault, thread, hidden),
     }
 
 
-def _broken_summary(vault: Path, thread: Thread, exc: Exception) -> dict[str, Any]:
+def _broken_summary(vault: Path, thread: Thread, exc: Exception, hidden: set[str]) -> dict[str, Any]:
     """The row for a thread whose summary couldn't be built: the same keys, nothing counted, the failure named
     in ``error`` and counted as one more problem, so the app shows it as not matching the lab format."""
     return {
@@ -187,9 +262,10 @@ def _broken_summary(vault: Path, thread: Thread, exc: Exception) -> dict[str, An
         "counts": {"open": 0, "answered": 0, "dropped": 0, "raised_7d": 0},
         "unanswered_comments": 0,
         "scout_replies": [],
-        "experiments": {"planned": [], "running": [], "due": [], "held": []},
+        "experiments": {"planned": [], "running": [], "due": [], "held": [], "running_detail": []},
         "last_run": None,
         "problems": len(thread.problems) + 1,
+        "checkpoint_bytes": _checkpoint_bytes(vault, thread, hidden),
         "error": f"cannot summarize this thread: {exc.__class__.__name__}: {exc}"[:300],
     }
 
@@ -199,13 +275,19 @@ def _status_rank(status: str) -> int:
 
 
 def lab_list(
-    vault: Path, labels: Mapping[str, str] | None, *, full: bool, now: _dt.datetime | None = None
+    vault: Path,
+    labels: Mapping[str, str] | None,
+    *,
+    full: bool,
+    now: _dt.datetime | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Every readable thread as a summary row, plus what needs the owner.
 
     ``labels`` is the reader's visibility map. Unless ``full``, a thread is left out when its front
     page is not in ``labels`` or its own frontmatter says ``visibility: private``, and an experiment when its
-    note isn't labeled ``normal`` there (the module docstring).
+    note isn't labeled ``normal`` there (the module docstring). ``env``'s HOME finds the owner's detached-run
+    records (default this process's environment).
     """
     moment = _moment(vault, now)
     seen = labels or {}
@@ -215,9 +297,10 @@ def lab_list(
         if not full and (rel not in seen or thread.visibility == "private"):
             continue
         try:
-            row = _summary(vault, thread, moment, _hidden_experiments(vault, thread, labels, full))
+            row = _summary(vault, thread, moment, _hidden_experiments(vault, thread, labels, full), env)
         except Exception as exc:  # noqa: BLE001 - one malformed thread must not empty the whole list
-            row = _broken_summary(vault, thread, exc)
+            # A failed summary can't say which experiments the reader may see: a partial reader sees none of them.
+            row = _broken_summary(vault, thread, exc, set() if full else {e.eid for e in thread.experiments})
         rows.append((thread, row))
     rows.sort(key=lambda pair: (_status_rank(pair[0].status), pair[0].title.lower(), pair[0].slug))
     return {

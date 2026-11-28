@@ -45,6 +45,9 @@ SAFE_VARS: tuple[str, ...] = (
     "GITHUB_USERNAME",
     "SCOUT_DIR",
     "SCOUTCTL_BIN",
+    # The owner's comment handle (`Alex-Example`): the USER_NAME check misses it, since the name isn't a substring
+    # of its fold. See `_reversible`: never its fallback `user`, nor a one-word name that is its own handle.
+    "USER_HANDLE",
 )
 
 # Short/common values (an instance name, a user's first name, a date, a
@@ -63,7 +66,25 @@ RISKY_VARS: tuple[str, ...] = (
     "MAX_BUDGET",
     "AUTO_UPDATE_ENABLED",
     "GITHUB_REPOS",
+    # Also safe (above): reported only when it was left unreversed, so such a hunk is never auto-applied.
+    "USER_HANDLE",
 )
+
+# Values a var takes that are ordinary words, never instance data: the handle's fallback is the word "user".
+_GENERIC_VALUES: dict[str, frozenset[str]] = {"USER_HANDLE": frozenset({"user"})}
+
+
+def _present(name: str, vars_: dict[str, str]) -> bool:
+    """Whether ``name`` has a value worth matching: set, and not one of its generic words."""
+    value = vars_.get(name)
+    return bool(value) and value not in _GENERIC_VALUES.get(name, frozenset())
+
+
+def _reversible(name: str, vars_: dict[str, str]) -> bool:
+    """A safe var is reversed unless it is generic, or it is the (risky, prose-common) user name itself."""
+    if not _present(name, vars_):
+        return False
+    return not (name == "USER_HANDLE" and vars_[name] == vars_.get("USER_NAME"))
 
 
 @dataclass
@@ -113,7 +134,7 @@ def retemplatize(
     get partially clobbered.
     """
     safe_pairs = sorted(
-        ((k, vars_[k]) for k in safe if vars_.get(k)),
+        ((k, vars_[k]) for k in safe if _reversible(k, vars_)),
         key=lambda kv: len(kv[1]),
         reverse=True,
     )
@@ -122,7 +143,7 @@ def retemplatize(
         for name, value in safe_pairs:
             line = line.replace(value, f"{{{{{name}}}}}")
         out.append(line)
-    risky_hits = [k for k in risky if vars_.get(k) and any(vars_[k] in ln for ln in out)]
+    risky_hits = [k for k in risky if _present(k, vars_) and any(vars_[k] in ln for ln in out)]
     return out, risky_hits
 
 

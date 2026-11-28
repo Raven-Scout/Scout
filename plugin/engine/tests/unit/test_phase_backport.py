@@ -51,6 +51,32 @@ def test_retemplatize_flags_risky_vars_but_leaves_them_literal():
     assert set(risky) == {"USER_NAME", "INSTANCE_NAME"}
 
 
+def test_retemplatize_reverses_the_owner_handle():
+    """A rendered `--author <handle>` line never reaches the shipped phases: the name check misses the fold."""
+    vars_ = {**VARS, "USER_NAME": "Alex Example", "USER_HANDLE": "Alex-Example"}
+    lines = ["scripts/scoutctl lab comment <slug> --text 'Q: x' --author Alex-Example"]
+    out, risky = retemplatize(lines, vars_)
+    assert out == ["scripts/scoutctl lab comment <slug> --text 'Q: x' --author {{USER_HANDLE}}"]
+    assert risky == []
+
+
+def test_retemplatize_leaves_the_word_user_alone_when_the_handle_is_the_fallback():
+    vars_ = {**VARS, "USER_NAME": "", "USER_HANDLE": "user"}
+    lines = ["Ask the user before you send anything; the user decides."]
+    out, risky = retemplatize(lines, vars_)
+    assert out == lines
+    assert risky == []
+
+
+def test_retemplatize_reports_a_handle_equal_to_the_name_instead_of_rewriting_prose():
+    """A one-word name is its own handle: rewriting it would corrupt prose, so it stays risky, as USER_NAME is."""
+    vars_ = {**VARS, "USER_NAME": "Alex", "USER_HANDLE": "Alex"}
+    lines = ["Alex asked for this: --author Alex"]
+    out, risky = retemplatize(lines, vars_)
+    assert out == lines
+    assert "USER_NAME" in risky and "USER_HANDLE" in risky
+
+
 def test_retemplatize_clean_line_has_no_risky_hits():
     lines = ["A generic rule with no instance-specific tokens."]
     out, risky = retemplatize(lines, VARS)
@@ -127,6 +153,20 @@ def test_plan_backport_needs_review_when_risky_value_present():
     results = plan_backport(snapshot, live, [sec], VARS)
     assert results[0].status == "needs-review"
     assert "USER_NAME" in results[0].risky_hits
+
+
+def test_plan_backport_writes_a_rendered_handle_back_as_its_var():
+    """The vault's `--author Alex-Example` line lands in the shipped phase as `--author {{USER_HANDLE}}`."""
+    vars_ = {**VARS, "USER_NAME": "Alex Example", "USER_HANDLE": "Alex-Example"}
+    raw = "### Step 2-pre\n\nScan markers under {{SCOUT_DIR}}.\nThen score files."
+    sec = _section(raw)
+    live = sec.rendered_body.replace(
+        "Scan markers under /home/alex/vault.",
+        "Scan markers under /home/alex/vault.\nComment with `--author Alex-Example`.",
+    )
+    (result,) = plan_backport(sec.rendered_body, live, [sec], vars_)
+    assert result.retemplatized == ["Comment with `--author {{USER_HANDLE}}`."]
+    assert "Alex-Example" not in "\n".join(result.retemplatized)
 
 
 def test_plan_backport_needs_review_for_modified_line_not_pure_insert():

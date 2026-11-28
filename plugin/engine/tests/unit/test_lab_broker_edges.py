@@ -62,12 +62,12 @@ def vault(tmp_path: Path) -> Path:
     return v
 
 
-def _validate(vault: Path) -> tuple[str, str, list[str], float, str]:
+def _validate(vault: Path) -> tuple[str, str, list[str], float, str, broker.ExperimentPlan]:
     return broker.validate_experiment(dict(REQ), vault, broker.LabLimits(), AFTER_NOTICE, dict(os.environ))
 
 
 def test_the_fixture_validates(vault: Path) -> None:
-    slug, eid, argv, cap, _commit = _validate(vault)
+    slug, eid, argv, cap, _commit, _plan = _validate(vault)
     assert (slug, eid, argv, cap) == (SLUG, EID, ["python3", "run.py"], 1.0)
 
 
