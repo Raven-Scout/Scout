@@ -369,8 +369,24 @@ def _deny_title_rewrites(form: str) -> str:
     )
 
 
+# `log -S/-G/--pickaxe-all` that may search the KB's text (review of #817, round 7: an oracle on a note).
+PICKAXE_FORM = "git form not allowed in a run (log -S/-G over the KB)"
+
+
+def _pickaxe_scope() -> str:
+    """The pathspecs that keep a pickaxe search outside the KB, as a run can paste them."""
+    return " ".join(f"':!{d}'" for d in (*KB_DIRS, "knowledge-base.md"))
+
+
 def _deny_git_form(form: str) -> str:
     from scout.kb import git_allow
+
+    if form == PICKAXE_FORM:
+        return (
+            f"{MARK} A scheduled run's `git log -S`/`-G` may not search the KB's notes: it picks commits by their "
+            f"text. To search outside the KB, add `-- {_pickaxe_scope()}` (or a non-KB path such as `-- docs`). "
+            "To find something in KB notes, use `scoutctl kb search …`."
+        )
 
     # The engine-change flow (phases/core/git-setup.md: clone, branch, commit, push in ~/.scout-worktrees) isn't
     # a run's to make for now: as in the write sandbox, the change is described in the wrap.
@@ -587,8 +603,8 @@ def _decide_bash(
             return f"{GIT_FORM} (a repository whose config runs commands: {found[7:]})"
         if found == "holds:":
             return f"{GIT_FORM} (a repository holding the vault's history)"
-        if read.strict and found in ("unresolved", "whole"):
-            return KB_READ  # `log -S/-G` over paths the gate can't bound: an oracle on the KB's text
+        if read.strict and found in ("unresolved", "whole", "kb"):
+            return PICKAXE_FORM  # `log -S/-G` over the KB, or paths the gate can't bound: an oracle on its text
         if found == "unresolved":
             if DENY_UNRESOLVED_GIT_READS:
                 return UNRESOLVED_READ

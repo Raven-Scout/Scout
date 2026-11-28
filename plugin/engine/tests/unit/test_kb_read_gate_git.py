@@ -970,6 +970,14 @@ ROUND_7 = [
 ]
 
 
+def test_a_pickaxe_deny_says_how_to_search_outside_the_kb(home: Path) -> None:
+    reason = _denied(_run(home, "git log -S briefing --oneline"))
+    assert "-- ':!knowledge-base'" in reason and "scoutctl kb search" in reason
+    scope = gate._pickaxe_scope()
+    assert _run(home, f"git log -S briefing --oneline -- {scope}") is None  # the hint works as given
+    assert _run(home, "git log -S briefing --oneline -- docs") is None
+
+
 @pytest.mark.parametrize("command", ROUND_7)
 def test_round_7_forms_are_refused(home: Path, command: str) -> None:
     _denied(_run(home, command))
