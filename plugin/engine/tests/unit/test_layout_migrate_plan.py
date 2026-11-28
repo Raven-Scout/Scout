@@ -209,3 +209,75 @@ def test_the_no_personal_space_note_is_given_once(tmp_path: Path) -> None:
         (vault / f"knowledge-base/personal/note-{n}.md").write_text("# n\n")
     notes = layout_migrate.plan(vault).notes
     assert notes.count("no personal space is registered: knowledge-base/personal/ stays as it is") == 1
+
+
+# The real vault's shape (anonymised): the root registry kept one-offs under its recurring heading, typed only by
+# their own cell, while the KB copy listed some of them under its one-off heading. Each one got a row in both
+# tables until the row's own type counted and a slug met itself across tables.
+_ROOT_ONE_OFFS_UNDER_ACTIVE = """# Meetings Registry
+
+## Active Meetings
+
+| Meeting | Frequency | Day / Time | Key Attendees | Related Projects |
+|---------|-----------|------------|---------------|------------------|
+| [[team-sync]] | Weekly | Mon 10:00 | Alex | [[apollo]] |
+| [[launch-comms]] | **one-off** | Mon 2026-09-14 15:00-15:30 | Alex, Sam | [[apollo]] |
+| [[launch-sync]] | **one-off** | Tue 2026-09-01 08:00-09:00 | Priya (org.) | [[apollo]] |
+| [[pricing-followup]] | Ad-hoc | TBD | Alex, Priya | [[apollo]] |
+| [[alex-1on1]] | Ad-hoc | TBD (first: Tue 2026-07-21 16:00) | Alex | |
+| [[apps-kickoff]] | One-off | 2026-04-28 | Alex + cohort | [[apollo]] |
+| [[launch-check]] | One-off | 2026-08-31 09:30 CEST | Sam (organizer), Alex | [[apollo]] |
+"""
+
+_KB_ONE_OFF_TABLE = """# Meetings - Registry (knowledge-base copy)
+
+## Recurring Series
+
+| Series | Last known state | Lead | Notes |
+|--------|------------------|------|-------|
+| [[launch-sync]] | One-off, Tue 2026-09-01 08:00-09:00 | Priya (org.) | Distinct from [[launch-check]]. |
+
+## One-off / Ad-hoc Sessions
+
+| Date | Session | Outcome |
+|------|---------|---------|
+| 2026-08-31 | [[launch-check/2026-08-31]] (Sam + Alex) | go |
+| 2026-04-22 | [[pricing-followup]] | credits, not seats |
+| 2026-04-28 | [[apps-kickoff/2026-04-28]] | kickoff |
+"""
+
+
+KEPT = "## Kept from the old registries"
+
+
+def _tables(out: str) -> tuple[list[str], list[str]]:
+    recurring = out.split("## Active Recurring Meetings", 1)[1].split("## One-Off Meetings", 1)[0]
+    one_off = out.split("## One-Off Meetings", 1)[1].split(KEPT, 1)[0]
+    slug = re.compile(r"\| \[\[work/meetings/([^/]+)/")
+    return slug.findall(recurring), slug.findall(one_off)
+
+
+def test_a_one_off_gets_one_row_whatever_heading_either_registry_kept_it_under() -> None:
+    out, clashes, extras = layout_migrate.merge_registries(
+        [("root-meetings", _ROOT_ONE_OFFS_UNDER_ACTIVE), ("kb-meetings", _KB_ONE_OFF_TABLE)],
+        space="work",
+        newest_side={},
+        header="# Meetings",
+    )
+    recurring, one_off = _tables(out)
+    assert not set(recurring) & set(one_off)
+    # typed one-off by their own cell, or listed under a one-off heading on the other side
+    assert one_off == ["apps-kickoff", "launch-check", "launch-comms", "launch-sync", "pricing-followup"]
+    # "Ad-hoc" alone is a series that meets when needed, not a one-off
+    assert recurring == ["alex-1on1", "team-sync"]
+    for line in (
+        "| [[work/meetings/launch-check/launch-check\\|launch-check]] | work | 2026-08-31 |",
+        "| [[work/meetings/launch-comms/launch-comms\\|launch-comms]] | work | 2026-09-14 |",  # its first date
+        "| [[work/meetings/launch-sync/launch-sync\\|launch-sync]] | work | 2026-09-01 |",
+        "| [[work/meetings/pricing-followup/pricing-followup\\|pricing-followup]] | work | 2026-04-22 |",
+    ):
+        assert line in out
+    assert {"launch-check", "launch-sync", "pricing-followup", "apps-kickoff"} <= set(clashes)
+    # the recurring-table row lost, and its cells still reach the home file (§4.7)
+    assert "Frequency (from meetings/meetings.md): Ad-hoc" in extras["pricing-followup"]
+    assert "Key Attendees (from meetings/meetings.md): Alex, Priya" in extras["pricing-followup"]

@@ -1,0 +1,1 @@
+- The layout v2 move no longer lists a one-off meeting in both registry tables. A row now counts as one-off when its own cell says "One-off", whatever heading it sat under, and a meeting with a one-off row in either old registry gets a single row in the one-off table.

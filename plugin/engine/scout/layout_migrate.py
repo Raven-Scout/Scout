@@ -862,6 +862,10 @@ def identity_keys_only(text: str) -> list[str]:
 _REG_TABLES = ("Active Recurring Meetings", "One-Off Meetings")
 _KEY_COLUMNS = ("meeting", "series", "session", "name")
 _ONE_OFF_HEADING = re.compile(r"one[- ]?off|ad[- ]?hoc", re.I)
+# A row whose own cell starts "One-off" is one, whatever heading it sits under. "Ad-hoc" alone is not enough: an
+# ad-hoc 1:1 is a series that meets when needed.
+_ONE_OFF_CELL = re.compile(r"^one[- ]?off\b", re.I)
+_ISO_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 _SEPARATOR = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$")
 _SIDE_PATHS = {"root-meetings": "meetings/meetings.md", "kb-meetings": f"{KB}/meetings/meetings.md"}
 KEPT_HEADING = "## Kept from the old registries"
@@ -949,6 +953,10 @@ def _registry_parts(text: str) -> tuple[list[_RegTable], list[str]]:
     return tables, kept
 
 
+def _says_one_off(cells: list[str], key_col: int) -> bool:
+    return any(_ONE_OFF_CELL.match(_head_name(c)) for n, c in enumerate(cells) if n != key_col)
+
+
 def _demote(line: str) -> str:
     h = re.match(r"^(#{1,6})(\s.*)$", line)
     return f"{'#' * min(6, len(h.group(1)) + 2)}{h.group(2)}" if h else line
@@ -965,8 +973,10 @@ def merge_registries(
     """(registry text, clashing slugs, slug -> labelled extra cells for the home file) from (side, text) pairs.
 
     Rows are keyed by their link target's slug, else the normalised meeting name, and unioned into the recurring
-    and the one-off table, whatever their v1 heading. On a clash the row from the side holding the series'
-    newest dated file wins (``newest_side[slug]``; with none known, the first row read). Rows are reduced to the
+    and the one-off table: a row is one-off when its v1 heading says so or one of its own cells starts "One-off",
+    and a meeting with a one-off row anywhere is one-off, so it gets one row in one table. On a clash the row
+    from the side holding the series' newest dated file wins (``newest_side[slug]``; with none known, the first
+    row read, one-off rows before recurring ones). Rows are reduced to the
     meeting link, the space and the calendar match pattern (§3.3: ``matches[slug]``, from the series' home
     file); every other cell moves to the home file as ``<column>: <value>``, a losing row's cells too, marked
     with their registry (§4.7: nothing is dropped). Text that isn't a series row (notes, event logs, retired
@@ -982,19 +992,24 @@ def merge_registries(
         kept_rows: list[str] = []
         kept_by_side.append((side, kept))
         for table in tables:
-            bucket = rows[table.one_off]
             for line in table.rows:
                 cells = _cells(line)
                 key = _registry_key("| " + cells[table.key_col] + " |") if len(cells) > table.key_col else None
                 if key is None or key == "meetings":
                     kept_rows.append(line)  # no series to key it by, or the registry itself: kept as text
                     continue
+                bucket = rows[table.one_off or _says_one_off(cells, table.key_col)]
                 entries = bucket.setdefault(key, [])
                 if entries and key not in clashes:
                     clashes.append(key)
                 entries.append((side, cells, table))
         if kept_rows:
             kept += ["", "Rows with no series of their own:", "", *kept_rows]
+    # One meeting, one row: a series with a one-off row on either side is one-off, its recurring rows its losers.
+    for key in sorted(rows[True].keys() & rows[False].keys()):
+        rows[True][key] += rows[False].pop(key)
+        if key not in clashes:
+            clashes.append(key)
 
     def winner(key: str, entries: list[tuple[str, list[str], _RegTable]]) -> int:
         want = newest_side.get(key)
@@ -1021,6 +1036,10 @@ def merge_registries(
             cell = _meeting_cell(cells[table.key_col], key, space)
             if one_off:
                 date = cells[table.date_col] if table.date_col is not None and len(cells) > table.date_col else ""
+                if not date:  # won by a row with no date column: another row's date, else the first date it names
+                    dated = [c[t.date_col] for _s, c, t in entries if t.date_col is not None and len(c) > t.date_col]
+                    found = _ISO_DATE.search(" ".join(c for n, c in enumerate(cells) if n != table.key_col))
+                    date = next((d for d in dated if d), found.group(0) if found else "")
                 out.append(f"| {cell} | {space} | {date} |")
             else:
                 out.append(f"| {cell} | {space} | {matches.get(key, '')} |")
