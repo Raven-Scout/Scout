@@ -1391,6 +1391,76 @@ def lease_findings(rows: list[OutcomeRow], *, vault: Path, cutoff: datetime) -> 
     return findings
 
 
+# A scheduled run's python (or other interpreter) program that edits a KB note: the read gate is to record it as
+# a `kb_read_gate.kb_edit` event (once per command, {"mode", "targets"}, no paths) and allow it while
+# DENY_INTERPRETER_KB_EDITS is off (follow-up to #824). `scoutctl kb edit` replaces it; this finding counts the
+# records per run, so the owner can see when runs have stopped and the switch can go on.
+KB_EDIT_EVENT = "kb_read_gate.kb_edit"
+KB_EDIT_RUNS = 10  # the runs counted
+KB_EDIT_QUIET = timedelta(days=14)  # how long the line stays once the runs have stopped
+
+
+def kb_edit_times(vault: Path, *, since: datetime) -> list[datetime]:
+    """When each `kb_edit` record at or after ``since`` was written, oldest first (event logs, by file date)."""
+    first = since.astimezone(UTC).date().isoformat()
+    found: list[datetime] = []
+    for path in sorted((vault / ".scout-logs").glob("schedule-events-*.jsonl"), key=lambda p: p.name):
+        if path.name[len("schedule-events-") : -len(".jsonl")] < first:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:  # pragma: no cover - unreadable log
+            continue
+        for line in text.splitlines():
+            if "kb_edit" not in line:
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            ts = _parse_ts(obj.get("ts")) if isinstance(obj, dict) else None
+            if ts is not None and ts >= since and obj.get("kind") == KB_EDIT_EVENT:
+                found.append(ts)
+    return sorted(found)
+
+
+def kb_edit_findings(rows: list[OutcomeRow], *, vault: Path, now: datetime) -> list[Finding]:
+    """A note while runs' interpreter KB edits are recorded and not denied: how many in each of the last runs."""
+    times = kb_edit_times(vault, since=now - KB_EDIT_QUIET)
+    if not times:
+        return []
+    from scout.hooks import kb_read_gate
+
+    if getattr(kb_read_gate, "DENY_INTERPRETER_KB_EDITS", False):
+        return []  # denied now: there is nothing left to watch
+    ran = [r for r in rows if r.outcome not in SKIP_OUTCOMES][-KB_EDIT_RUNS:]
+    per_run = [sum(1 for t in times if r.started_at <= t <= r.finished_at) for r in ran]
+    total = sum(per_run)
+    fix = (
+        "Nothing to do: these edits are recorded, not refused. Runs are told to use `scoutctl kb edit`; once they "
+        "make none, Scout's read gate can refuse them (DENY_INTERPRETER_KB_EDITS)."
+    )
+    runs = "the last run" if len(ran) == 1 else f"the last {count(len(ran), 'run')}"
+    if not ran:
+        summary = (
+            f"Scheduled runs edited KB notes with interpreter scripts {count(len(times), 'time')} in "
+            f"{KB_EDIT_QUIET.days} days."
+        )
+    elif total:
+        summary = (
+            f"Scheduled runs still edit KB notes with interpreter scripts: {count(total, 'edit')} in {runs} "
+            f"({sum(1 for n in per_run if n)} with any; per run, newest last: {', '.join(map(str, per_run))})."
+        )
+    else:
+        summary = (
+            f"No interpreter KB edits in {runs}; the last was {_age(now - times[-1])} ago. "
+            "Runs have moved to `scoutctl kb edit`."
+        )
+    return [
+        Finding(id="kb.interpreter_edits", severity="note", since=times[-1], summary=summary, fix=fix, source="events")
+    ]
+
+
 def build_report(
     findings: list[Finding],
     *,
@@ -2484,8 +2554,9 @@ def evaluate(vault: Path, *, now: datetime | None = None, home: Path | None = No
     engine = engine_findings(home=home)
     config = config_findings(vault)
     delegates = delegate_findings(vault) + delegate_inbox_findings(vault)
+    edits = kb_edit_findings(rows, vault=vault, now=now)
     return build_report(
-        found + sched + lanes + updates + engine + config + delegates,
+        found + sched + lanes + updates + engine + config + delegates + edits,
         now=now,
         last_ok_at=_last_ok_at(rows),
         slots=slots,
