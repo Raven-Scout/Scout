@@ -270,6 +270,7 @@ DENY_GIT_WHOLE_REPO_READS = False
 # program_path: a file a program's text opens by a path it builds at run time (awk, perl; scout.kb.other_reads).
 UNRESOLVED_CATEGORIES = (
     "xargs_input", "command_output", "unset_variable", "program_path", "git_unresolved", "git_whole_repo",
+    "git_pickaxe",
 )  # fmt: skip
 
 
@@ -488,7 +489,13 @@ EMBEDDED_DEPTH = 3
 
 
 def _decide_bash(
-    command: str, cwd: Path, vault: Path, env: Mapping[str, str], mode: str | None, depth: int = 0
+    command: str,
+    cwd: Path,
+    vault: Path,
+    env: Mapping[str, str],
+    mode: str | None,
+    depth: int = 0,
+    reader: str = "autonomous",
 ) -> str | None:
     """The deny reason for a run's shell command in the vault, or None: the path checks, the KB read checks and the
     commands git runs for it (each judged the same way, ``depth`` deep)."""
@@ -604,7 +611,15 @@ def _decide_bash(
         if found == "holds:":
             return f"{GIT_FORM} (a repository holding the vault's history)"
         if read.strict and found in ("unresolved", "whole", "kb"):
-            return PICKAXE_FORM  # `log -S/-G` over the KB, or paths the gate can't bound: an oracle on its text
+            # `log -S/-G` over the KB, or paths the gate can't bound: it picks commits by a note's text. A full reader
+            # (a run's, the owner's) may read every note through `scoutctl kb read` anyway: what the search skips is
+            # that labelled read, so it is recorded (review of #817, round 8). Any other reader is refused.
+            from scout.kb.privacy import FULL_READERS
+
+            if reader not in FULL_READERS or DENY_GIT_WHOLE_REPO_READS:
+                return PICKAXE_FORM
+            unresolved.add("git_pickaxe")
+            return None
         if found == "unresolved":
             if DENY_UNRESOLVED_GIT_READS:
                 return UNRESOLVED_READ
@@ -682,7 +697,7 @@ def _decide_bash(
         if depth >= EMBEDDED_DEPTH:
             _record_hook_skip(vault, hook_paths.TOO_MANY, mode)
             return _deny_skip_form(hook_paths.TOO_MANY)
-        reason = _decide_bash(program, cwd, vault, env, mode, depth + 1)
+        reason = _decide_bash(program, cwd, vault, env, mode, depth + 1, reader)
         if reason is not None:
             return reason
     if unresolved:
@@ -721,7 +736,7 @@ def decide(
         command = tool_input.get("command")
         if not isinstance(command, str):
             raise ValueError("Bash call without a command")
-        return _decide_bash(command, cwd, vault, env, mode)
+        return _decide_bash(command, cwd, vault, env, mode, reader=reader)
     if tool in ("Grep", "Glob"):
         raw = tool_input.get("path")
         root = _target(raw, cwd) if isinstance(raw, str) and raw else cwd

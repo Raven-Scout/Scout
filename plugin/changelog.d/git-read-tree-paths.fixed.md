@@ -102,8 +102,10 @@
   its history (a fetch from it, an alternate, a copy of `.git`) is refused, and so is one with a hook git would run
   for the call (`post-index-change` on `add` and `status`, …), in its `hooks/` or `core.hooksPath`. A names-only
   `git show` of a blob, by any id (`67de3`, `<id>^{blob}`), is refused; `git diff` outside a repository, or with a
-  path outside its work tree, is judged by the files it compares. `log -S/-G/--pickaxe-all` is refused unless
-  every pathspec is outside the KB (they pick commits by a note's text). A `PATH` change may only reorder the run's
+  path outside its work tree, is judged by the files it compares. `log -S/-G/--pickaxe-all` over the KB (or with no
+  pathspec) picks commits by a note's text: for a full reader (a run's, the owner's) it is allowed and recorded
+  (`git_pickaxe`, behind `DENY_GIT_WHOLE_REPO_READS`); for any other reader, or with the switch on, it is refused
+  with the pathspecs that keep it outside the KB. A `PATH` change may only reorder the run's
   own PATH folders or add fixed system ones (`/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`, `/opt/homebrew/bin`), in
   every spelling (`path[1,0]=`, `${PATH::=…}`; `${(P)…}` is refused). `source`/`.` of stdin or a pipe is judged as
   a shell running that text.

@@ -935,15 +935,6 @@ def test_round_6_forms_are_refused(home: Path, command: str) -> None:
 
 
 ROUND_7 = [
-    # pickaxe over paths the gate can't bound outside the KB: an oracle on a note's text
-    "git log -S x --oneline",
-    "git log -G x --format=%B -n1",
-    "git log --pickaxe-all -S x --stat",
-    "git log -SKBSECRET --oneline",
-    "git log -i -G 'x' --oneline",
-    "git log -S x --oneline -- knowledge-base",
-    "git log -G '^secret$' --format=format:HIT -- knowledge-base/a.md",
-    "git -C action-items log -S x --oneline -- context",
     # PATH: only the run's own folders, reordered, or fixed system ones
     "PATH+=:/tmp/x; git status",
     "PATH=/usr/local/bin:$PATH git status",
@@ -970,11 +961,58 @@ ROUND_7 = [
 ]
 
 
-def test_a_pickaxe_deny_says_how_to_search_outside_the_kb(home: Path) -> None:
-    reason = _denied(_run(home, "git log -S briefing --oneline"))
+PICKAXE_OVER_THE_KB = [
+    "git log -S x --oneline",
+    "git log -G x --format=%B -n1",
+    "git log --pickaxe-all -S x --stat",
+    "git log -SKBSECRET --oneline",
+    "git log -i -G 'x' --oneline",
+    "git log -S x --oneline -- knowledge-base",
+    "git log -G '^secret$' --format=format:HIT -- knowledge-base/a.md",
+    "git -C action-items log -S x --oneline -- context",
+    "git log -S'a phrase' --format='%h %ad' --date=short",  # the replay's shapes at 6384a13e
+    "git log --format='%h' -S'a phrase' -- knowledge-base/a.md; git log --format='%h' -3 -S'a phrase' -- docs/a.md",
+]
+
+
+@pytest.mark.parametrize("command", PICKAXE_OVER_THE_KB)
+def test_a_pickaxe_over_the_kb_is_recorded_for_a_full_reader(home: Path, command: str) -> None:
+    """Round 8 (the coordinator's call): a run's reader may read every note through `scoutctl kb read`, so a
+    pickaxe over the KB reveals nothing new to it; what it skips is the labelled read, so it is recorded."""
+    assert _run(home, command) is None
+    (row,) = _events(home)
+    assert "git_pickaxe" in row["payload"]["categories"]
+
+
+@pytest.mark.parametrize("command", PICKAXE_OVER_THE_KB[:3])
+def test_a_pickaxe_over_the_kb_is_refused_with_the_switch_on_or_for_another_reader(
+    home: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    monkeypatch.setattr(gate, "DENY_GIT_WHOLE_REPO_READS", True)
+    reason = _denied(_run(home, command))
     assert "-- ':!knowledge-base'" in reason and "scoutctl kb search" in reason
-    scope = gate._pickaxe_scope()
-    assert _run(home, f"git log -S briefing --oneline -- {scope}") is None  # the hint works as given
+    monkeypatch.setattr(gate, "DENY_GIT_WHOLE_REPO_READS", False)
+    assert "git log -S" in _denied(_run(home, command, env={"SCOUT_READER": "agent:person:alex@example.com"}))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git log --format='%h %ad' -3 -S'a phrase' -- docs/a.md",
+        "git log -S'a phrase' --format='%h %s' --date=short -- docs/a.md",
+        "git log -S 'run `scoutctl kb` first' --format=%h --date=iso -- docs/a.md",
+        "git log -S'phrase' --format=%h -- ./docs/a.md",
+        "git log -S'phrase' --format=%h -- ~/Vault/docs/a.md",
+    ],
+)
+def test_a_pickaxe_outside_the_kb_is_allowed_and_records_nothing(home: Path, command: str) -> None:
+    assert _run(home, command) is None
+    assert _events(home) == []
+
+
+def test_the_pickaxe_hint_works_as_given(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gate, "DENY_GIT_WHOLE_REPO_READS", True)
+    assert _run(home, f"git log -S briefing --oneline -- {gate._pickaxe_scope()}") is None
     assert _run(home, "git log -S briefing --oneline -- docs") is None
 
 
