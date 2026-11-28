@@ -67,6 +67,9 @@ final class ActionItemsDocumentService: ObservableObject {
     /// churn stops (#22).
     private let fileEvents: any FileSystemEventSource
     private let defaults: UserDefaults
+    /// Reconciled on every parse, so a comment draft whose task was completed
+    /// or archived goes with it.
+    private let drafts: CommentDraftStore
     private var currentDate: Date?
     private var watchTask: Task<Void, Never>?
 
@@ -99,11 +102,13 @@ final class ActionItemsDocumentService: ObservableObject {
     init(
         directory: URL,
         fileEvents: any FileSystemEventSource,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        drafts: CommentDraftStore = .shared
     ) {
         self.directory = directory
         self.fileEvents = DebouncedFileEvents(base: fileEvents, interval: Self.watchDebounce)
         self.defaults = defaults
+        self.drafts = drafts
     }
 
     /// Byline for Obsidian `//==<< … >>==//` inline comments.
@@ -219,6 +224,7 @@ final class ActionItemsDocumentService: ObservableObject {
             break
         case .success(.parsed(let document, let fingerprint)):
             publishedFingerprint = fingerprint
+            drafts.reconcile(day: ActionItemsDay.stem(for: date), sections: document.sections)
             publish(.loaded(document))
         case .failure(is CancellationError):
             // Superseded mid-parse. The generation guard above normally

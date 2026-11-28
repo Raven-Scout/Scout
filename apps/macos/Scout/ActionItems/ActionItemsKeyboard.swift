@@ -24,6 +24,12 @@ struct ActionItemsKeyboardContext: Equatable {
     /// current left the list without focus when it came from elsewhere, the
     /// sidebar say: gold, no ring, and ↓ did nothing (UI audit T4).
     var focusCard: StableAction<UUID>?
+    /// Makes a card current and gives the list the keys, unconditionally: a
+    /// card collapsing while its comment editor has them. The editor is torn
+    /// down with the card's detail, and the list only heard it let go once
+    /// the preference caught up, a render later, so the keys sat for that
+    /// long on the list's sink with no ring.
+    var takeKeys: StableAction<UUID>?
 
     struct ToggleRequest: Equatable {
         let id: UUID
