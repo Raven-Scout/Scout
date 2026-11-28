@@ -22,7 +22,7 @@ from __future__ import annotations
 
 MODIFIERS = frozenset({"sudo", "command", "builtin", "exec", "nice", "time", "xargs", "noglob", "nocorrect", "-"})
 LAUNCHERS = frozenset(
-    {"timeout", "gtimeout", "stdbuf", "gstdbuf", "caffeinate", "unbuffer", "parallel", "xcrun", "arch"}
+    {"timeout", "gtimeout", "stdbuf", "gstdbuf", "caffeinate", "unbuffer", "parallel", "xcrun", "arch", "sandbox-exec"}
 )
 SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
 SELF_JUDGED = frozenset({"env", "nohup", "eval"} | SHELLS)
