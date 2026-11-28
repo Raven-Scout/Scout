@@ -54,19 +54,25 @@ what the gate denies and what the eval counts are one definition.
 
 from __future__ import annotations
 
+import dataclasses
+import fnmatch
 import glob
 import json
 import os
+import posixpath
 import re
 import signal
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, TYPE_CHECKING, Any
 
 from scout import paths
 from scout.kb.live_run import _DIGIT_PARAMS, _PARAM, _SUBST_NAME, _VAR
 from scout.kb.raw_read import KB_DIRS, filter_reaches_kb, is_kb_note_path, is_kb_path, raw_kb_read
+
+if TYPE_CHECKING:
+    from scout.kb.git_read import GitRead
 
 GATE = "kb-read-gate"
 MARK = f"[scout:{GATE}]"
@@ -186,9 +192,10 @@ def _deny_delegate_write() -> str:
 def _deny_hook_skip(form: str) -> str:
     return (
         f"{MARK} A scheduled run doesn't skip or redirect git's commit hooks ({form}): their checks are what keep "
-        "private and shared notes apart. Commit the normal way: `scripts/git-safe-commit.sh` in the vault, plain "
-        "`git commit` in any other repo. If a hook refuses the commit, fix what it reports; if you can't, leave the "
-        "file uncommitted and say so in the run notes."
+        "private and shared notes apart. Commit with `scripts/git-safe-commit.sh` in the vault, and with a plain "
+        "`git commit -m` only in an engine-change clone in `~/.scout-worktrees` (git-setup's flow; else describe the "
+        "change in the wrap notification). If a hook refuses the commit, fix what it reports; if you can't, leave "
+        "the file uncommitted and say so in the run notes."
     )
 
 
@@ -250,9 +257,21 @@ def _deny_unresolved(form: str) -> str:
 # allowed and recorded as a `kb_read_gate.unresolved_read` event with its categories (UNRESOLVED_CATEGORIES)
 # until there's data to decide on. The KB reads the gate can work out are denied either way.
 DENY_UNRESOLVED_READS = False
-# What made a read unresolved, by the placeholder live_run left in its word.
+# A run's git call that prints file contents from a folder, a repository or a path the gate can't work out (a
+# variable or substitution in -C, --git-dir, --work-tree or a path). True denies it; off, like
+# DENY_UNRESOLVED_READS, until a replay of real runs says how often it happens: recorded as `git_unresolved`.
+DENY_UNRESOLVED_GIT_READS = False
+# A run's git call in the vault's repository that prints file contents with no path to bound it (`git show HEAD`,
+# `git diff`, `git log -p`, `git stash show -p`, `git format-patch --stdout`): it prints the KB's changes too. True
+# denies it. Off: runs may do it before a commit. Recorded as `git_whole_repo`, with each subcommand in the
+# event's `git_whole_repo` list. A call that prints names only (`--stat`, `--name-only`, `status`) is never counted.
+DENY_GIT_WHOLE_REPO_READS = False
+# What made a read unresolved, by the placeholder live_run left in its word; and the two git kinds above.
 # program_path: a file a program's text opens by a path it builds at run time (awk, perl; scout.kb.other_reads).
-UNRESOLVED_CATEGORIES = ("xargs_input", "command_output", "unset_variable", "program_path")
+UNRESOLVED_CATEGORIES = (
+    "xargs_input", "command_output", "unset_variable", "program_path", "git_unresolved", "git_whole_repo",
+    "git_pickaxe",
+)  # fmt: skip
 
 
 def _unresolved_category(raw: str) -> str:
@@ -351,8 +370,52 @@ def _deny_title_rewrites(form: str) -> str:
     )
 
 
+# `log -S/-G/--pickaxe-all` that may search the KB's text (review of #817, round 7: an oracle on a note).
+PICKAXE_FORM = "git form not allowed in a run (log -S/-G over the KB)"
+
+
+def _pickaxe_scope() -> str:
+    """The pathspecs that keep a pickaxe search outside the KB, as a run can paste them."""
+    return " ".join(f"':!{d}'" for d in (*KB_DIRS, "knowledge-base.md"))
+
+
+def _deny_git_form(form: str) -> str:
+    from scout.kb import git_allow
+
+    if form == PICKAXE_FORM:
+        return (
+            f"{MARK} A scheduled run's `git log -S`/`-G` may not search the KB's notes: it picks commits by their "
+            f"text. To search outside the KB, add `-- {_pickaxe_scope()}` (or a non-KB path such as `-- docs`). "
+            "To find something in KB notes, use `scoutctl kb search …`."
+        )
+
+    # The engine-change flow (phases/core/git-setup.md: clone, branch, commit, push in ~/.scout-worktrees) isn't
+    # a run's to make for now: as in the write sandbox, the change is described in the wrap.
+    engine = (
+        any(f"(git {sub}" in form for sub in ("clone", "switch", "checkout", "commit", "push"))
+        or "(branch a name" in form
+    )
+    return (
+        f"{MARK} A scheduled run uses git only in a few read forms, and this isn't one ({form}). The forms: "
+        f"{git_allow.forms()}. Commit with `scripts/git-safe-commit.sh` in the vault; read KB notes with "
+        "`scoutctl kb …`. "
+        + (
+            "To change the engine or plugin, follow git-setup's flow exactly: clone Scout's own remote into "
+            "`~/.scout-worktrees/<name>`, then `switch -c scout/<name>`, `commit -m`, `push -u origin scout/<name>` "
+            "there. If that can't work, describe the change you would make, and why, in the wrap notification. "
+            if engine
+            else ""
+        )
+        + "If the run needs another git form, say so in the run notes."
+    )
+
+
 def _deny_skip_form(form: str) -> str:
     from scout.kb import hook_paths as hp
+    from scout.kb.live_run import GIT_FORM
+
+    if form.startswith(GIT_FORM):
+        return _deny_git_form(form)
 
     by_form = {
         hp.TOO_MANY: _deny_too_many,
@@ -383,10 +446,16 @@ def _record_hook_skip(vault: Path, form: str, mode: str | None) -> None:
     _PENDING_AUDIT.append((vault, "kb_read_gate.hook_skip", {"form": form, "mode": mode}))
 
 
-def _record_unresolved_read(vault: Path, categories: list[str], mode: str | None) -> None:
+def _record_unresolved_read(
+    vault: Path, categories: list[str], mode: str | None, git_whole_repo: list[str] | None = None
+) -> None:
     """Queue an allowed read the gate couldn't work out: what kind of word it was and the run's mode, never the
-    command or the path (see :data:`DENY_UNRESOLVED_READS`)."""
-    _PENDING_AUDIT.append((vault, "kb_read_gate.unresolved_read", {"categories": categories, "mode": mode}))
+    command or the path (see :data:`DENY_UNRESOLVED_READS`); and the git subcommands that read the whole
+    repository (:data:`DENY_GIT_WHOLE_REPO_READS`)."""
+    payload: dict[str, Any] = {"categories": categories, "mode": mode}
+    if git_whole_repo:
+        payload["git_whole_repo"] = git_whole_repo
+    _PENDING_AUDIT.append((vault, "kb_read_gate.unresolved_read", payload))
 
 
 def _record_unresolved_command_word(vault: Path, kinds: list[str], mode: str | None) -> None:
@@ -413,6 +482,229 @@ def _deny_delegate_read() -> str:
 
 def _deny_read() -> str:
     return f"{MARK} This session's reader may not read knowledge-base/ or action-items/context/ files. {_REPLACEMENT}"
+
+
+# How deep a command git runs may nest another (`git rebase -x "git rebase -x …"`) before it counts as too complex.
+EMBEDDED_DEPTH = 3
+
+
+def _decide_bash(
+    command: str,
+    cwd: Path,
+    vault: Path,
+    env: Mapping[str, str],
+    mode: str | None,
+    depth: int = 0,
+    reader: str = "autonomous",
+) -> str | None:
+    """The deny reason for a run's shell command in the vault, or None: the path checks, the KB read checks and the
+    commands git runs for it (each judged the same way, ``depth`` deep)."""
+    from scout.kb import hook_paths
+    from scout.kb.live_run import (
+        COMMAND_WORD_FORM,
+        DELEGATE_FORM,
+        GIT_FORM,
+        HOME_FORM,
+        KB_READ,
+        RESOLVED,
+        UNRESOLVED_READ,
+        denied_word,
+        even_dollar_escape,
+        expansion_escape,
+        run_escape,
+    )
+
+    if hook_paths.names_agy_server_env(command):
+        return _deny_agy_server()  # before the path checks (runtime-agnostic Phase 2A.3)
+
+    def text_of(raw: str) -> str | None:
+        """A word with the environment's variables put in; None when the shell fills in part of it the gate
+        can't know (a substitution, a variable neither the command nor the run sets)."""
+        text = _PARAM.sub(lambda m: _env_param(m, env), raw)
+        text = _DIGIT_PARAMS.sub("0", _VAR.sub(lambda m: _env_value(m, env), text))
+        return None if _LEFT_VAR.search(text) or "`" in text else text
+
+    def resolve(raw: str) -> str | None:
+        """The path a word names (see text_of), from the session's folder."""
+        text = text_of(raw)
+        if text is None:
+            return None
+        expanded = hook_paths._expand(text, env)
+        joined = expanded if os.path.isabs(expanded) else str(cwd / expanded)
+        # `*/` is folders only: keep the slash a join drops, or the glob would match files too.
+        return joined + "/" if text.endswith("/") and not joined.endswith("/") else joined
+
+    def protect(raw: str, removes: bool) -> str | None:
+        target = resolve(raw)
+        if target is None:
+            return hook_paths.UNRESOLVED  # round 3, must-fix 1: a run writes only paths the gate can read
+        check = hook_paths.removes_protected if removes else hook_paths.protected_write
+        # A glob writes (or removes) whatever it matches: judge each match, and the literal spelling.
+        targets = _glob_targets(target)
+        if targets is None:
+            return hook_paths.TOO_MANY  # fail closed: a hook that times out allows the call
+        for one in targets:
+            found = check(one, vault, env)
+            if found is not None:
+                return found
+        return None
+
+    def secret(raw: str) -> str | None:
+        target = resolve(raw)
+        if target is None:
+            return None
+        # A glob reads whatever it matches: judge each match, and the literal spelling (`.scout-in*/agents/*`).
+        targets = globs(target)
+        if targets is None:
+            return hook_paths.TOO_MANY  # fail closed: a hook that times out allows the call
+        for one in targets:
+            found = hook_paths.secret_read(one, env) or hook_paths.agent_text_read(one, vault, env)
+            if found is not None:
+                return found
+        return None
+
+    def kb_read(raw: str, how: str) -> str | None:
+        """A reading command's file, as the shell hands it over: a KB note (after its glob, if any), or a path
+        the gate can't work out (a substitution, a variable the command doesn't set, unseen xargs input).
+        ``how`` (live_run.KB_READ_HOW): a "file" reader never reads a KB folder it's given (``cat action-items/*``
+        only prints an error for ``context/``), a "folder" reader does, and for "covers" (an xargs lister's root)
+        a folder holding the KB counts too. "dest" is no read: KB_READ when a copy's target is in the KB, and
+        None for one outside it or one the gate can't work out (nothing is recorded)."""
+        target = resolve(raw)
+        if how == "dest":
+            if target is None:
+                return None
+            rels = (_vault_rel(vault, paths.resolve_path(one)) for one in globs(target) or [target])
+            return KB_READ if any(rel is not None and rel != "." and is_kb_path(rel) for rel in rels) else None
+        if target is None:
+            if DENY_UNRESOLVED_READS:
+                return UNRESOLVED_READ
+            unresolved.add(_unresolved_category(raw))
+            return None
+        targets = globs(target)
+        if targets is None:
+            # Too many matches to judge: refused wherever the glob starts, since a match past the cap may be a
+            # symlink into the vault (`/tmp/x/*/*/*` behind decoys).
+            return hook_paths.TOO_MANY
+        for one in targets:
+            here = paths.resolve_path(one)
+            rel = _vault_rel(vault, here)
+            if rel is None:
+                if how == "covers" and vault.resolve().is_relative_to(here):
+                    return KB_READ  # a folder above the vault
+            elif rel != "." and is_kb_path(rel):
+                if how != "file" or not os.path.isdir(here):
+                    return KB_READ
+            elif how == "covers" and (rel == "." or any(d.startswith(rel + "/") for d in KB_DIRS)):
+                return KB_READ
+        return None
+
+    def git_read(read: GitRead, where: str) -> str | None:
+        """A git call's reads (:func:`_git_reads_kb`), from the folder ``where`` it runs in."""
+        found = _git_reads_kb(read, where, vault, env, resolve, text_of, names_vault)
+        if found == "outside":
+            return f"{GIT_FORM} (git {read.sub} outside the vault's repository)"
+        if found is not None and found.startswith("engine:"):
+            return f"{GIT_FORM} (git {read.sub}: {found[7:]})"
+        if found is not None and found.startswith("config:"):
+            return f"{GIT_FORM} (a repository whose config runs commands: {found[7:]})"
+        if found == "holds:":
+            return f"{GIT_FORM} (a repository holding the vault's history)"
+        if read.strict and found in ("unresolved", "whole", "kb"):
+            # `log -S/-G` over the KB, or paths the gate can't bound: it picks commits by a note's text. A full reader
+            # (a run's, the owner's) may read every note through `scoutctl kb read` anyway: what the search skips is
+            # that labelled read, so it is recorded (review of #817, round 8). Any other reader is refused.
+            from scout.kb.privacy import FULL_READERS
+
+            if reader not in FULL_READERS or DENY_GIT_WHOLE_REPO_READS:
+                return PICKAXE_FORM
+            unresolved.add("git_pickaxe")
+            return None
+        if found == "unresolved":
+            if DENY_UNRESOLVED_GIT_READS:
+                return UNRESOLVED_READ
+            unresolved.add("git_unresolved")
+            return None
+        if found == "whole":
+            if DENY_GIT_WHOLE_REPO_READS:
+                return KB_READ
+            unresolved.add("git_whole_repo")
+            whole_repo.add(read.sub)
+            return None
+        return KB_READ if found == "kb" else None
+
+    memo: dict[str, list[str] | None] = {}
+    unresolved: set[str] = set()
+    whole_repo: set[str] = set()
+    unresolved_words: set[str] = set()
+
+    def command_word(kind: str) -> str | None:
+        if DENY_UNRESOLVED_COMMAND_WORDS:
+            return denied_word(kind)
+        unresolved_words.add(kind)
+        return None
+
+    names_vault = _names_vault(command, vault, env)
+
+    def globs(target: str) -> list[str] | None:
+        if target not in memo:
+            memo[target] = _literal_globs(target)
+        return memo[target]
+
+    embedded: list[str] = []  # the commands git runs for this one (`git rebase -x 'cmd'`): judged below
+    escape = (
+        expansion_escape(command)
+        or run_escape(
+            command,
+            protect=protect,
+            secret=secret,
+            kb_read=kb_read,
+            git_read=git_read,
+            embedded=embedded,
+            home=env.get("HOME"),
+            command_word=command_word,
+            run_path=env.get("PATH"),
+        )
+        or even_dollar_escape(command)
+    )
+    if escape == "env":
+        return _deny_run_env()
+    if escape == HOME_FORM:
+        return _deny_home()
+    if escape == KB_READ:
+        return _deny_bash()
+    if escape == UNRESOLVED_READ:
+        return _deny_unresolved_read()
+    if escape == DELEGATE_FORM:
+        return _deny_delegate_write()
+    if escape == "detach":
+        return _deny_detach()
+    if escape is not None and escape.startswith(COMMAND_WORD_FORM):
+        _record_hook_skip(vault, escape, mode)
+        return _deny_command_word(escape)
+    if escape is not None:
+        _record_hook_skip(vault, escape, mode)
+        return _deny_skip_form(escape)
+    flagged = raw_kb_read(command, in_kb=_in_kb(cwd, vault), cwd=str(cwd), vault=str(vault), env=env) or any(
+        raw_kb_read(text, in_kb=_in_kb(cwd, vault), cwd=str(cwd), vault=str(vault), env=env)
+        for text in list(RESOLVED)  # a program named at run time, as the gate filled it in
+    )
+    if flagged:
+        return _deny_bash()
+    # A command git runs (rebase -x, bisect run, --upload-pack, …) is judged as the same command run directly
+    # would be, from git's folder: every check above, not a part of them (review of #817, round 3).
+    for program in embedded:
+        if depth >= EMBEDDED_DEPTH:
+            _record_hook_skip(vault, hook_paths.TOO_MANY, mode)
+            return _deny_skip_form(hook_paths.TOO_MANY)
+        reason = _decide_bash(program, cwd, vault, env, mode, depth + 1, reader)
+        if reason is not None:
+            return reason
+    if unresolved:
+        _record_unresolved_read(vault, sorted(unresolved), mode, sorted(whole_repo))
+    if unresolved_words:
+        _record_unresolved_command_word(vault, sorted(unresolved_words), mode)
+    return None
 
 
 def decide(
@@ -444,149 +736,7 @@ def decide(
         command = tool_input.get("command")
         if not isinstance(command, str):
             raise ValueError("Bash call without a command")
-        from scout.kb import hook_paths
-        from scout.kb.live_run import (
-            COMMAND_WORD_FORM,
-            DELEGATE_FORM,
-            HOME_FORM,
-            KB_READ,
-            RESOLVED,
-            UNRESOLVED_READ,
-            denied_word,
-            even_dollar_escape,
-            expansion_escape,
-            run_escape,
-        )
-
-        if hook_paths.names_agy_server_env(command):
-            return _deny_agy_server()  # before the path checks (runtime-agnostic Phase 2A.3)
-
-        def resolve(raw: str) -> str | None:
-            """The path a word names, with the environment's variables put in; None when the shell fills in
-            part of it the gate can't know (a substitution, a variable neither the command nor the run sets)."""
-            text = _PARAM.sub(lambda m: _env_param(m, env), raw)
-            text = _DIGIT_PARAMS.sub("0", _VAR.sub(lambda m: _env_value(m, env), text))
-            if _LEFT_VAR.search(text) or "`" in text:
-                return None
-            expanded = hook_paths._expand(text, env)
-            joined = expanded if os.path.isabs(expanded) else str(cwd / expanded)
-            # `*/` is folders only: keep the slash a join drops, or the glob would match files too.
-            return joined + "/" if text.endswith("/") and not joined.endswith("/") else joined
-
-        def protect(raw: str, removes: bool) -> str | None:
-            target = resolve(raw)
-            if target is None:
-                return hook_paths.UNRESOLVED  # round 3, must-fix 1: a run writes only paths the gate can read
-            check = hook_paths.removes_protected if removes else hook_paths.protected_write
-            # A glob writes (or removes) whatever it matches: judge each match, and the literal spelling.
-            targets = _glob_targets(target)
-            if targets is None:
-                return hook_paths.TOO_MANY  # fail closed: a hook that times out allows the call
-            for one in targets:
-                found = check(one, vault, env)
-                if found is not None:
-                    return found
-            return None
-
-        def secret(raw: str) -> str | None:
-            target = resolve(raw)
-            if target is None:
-                return None
-            # A glob reads whatever it matches: judge each match, and the literal spelling (`.scout-in*/agents/*`).
-            targets = globs(target)
-            if targets is None:
-                return hook_paths.TOO_MANY  # fail closed: a hook that times out allows the call
-            for one in targets:
-                found = hook_paths.secret_read(one, env) or hook_paths.agent_text_read(one, vault, env)
-                if found is not None:
-                    return found
-            return None
-
-        def kb_read(raw: str, how: str) -> str | None:
-            """A reading command's file, as the shell hands it over: a KB note (after its glob, if any), or a path
-            the gate can't work out (a substitution, a variable the command doesn't set, unseen xargs input).
-            ``how`` (live_run.KB_READ_HOW): a "file" reader never reads a KB folder it's given (``cat action-items/*``
-            only prints an error for ``context/``), a "folder" reader does, and for "covers" (an xargs lister's root)
-            a folder holding the KB counts too. "dest" is no read: KB_READ when a copy's target is in the KB, and
-            None for one outside it or one the gate can't work out (nothing is recorded)."""
-            target = resolve(raw)
-            if how == "dest":
-                if target is None:
-                    return None
-                rels = (_vault_rel(vault, paths.resolve_path(one)) for one in globs(target) or [target])
-                return KB_READ if any(rel is not None and rel != "." and is_kb_path(rel) for rel in rels) else None
-            if target is None:
-                if DENY_UNRESOLVED_READS:
-                    return UNRESOLVED_READ
-                unresolved.add(_unresolved_category(raw))
-                return None
-            targets = globs(target)
-            if targets is None:
-                # Too many matches to judge: refused wherever the glob starts, since a match past the cap may be a
-                # symlink into the vault (`/tmp/x/*/*/*` behind decoys).
-                return hook_paths.TOO_MANY
-            for one in targets:
-                here = paths.resolve_path(one)
-                rel = _vault_rel(vault, here)
-                if rel is None:
-                    if how == "covers" and vault.resolve().is_relative_to(here):
-                        return KB_READ  # a folder above the vault
-                elif rel != "." and is_kb_path(rel):
-                    if how != "file" or not os.path.isdir(here):
-                        return KB_READ
-                elif how == "covers" and (rel == "." or any(d.startswith(rel + "/") for d in KB_DIRS)):
-                    return KB_READ
-            return None
-
-        memo: dict[str, list[str] | None] = {}
-        unresolved: set[str] = set()
-        unresolved_words: set[str] = set()
-
-        def command_word(kind: str) -> str | None:
-            if DENY_UNRESOLVED_COMMAND_WORDS:
-                return denied_word(kind)
-            unresolved_words.add(kind)
-            return None
-
-        def globs(target: str) -> list[str] | None:
-            if target not in memo:
-                memo[target] = _literal_globs(target)
-            return memo[target]
-
-        escape = (
-            expansion_escape(command)
-            or run_escape(command, protect=protect, secret=secret, kb_read=kb_read, command_word=command_word)
-            or even_dollar_escape(command)
-        )
-        if escape == "env":
-            return _deny_run_env()
-        if escape == HOME_FORM:
-            return _deny_home()
-        if escape == KB_READ:
-            return _deny_bash()
-        if escape == UNRESOLVED_READ:
-            return _deny_unresolved_read()
-        if escape == DELEGATE_FORM:
-            return _deny_delegate_write()
-        if escape == "detach":
-            return _deny_detach()
-        if escape is not None and escape.startswith(COMMAND_WORD_FORM):
-            _record_hook_skip(vault, escape, mode)
-            return _deny_command_word(escape)
-        if escape is not None:
-            _record_hook_skip(vault, escape, mode)
-            return _deny_skip_form(escape)
-        flagged = raw_kb_read(command, in_kb=_in_kb(cwd, vault), cwd=str(cwd), vault=str(vault), env=env) or any(
-            raw_kb_read(text, in_kb=_in_kb(cwd, vault), cwd=str(cwd), vault=str(vault), env=env)
-            for text in list(RESOLVED)  # a program named at run time, as the gate filled it in
-        )
-        if flagged:
-            return _deny_bash()
-        if unresolved:
-            _record_unresolved_read(vault, sorted(unresolved), mode)
-        if unresolved_words:
-            _record_unresolved_command_word(vault, sorted(unresolved_words), mode)
-        return None
+        return _decide_bash(command, cwd, vault, env, mode, reader=reader)
     if tool in ("Grep", "Glob"):
         raw = tool_input.get("path")
         root = _target(raw, cwd) if isinstance(raw, str) and raw else cwd
@@ -610,6 +760,456 @@ def decide(
     from scout.kb.privacy import FULL_READERS
 
     return None if reader in FULL_READERS else _deny_read()
+
+
+def _git_reads_kb(
+    read: GitRead,
+    where: str,
+    vault: Path,
+    env: Mapping[str, str],
+    resolve: Callable[[str], str | None],
+    text_of: Callable[[str], str | None],
+    names_vault: bool = False,
+) -> str | None:
+    """:func:`_git_tree_reads_kb`, for folders the gate can't be sure of: when an earlier part of the command moved,
+    linked or copied folders (``ln -s``, ``mv``, ``cp``, ``git worktree add``, ``git clone``), or the folder git runs
+    in (or its ``--git-dir``) isn't on disk yet, what git reads there is unknown unless it is plainly the KB already.
+    Then the read is "unresolved", or "kb" when the command names the vault or a KB folder (``names_vault``), or
+    copied the repository it runs in, the vault's (``git worktree add``, ``git clone .``)."""
+    if read.engine:
+        if read.vault_ok:
+            in_vault = dataclasses.replace(read, engine="", vault_only=True, vault_ok=False)
+            if _git_tree_reads_kb(in_vault, where, vault, env, resolve, text_of) is None:
+                return None  # the vault's repository allows it too
+        return _engine_repo(read, resolve(where or "."), vault, env)
+    found = _git_tree_reads_kb(read, where, vault, env, resolve, text_of)
+    if read.vault_only:
+        return None if found is None else "outside"  # None: the vault's repository, for sure
+    if found in ("kb", "holds:") or (found or "").startswith("config:"):
+        return found
+    if not read.reads:
+        return None
+    folder = resolve(where or ".")
+    missing = folder is None or not os.path.lexists(folder)
+    if read.git_dir is not None and not missing:
+        place = resolve(read.git_dir)
+        missing = place is None or not os.path.lexists(place)
+    if not (read.fs_changed or missing):
+        return found
+    if names_vault or read.fs_changed == "vault-copy" or _links_to_vault(read.links, vault, resolve):
+        return "kb"
+    return "unresolved"
+
+
+def _links_to_vault(links: list[str], vault: Path, resolve: Callable[[str], str | None]) -> bool:
+    """Whether a link the command made points at the vault, or into or above it (by file identity)."""
+    from scout.kb import git_read
+
+    home = paths.resolve_path(vault)
+    for word in links:
+        place = resolve(word)
+        if place is None or git_read.WILD.search(word):
+            return True  # a target the gate can't work out, or a glob (`ln -s ~/V*t`), may be the vault
+        target = paths.resolve_path(place)
+        if git_read.rel_to(home, target) is not None or git_read.rel_to(target, home) is not None:
+            return True
+    return False
+
+
+# A command names the vault's KB folders: one spelled out, or action-items/ itself (which holds context/).
+_NAMES_KB_FOLDER = re.compile(r"(?:^|[\s'\"=/])action-items/?(?=$|[\s'\";&|)])", re.IGNORECASE)
+
+
+def _names_vault(command: str, vault: Path, env: Mapping[str, str]) -> bool:
+    """Whether ``command`` spells the vault (its path, or ``~/…``, ``$HOME/…``, ``${HOME}/…``) or a KB folder."""
+    text = command.casefold()
+    if is_kb_path(text) or _NAMES_KB_FOLDER.search(command):
+        return True
+    spellings = {str(vault), str(paths.resolve_path(vault))}
+    home = env.get("HOME")
+    if home:
+        try:
+            rel = paths.resolve_path(vault).relative_to(paths.resolve_path(home)).as_posix()
+        except ValueError:
+            rel = None
+        if rel:
+            spellings |= {f"~/{rel}", f"$HOME/{rel}", f"${{HOME}}/{rel}"}
+    return any(sp.casefold() in text for sp in spellings)
+
+
+def _expand_home(text: str, env: Mapping[str, str]) -> str:
+    """``text`` with a leading ``~``, ``$HOME`` or ``${HOME}`` as the run's HOME (``env``), not the hook's own."""
+    from scout.kb import hook_paths
+
+    return hook_paths._expand(text, env)
+
+
+def _engine_repo(read: GitRead, folder: str | None, vault: Path, env: Mapping[str, str]) -> str | None:
+    """Whether a form of the engine-change flow (``read.engine``) runs where it may: in a repository whose top is
+    under ~/.scout-worktrees and has no tie to the vault's (not it, not in or above the vault), whose config runs no
+    command, and whose origin is Scout's remote. A folder not on disk yet counts only below a clone the
+    same command made first. "engine:<why>" or "config:<key>" when it doesn't, else None."""
+    from scout.kb import git_allow, git_read
+
+    home = env.get("HOME")
+    if not home or folder is None:
+        return "engine:a folder the gate can't work out"
+    root = paths.resolve_path(Path(home) / git_allow.WORKTREES)
+    here = paths.resolve_path(folder)
+    if not os.path.lexists(folder):
+        clones = [paths.resolve_path(Path(c)) for c in read.cloned]
+        made = any(here == c or c in here.parents for c in clones)
+        return None if made and root in here.parents else "engine:a folder that isn't a clone in ~/.scout-worktrees"
+    repo = git_read.find_repo(here, None, None)
+    if repo is None or git_read.rel_to(root, repo[0]) in (None, ""):
+        return "engine:a repository outside ~/.scout-worktrees"
+    home_vault = paths.resolve_path(vault)
+    ours = git_read.find_repo(home_vault, None, None)
+    if (
+        (ours is not None and git_read.same_folder(repo[1], ours[1]))
+        or git_read.rel_to(home_vault, repo[0]) is not None
+        or git_read.rel_to(repo[0], home_vault) is not None
+    ):
+        return "engine:the vault's repository"
+    # Its own .git folder (no .git file naming one elsewhere, no linked worktree), as `git clone` makes it.
+    if not (repo[0] / ".git").is_dir() or not git_read.same_folder(repo[1], repo[0] / ".git"):
+        return "engine:a repository whose .git isn't its own folder"
+    if any((repo[1] / name).exists() for name in ("config.worktree", "worktrees", "commondir")):
+        return "engine:a repository with linked worktrees"
+    entries = git_read.read_config(repo[1] / "config")
+    if entries is None:
+        return "engine:an unreadable config"
+    odd = _engine_config_odd(entries)
+    if odd is not None:
+        return f"engine:a config key a clone doesn't write ({odd})"
+    if not any(k == "remote.origin.url" for k, _ in entries):
+        return "engine:a repository whose origin isn't Scout's"
+    hook = git_read.hooks_run(repo[1], repo[0], read.sub, entries, strict=True)
+    if hook is not None:
+        return f"engine:a repository with {hook}"
+    if ours is not None and git_read.holds_history(repo[1], ours[1]):
+        return "engine:a repository holding the vault's history"
+    if read.engine == git_allow.PUSH:
+        return _engine_push(repo[1], read.engine_ref)
+    return None
+
+
+# What `git clone` writes into a repository's config (and `push -u` adds): any other key is no clone of Scout's.
+_CLONE_CONFIG = {
+    "core.repositoryformatversion", "core.filemode", "core.bare", "core.logallrefupdates", "core.ignorecase",
+    "core.precomposeunicode", "core.symlinks",
+}  # fmt: skip
+
+
+def _engine_config_odd(entries: list[tuple[str, str]]) -> str | None:
+    """The first key of an engine clone's config that `git clone` and `git push -u` don't write, or that holds
+    another value than theirs (review of #817, round 7: no push refspec, pushurl, url rewrite or hooksPath)."""
+    from scout.kb import git_allow
+
+    for key, value in entries:
+        if key in _CLONE_CONFIG:
+            if key == "core.bare" and value.lower() not in ("false", "no", "off", "0"):
+                return key
+            continue
+        if key == "remote.origin.url":
+            if value not in git_allow.SCOUT_REMOTES:
+                return key
+            continue
+        if key == "remote.origin.fetch":
+            if value != "+refs/heads/*:refs/remotes/origin/*":
+                return key
+            continue
+        m = re.fullmatch(r"branch\.(.+)\.(remote|merge)", key)
+        if m is not None:
+            want = "origin" if m[2] == "remote" else f"refs/heads/{m[1]}"
+            if value.lower() != want.lower():
+                return key
+            continue
+        return key
+    return None
+
+
+def _engine_push(git_dir: Path, branch: str) -> str | None:
+    """Whether a push of ``branch`` sends only Scout's own history plus the run's commits: the branch descends from
+    origin/main, adds no root commit, and changes only paths under the folders origin/main already has, none a
+    KB path. "engine:<why>" when it doesn't."""
+    from scout.kb import git_read
+
+    if not branch or not re.fullmatch(r"scout/[A-Za-z0-9._/-]+", branch) or ".." in branch:
+        return "engine:a branch the gate can't read"
+    base, head = "refs/remotes/origin/main", f"refs/heads/{branch}"
+    if git_read.git_out(git_dir, ["rev-parse", "--verify", "-q", base]) is None:
+        return "engine:a clone with no origin/main"
+    if git_read.git_out(git_dir, ["rev-parse", "--verify", "-q", head]) is None:
+        return None  # no such branch: git refuses the push
+    if git_read.git_out(git_dir, ["merge-base", "--is-ancestor", base, head]) is None:
+        return "engine:a branch that doesn't descend from origin/main"
+    if git_read.git_out(git_dir, ["rev-list", "--max-parents=0", f"{base}..{head}"]):
+        return "engine:a branch with a history of its own"
+    top = set((git_read.git_out(git_dir, ["ls-tree", "--name-only", base]) or "").splitlines())
+    changed = git_read.git_out(git_dir, ["diff", "--name-only", "--no-renames", base, head])
+    if changed is None:
+        return "engine:a branch the gate can't compare"
+    for path in changed.splitlines():
+        if path.split("/", 1)[0] not in top or is_kb_path(path):
+            return "engine:a branch that adds files outside Scout's folders"
+    return None
+
+
+def _git_tree_reads_kb(
+    read: GitRead,
+    where: str,
+    vault: Path,
+    env: Mapping[str, str],
+    resolve: Callable[[str], str | None],
+    text_of: Callable[[str], str | None],
+) -> str | None:
+    """What a run's git call reads (scout.kb.git_read), judged by the repository paths git reads: "kb" (a KB
+    note or folder, or a pathspec that covers one), "whole" (the vault's repository with no path to bound it),
+    "unresolved" (a folder, repository or path the gate can't work out), else None.
+
+    The folder git runs in is ``where`` (live_run's, -C applied). The repository is found as git finds it
+    (``--git-dir``/``GIT_DIR``, ``--work-tree``/``GIT_WORK_TREE``, else the nearest ``.git`` above), and only the
+    vault's own repository (the same common git folder, by file identity: a linked worktree of it counts) holds
+    the KB. A tree path is the folder's place below the repository's top plus a ``./``/``../`` path, or a path
+    from the top; it is judged against the vault's place in its repository, ignoring letter case. A path before
+    ``--`` that is no file on disk (and no wildcard) is git's rev, not a path."""
+    from scout.kb import git_read
+
+    folder = resolve(where or ".")
+    if folder is None:
+        return "unresolved"
+    here = paths.resolve_path(folder)
+
+    def at(word: str | None, name: str) -> Path | None | str:
+        """``--git-dir``/``--work-tree`` as live_run placed it (from the session's folder), else the run's
+        ``GIT_DIR``/``GIT_WORK_TREE``, which git takes from the folder it runs in."""
+        if word is not None:
+            found = resolve(word)
+            return "unresolved" if found is None else paths.resolve_path(found)
+        raw = env.get(name)
+        if not raw:
+            return None
+        expanded = Path(os.path.expanduser(raw))
+        return paths.resolve_path(expanded if expanded.is_absolute() else here / expanded)
+
+    git_dir, work_tree = at(read.git_dir, "GIT_DIR"), at(read.work_tree, "GIT_WORK_TREE")
+    if isinstance(git_dir, str) or isinstance(work_tree, str):
+        return "unresolved"
+    repo = git_read.find_repo(here, git_dir, work_tree)
+
+    def disk_diff() -> str | None:
+        """``git diff <a> <b>`` outside a repository, or with a path outside its work tree, compares the files on
+        disk, as ``--no-index`` does (review of #817, round 7): each path is judged as a folder reader's."""
+        for word in [*read.maybe_paths, *read.pathspecs]:
+            text = text_of(word)
+            if text is None:
+                return "unresolved"
+            target = paths.resolve_path(here / _expand_home(text, env))
+            rel = _vault_rel(vault, target)
+            if rel is None:
+                if vault.resolve().is_relative_to(target):
+                    return "kb"  # a folder above the vault
+            elif rel == "." or is_kb_path(rel) or any(d.startswith(rel + "/") for d in KB_DIRS):
+                return "kb"
+        return None
+
+    if repo is None:
+        if read.vault_only:  # git refuses a write with no repository; the vault's folder is fine (and isn't one yet)
+            return None if git_read.rel_to(paths.resolve_path(vault), here) is not None else "outside"
+        return disk_diff() if read.sub == "diff" else None  # else not a repository: git reads nothing of a tree
+    if read.sub == "diff" and read.reads:
+        for word in [*read.maybe_paths, *read.pathspecs]:
+            text = text_of(word)
+            target = None if text is None else paths.resolve_path(here / _expand_home(text, env))
+            if target is not None and os.path.lexists(target) and git_read.rel_to(repo[0], target) is None:
+                found = disk_diff()  # a path outside the work tree: git compares the files
+                if found is not None:
+                    return found
+                break
+    home = paths.resolve_path(vault)
+    ours = git_read.find_repo(home, None, None)
+    vault_at: str | None  # the vault's place below the repository's top, "" when it is the top
+    top_in: str | None = None  # or the top's place in the vault, when the top is inside it
+    foreign = False  # a repository with no tie to the vault's: judged by the paths it names, as if laid out so
+    if ours is not None and git_read.same_folder(repo[1], ours[1]):
+        vault_at = git_read.rel_to(ours[0], home) or ""
+    else:
+        if read.vault_only:
+            return "outside"
+        runs = git_read.config_runs(repo[1], read.sub, repo[0])
+        if runs is not None:
+            return f"config:{runs}"
+        if ours is not None and git_read.holds_history(repo[1], ours[1]):
+            return "holds:"  # an alternate into the vault's objects, or a copy of them (review of #817, round 7)
+        # Another repository whose work tree is the vault, or in or above it (`core.worktree`, `--work-tree`):
+        # its index and history hold the vault's files at the same places (review of #817, round 5).
+        vault_at = git_read.rel_to(repo[0], home)
+        top_in = None if vault_at is not None else git_read.rel_to(home, repo[0])
+        if vault_at is None and top_in is None:
+            if repo[2]:
+                return "unresolved"  # its config includes a file that may move its work tree
+            if not read.reads:
+                return None
+            # It may still hold the vault's history (a fetch from it, an alternate, objects copied in): a tree path
+            # or pathspec that names a KB path is refused there too (review of #817, round 6). Only one that names
+            # it: a folder above the KB, a wildcard or no path at all is any repository's ordinary use.
+            foreign, vault_at = True, ""
+    if not read.reads:
+        return None  # the call reads no tree (`git status`): only its repository's config was in question
+    vault_at = (vault_at or "").casefold()
+    top_in = None if top_in is None else top_in.casefold()
+
+    def to_vault(tree: str) -> str | None:
+        """A tree path's place in the vault ("" for the vault itself), or None outside it."""
+        tree = tree.casefold()
+        if top_in is not None:
+            joined = posixpath.normpath(posixpath.join(top_in or ".", tree or "."))
+            return "" if joined == "." else joined
+        if not vault_at or tree == vault_at:
+            return tree if not vault_at else ""
+        return tree[len(vault_at) + 1 :] if tree.startswith(vault_at + "/") else None
+
+    def tree_of(rel: str) -> str | None:
+        """A vault path's tree path, or None when the repository's tree doesn't hold it."""
+        if top_in is not None:
+            if not top_in:
+                return rel
+            return "" if rel == top_in else (rel[len(top_in) + 1 :] if rel.startswith(top_in + "/") else None)
+        return posixpath.join(vault_at, rel) if vault_at else rel
+
+    kb_dirs = [t for t in (tree_of(d) for d in KB_DIRS) if t is not None]
+    kb_index = tree_of("knowledge-base.md")
+    prefix = git_read.rel_to(repo[0], here) or ""
+    in_git_dir = git_read.rel_to(repo[1], here) is not None or ".git" in prefix.casefold().split("/")
+    if in_git_dir:
+        prefix = ""  # inside the git folder git works from the top (`git -C .git grep x HEAD` reads it all)
+
+    def in_kb(tree: str) -> bool:
+        rest = to_vault(tree)
+        return rest is not None and rest != "" and is_kb_path(rest)
+
+    def covers(tree: str) -> bool:  # a pathspec matches every path below it
+        if foreign:
+            return in_kb(tree)
+        tree = tree.casefold()
+        if top_in is None and vault_at and (tree == "" or vault_at.startswith(tree + "/")):
+            return True  # a folder above the vault
+        rest = to_vault(tree)
+        return rest is not None and (rest == "" or is_kb_path(rest) or any(d.startswith(rest + "/") for d in KB_DIRS))
+
+    def reaches(spec: str) -> bool:
+        """A pathspec matches a KB path: it is one, or a folder above one, or a wildcard (whose ``*`` crosses
+        folders, as git's does) that matches a KB folder or a note on disk."""
+        fixed = git_read.fixed_part(spec)
+        if foreign:
+            return in_kb(fixed)
+        if fixed == spec:
+            return covers(spec)
+        if in_kb(fixed):
+            return True
+        if not covers(fixed):
+            return False  # the wildcard starts below a folder outside the KB
+        pattern = spec.casefold()
+        if any(fnmatch.fnmatchcase(d, pattern) for d in kb_dirs):
+            return True
+        return _kb_file_matches(vault, tree_of, pattern)
+
+    def left_in(root: str, excluded: list[str]) -> bool:
+        """Whether everything below ``root`` but the ``excluded`` paths still holds a KB path (a wildcard
+        exclusion is taken as excluding nothing)."""
+        if foreign:
+            return False
+        root = root.casefold()
+
+        def out(path: str) -> bool:
+            return any(e == "" or path == e or path.startswith(e + "/") for e in excluded)
+
+        if in_kb(root):
+            return not out(root)
+        targets = [*kb_dirs, *([kb_index] if kb_index is not None else [])]
+        if root == "" and to_vault("") and is_kb_path(to_vault("") or ""):
+            return not out("")  # the whole tree is inside the KB
+        return any((root == "" or t.startswith(root + "/")) and not out(t) for t in targets)
+
+    bounded, unresolved = False, False
+    whole_trees = read.sub in git_read.TREE_READERS  # `git grep x HEAD:dir` reads all below dir
+    for word in read.trees:
+        text = text_of(word)
+        if text is None:
+            unresolved = True
+            continue
+        tree = git_read.tree_path(text, prefix, pathspec=False)
+        bounded = True
+        if tree is not None and (covers(tree) if whole_trees else in_kb(tree)):
+            return "kb"
+    for word in read.objects:  # a names-only show: a blob among its revs prints the blob (review of #817, round 7)
+        text = text_of(word) or word  # its revs hold no `$` (parse records a show with one as whole-repo)
+        if not in_git_dir and os.path.lexists(here / _expand_home(text, env)):
+            continue  # a path: names only
+        if not foreign and git_read.object_type(repo[1], text) == "blob":
+            return "kb"
+    excluded: list[str] = []
+    included = False
+    for word, sure in [*((w, True) for w in read.pathspecs), *((w, False) for w in read.maybe_paths)]:
+        text = text_of(word)
+        if text is None:
+            unresolved = True
+            continue
+        if sure and _is_exclusion(text):
+            left = git_read.exclusion(text, prefix)
+            if left is not None and not git_read.WILD.search(left):
+                excluded.append(left.casefold())
+            continue  # an exclusion reads nothing itself
+        on_disk = not in_git_dir and os.path.lexists(here / _expand_home(text, env))  # .git/HEAD is no path
+        if not sure and not (git_read.WILD.search(text) or on_disk):
+            continue  # a rev (`HEAD~3`, `main`), as git takes a word that names no file
+        tree = git_read.tree_path(text, prefix, pathspec=True)
+        bounded = included = True
+        if tree is not None and reaches(tree):
+            return "kb"
+    if not included and any(_is_exclusion(w) for w in read.pathspecs):
+        # Only exclusions: git reads everything else, below its folder (grep, archive) or in the whole tree.
+        if left_in(prefix if read.sub in git_read.PREFER_CWD else "", excluded):
+            return "kb"
+        bounded = True
+    if foreign:
+        return None
+    if unresolved:
+        return "unresolved"
+    if bounded or read.unbounded is None:
+        return None
+    if read.unbounded == "cwd":
+        return "kb" if covers(prefix) else None
+    return "whole"
+
+
+def _is_exclusion(word: str) -> bool:
+    from scout.kb import git_read
+
+    return git_read.is_exclusion(word)
+
+
+GIT_GLOB_CAP = 20000  # KB files a git pathspec's wildcard is matched against; more counts as a match
+
+
+def _kb_file_matches(vault: Path, tree_of: Callable[[str], str | None], pattern: str) -> bool:
+    """Whether a git wildcard pathspec (casefolded, from the repository's top) matches a KB note on disk; ``tree_of``
+    gives a vault path's tree path."""
+    seen = 0
+    for kb_dir in KB_DIRS:
+        root = vault / kb_dir
+        for folder, _dirs, files in os.walk(root):
+            for name in files:
+                seen += 1
+                if seen > GIT_GLOB_CAP:
+                    return True  # fail closed: too many to look through in time
+                rel = (Path(folder) / name).relative_to(vault).as_posix().casefold()
+                tree = tree_of(rel)
+                if tree is not None and fnmatch.fnmatchcase(tree, pattern):
+                    return True
+    index = tree_of("knowledge-base.md")
+    return index is not None and fnmatch.fnmatchcase(index, pattern)
 
 
 def _literal_globs(target: str) -> list[str] | None:

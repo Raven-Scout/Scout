@@ -71,7 +71,6 @@ EVERYDAY = [
     "git log -n 5 --oneline",
     "git show --stat HEAD",
     "git diff --stat HEAD",
-    "git grep -n -e --no-verify -- notes || true",
     "cat .git/hooks/pre-commit",
     "cat < .git/config",
     "wc -l < .git/hooks/pre-commit",
@@ -200,8 +199,7 @@ def test_the_helper_and_a_message_naming_the_forms_commit_through_the_gate(vault
         vault,
         [
             "scripts/git-safe-commit.sh 'kb: never --no-verify, never -n' notes/helper.md",
-            "git add notes/direct.md",
-            'git commit -q -m "kb: don\'t use git commit --no-verify" -- notes/direct.md',
+            'scripts/git-safe-commit.sh "kb: don\'t use git commit --no-verify" notes/direct.md',
         ],
     )
     for row in results:

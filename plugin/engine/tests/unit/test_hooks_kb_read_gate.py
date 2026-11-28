@@ -75,7 +75,7 @@ def test_raw_reads_are_flagged(command):
         "scripts/scoutctl kb read knowledge-base/people.md",
         "scripts/scoutctl kb files knowledge-base/people | head -20",
         "python3 scripts/recurring-task-status.py --date 2026-10-29 --json",
-        'git add knowledge-base/people.md && git commit -m "update knowledge-base/people.md"',
+        'scripts/git-safe-commit.sh "update knowledge-base/people.md" knowledge-base/people.md',
         "ls action-items/",
         "cat .scout-cache/session-context.json",
     ],
@@ -149,7 +149,7 @@ def test_a_reader_kb_shows_nothing_is_denied_a_kb_read(vault, env, rel):
     [
         ("Bash", {"command": "scripts/scoutctl kb search Priya"}),
         ("Bash", {"command": "scripts/scoutctl kb read knowledge-base/people.md"}),
-        ("Bash", {"command": "git add knowledge-base/people.md && git commit -m 'kb: people'"}),
+        ("Bash", {"command": "scripts/git-safe-commit.sh 'kb: people' knowledge-base/people.md"}),
         ("Bash", {"command": "python3 scripts/recurring-task-status.py --json"}),
         ("Bash", {"command": "ls action-items/"}),
         ("Grep", {"pattern": "PROJ-1234", "path": "action-items", "glob": "action-items-*.md"}),
@@ -192,7 +192,7 @@ def test_run_denies_a_command_that_changes_its_run_env(vault, command):
     assert "lock" not in reason and "PID" not in reason
 
 
-@pytest.mark.parametrize("command", ["nohup git commit -m x", "( git commit -m x & )", "osascript -e 'x'"])
+@pytest.mark.parametrize("command", ["nohup git status", "( git status & )", "osascript -e 'x'"])
 def test_run_denies_a_command_that_detaches(vault, command):
     reason = _denied(_decision(vault, "Bash", {"command": command}))
     assert "foreground" in reason
@@ -352,7 +352,7 @@ def _events(vault: Path) -> list[dict]:
 def test_run_denies_a_hook_skip_names_the_form_and_records_an_event(vault, command, form):
     reason = _denied(_decision(vault, "Bash", {"command": command}))
     assert form in reason and "fix" in reason.lower() and "git-safe-commit.sh" in reason
-    assert "plain `git commit`" in reason, "the helper can't commit in an engine clone: the deny covers both places"
+    assert "wrap notification" in reason, "a run commits in no other repository: an engine change goes in the wrap"
     for word in ("lock", "PID", "process", "ancestry", "live", "host"):
         assert word not in reason, f"the deny doesn't explain how a run is told apart: {word}"
     (row,) = _events(vault)
@@ -388,8 +388,8 @@ def test_env_and_detach_denies_keep_their_messages_and_record_no_hook_skip(vault
     [
         "git log -n 5",
         "git show HEAD",
-        'git commit -m "why --no-verify is wrong"',
-        "git commit -F - <<'EOF'\ngit commit --no-verify\nEOF",
+        "scripts/git-safe-commit.sh 'why --no-verify is wrong' notes/a.md",
+        "cat <<'EOF'\ngit commit --no-verify\nEOF",
         "grep -rn -- --no-verify phases/",
         'git config user.email "alex@example.com"',
         "scripts/git-safe-commit.sh 'x' notes/a.md",
@@ -651,10 +651,7 @@ def test_a_run_env_change_is_denied_through_the_real_cli(vault):
 @pytest.mark.parametrize(
     "command",
     [
-        "git add notes/a.md && git commit -m x 2>&1",
-        "scripts/git-safe-commit.sh msg notes/a.md >&2",
         "ls notes",
-        "git status --short",
         'echo "reading the notes"',  # a builtin's name only as part of a word
         "scripts/scoutctl health --json",
     ],
@@ -727,33 +724,44 @@ def test_a_hook_skip_reaches_python_from_the_shell(vault, tmp_path, command):
     assert res.returncode == 2, command
 
 
-@pytest.mark.parametrize(
-    "command",
-    [
-        "git status",
-        "git log -n 5",
-        "git diff HEAD",
-        "git add notes/a.md",
-        "git commit -m x",
-        'git commit -m "non-urgent note"',
-        'git commit -m "a note" -q',
-        "git commit -q -m 'a; b' -- notes/a.md",
-        "git commit --amend --no-edit",
-        "git commit -F notes/msg.txt",
-        "git merge -n feature",
-        "git push origin main",
-        "scripts/git-safe-commit.sh 'kb: note' notes/a.md",
-        "scripts/scoutctl kb search commit",
-        "ls notes -n",
-    ],
-)
-def test_ordinary_git_stays_in_the_shell(vault, tmp_path, command):
+@pytest.mark.parametrize("command", ["scripts/scoutctl kb search commit", "ls notes -n"])
+def test_a_mention_of_commit_stays_in_the_shell(vault, tmp_path, command):
     payload = _payload("Bash", {"command": command}, vault).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
     assert res.returncode == 0 and res.stdout == "" and res.stderr == "", command
 
 
-@pytest.mark.parametrize("command", ["git mv notes/a.md notes/b.md", "git config user.email alex@example.com"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git status",
+        "git status --short",
+        "git add notes/a.md",
+        "git commit -m x",
+        'git commit -m "non-urgent note"',
+        "git commit --amend --no-edit",
+        "git merge -n feature",
+        "git add notes/a.md && git commit -m x 2>&1",
+        "scripts/git-safe-commit.sh 'kb: note' notes/a.md",
+        "scripts/git-safe-commit.sh msg notes/a.md >&2",
+    ],
+)
+def test_every_git_call_reaches_python(vault, tmp_path, command):
+    """A run's git is judged by an allowlist (scout.kb.git_allow, #817 round 6): the shell sends every call on."""
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing")
+    assert res.returncode == 2, command
+
+
+@pytest.mark.parametrize("command", ["git log -n 5", "git diff HEAD", "git show --stat HEAD", "git status --short"])
+def test_git_calls_go_to_python_which_allows_the_ordinary_ones(vault, tmp_path, command):
+    """Every git call reaches Python, which judges it by the run's allowlist (scout.kb.git_allow, #817 round 6)."""
+    payload = _payload("Bash", {"command": command}, vault).getvalue()
+    assert _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault, root=tmp_path / "missing").returncode == 2
+    assert _decision(vault, "Bash", {"command": command}) is None
+
+
+@pytest.mark.parametrize("command", ["mv notes/a.md notes/b.md", "git config user.email alex@example.com"])
 def test_file_moves_and_config_writes_go_to_python_which_allows_the_ordinary_ones(vault, tmp_path, command):
     """A `mv` or a `git config` write may touch what decides which checks run (#637), so Python decides; these pass."""
     payload = _payload("Bash", {"command": command}, vault).getvalue()
@@ -778,7 +786,9 @@ def test_a_hook_skip_is_denied_and_recorded_through_the_real_cli(vault):
 
 
 def test_a_mention_of_a_hook_skip_is_allowed_through_the_real_cli(vault):
-    payload = _payload("Bash", {"command": 'git commit -m "why --no-verify is wrong"'}, vault).getvalue()
+    payload = _payload(
+        "Bash", {"command": "scripts/git-safe-commit.sh 'why --no-verify is wrong' notes/a.md"}, vault
+    ).getvalue()
     res = _sh({**RUN, "SCOUT_DATA_DIR": str(vault)}, payload, vault)
     assert res.returncode == 0 and res.stdout == "", res.stdout + res.stderr
     assert _events(vault) == []

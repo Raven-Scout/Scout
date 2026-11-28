@@ -56,6 +56,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from scout.kb import shell_prefixes
 
 if TYPE_CHECKING:
+    from scout.kb.git_read import GitRead
     from scout.kb.raw_read import _Stripped
 
 LOCK_NAME = ".scout-session.lock"
@@ -1163,7 +1164,10 @@ def _git_words(words: list[str]) -> list[str] | None:
     """The arguments of the git call ``words`` makes, directly or through a wrapper, else None."""
     name = _program(words[0])
     if name == "git":
-        return words[1:]
+        rest = words[1:]
+        while rest and rest[0] == "git":  # `git git status` (a call built from a function's words, or alias.git)
+            rest = rest[1:]
+        return rest
     if name.startswith("git-"):  # the dashed form of a subcommand; a script named git-*.sh matches no subcommand
         return [name[4:], *words[1:]]
     if name in _GIT_WRAPPERS:
@@ -1177,34 +1181,83 @@ def _git_words(words: list[str]) -> list[str] | None:
 _COMMAND_KEYS = {
     "core.fsmonitor", "core.sshcommand", "core.pager", "core.editor", "core.attributesfile", "core.askpass",
     "credential.helper", "init.templatedir", "sequence.editor", "diff.external", "gpg.program",
-    "uploadpack.packobjectshook", "receive.procreceiverefs",
+    "uploadpack.packobjectshook", "receive.procreceiverefs", "core.gitproxy", "gc.recentobjectshook",
+    "core.alternaterefscommand", "interactive.difffilter", "core.hookspath",
 }  # fmt: skip
-_COMMAND_KEY_SUFFIXES = (".helper", ".textconv", ".driver", ".process", ".clean", ".smudge", ".command", ".cmd")
-_COMMAND_KEY_PREFIXES = ("pager.", "filter.", "credential.", "diff.", "merge.", "gpg.")
+# Any key that ends so names a command or program git runs, whatever section it is in (`remote.x.uploadpack`,
+# `browser.x.cmd`, `sendemail.tocmd`, `gpg.ssh.defaultkeycommand`, `mergetool.x.path`): checked against `git help
+# --config` by test_kb_read_gate_git.py, so a new key that runs something fails CI (review of #817, round 4).
+_COMMAND_KEY_SUFFIXES = (
+    "cmd", "command", ".program", ".helper", ".driver", ".process", ".clean", ".smudge", ".textconv",
+    ".uploadpack", ".receivepack", ".tool", ".guitool", ".path", ".browser",
+)  # fmt: skip
+
+
+# The config keys a run may set (`git config`, `-c`, `--config-env`): plain settings that run nothing and point git
+# at nothing that does (review of #817, round 5: a list of what runs commands never converged). `*` is a name or
+# subsection (`branch.*.remote`). Anything else is refused in a run, as a key that may change which commands run.
+CONFIG_ALLOWED = (
+    "user.*", "color.*", "advice.*", "i18n.*", "column.*",
+    "core.autocrlf", "core.quotepath", "core.safecrlf", "core.filemode", "core.ignorecase",
+    "core.precomposeunicode", "core.excludesfile", "core.eol", "core.whitespace", "core.abbrev",
+    "init.defaultbranch",
+    "pull.rebase", "pull.ff",
+    "push.default", "push.autosetupremote", "push.followtags",
+    "fetch.prune", "fetch.prunetags",
+    "rebase.autostash", "rebase.autosquash", "rebase.updaterefs",
+    "merge.ff", "merge.conflictstyle", "merge.log",
+    "commit.gpgsign", "commit.cleanup", "commit.status", "gpg.format", "tag.sort", "tag.gpgsign",
+    "status.showuntrackedfiles", "status.short", "status.branch", "status.relativepaths",
+    "diff.colormoved", "diff.noprefix", "diff.renames", "diff.algorithm", "diff.mnemonicprefix",
+    "diff.indentheuristic", "log.date", "log.decorate", "format.pretty",
+    "branch.autosetuprebase", "branch.autosetupmerge", "branch.sort",
+    "branch.*.remote", "branch.*.merge", "branch.*.rebase", "branch.*.pushremote",
+    "remote.*.url", "remote.*.pushurl", "remote.*.fetch", "remote.*.push", "remote.*.prune", "remote.*.tagopt",
+    "remote.pushdefault",
+    "credential.username", "credential.*.username",
+    "mergetool.keepbackup", "mergetool.prompt", "difftool.prompt",
+    "gc.auto", "maintenance.auto", "rerere.enabled",
+)  # fmt: skip
+# Sections every key of which is on the list: the only ones a run may rename or remove whole.
+CONFIG_PLAIN_SECTIONS = ("user", "color", "advice", "i18n", "column")
+
+
+def config_allowed(key: str) -> bool:
+    """Whether a run may set ``key`` (:data:`CONFIG_ALLOWED`; keys don't depend on case)."""
+    import fnmatch
+
+    key = key.lower()
+    return any(fnmatch.fnmatchcase(key, pattern) for pattern in CONFIG_ALLOWED)
 
 
 def _config_form(key: str) -> str | None:
-    """The name of a config key that changes which hooks or commands run (keys don't depend on case)."""
+    """The name of a config key a run may not set, else None: any key off :data:`CONFIG_ALLOWED`. The ones known to
+    change which hooks or commands run keep their own names (keys don't depend on case)."""
     key = key.lower()
+    if config_allowed(key):
+        return None
     if key == "core.hookspath":
         return "core.hooksPath"
     if key.startswith("alias."):
         return "alias.*"
     if key == "include.path" or (key.startswith("includeif.") and key.endswith(".path")):
         return "include.path"
-    if key in _COMMAND_KEYS or (key.startswith(_COMMAND_KEY_PREFIXES) and key.endswith(_COMMAND_KEY_SUFFIXES)):
+    if key in _COMMAND_KEYS or key.endswith(_COMMAND_KEY_SUFFIXES):
         return key
     if key.startswith("pager."):
         return key
-    return None
+    # A proxy command, and the protocol switches that let `ext::` URLs run one (review of #817, round 3).
+    if key == "core.gitproxy" or key == "protocol.allow" or (key.startswith("protocol.") and key.endswith(".allow")):
+        return key
+    return key  # off the list: may run something (`submodule.x.update = !cmd`, `imap.tunnel`, `help.autocorrect`)
 
 
 def _config_flag_form(flag: str, setting: str) -> str | None:
     key = setting.split("=", 1)[0]
+    if _dynamic(key):
+        return f"{flag} <unknown>"
     form = _config_form(key)
-    if form is not None:
-        return f"{flag} {form}"
-    return f"{flag} <unknown>" if _dynamic(key) else None
+    return f"{flag} {form}" if form is not None else None
 
 
 def _short_no_verify(subcommand: str, flag: str) -> tuple[bool, bool]:
@@ -1286,16 +1339,51 @@ def _config_writes(args: list[str]) -> bool:
     return bool(positional) and (positional[0] in _CONFIG_WRITE_SUBCOMMANDS or len(positional) >= 2)
 
 
+def _config_positionals(args: list[str]) -> list[str]:
+    """A `git config` call's words that aren't options or their values (subcommand, key, value…)."""
+    out: list[str] = []
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in _CONFIG_VALUE_FLAGS:
+            skip = True
+        elif a.startswith("-") and a != "-":
+            continue
+        else:
+            out.append(a)
+    return out
+
+
 def _git_config_form(args: list[str]) -> str | None:
     if any(a in _CONFIG_READS for a in args) or not _config_writes(args):
         return None
-    for a in args:
-        form = _config_form(a)
-        if form is not None:
-            return f"git config {form}"
+    words = _config_positionals(args)
+    renames = any(a in ("--rename-section", "--remove-section") for a in args) or words[:1] in (
+        ["rename-section"],
+        ["remove-section"],
+    )
+    if words[:1] and words[0] in _CONFIG_WRITE_SUBCOMMANDS:
+        words = words[1:]
+    if renames:
+        # A section renamed into another (`foo` → `diff`) brings its keys along: only plain sections move.
+        for section in words[:2]:
+            if _dynamic(section) or section.lower().split(".", 1)[0] not in CONFIG_PLAIN_SECTIONS:
+                return f"git config --rename-section {section.lower() if not _dynamic(section) else '<unknown>'}"
+        return None
+    if not words:
+        return None
+    key = words[0]
+    if _dynamic(key):
+        return "git config <unknown>"
+    form = _config_form(key)
+    if form is not None:
+        return f"git config {form}"
     scope = next((a for a in args if a in _CONFIG_SCOPES or a.startswith("--file=")), None)
-    if scope is not None and scope != "--blob" and any(not a.startswith("-") for a in args):
-        return f"git config {scope.split('=', 1)[0]}"  # any key: the user's or another config file
+    if scope is not None and scope != "--blob":
+        # Any key, even a plain one: a run never writes the user's own config (`--global` is their ~/.gitconfig,
+        # where `user.name` rewrites the authorship of their commits) or another file. Only the repository's.
+        return f"git config {scope.split('=', 1)[0]}"
     return None
 
 
@@ -1340,6 +1428,10 @@ _PROTECT: Callable[[str, bool], str | None] | None = None
 _SECRET: Callable[[str], str | None] | None = None
 # And whether a reading command's file (scout.kb.raw_read's readers) is a KB note, by the path the shell hands it.
 _KB_READ: Callable[[str, str], str | None] | None = None
+# And what a git call reads (scout.kb.git_read): its tree paths and pathspecs, from the folder it runs in.
+_GIT_READ: Callable[[GitRead, str], str | None] | None = None
+# And where the commands git runs for the call go (`git rebase -x 'cmd'`), for the gate to judge as its own.
+_EMBEDDED: list[str] | None = None
 # The forms that callback returns: a read of a KB note, and a read whose path the gate can't work out.
 KB_READ = "a knowledge-base read"
 UNRESOLVED_READ = "a read the gate can't resolve"
@@ -1354,7 +1446,9 @@ MAX_LITERAL_READS = 4096
 MAX_DEPTH = 6
 _STATE: dict[str, Any] = {
     "checked": 0, "secrets": 0, "reads": 0, "literal": 0, "vars": {}, "bodies": [], "unparsed": False, "capped": False,
-    "parsing": False, "expanded": set(), "lists": [], "words": {}, "functions": {}, "calls": 0, "literals": 0,
+    "parsing": False, "fs_changed": "", "links": [], "expanded": set(), "lists": [], "git_env": False,
+    "command": "", "home": None, "engine_clones": [], "texts": [], "run_path": "",
+    "words": {}, "functions": {}, "calls": 0, "literals": 0,
     "defining": False, "aliased": set(), "sourced": False, "locals": [], "escaped": [], "body_depths": [],
 }  # fmt: skip
 _VAR = re.compile(r"\$\{(\w+)\}|\$(\w+)")
@@ -1830,6 +1924,657 @@ def _judge_read(word: str, where: str, how: str, oldpwd: str | None = None) -> s
     return None
 
 
+# The variables that choose a git call's repository and its top, when its options don't.
+_GIT_ENV = ("GIT_DIR", "GIT_WORK_TREE")
+
+
+def _git_read(words: list[str], cwd: str, oldpwd: str | None = None) -> str | None:
+    """Ask _GIT_READ about a git call that prints file contents (scout.kb.git_read.parse), once for each folder
+    it can run in: the shell's (``cd``, ``env -C``), then each ``-C`` in turn, with the command's own variables,
+    brace lists and ``$PWD`` put in. ``--git-dir``/``--work-tree`` come from its options, else from a
+    ``GIT_DIR=``/``GIT_WORK_TREE=`` prefix or an earlier assignment, else (None) from the run's environment.
+    The files it reads from disk (``grep -f``, ``blame --contents``, ``diff --no-index``) go to _KB_READ as a
+    reader's do. A ``-C`` folder with a glob in it is one the gate can't know (unresolved)."""
+    from scout.kb import git_read, raw_read
+    from scout.kb.hook_paths import TOO_MANY
+
+    assert _GIT_READ is not None
+    stripped = raw_read._strip(words)
+    if not stripped.words:
+        return None
+    head = stripped.words[0]
+    if "$" in head or "`" in head:  # pragma: no cover  # defence in depth: #823's walk resolves or records $G first
+        before = words[: len(words) - len(stripped.words)]
+        for alt in _substitute(head)[:MAX_CHECKED_PATHS]:
+            if "$" in alt or "`" in alt:
+                if git_read.parse([_unshield(w) for w in stripped.words[1:]]) is not None:
+                    return _GIT_READ(git_read.GitRead(sub=stripped.words[1], trees=[SUBST]), cwd)  # unresolved
+                continue
+            found = _git_read([*before, alt, *stripped.words[1:]], cwd, oldpwd)
+            if found is not None:
+                return found
+        return None
+    git = _git_words(stripped.words)
+    if git is None:
+        return None
+    read = git_read.parse([_unshield(w) for w in git])
+    if read is None:
+        # `log -S/-G/--pickaxe-all` picks commits by the text of what it searches: an oracle on a KB note's text
+        # (`log -G '^secret' -- note`). Judged as the content read it stands for, and refused unless every
+        # pathspec is outside the KB (review of #817, round 7).
+        plain = [_unshield(w) for w in git]
+        at_ = git_read.split_global(plain)[3]
+        if (
+            at_ < len(plain)
+            and raw_read.fold(plain[at_]) == "log"
+            and any(
+                w in ("--pickaxe-all", "-S", "-G") or (w[:2] in ("-S", "-G") and not w.startswith("--"))
+                for w in plain[at_ + 1 :]
+            )
+        ):
+            read = git_read.parse([*plain[: at_ + 1], "-p", *plain[at_ + 1 :]])
+            if read is not None:
+                read.strict = True
+    if read is None:
+        # It prints no file's contents: only its repository is judged, by its config (git_read.config_runs).
+        chdirs, git_dir_, work_tree_, at = git_read.split_global([_unshield(w) for w in git])
+        if at >= len(git):
+            return None
+        from scout.kb import git_allow
+
+        sub = raw_read.fold(_unshield(git[at]))
+        rest = [_unshield(w) for w in git[at + 1 :]]
+        engine = _engine_kind(sub, git[at + 1 :])
+        engine = engine if engine in (git_allow.WORKTREE, git_allow.PUSH) else ""
+        commit = sub == "commit" and _vault_commit(git[at + 1 :])  # allowed in the vault's repository
+        ref = ((_plain_args(git[at + 1 :]) or [""])[-1]) if engine == git_allow.PUSH else ""
+        read = git_read.GitRead(
+            sub=sub, chdirs=chdirs, git_dir=git_dir_, work_tree=work_tree_, reads=False,
+            vault_only=(sub == "config" and git_allow.config_write(rest)) or (commit and not engine),
+            vault_ok=commit and bool(engine), engine=engine, engine_ref=ref,
+            files=git_allow.commit_files(rest) if engine or commit else [], cloned=list(_STATE["engine_clones"]),
+        )  # fmt: skip
+    elif stripped.fed:  # `… | xargs git cat-file -p`: its objects or paths come from stdin, which the gate can't see
+        read.trees, read.pathspecs, read.maybe_paths, read.files, read.no_index = [SUBST], [], [], [], False
+    start = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
+    given = {}
+    for word in words[: len(words) - len(stripped.words)]:
+        m = _ASSIGN.match(word)
+        if m and m[1] in _GIT_ENV:
+            given[m[1]] = _unshield(word.split("=", 1)[1])
+    known = _STATE["vars"]
+
+    def chosen(option: str | None, name: str) -> str | None:
+        if option is not None:
+            return option
+        return given.get(name) or (f"${name}" if known.get(name) else None)
+
+    def alternatives(word: str) -> list[str] | None:
+        """``word`` as the shell hands it over, once per value (``$PWD`` is the shell's folder, ``start``)."""
+        expanded = raw_read.brace_expand(word)
+        if expanded is None:
+            return None
+        return [_put_pwd(one, start, oldpwd) for alt in expanded for one in _substitute(_tilde_dirs(alt))]
+
+    def placed(word: str, where: str) -> list[str]:
+        """A folder word as the gate resolves it, from the session's folder: one built from ``$PWD`` already is;
+        any other relative one is from ``where``, the folder git is in by then (-C applies first)."""
+        out = []
+        for one in _substitute(word):
+            pwd = bool(re.match(r"^\$(?:PWD\b|\{PWD[}:%#/])", one))
+            for value in alternatives(one) or [SUBST]:
+                if re.search(r"[*?\[]", value):
+                    value = SUBST  # a glob the shell expands: a folder the gate can't know
+                out.append(value if pwd or value.startswith(("/", "~", "$")) else _into(where, value).rstrip("/"))
+        return out
+
+    wheres = [start]
+    for folder in read.chdirs:
+        if not folder:
+            continue  # `-C ""` leaves git where it is
+        wheres = [_into("", one) if one else where for where in wheres for one in placed(folder, where)]
+        if len(wheres) > MAX_CHECKED_PATHS:
+            return TOO_MANY
+    git_dir, work_tree = chosen(read.git_dir, "GIT_DIR"), chosen(read.work_tree, "GIT_WORK_TREE")
+    for where in wheres:
+        for word in read.files:
+            found = _judge_read(word, where, "file", oldpwd)
+            if found is not None:
+                return found
+        if read.no_index:  # files on disk, as `diff -r` and `grep -r` read them
+            roots = [*read.maybe_paths, *read.pathspecs] or (["."] if read.unbounded == "cwd" else [])
+            for word in roots:
+                found = _judge_read(word, where, "covers", oldpwd)
+                if found is not None:
+                    return found
+            continue
+        lists = []
+        for words_ in (read.trees, read.pathspecs, read.maybe_paths):
+            flat: list[str] = []
+            for word in words_:
+                flat += alternatives(word) or [SUBST]
+            lists.append(flat)
+        if sum(len(x) for x in lists) > MAX_CHECKED_PATHS:
+            return TOO_MANY
+        git_dirs: list[str | None] = [None] if git_dir is None else list(placed(git_dir, where))
+        work_trees: list[str | None] = [None] if work_tree is None else list(placed(work_tree, where))
+        for gd in git_dirs:
+            for wt in work_trees:
+                one = git_read.GitRead(
+                    sub=read.sub, git_dir=gd, work_tree=wt, trees=lists[0], pathspecs=lists[1],
+                    maybe_paths=lists[2], unbounded=read.unbounded, fs_changed=_STATE["fs_changed"],
+                    links=list(_STATE["links"]), reads=read.reads, vault_only=read.vault_only,
+                    engine=read.engine, cloned=read.cloned, vault_ok=read.vault_ok, objects=read.objects,
+                    strict=read.strict, engine_ref=read.engine_ref,
+                )  # fmt: skip
+                found = _GIT_READ(one, where)
+                if found is not None:
+                    return found
+    return None
+
+
+# Options whose value is a shell command git runs (`git rebase -x 'cmd'`), as (long names, short letters): read by
+# scout.kb.git_read.option_values, so every entry takes abbreviations (`--exe`) and clusters (`-qx`). The
+# transports run theirs to reach the other side (`git ls-remote --upload-pack='cmd' .`).
+_GIT_RUN_OPTIONS: dict[str, tuple[set[str], set[str]]] = {
+    "rebase": ({"exec"}, {"x"}),
+    "difftool": ({"extcmd"}, {"x"}),
+    "mergetool": ({"tool-cmd"}, set()),
+    "filter-branch": (
+        {"setup", "tree-filter", "index-filter", "msg-filter", "env-filter", "commit-filter", "parent-filter",
+         "tag-name-filter"},
+        set(),
+    ),
+    "ls-remote": ({"upload-pack"}, {"u"}),
+    "clone": ({"upload-pack"}, {"u"}),
+    "fetch": ({"upload-pack"}, set()),
+    "pull": ({"upload-pack"}, set()),
+    "fetch-pack": ({"upload-pack", "exec"}, set()),
+    "push": ({"receive-pack", "exec"}, set()),
+    "send-pack": ({"receive-pack", "exec"}, set()),
+    "archive": ({"exec"}, set()),
+    "grep": ({"open-files-in-pager"}, {"O"}),
+}  # fmt: skip
+# Each subcommand's other short options that take a value: in a cluster, the first one takes the rest of the word
+# (`-Xours`, `-Xx -x 'cmd'`), so the scan stops there.
+_GIT_VALUE_SHORTS: dict[str, set[str]] = {
+    "rebase": {"X", "s", "S", "C"},
+    "difftool": {"t"},
+    "mergetool": {"t"},
+    "ls-remote": {"o"},
+    "clone": {"b", "c", "o", "j"},
+    "fetch": {"o", "j"},
+    "pull": {"o", "j", "s", "X", "S"},
+    "push": {"o"},
+    "archive": {"o"},
+}
+_GIT_RUN_ENV = (
+    "GIT_PAGER", "PAGER", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "EDITOR", "VISUAL", "GIT_SSH_COMMAND",
+    "GIT_PROXY_COMMAND", "GIT_EXTERNAL_DIFF",
+)  # fmt: skip
+# Variables that name a program git runs as is (no shell to judge), or let a URL run one: a run never needs them.
+_GIT_PROGRAM_ENV = ("GIT_SSH", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_ALLOW_PROTOCOL")
+# Programs and git subcommands that move, link or copy folders: a git read after one is of folders the gate can't
+# see yet (scout.kb.git_read.GitRead.fs_changed).
+_FOLDER_CHANGERS = {"ln", "mv", "cp", "rsync", "ditto", "install"}
+_GIT_FOLDER_CHANGERS = {"worktree", "clone", "mv", "checkout-index", "submodule", "init"}
+
+
+def _git_programs(words: list[str], cwd: str) -> list[str]:
+    """The shell commands a git call runs for you, each from the folder git runs in: ``rebase -x|--exec``,
+    ``bisect run``, ``difftool -x|--extcmd``, ``submodule foreach``, ``filter-branch --*-filter``, the transports'
+    ``--upload-pack``/``--receive-pack``, and a ``GIT_PAGER``/``PAGER``/``GIT_EDITOR``/… the command sets (a prefix,
+    or earlier in it). The gate judges each as the same command run directly (review of #817)."""
+    from scout.kb import git_read, raw_read
+
+    stripped = raw_read._strip(words)
+    git = _git_words(stripped.words) if stripped.words else None
+    if git is None:
+        return []
+    chdirs, _git_dir, _work_tree, at = git_read.split_global(git)
+    sub, args = (raw_read.fold(git[at]), git[at + 1 :]) if at < len(git) else ("", [])
+    longs, shorts = _GIT_RUN_OPTIONS.get(sub, (set(), set()))
+    programs = git_read.option_values(args, longs, shorts, _GIT_VALUE_SHORTS.get(sub, set()))
+    if sub == "bisect" and args[:1] == ["run"] and len(args) > 1:
+        programs.append(shlex.join(args[1:]))
+    if sub == "submodule":
+        rest = [a for a in args if a not in ("-q", "--quiet", "--recursive")]
+        if rest[:1] == ["foreach"] and len(rest) > 1:
+            programs.append(" ".join(rest[1:]))  # git hands them to a shell as one line
+    for word in words[: len(words) - len(stripped.words)]:
+        m = _ASSIGN.match(word)
+        if m and m[1] in _GIT_RUN_ENV:
+            programs.append(word.split("=", 1)[1])
+    for name in _GIT_RUN_ENV:
+        programs += [v for v in _STATE["vars"].get(name) or [] if v != SUBST]
+    where = cwd
+    for folder in chdirs:
+        if folder:
+            where = _into(where, folder)
+    return [f"cd {shlex.quote(where)} && {p}" if where else p for p in programs]
+
+
+# git's own subcommands (git 2.52's builtins and scripts) and the common external one (lfs). Any other in a run is an
+# alias or a typo that help.autocorrect may run as a subcommand the gate didn't judge (review of #817, round 5).
+_GIT_KNOWN_SUBCOMMANDS = frozenset(
+    """
+    add am annotate apply archive backfill bisect blame branch bugreport bundle cat-file check-attr check-ignore
+    check-mailmap check-ref-format checkout checkout-index cherry cherry-pick citool clean clone column commit
+    commit-graph commit-tree config count-objects credential credential-cache credential-store describe diagnose
+    diff diff-files diff-index diff-tree difftool fast-export fast-import fetch fetch-pack filter-branch
+    fmt-merge-msg for-each-ref for-each-repo format-patch fsck fsck-objects gc get-tar-commit-id grep gui
+    hash-object help hook index-pack init init-db interpret-trailers log ls-files ls-remote ls-tree mailinfo
+    mailsplit maintenance merge merge-base merge-file merge-index merge-one-file merge-tree mergetool mktag mktree
+    multi-pack-index mv name-rev notes pack-objects pack-redundant pack-refs patch-id prune prune-packed pull push
+    range-diff read-tree rebase receive-pack reflog refs remote repack replace replay request-pull rerere reset
+    restore rev-list rev-parse revert rm send-pack shortlog show show-branch show-index show-ref sparse-checkout
+    stage stash status stripspace submodule switch symbolic-ref tag unpack-file unpack-objects update-index
+    update-ref update-server-info upload-archive upload-pack var verify-commit verify-pack verify-tag version
+    whatchanged worktree write-tree lfs
+""".split()
+)
+# Subcommands that run commands from options and config too many to judge: denied in a run outright.
+_GIT_DENIED_SUBCOMMANDS = frozenset({"send-email", "instaweb", "imap-send", "daemon"})
+
+
+def _git_run_form(words: list[str]) -> str | None:
+    """The form of a git call that runs a program the gate can't read, else None: hooks from a template folder
+    (``clone``/``init --template``), an ``ext::`` URL (it runs a command), or a ``GIT_SSH``/``GIT_ASKPASS``/
+    ``SSH_ASKPASS``/``GIT_ALLOW_PROTOCOL`` the command sets (a prefix, or earlier in it)."""
+    from scout.kb import git_read, raw_read
+
+    stripped = raw_read._strip(words)
+    git = _git_words(stripped.words) if stripped.words else None
+    if git is None:
+        return None
+    at = git_read.split_global(git)[3]
+    sub, args = (raw_read.fold(git[at]), git[at + 1 :]) if at < len(git) else ("", [])
+    if not sub:
+        return None
+    if sub in _GIT_DENIED_SUBCOMMANDS:
+        return f"git {sub}"  # runs commands from options and config too many to judge
+    plain_git = raw_read.fold(raw_read._command_name(stripped.words[0])) == "git"  # not a git-* script
+    if plain_git and sub not in _GIT_KNOWN_SUBCOMMANDS and not _dynamic(sub):
+        return "git <unknown subcommand>"  # an alias, or a typo help.autocorrect may run as another
+    if sub in ("clone", "init") and git_read.option_values(args, {"template"}, set()):
+        return f"git {sub} --template"
+    if any(raw_read.fold(a).lstrip("'\"").startswith("ext::") or "=ext::" in raw_read.fold(a) for a in git):
+        return "git ext:: URL"
+    for word in words[: len(words) - len(stripped.words)]:
+        m = _ASSIGN.match(word)
+        if m and m[1] in _GIT_PROGRAM_ENV:
+            return m[1]
+    for name in _GIT_PROGRAM_ENV:
+        if _STATE["vars"].get(name):
+            return name
+    return None
+
+
+# A run's git calls are judged by scout.kb.git_allow's lists: any other form is refused under this name.
+GIT_FORM = "git form not allowed in a run"
+# A command that sets what decides which git runs or how: a GIT_* variable (GIT_EXEC_PATH, GIT_SSH_COMMAND,
+# GIT_EDITOR, GIT_OBJECT_DIRECTORY…), an editor or pager (EDITOR, VISUAL, PAGER, LESSOPEN), PATH or zsh's `path`,
+# the command table zsh keeps (`commands`, `aliases`, `functions`, `hash`, `alias`), or a function named git. Read
+# from the whole command's text, set by any means (`read -r GIT_SSH_COMMAND`, `print -v`, an export): a git call in
+# it is refused (review of #817, round 6).
+_GIT_ENV_TEXT = re.compile(
+    r"(?<![A-Za-z0-9_])(?:GIT_[A-Za-z0-9_]+|EDITOR|VISUAL|PAGER|MANPAGER|LESSOPEN|LESSCLOSE)(?![A-Za-z0-9_])"
+    r"|(?<![\w/.-])(?:commands|aliases|galiases|saliases|functions|alias|unalias|unhash|enable|disable)"
+    r"(?![\w/.-])"
+    r"|(?<![\w/.-])hash(?![\w/.-])(?!\s*(?:-r\b|$|[;&|\n)]))"  # `hash -r` only forgets: fine
+    r"|(?<![\w/.-])git\s*\(\s*\)|\bfunction\s+\S*git"
+)
+
+
+# PATH, or zsh's `path` tied to it: a change is judged by where `git` then resolves (_path_keeps_git).
+_PATH_WORD = re.compile(r"(?<![A-Za-z0-9_])PATH(?![A-Za-z0-9_])|(?<![\w/.-])path(?![\w/.-])")
+_SYSTEM_GITS = (
+    "/usr/bin/git",
+    "/opt/homebrew/bin/git",
+    "/usr/local/bin/git",
+    "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+    "/Library/Developer/CommandLineTools/usr/bin/git",
+)
+
+
+# Builtins that set the variables they name (a PATH they name is a change the gate can't follow).
+_PATH_SETTER = re.compile(
+    r"(?:^|\s)(?:export|declare|typeset|local|readonly|integer|float|read|vared|getopts|zparseopts|unset|print|printf"
+    r"|set|mapfile|readarray|select|for|zstyle|zformat|strftime|getln|sysread)(?:\s|$)"
+)
+
+
+def _system_git(path: str) -> bool:
+    real = os.path.realpath(path)
+    return (
+        os.path.normpath(path) in _SYSTEM_GITS
+        or real in _SYSTEM_GITS
+        or real.startswith(("/opt/homebrew/Cellar/git/", "/usr/local/Cellar/git/"))
+    )
+
+
+# A quoted word that starts with a name the git checks watch stays visible to them (`export "GIT_DIR=x"`,
+# `read -r "PATH"`); any other quoted text (a commit message, a --grep pattern) is data to them.
+_WATCHED_START = re.compile(
+    r"\$?[\"']?(?:GIT_|PATH\b|path\b|EDITOR|VISUAL|PAGER|MANPAGER|LESSOPEN|LESSCLOSE|commands\b|aliases\b|galiases\b"
+    r"|saliases\b|functions\b|alias\b|unalias\b|hash\b|unhash\b|enable\b|disable\b|git\s*\()"
+)
+
+
+_SOURCE = re.compile(r"(?:^|[\s;&|(){}])(?:builtin\s+|command\s+)?(?:source|\.)\s+(\S+)")
+
+
+def _sources_text(text: str) -> bool:
+    """Whether ``text`` sources anything but a plain file (stdin, a pipe, a substitution, a variable)."""
+    for m in _SOURCE.finditer(text):
+        arg = m[1].strip("\"'")
+        if not re.fullmatch(r"[A-Za-z0-9_./~+-]+", arg) or arg.startswith("/dev/") or arg == "-":
+            return True
+    return False
+
+
+def _scanned_texts() -> list[tuple[str, str]]:
+    """Each command the walk has read so far (the outer one, and each ``sh -c``, ``eval``, substitution and
+    here-document fed to a shell, as its own), without here-document bodies, and the same with quoted text
+    blanked but for words that start with a watched name: ``(text, masked)``, at the same positions."""
+    if any(_sources_text(text) for text in _STATE["texts"]):
+        # `source /dev/stdin <<EOF`, `. <(printf …)`: the shell runs that text, quotes and here-documents too
+        # (review of #817, round 7): every text is read as it is.
+        return [(text, text) for text in _STATE["texts"]]
+    out = []
+    for text in _STATE["texts"]:
+        text = _split_heredocs(text)[0]
+        masked, at = [], 0
+        for a, b in _quoted_spans(text):
+            masked.append(text[at:a])
+            masked.append(text[a:b] if _WATCHED_START.match(text, a) else "\0" * (b - a))
+            at = b
+        masked.append(text[at:])
+        out.append((text, "".join(masked)))
+    return out
+
+
+# Folders a run may put in PATH besides the ones already there: fixed system ones only (/usr/local/bin is the user's
+# on an Intel Mac's Homebrew).
+_SAFE_PATH_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin", "/opt/homebrew/bin")
+
+
+def _path_keeps_git(command: str, masked: str | None = None) -> bool:
+    """Whether every change the command makes to PATH (or zsh's ``path``) only reorders the folders the run's PATH
+    already has or adds fixed system folders (:data:`_SAFE_PATH_DIRS`): never a folder of its own, which could hold
+    a planted ``git``, ``ssh`` or a hook's ``python3`` (review of #817, round 7). Assignments in every spelling count
+    (``PATH=``, ``PATH+=``, ``path=(…)``, ``path[1,0]=``, ``${PATH::=…}``, ``${PATH:=…}``, ``${PATH=…}``); PATH set any
+    other way (``read``, ``typeset``, ``export PATH`` alone, ``${(P)…}``) is refused."""
+    home = (_STATE["home"] or "").rstrip("/")
+    allowed = {os.path.normpath(d) for d in (_STATE.get("run_path") or "").split(":") if d.startswith("/")}
+    allowed |= set(_SAFE_PATH_DIRS)
+    text = command if masked is None else masked
+    if "${(P)" in command or "${(P" in command:
+        return False
+
+    def fine(entries: list[str], old: tuple[str, ...]) -> bool:
+        for raw in entries:
+            raw = raw.strip("\"'")
+            if not raw or raw in old:
+                continue  # the old value
+            folder = raw
+            for start_ in ("~/", "$HOME/", "${HOME}/"):
+                if folder.startswith(start_) and home:
+                    folder = home + "/" + folder[len(start_) :]
+            if _dynamic(folder) or not folder.startswith("/"):
+                return False
+            if os.path.normpath(folder) not in allowed:
+                return False
+        return True
+
+    for m in _PATH_WORD.finditer(text):
+        word, start = m[0], m.start()
+        if command[max(0, start - 2) : start] == "${":
+            param = re.match(r"(?::?:?=|=)([^}]*)\}", command[m.end() :])
+            if param is not None:  # `${PATH::=…}`: an assignment
+                if not fine(param[1].split(":" if word == "PATH" else None), ("$PATH", "${PATH}", "$path")):
+                    return False
+            continue  # else a read of it
+        if command[max(0, start - 1) : start] == "$":
+            continue  # a read of it
+        rest = command[m.end() :]
+        index = re.match(r"\[[^\]]*\]", rest)
+        if index is not None:
+            rest = rest[index.end() :]
+        op = re.match(r"\+?=", rest)
+        if op is None:
+            # Not an assignment: it counts only as a setter's argument (`export PATH`, `read -r PATH`, `typeset
+            # path`, `for path in …`); anywhere else it is a word of data (`grep path`, `git log -- path`).
+            segment = re.split(r"[;&|\n(){}`]", text[:start])[-1]
+            if _PATH_SETTER.search(segment) or index is not None:
+                return False
+            continue
+        rest = rest[len(op[0]) :]
+        if word == "path":
+            group = re.match(r"\(([^()]*)\)", rest)
+            values = group[1].split() if group else [re.match(r"[^\s;&|()]*", rest)[0]]  # type: ignore[index]
+            if not fine(values, ("$path", "${path}", "$path[@]", "${path[@]}")):
+                return False
+        else:
+            value = re.match(r'"([^"]*)"|\'([^\']*)\'|([^\s;&|()]*)', rest)
+            raw = (
+                (value[1] if value[1] is not None else value[2] if value[2] is not None else value[3]) if value else ""
+            )
+            if not fine(raw.split(":"), ("$PATH", "${PATH}")):
+                return False
+    return True
+
+
+def _array_set(name: str) -> bool:
+    """Whether the command makes ``name`` an array (``A=(…)``, ``A+=(…)``, ``set -A``, ``read -A``/``-a``…), whose
+    value the gate doesn't keep as words."""
+    text = _STATE["command"]
+    n = re.escape(name)
+    return bool(
+        re.search(rf"(?<![\w$]){n}(?:\[[^\]]*\])?\+?=\(", text)
+        or re.search(
+            rf"(?:^|[\s;&|({{])(?:set|read|typeset|declare|local|readonly|vared|zparseopts)\b[^;&|\n]*"
+            rf"\s-[A-Za-z]*[aAH][A-Za-z]*\s[^;&|\n]*(?<![\w$]){n}(?!\w)",
+            text,
+        )
+    )
+
+
+def _git_allowlist_form(words: list[str]) -> str | None:
+    """:data:`GIT_FORM` (with what broke it) for a git call that isn't one of the forms a run may use
+    (:mod:`scout.kb.git_allow`), else None. ``words`` are the segment's, quoted glob characters shielded: the
+    program git in any spelling (or ``git-<subcommand>``), at most ``-C <dir>`` before the subcommand, and no
+    GIT_*/PATH set anywhere in the command. A program the command builds (``$G``) is judged with each value the
+    command gives it; one the gate can't know, followed by a git subcommand, is refused."""
+    from scout.kb import git_allow, raw_read
+
+    stripped = raw_read._strip(words)
+    if not stripped.words:
+        return None
+    head = stripped.words[0]
+    if _dynamic(head):  # pragma: no cover  # defence in depth: #823's walk resolves or records $G first
+        for alt in _substitute(head)[:MAX_CHECKED_PATHS]:
+            if _dynamic(alt):
+                after = _unshield(stripped.words[1]) if len(stripped.words) > 1 else ""
+                if raw_read.fold(after) in _GIT_KNOWN_SUBCOMMANDS:
+                    return f"{GIT_FORM} (a program the gate can't read)"
+                continue
+            found = _git_allowlist_form([alt, *stripped.words[1:]])
+            if found is not None:
+                return found
+        return None
+    name = raw_read.fold(_program(_unshield(head)))
+    if name == "git":
+        args = stripped.words[1:]
+        while args and _unshield(args[0]) == "git":
+            args = args[1:]  # as _git_words reads it
+    elif name.startswith("git-") and name[4:] in _GIT_KNOWN_SUBCOMMANDS:
+        args = [name[4:], *stripped.words[1:]]
+    elif name in _GIT_WRAPPERS:  # `nohup git …`, `find … -exec git …`
+        for at, word in enumerate(stripped.words[1:], 1):
+            inner = raw_read.fold(_program(_unshield(word)))
+            if inner == "git" or (inner.startswith("git-") and inner[4:] in _GIT_KNOWN_SUBCOMMANDS):
+                if name in ("xargs", "parallel"):  # pragma: no cover  # defence in depth: _strip takes xargs first
+                    return f"{GIT_FORM} (words from {name})"  # its input becomes git's options
+                return _git_allowlist_form(stripped.words[at:])
+        return None
+    else:
+        return None
+    if stripped.fed:
+        return f"{GIT_FORM} (words from xargs)"  # its input becomes git's options
+    scanned = _scanned_texts()
+    if any(_GIT_ENV_TEXT.search(masked) for _text, masked in scanned):
+        return f"{GIT_FORM} (GIT_*, an editor or pager, or the command table set)"
+    if any(_PATH_WORD.search(masked) and not _path_keeps_git(text, masked) for text, masked in scanned):
+        return f"{GIT_FORM} (PATH set to where another git may run)"
+    i = 0
+    if [_unshield(a) for a in args] == ["--version"]:
+        return None
+    while i < len(args) and _unshield(args[i]) in ("-C", "--no-pager"):
+        i += 2 if _unshield(args[i]) == "-C" else 1
+    if i >= len(args):
+        return f"{GIT_FORM} (no subcommand)" if i == 0 else None
+    sub = _unshield(args[i])
+    listed = sub in git_allow.ALLOWED or sub in git_allow.ENGINE_SUBCOMMANDS
+    if sub.startswith("-") or _dynamic(sub) or not listed:
+        return f"{GIT_FORM} ({sub.split('=', 1)[0] if sub.startswith('-') else 'git ' + sub})"
+
+    def dynamic(word: str) -> bool:
+        return _dynamic(word) or word[:1] in "*?[{"
+
+    def expand(word: str) -> list[str] | None:
+        if word[:1] in "*?[{":
+            return None  # a glob or brace list may match (or make) a word like `-p`
+        if word[:1] not in "$`":
+            return [_unshield(word)]  # it starts with a letter of its own: no option, whatever follows
+        names = [m[1] or m[2] for m in _VAR.finditer(word)] + [m[1] for m in _PARAM.finditer(word)]
+        if any(_array_set(name) for name in names):
+            return None  # zsh hands each element over as a word of its own: `A=(-p x); git log $A`
+        out: list[str] = []
+        for alt in _substitute(word)[:MAX_CHECKED_PATHS]:
+            if _dynamic(alt):
+                return None
+            out += [w for w in re.split(r"[\s()]+", _unshield(alt)) if w]
+        return out
+
+    reason = git_allow.judge(sub, args[i + 1 :], dynamic=dynamic, expand=expand, plain=_unshield)
+    if reason is not None and _engine_kind(sub, args[i + 1 :], record=True) is not None:
+        return None  # the engine-change flow: the gate checks the repository it runs in (git_read.GitRead.engine)
+    if reason is not None and sub == "commit" and _vault_commit(args[i + 1 :]):
+        return None  # a commit in the vault's repository: the gate checks where (git_read.GitRead.vault_only)
+    if reason is not None and sub not in git_allow.ALLOWED:
+        return f"{GIT_FORM} (git {sub})"
+    return None if reason is None else f"{GIT_FORM} ({sub} {reason})"
+
+
+def _plain_args(args: list[str]) -> list[str] | None:
+    """A call's words (shielded) as git gets them, with the command's variables put in; None when one has more than
+    one value."""
+    words: list[str] = []
+    for word in args:
+        alts = _substitute(word)
+        if len(alts) != 1:
+            return None
+        words.append(_unshield(alts[0]))
+    return words
+
+
+def _vault_commit(args: list[str]) -> bool:
+    from scout.kb import git_allow
+
+    words = _plain_args(args)
+    return words is not None and git_allow.vault_commit(words)
+
+
+def _engine_kind(sub: str, args: list[str], *, record: bool = False) -> str | None:
+    """:func:`scout.kb.git_allow.engine_form` for a call's words (shielded), with the command's variables put in. A
+    clone's folder must be in ~/.scout-worktrees (``record``: kept for the calls after it in the command)."""
+    from scout.kb import git_allow
+
+    words = _plain_args(args)
+    if words is None:
+        return None
+    kind = git_allow.engine_form(sub, words)
+    if kind != git_allow.CLONE:
+        return kind
+    dest, home = words[-1], _STATE["home"]
+    if not home:
+        return None
+    for start in ("~/", "$HOME/", "${HOME}/", home.rstrip("/") + "/"):
+        if dest.startswith(start + git_allow.WORKTREES + "/"):
+            rest = dest[len(start) + len(git_allow.WORKTREES) + 1 :]
+            break
+    else:
+        return None
+    if not rest or "$" in rest or any(part in ("", ".", "..") for part in rest.rstrip("/").split("/")):
+        return None
+    if record:
+        _STATE["engine_clones"].append(f"{home.rstrip('/')}/{git_allow.WORKTREES}/{rest}")
+    return kind
+
+
+def _local_path(word: str) -> bool:
+    """A push or fetch destination that is a folder on this disk, not a remote's name or a URL."""
+    return word.startswith(("/", ".", "~", "$")) or ("/" in word and ":" not in word) or word.startswith("file:")
+
+
+def _link_targets(words: list[str], cwd: str) -> list[str]:
+    """The targets an ``ln`` call links to, each placed from the session's folder (as run_escape keeps folders):
+    a relative target is from the link's folder (``cd ~ && ln -s Vault V2`` links ~/V2 to ~/Vault)."""
+    from scout.kb import raw_read
+
+    stripped = raw_read._strip(words)
+    if not stripped.words or raw_read.fold(raw_read._command_name(stripped.words[0])) != "ln":
+        return []
+    plain = [w for w in stripped.words[1:] if not w.startswith("-")]
+    if not plain:
+        return []
+    targets, link = (plain[:-1], plain[-1]) if len(plain) > 1 else (plain, "")
+    folder = cwd
+    if link.endswith("/"):
+        folder = _into(cwd, link)
+    elif "/" in link:
+        folder = _into(cwd, link.rsplit("/", 1)[0] or "/")
+    out = []
+    for target in targets:
+        for one in _substitute(target):
+            out.append(one if one.startswith(("/", "~", "$")) else (folder + one if folder else one))
+    return out
+
+
+def _changes_folders(words: list[str]) -> str:
+    """ "vault-copy" for a git call that copies the repository the command runs in (``git worktree add``, ``git
+    clone .``, with no -C or --git-dir), "changed" for any other that moves, links or copies folders, else ""."""
+    from scout.kb import git_read, raw_read
+
+    stripped = raw_read._strip(words)
+    if not stripped.words:
+        return ""
+    if raw_read._command_name(stripped.words[0]) in _FOLDER_CHANGERS:
+        return "changed"
+    git = _git_words(stripped.words)
+    if git is None:
+        return ""
+    chdirs, git_dir, _work_tree, at = git_read.split_global(git)
+    if at >= len(git):
+        return ""
+    here = not chdirs and git_dir is None
+    plain = [a for a in git[at + 1 :] if not a.startswith("-")]
+    sub = raw_read.fold(git[at])
+    # A bundle of the repository, or a push of it into a folder (`git push /x/b.git HEAD`), copies it too.
+    if here and sub == "bundle" and [raw_read.fold(w) for w in plain[:1]] == ["create"]:
+        return "vault-copy"
+    if here and sub == "push" and plain[:1] and _local_path(plain[0]):
+        return "vault-copy"
+    if sub not in _GIT_FOLDER_CHANGERS:
+        return ""
+    if here and sub == "worktree" and [raw_read.fold(w) for w in plain[:1]] == ["add"]:
+        return "vault-copy"
+    if here and sub == "clone" and plain[:1] and plain[0].rstrip("/") in (".", "..", "./.git", ".git"):
+        return "vault-copy"
+    return "changed"
+
+
 def _unshield(word: str) -> str:
     return "".join(UNSHIELD.get(c, c) for c in word)
 
@@ -2091,6 +2836,9 @@ def _shell_stdin_program(words: list[str]) -> bool:
     """``sh``, ``bash -s``, ``zsh`` with no ``-c`` and no script: it runs its stdin as commands."""
     while words and (_ASSIGN.match(words[0]) or words[0] in _KEYWORDS or _program(words[0]) in _PREFIX):
         words = words[1:]
+    if words and words[0] in ("source", ".") and len(words) > 1:
+        # `source /dev/stdin <<EOF`, `. /dev/fd/0`: the shell runs its stdin (review of #817, round 7)
+        return words[1] in ("/dev/stdin", "/dev/fd/0", "-") or words[1].startswith("/proc/self/fd/0")
     if not words or _program(words[0]) not in _SHELLS:
         return False
     args = words[1:]
@@ -3170,7 +3918,11 @@ def run_escape(
     protect: Callable[[str, bool], str | None] | None = None,
     secret: Callable[[str], str | None] | None = None,
     kb_read: Callable[[str, str], str | None] | None = None,
+    git_read: Callable[[GitRead, str], str | None] | None = None,
+    embedded: list[str] | None = None,
+    home: str | None = None,
     command_word: Callable[[str], str | None] | None = None,
+    run_path: str | None = None,
 ) -> str | None:
     """Whether a run's shell command gets around the commit hook's checks: "env" (changes SCOUT_MODE/SCOUT_READER
     or clears the environment), "detach" (backgrounds or hands work to another process), else the name of the form
@@ -3188,14 +3940,20 @@ def run_escape(
     (``python3 -c``, a here-document fed to ``python3 -``) that writes files is judged by the paths and protected
     names it spells. ``secret`` judges each path it names for a read of Scout's secrets. ``kb_read`` judges each
     file a reading command reads (``cat``, ``ls``, ``grep``…, input redirects) by the path the shell hands it,
-    returning :data:`KB_READ` or :data:`UNRESOLVED_READ` (see :func:`_kb_read`). ``command_word`` decides a
-    command word of one of COMMAND_WORD_KINDS (a form to deny it, or None); every command word the gate can't
-    work out otherwise is denied as :func:`denied_word` says.
+    returning :data:`KB_READ` or :data:`UNRESOLVED_READ` (see :func:`_kb_read`). ``git_read`` (with ``kb_read``)
+    judges what each git call reads, given as a :class:`scout.kb.git_read.GitRead` and the folder it runs in
+    (see :func:`_git_read`), returning the same. The commands git runs for the call (:func:`_git_programs`) are
+    added to ``embedded``, each with a ``cd`` to git's folder, for the caller to judge as commands of their own.
+    ``home`` (the run's HOME) places the engine-change flow's folders (:func:`_engine_kind`). ``command_word``
+    decides a command word of one of COMMAND_WORD_KINDS (a form to deny it, or None); every command word the gate
+    can't work out otherwise is denied as :func:`denied_word` says.
     """
-    global _PROTECT, _SECRET, _KB_READ, _COMMAND_WORD
+    global _PROTECT, _SECRET, _KB_READ, _GIT_READ, _EMBEDDED, _COMMAND_WORD
     outer = depth == 0
     if outer:
-        _PROTECT, _SECRET, _KB_READ, _COMMAND_WORD = protect, secret, kb_read, command_word
+        _PROTECT, _SECRET, _KB_READ, _GIT_READ, _EMBEDDED, _COMMAND_WORD = (
+            protect, secret, kb_read, git_read, embedded, command_word
+        )  # fmt: skip
         _STATE.update(
             checked=0,
             secrets=0,
@@ -3206,8 +3964,16 @@ def run_escape(
             unparsed=False,
             capped=False,
             parsing=False,
+            fs_changed="",
+            links=[],
             expanded=set(),
             lists=[],
+            git_env=False,
+            texts=[],
+            command=command,
+            home=home,
+            run_path=run_path or "",
+            engine_clones=[],
         )
         _STATE.update(
             words={},
@@ -3245,7 +4011,7 @@ def run_escape(
         return found
     finally:
         if outer:
-            _PROTECT = _SECRET = _KB_READ = _COMMAND_WORD = None
+            _PROTECT = _SECRET = _KB_READ = _GIT_READ = _EMBEDDED = _COMMAND_WORD = None
 
 
 def _expanding_bodies(text: str, depth: int) -> list[str | None]:
@@ -3271,10 +4037,73 @@ _HEREDOC_CAT = re.compile(r"^\s*cat\s+<<-?__scout_hd_(\d+)__\s*$")
 _PLAIN_PATH = re.compile(r"[A-Za-z0-9_./@%+=:,-]+")
 
 
+# The engine-change flow's two substitutions, as phases/core/git-setup.md spells them: the engine checkout's folder
+# (from ~/.local/state/scout/engine.json) and its origin's URL, with Scout's remote as the fallback. The gate works
+# out what each prints itself, so a clone's source can be checked as Scout's remote (review of #817, round 6).
+_ENGINE_ROOT_BODY = (
+    "python3 -I -c 'import json,os;print(json.load(open(os.path.expanduser("
+    '"~/.local/state/scout/engine.json")))["engine_root"])\''
+)
+_ORIGIN_URL_BODY = re.compile(
+    r'git -C (?:"(\$\{?ROOT\}?)"|(\$\{?ROOT\}?)|(/[A-Za-z0-9_./@%+=:,-]+)) remote get-url origin'
+    r"(?: 2>/dev/null)?(?: \|\| echo (\S+))?"
+)
+
+
+def _engine_root() -> str | None:
+    """The engine checkout's folder, as ~/.local/state/scout/engine.json names it, else None."""
+    import json
+
+    home = _STATE["home"]
+    if not home:
+        return None
+    try:
+        root = json.loads((Path(home) / ".local/state/scout/engine.json").read_text(encoding="utf-8"))["engine_root"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return root if isinstance(root, str) and root.startswith("/") and _PLAIN_PATH.fullmatch(root) else None
+
+
+def _engine_output(body: str) -> str | None:
+    """What one of the engine-change flow's substitutions prints, where the gate can be sure, else None: the engine
+    folder, or Scout's remote URL (its origin, when that is Scout's; the fallback, when it has none). ``$ROOT``
+    counts only when the command sets it once, from the engine folder's substitution."""
+    from scout.kb import git_allow, git_read
+
+    text = body.strip()
+    if text == _ENGINE_ROOT_BODY:
+        return _engine_root()
+    m = _ORIGIN_URL_BODY.fullmatch(text)
+    if m is None:
+        return None
+    if m[3]:
+        return None  # only the engine checkout's own origin (review of #817, round 7: a folder of the run's)
+    command = _STATE["command"]
+    sets = re.findall(r"(?<![\w${])ROOT(?!\w)", command)
+    ok = len(sets) == 1 and re.search(r'(?<![\w$])ROOT="?\$\(' + re.escape(_ENGINE_ROOT_BODY) + r"\)", command)
+    root = _engine_root() if ok else None
+    if root is None:
+        return None
+    fallback = m[4] if m[4] in git_allow.SCOUT_REMOTES else None
+    repo = git_read.find_repo(Path(root), None, None)
+    if repo is None:
+        return fallback  # `git -C` fails: the fallback is printed
+    entries = git_read.read_config(repo[1] / "config")
+    if entries is None or any(k.startswith("url.") for k, _ in entries):
+        return None  # a URL rewrite may send Scout's URL elsewhere
+    urls = [v for k, v in entries if k == "remote.origin.url"]
+    if not urls:
+        return fallback
+    return urls[-1] if urls[-1] in git_allow.SCOUT_REMOTES else None
+
+
 def _known_output(body: str) -> str | None:
     """What a substitution prints, where the gate can know it: ``$(mktemp …)`` is a new file in the template's
     folder (``-p DIR``, else the temp folder), ``$(cat <<'EOF'`` the line its here-document holds. Anything else
     is unknown (None)."""
+    engine = _engine_output(body)
+    if engine is not None:
+        return engine
     cat = _HEREDOC_CAT.match(body)
     if cat is not None and int(cat[1]) < len(_STATE["bodies"]):
         text, _expands = _STATE["bodies"][int(cat[1])]
@@ -3311,6 +4140,7 @@ def _merge(results: list[str | None], detach: bool = False) -> str | None:
 
 
 def _run_escape(command: str, depth: int, *, split: bool = True, arith: bool = False) -> str | None:
+    _STATE["texts"].append(command)  # each command the walk reads, nested ones too (_scanned_texts)
     if depth > MAX_DEPTH:
         from scout.kb.hook_paths import TOO_MANY
 
@@ -3479,6 +4309,11 @@ def _run_escape(command: str, depth: int, *, split: bool = True, arith: bool = F
         if found == "env":
             return "env"
         results.append((here, found))
+        if _KB_READ is not None:
+            _STATE["links"].extend(_link_targets(words, cwd))
+            change = _changes_folders(words)
+            if change and _STATE["fs_changed"] != "vault-copy":
+                _STATE["fs_changed"] = change
         previous = segment if resolved is words else _resolved_text(segment, words, resolved)
         if resolved is not words:  # for the gate's text check too (raw_read), in the folder it runs in
             RESOLVED.append(f"cd {shlex.quote(cwd)} && {previous}" if cwd else previous)
@@ -3690,6 +4525,21 @@ def _segment_escape(
         found = _secret_read(literal_words, literal_reads, cwd)
         if found is None and _KB_READ is not None:
             found = _kb_read(literal_words, literal_reads, cwd, fed, oldpwd, targets)
+        if found is None and _GIT_READ is not None and _KB_READ is not None:
+            found = _git_read(literal_words, cwd, oldpwd)
+        if found is None and _GIT_READ is not None and _KB_READ is not None:
+            found = _git_run_form(words)
+        if found is None and _GIT_READ is not None and _KB_READ is not None:
+            found = _git_allowlist_form(literal_words)
+        if found is None and _GIT_READ is not None and _KB_READ is not None:
+            programs = _git_programs(words, cwd)
+            if _EMBEDDED is not None:
+                _EMBEDDED.extend(programs)
+            else:  # no caller to judge them in full: at least what run_escape sees
+                for program in programs:
+                    found = _run_escape(program, depth + 1)
+                    if found is not None:
+                        break
         if found is None and _KB_READ is not None:
             for program in _other_programs(words):  # awk's system("…"), perl's backticks: commands too
                 # It runs in this segment's folder: `cd action-items; awk 'BEGIN{system("cat context/x")}'`.

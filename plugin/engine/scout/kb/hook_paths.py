@@ -633,6 +633,19 @@ def _match(keys: set[str], roots: list[Root]) -> str | None:
     return best.form
 
 
+def _engine_git_write(target: str | Path, env: Mapping[str, str]) -> str | None:
+    """:data:`GIT_DIR` for a write inside a ``.git`` folder below ~/.scout-worktrees (the engine-change flow's
+    clones), by the resolved and the written path, letter case ignored: a run's own writes there could plant hooks,
+    alternates, refs or config the gate's checks of the clone would then miss (review of #817, round 7)."""
+    keys = {canon(target, env), spelled(target, env)}
+    for home in homes(env):
+        for root in {canon(home / ".scout-worktrees", env), spelled(home / ".scout-worktrees", env)}:
+            for key in keys:
+                if _under(key, root) and ".git" in key[len(root) :].split("/"):
+                    return GIT_DIR
+    return None
+
+
 def protected_write(
     target: str | Path, vault: Path | None, env: Mapping[str, str] | None = None, *, file_tool: bool = False
 ) -> str | None:
@@ -642,6 +655,8 @@ def protected_write(
     """
     env = os.environ if env is None else env
     found = _match({canon(target, env), spelled(target, env)}, protected_roots(vault, env))
+    if found is None:
+        found = _engine_git_write(target, env)
     if found is None and file_tool:
         try:
             st = os.stat(_expand(target, env))

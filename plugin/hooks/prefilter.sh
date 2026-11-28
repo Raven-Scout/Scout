@@ -212,6 +212,14 @@ bash_pattern() {
     # -- Any `(`: zsh reads a group glued to a word as alternation, so `cat kn(o|)wledge-base/a.md` and
     #    `cat (a|b)(c|d)/x.md` name a note with no glob character in them.
     alt '\('
+    # -- A git call that picks its repository or top itself: `git --git-dir=~/V/.git --work-tree=/tmp/w -C
+    #    /tmp/w/a show HEAD:./context/x.md` reads a note from the vault's history without naming the KB.
+    alt '--git-dir|--work-tree|GIT_DIR|GIT_WORK_TREE'
+    #    And any git call at all: in a run git is judged by an allowlist of subcommands and options (Python's
+    #    scout.kb.git_allow, review of #817, round 6), so every call goes to Python. `git` as a word or a
+    #    path's last part (`/usr/bin/git`), and the dashed forms (`git-upload-pack`); not `.git/`, `digit`.
+    git_word='(^|[^A-Za-z0-9_.-])git($|[^A-Za-z0-9_])'
+    alt "$git_word"
     # -- HOME. The gates expand `~` and `$HOME` with the run's own HOME, so a command that points HOME
     #    elsewhere first (`HOME=x cmd`, `unset HOME`, `export HOME=…`) names files they never check.
     #    Every mention goes to Python, which denies a change and lets `HOME=$HOME` or a read through.
@@ -356,6 +364,10 @@ bash_needs_python() {
     # HOME, SCOUT_MODE, SCOUT_READER and git's GIT_CONFIG_* variables spelled with quotes or
     # backslashes (`HO''ME=x`, `export SCOUT_MO\DE=x`, `GIT_CONF''IG_GLOBAL=x git commit`).
     matches 'HOME|SCOUT_(MODE|READER)|GIT_CONFIG'
+    [ "$?" -ne 1 ] && return 0
+    # A git call in any letter case (`GIT log` runs git on a case-insensitive disk) and spelled through quotes
+    # or backslashes (`g''it`, `g\it`, `"git"`): Python judges it.
+    matches_i "$git_word"
     [ "$?" -ne 1 ] && return 0
     # A builtin that sets or unsets the variables it names, anywhere in the command, its own name perhaps
     # quoted or escaped (`"read" HOM?`, `\export`, `r''ead`): its target need not spell HOME (`export
