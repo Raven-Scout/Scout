@@ -361,9 +361,9 @@ bash_needs_python() {
     tool sed
     # shellcheck disable=SC1003 # the set is ', " and \ (one backslash after the shell's escaping)
     v=$(printf '%s' "$raw" | "$t" -e 's/\\\\//g' -e 's/\\[nt]/ /g' | "$tr" -d "'\"\\\\") || return 0
-    # HOME, SCOUT_MODE and SCOUT_READER spelled with quotes or backslashes (`HO''ME=x`,
-    # `export SCOUT_MO\DE=x`).
-    matches 'HOME|SCOUT_(MODE|READER)'
+    # HOME, SCOUT_MODE, SCOUT_READER and git's GIT_CONFIG_* variables spelled with quotes or
+    # backslashes (`HO''ME=x`, `export SCOUT_MO\DE=x`, `GIT_CONF''IG_GLOBAL=x git commit`).
+    matches 'HOME|SCOUT_(MODE|READER)|GIT_CONFIG'
     [ "$?" -ne 1 ] && return 0
     # A git call in any letter case (`GIT log` runs git on a case-insensitive disk) and spelled through quotes
     # or backslashes (`g''it`, `g\it`, `"git"`): Python judges it.

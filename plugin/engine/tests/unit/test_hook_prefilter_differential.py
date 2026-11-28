@@ -34,7 +34,7 @@ Python too, which allows them). Every form ``test_kb_read_gate_git.py`` must den
 
 And because the gates expand ``~`` and ``$HOME`` with the run's own HOME, and a command that points HOME
 elsewhere first names files they never check, the pattern also gained ``ADDED_ALTERNATIVES`` (any mention of
-HOME), and the last, quote-stripped match ``STRIPPED_NAMES`` (HOME, SCOUT_MODE and SCOUT_READER) and
+HOME), and the last, quote-stripped match ``STRIPPED_NAMES`` (HOME, SCOUT_MODE, SCOUT_READER and GIT_CONFIG) and
 ``STRIPPED_NAMERS`` (a builtin that sets what it names, anywhere), so ``HO''ME=x``, ``SCOUT_MO\\DE=`` or
 ``"read" HOM?`` is no way round; a case may differ only by now reaching Python for those too.
 ``ADDED_ALTERNATIVES`` also holds a quote or backslash inside a word (``gr''ep -r TODO .``: the shell runs ``grep``,
@@ -177,7 +177,7 @@ NEW_ALTERNATIVES_PATTERN = f"{EXPANSION_PATTERN}|{ADDED_PATTERN}|{READER_PATTERN
 # What the last, case-sensitive match finds once quotes and backslashes are removed (\n and \t as spaces): the
 # names a run may not set, and, anywhere in the command, a builtin that sets or unsets what it names, its own name
 # perhaps quoted (`"read"`, `\export`), since its target may be built at run time (`read HOM?`, `export H$v=…`).
-STRIPPED_NAMES = "HOME|SCOUT_(MODE|READER)"
+STRIPPED_NAMES = "HOME|SCOUT_(MODE|READER)|GIT_CONFIG"
 STRIPPED_NAMERS = re.compile(
     r"(^|[^A-Za-z0-9_.-])(export|declare|typeset|local|readonly|integer|float|unset|read|select|getopts|vared|mapfile"
     r"|readarray|let|for|repeat|zstyle|zformat|strftime|getln|zparseopts|zstat|sysread|sysopen|zselect|zpty"
@@ -222,6 +222,35 @@ HOME_CHANGES = (
     "print -v HOM? x",
     "zstyle -s :x y HOM?",
     "repeat 1 read HOM? <<< x",
+)
+
+# git's config variables spelled with quotes or backslashes, which the old pattern let through (the runner pins
+# GIT_CONFIG_GLOBAL, and a run that points it at a file it wrote skips the commit hook): each must now reach Python.
+GIT_CONFIG_CHANGES = (
+    "GIT_CONF''IG_GLOBAL=x git commit -m m",
+    "GIT_CON\\FIG_GLOBAL=x git commit -m m",
+    "GIT_CONF''IG_COUNT=1 git commit -m m",
+)
+# A command word the shell builds as the command runs (live_run's COMMAND_WORD_FORM): the expansions already send
+# each to Python, and must keep doing so.
+COMMAND_WORDS = (
+    "c=re; c+=ad; $c HOM? <<< h; git commit -qm m",
+    '"${c}" HOM? <<< h',
+    "$(echo daer | rev) HOME",
+    "`echo daer | rev` HOME",
+    "c=READ; ${(L)c} HOME",
+    "c=READ; ${c:l} HOME",
+    "rea? HOME",
+    "rea[d] HOME",
+    "{read,HOME}",
+    'f(){ "$@"; }; f $c HOME',
+    'f(){ $1 "$2"; }; f $c HOME',
+    "function f { $1 HOME; }; f read",
+    "g=git; $g commit -m m",
+    # zsh's `=git` is git's path: no expansion to send it, but every rule names the program wherever it starts, so
+    # `=git commit --no-verify` and `=read HOME` reach Python by those.
+    "=git commit --no-verify -m m",
+    "=read HOME",
 )
 
 # Deliberate edits to the Bash pattern since the fixture was frozen, as (old text, new text, reason). The
@@ -1126,6 +1155,8 @@ def test_bash_forms_under_every_reader_shell_and_failure(world: World) -> None:
         *EXPANSION_FORMS,
         *NOT_EXPANSIONS,
         *HOME_CHANGES,
+        *GIT_CONFIG_CHANGES,
+        *COMMAND_WORDS,
         *READER_FORMS,
         *NOT_READERS,
     )
@@ -1263,6 +1294,20 @@ def test_a_run_that_points_home_elsewhere_now_reaches_python(world: World) -> No
         old, new = world.run(OLD["kb-read-gate"], case), world.run(NEW["kb-read-gate"], case)
         assert not old.python, form
         assert new == Outcome(0, "", "", f"hook kb-read-gate\n{_bash(form)}"), form
+
+
+def test_a_quoted_git_config_name_now_reaches_python(world: World) -> None:
+    """The one widening for git's config variables: the old pattern let these through unjudged."""
+    for form in GIT_CONFIG_CHANGES:
+        case = Case(form, "kb-read-gate", _bash(form), RUN, "vault")
+        old, new = world.run(OLD["kb-read-gate"], case), world.run(NEW["kb-read-gate"], case)
+        assert not old.python, form
+        assert new == Outcome(0, "", "", f"hook kb-read-gate\n{_bash(form)}"), form
+
+
+@pytest.mark.parametrize("shell", ["sh", "/bin/bash"])
+def test_every_built_command_word_reaches_python_in_a_run(world: World, shell: str) -> None:
+    assert [c for c in COMMAND_WORDS if not _judged(world, c, shell)] == []
 
 
 def test_known_missed_forms_are_kept_as_they_were_but_for_the_expansions(world: World) -> None:

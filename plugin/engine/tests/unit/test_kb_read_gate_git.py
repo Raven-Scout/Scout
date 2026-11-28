@@ -673,7 +673,6 @@ REFUSED_IN_A_RUN = [
     "git ls-tree -r HEAD | xargs -n1 git show",
     "git ls-tree -r HEAD | parallel git cat-file -p",
     "cp docs/a.md docs/b.md && git log -p -- docs",
-    "G=$UNSET_G; $G show HEAD:./x.md",
 ]
 
 
@@ -775,6 +774,8 @@ RUN_USAGE = [
     "git --no-pager log --oneline -3",
     "git --version",
     "git -C docs",
+    "git git status --short",  # alias.git, or a function's words (#823): the same call
+    "hash -r; git status",
     "git -C ~/Vault/docs config user.name 'Scout Bot'",  # still the vault's repository
     # round 7: commits in the vault's repository, pickaxe searches, a prelude that prepends to PATH
     "git add docs/a.md && git commit -m 'update docs'",
@@ -912,6 +913,9 @@ ROUND_6 = [
     "PATH=/tmp/no-git-here git log --oneline",
     "functions[git]='cat x'; git status",
     "git() { cat x; }; git status",
+    "hash git=/tmp/x; git status",
+    "hash -p /tmp/x git; git status",
+    "git git log -p",
     # words the shell fills in or splits before git sees them
     "X=-p; git log $X -- docs",
     "A=(-p docs); git log $A",
