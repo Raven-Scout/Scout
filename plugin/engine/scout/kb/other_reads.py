@@ -7,6 +7,10 @@ files another way, and both of the gate's judges ask this module about them (the
 - a copy or an archive reads its sources, all of them below a folder when it is recursive (``cp -r``,
   ``rsync -a``, ``ditto``, ``tar c``, ``zip -r``, ``pax -w``, ``cpio -o``, ``split``, ``gzip -c``); a copy
   into the KB is a write there, not a read out of it;
+- a move or a link out of the KB (``mv``, ``ln``, ``ln -s``, ``link``) leaves a note where a later call reads it
+  (a hard link is the note's own inode, which no path check sees through); one into the KB reads nothing;
+- an interpreter's inline program (``python3 -c``, ``ruby -e``, ``node -e``, ``php -r``, ``lua -e``,
+  ``Rscript -e``, or one read from stdin) reads the files its text names: :mod:`scout.kb.program_reads`;
 - ``diff -r`` reads every file below each folder it compares;
 - ``dd if=FILE``, ``source FILE`` and ``. FILE``;
 - a program names files in its own text: sed's ``r FILE`` / ``R FILE``, awk's ``getline < "FILE"`` (and
@@ -24,6 +28,7 @@ from __future__ import annotations
 import posixpath
 import re
 import shlex
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 # How a path is read (scout.kb.live_run.KB_READ_HOW): "file" opens it, "covers" reads every file below it.
@@ -39,6 +44,9 @@ class OtherReads:
     folders: list[str] = field(default_factory=list)  # folders a program lists exactly as written (opendir)
     requires: list[str] = field(default_factory=list)  # relative files `do`/`require` look for in each @INC folder
     dests: list[str] = field(default_factory=list)  # where a copy writes: one in the KB makes ``reads`` none
+    # Paths a program's text reads another way (scout.kb.program_reads.ProgramReads.spelled): (path, how, what of
+    # it is live).
+    spelled: list[tuple[str, str, str]] = field(default_factory=list)
     built: bool = False  # a program opens a path it builds at run time
     stdin_list: bool = False  # it reads the files named on its stdin (``find . | cpio -o``)
     programs: list[str] = field(default_factory=list)  # shell commands a program runs
@@ -47,6 +55,22 @@ class OtherReads:
     piped: bool = False
     # Paths a program takes from the environment (awk's `ENVIRON["F"]`): the variable's name, judged as `$F`.
     environ: list[str] = field(default_factory=list)
+    # What a program writes (scout.kb.program_reads.ProgramReads.writes, writes_built, operand_writes), so the gate
+    # can tell an edit of KB notes (read there, written only there: recorded as kb_edit) from a copy out of the KB.
+    writes: list[str] = field(default_factory=list)
+    writes_built: bool = False
+    operand_writes: bool = False
+    # Its text names the KB where no judged call spells a path (scout.kb.program_reads): denied, unless an edit.
+    unaccounted: bool = False
+    opaque: bool = False  # its program is text the shell fills in (`-c "$(…)"`): denied when the command names the KB
+    # The script file an interpreter runs (`python3 x.py`, `perl x.pl`), as the shell hands it: what it reads isn't in
+    # the command, so the gate judges the file itself (Scout's own scripts are trusted, any other recorded).
+    script: str | None = None
+    script_bare: bool = False  # `python3 <script> args`, no interpreter flag (ProgramReads.script_bare)
+
+    @property
+    def writes_something(self) -> bool:
+        return bool(self.writes or self.writes_built or self.operand_writes)
 
 
 def into_kb_counts(other: OtherReads) -> bool:
@@ -930,6 +954,8 @@ def _perl(args: list[str]) -> OtherReads | None:
             return None  # `perl -v`, `perl -V`: no program runs
         # A program from a file (`perl x.pl`, `-x`) or from stdin: what it reads isn't in the command.
         reads = [(script, FILE)] if script not in (None, "-") else []
+        if reads and not embedded:
+            return OtherReads(reads=reads, folders=inc, script=script)
         return OtherReads(reads=reads, folders=inc, built=True)
     out = OtherReads(folders=list(inc))
     text = "\n".join(programs)
@@ -1081,6 +1107,96 @@ def _perl_rest(text: str, file_copy: bool, inc: list[str], out: OtherReads) -> N
     out.reads += [(posixpath.join(d, w), how) for d in chdirs for w, how in list(out.reads) if not w.startswith("/")]
 
 
+# ----- moves and links --------------------------------------------------------------------------------------
+
+_MOVE_VALUES = {"-t", "--target-directory", "-S", "--suffix"}
+
+
+def _move(name: str, args: list[str]) -> OtherReads:
+    """mv, ln and link take a file out of where it was: a move or a hard link out of the KB leaves a copy of a
+    note for a later read (a hard link is the note's own inode, which no path check sees through), and a symbolic
+    link one that a reader following links (``grep -R``) reads. Their sources are reads, as a copy's are, unless
+    the target is in the KB. A symbolic link's target is relative to the link's folder, not the command's, so it
+    is judged from both (and from the target as a folder)."""
+    opts, plain = _getopt(args, _MOVE_VALUES)
+    target = _values(opts, "-t", "--target-directory")
+    symbolic = name == "ln" and _has(opts, "-s", "--symbolic")
+    if target:
+        sources, dests = plain, target
+    elif len(plain) >= 2:
+        sources, dests = plain[:-1], plain[-1:]
+    else:  # `ln -s ../x`: a link in this folder
+        sources, dests = (plain if name == "ln" else []), []
+    how = COVERS if name == "mv" or symbolic else FILE
+    reads = [(s, how) for s in sources]
+    if symbolic and not _has(opts, "-r", "--relative"):
+        for s in sources:
+            if s.startswith(("/", "~")):
+                continue
+            for dest in dests:
+                reads += [(posixpath.join(dest, s), how), (posixpath.join(posixpath.dirname(dest), s), how)]
+    return OtherReads(reads=list(dict.fromkeys(reads)), dests=dests)
+
+
+def _with_stdin(name: str, args: list[str], stdin: Sequence[str]) -> OtherReads | None:
+    """perl reading its program from stdin (``perl <<EOF``, ``perl - FILE <<EOF``): as ``perl -e``."""
+    if not stdin or any(a == "-e" or re.fullmatch(r"-[a-zA-Z]*[eE]", a) for a in args):
+        return None
+    flags = [a for a in args if a.startswith("-") and a != "-"]
+    rest = [a for a in args if not a.startswith("-") or a == "-"]
+    if rest and rest[0] != "-":
+        return None  # a script file
+    return _perl([*flags, "-e", "\n".join(stdin), *rest[1:]])
+
+
+def _interpreter(name: str, args: list[str], stdin: Sequence[str]) -> OtherReads | None:
+    from scout.kb.program_reads import program_reads
+
+    found = program_reads(name, args, stdin)
+    if found is None:
+        return None
+    return OtherReads(
+        reads=found.reads,
+        literal=found.literal,
+        spelled=found.spelled,
+        built=found.built,
+        programs=found.programs,
+        writes=found.writes,
+        writes_built=found.writes_built,
+        operand_writes=found.operand_writes,
+        unaccounted=found.unaccounted,
+        opaque=found.opaque,
+        script=found.script,
+        script_bare=found.script_bare,
+    )
+
+
+_SQLITE_VALUES = {"-cmd", "-init", "-separator", "-newline", "-nullvalue", "-vfs", "-mmap", "-pagecache",
+                  "-heap", "-lookaside", "-maxsize"}  # fmt: skip
+
+
+def _sqlite(args: list[str]) -> OtherReads:
+    """sqlite3 DB [SQL…]: the database it opens, the files its SQL reads (``readfile('…')``, ``.read F``,
+    ``.import F T``, ``.open F``, ``-init F``), and any other KB name in its SQL, which the gate denies."""
+    opts, plain = _getopt(args, _SQLITE_VALUES)
+    out = OtherReads(reads=[(d, FILE) for d in plain[:1] if d not in ("", ":memory:")])
+    out.reads += [(f, FILE) for f in _values(opts, "-init")]
+    sql = "\n".join([*plain[1:], *_values(opts, "-cmd")])
+    for m in re.finditer(r"\breadfile\s*\(\s*(?:'((?:[^']|'')*)'\s*\)|)", sql, re.I):
+        if m[1] is None:
+            out.built = True
+        else:
+            out.literal.append(m[1].replace("''", "'"))
+    for m in re.finditer(r"^\s*\.(?:read|import|open|restore|load)\s+(\S+)", sql, re.M | re.I):
+        out.literal.append(m[1].strip("'\""))
+    named = " ".join([*out.literal, *(w for w, _ in out.reads)])
+    out.unaccounted = bool(re.search(r"knowledge[-_]base|action-items/context", sql)) and not re.search(
+        r"knowledge[-_]base|action-items/context", named
+    )
+    out.writes += [f for f in (m[1] for m in re.finditer(r"\bwritefile\s*\(\s*'([^']*)'", sql, re.I))]
+    return out
+
+
 # ----- the table -------------------------------------------------------------------------------------------
 
 _COPIES = {"cp", "gcp", "install", "ginstall", "rsync", "scp", "ditto"}
@@ -1088,14 +1204,27 @@ _TARS = {"tar", "gtar", "bsdtar"}
 NAMES = _COPIES | _TARS | _COMPRESSORS | {"zip", "pax", "cpio", "split", "gsplit", "csplit", "gcsplit", "diff",
                                           "gdiff", "dd", "gdd", "source", ".", "sed", "gsed", "awk", "gawk", "mawk",
                                           "nawk", "perl", "look"}  # fmt: skip
+_MOVES = {"mv", "gmv", "ln", "gln", "link", "glink"}
+_PERL_IN_PLACE = re.compile(r"-[aplnswT0-9]*i")  # -i, -pi, -pi.bak; not -Mlib or -I
 
 
-def other_reads(name: str, args: list[str]) -> OtherReads | None:
+def other_reads(name: str, args: list[str], stdin: Sequence[str] = ()) -> OtherReads | None:
     """What ``name args`` reads beyond its operands (see the module's docstring), or None for a command that
-    reads nothing more."""
-    if name not in NAMES and not re.fullmatch(r"perl[0-9.]*", name):
-        return None
+    reads nothing more. ``stdin``: the programs an interpreter would read there (its here-documents, a pipe's
+    text), for one that takes its program from stdin (:mod:`scout.kb.program_reads`)."""
+    from scout.kb.program_reads import INTERPRETER
+    from scout.kb.raw_read import program_name
+
     if any(a in ("--help", "--version") for a in args):
+        return None
+    folded = program_name(name)  # `MV`, `Ln` and `PYTHON3` run them on a case-insensitive disk
+    if folded in _MOVES:
+        return _move(folded.removeprefix("g"), args)
+    if folded in ("sqlite3", "sqlite"):
+        return _sqlite(args)
+    if INTERPRETER.fullmatch(folded):
+        return _interpreter(folded, args, stdin)
+    if name not in NAMES and not re.fullmatch(r"perl[0-9.]*", name):
         return None
     if name in _COPIES:
         return _copy(name.removeprefix("g"), args)
@@ -1126,4 +1255,7 @@ def other_reads(name: str, args: list[str]) -> OtherReads | None:
         return _sed(args)
     if name in ("awk", "gawk", "mawk", "nawk"):
         return _awk(args)
-    return _perl(args)
+    found = _with_stdin(name, args, stdin) or _perl(args)  # a program on stdin is judged as `perl -e`
+    if found is not None and found.reads and any(_PERL_IN_PLACE.match(a) for a in args if not a.startswith("--")):
+        found.operand_writes = True  # `perl -pi -e …`: it rewrites its operands, an edit when they're KB notes
+    return found

@@ -18,11 +18,14 @@ import posixpath
 import re
 import shlex
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from scout.kb import shell_prefixes
+
+if TYPE_CHECKING:
+    from scout.kb.other_reads import OtherReads
 
 KB_PATH = re.compile(r"(?:^|[\s'\"=:/<{,])(?:knowledge-base|knowledge_base|action-items/context)(?:/|\b|$)")
 KB_DIRS = ("knowledge-base", "knowledge_base", "action-items/context")
@@ -55,7 +58,22 @@ _READ_COMMANDS |= _DECOMPRESSING_READERS
 _PREFIX_WORDS = set(shell_prefixes.ALL)
 # Prefix flags that take a separate value (`xargs -n 1 wc`, `nice -n 10 cat`): the value is not the command.
 _PREFIX_VALUE_FLAGS = {
-    "xargs": {"-n", "-I", "-L", "-P", "-s", "-d", "-E", "-a", "--max-args", "--max-procs", "--delimiter"},
+    "xargs": {
+        "-n",
+        "-I",
+        "-J",
+        "-R",
+        "-S",
+        "-L",
+        "-P",
+        "-s",
+        "-d",
+        "-E",
+        "-a",
+        "--max-args",
+        "--max-procs",
+        "--delimiter",
+    },  # -J, -R, -S: BSD's replstr, its count and size
     "parallel": {"-j", "-n", "-N", "-I", "--jobs"},
     "nice": {"-n"},
     "sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-U"},
@@ -128,6 +146,13 @@ class _Stripped:
         self.assignments = assignments or []  # `F=x cmd`, `env F=x cmd`: what it puts in the command's environment
 
 
+# Tools that run a command in an environment they set up: `uv run`, `poetry run`, `pipx run`, `conda run -n x`.
+_RUNNERS = {"uv", "uvx", "poetry", "pipx", "pdm", "hatch", "rye", "conda", "mamba", "micromamba", "pixi", "pipenv"}
+_RUNNER_VALUES = {"--with", "--python", "-p", "--project", "--directory", "--env-file", "--extra", "--group",
+                  "--package", "--index", "--with-requirements", "--from", "-n", "--name", "--prefix", "--spec",
+                  "-e", "--env", "--manifest-path"}  # fmt: skip
+
+
 def _strip(words: list[str]) -> _Stripped:
     """``words`` without what runs before the command: prefix programs (``xargs``, ``sudo``,
     ``env X=1``, ``timeout -s KILL 10``) with their flags and values, assignments and shell
@@ -141,6 +166,16 @@ def _strip(words: list[str]) -> _Stripped:
     while words:
         word = words[0]
         base = _command_name(word)  # `/usr/bin/env`, `/usr/bin/xargs` are prefixes too
+        if base in _RUNNERS and (base in ("uvx", "pipx") or (len(words) > 1 and _command_name(words[1]) == "run")):
+            prefix = "runner"  # `uv run python3 …`, `poetry run x.py`, `uvx tool`: what runs is the next word
+            words.pop(0)
+            if words and _command_name(words[0]) == "run":
+                words.pop(0)
+            pending = 0
+            continue
+        if prefix == "runner" and not word.startswith("-") and re.search(r"\.py[w]?$", _unquoted(word)):
+            words.insert(0, "python3")  # `uv run x.py`: python runs it
+            break
         if base in _PREFIX_WORDS and (fold(_unquoted(word)) == base or "/" in word):
             if base == "command" and len(words) > 1 and words[1] in ("-v", "-V") and not _names_kb(" ".join(words[2:])):
                 return _Stripped([], fed, chdir)  # a lookup: nothing runs (main denied one naming a KB path)
@@ -182,7 +217,7 @@ def _prefix_option(prefix: str, word: str, words: list[str]) -> tuple[str | None
     read getopt-style: ``-la x`` is ``-l`` then ``-a x``, ``-oL`` is ``-o L``, ``-Scat`` is ``-S cat``. A long or
     exact multi-letter option (``--chdir=x``, ``--sdk x``, ``-arch x``) is matched whole. ``(None, None)`` for a flag
     that takes nothing."""
-    values = _PREFIX_VALUE_FLAGS.get(prefix, set())
+    values = _RUNNER_VALUES if prefix == "runner" else _PREFIX_VALUE_FLAGS.get(prefix, set())  # `uv run --with x`
     if word.startswith("--") or word in values:
         flag, eq, attached = word.partition("=")
         if eq:
@@ -1890,6 +1925,50 @@ def _judge_recursive(
     return False
 
 
+def _edits(other: OtherReads, kb: Callable[[str], bool], where: str | None) -> bool:
+    """Whether what a program writes is an edit, as live_run's ``_kb_edit_count`` has it: every file in the KB, or
+    one it reads and writes back when all it reads is spelled out and each KB file it reads it writes back too."""
+    if other.writes_built:
+        return False
+    if other.operand_writes:
+        if all(kb(w) for w, _how in other.reads):
+            return True
+        if other.built or other.spelled or other.unaccounted or other.writes:
+            return False
+        rewritten = {posixpath.normpath(w) for w, _how in other.reads}
+        return all(posixpath.normpath(p) in rewritten for p in other.literal if kb(p))
+    if all(kb(w) for w in other.writes):
+        return True
+    if other.built or other.spelled or other.reads or other.unaccounted:
+        return False
+
+    def at(path: str) -> str:
+        return posixpath.normpath(path if path.startswith("/") or where is None else posixpath.join(where, path))
+
+    read, written = {at(p) for p in other.literal}, {at(w) for w in other.writes}
+    return all(kb(w) or at(w) in read for w in other.writes) and all(at(p) in written for p in other.literal if kb(p))
+
+
+def _copies_out_text(other: OtherReads, in_kb: bool) -> bool:
+    """Whether a script given a KB note also names a path outside the KB (live_run._copies_out, by spelling)."""
+    ops = [w for w, _how in other.reads if w != other.script and not w.startswith("-")]
+    kb = _lands_in_kb(in_kb)
+    return any(kb(w) for w in ops) and any(not kb(w) and ("/" in w or re.search(r"\.\w{1,8}$", w)) for w in ops)
+
+
+def _scouts_own(
+    script: str, where: str | None, vault: str | None, env: Mapping[str, str], local: Mapping[str, str]
+) -> bool:
+    """Whether the script file an interpreter runs, spelled ``script`` from ``where``, is Scout's own
+    (:func:`scout.kb.trusted_scripts.trusted_script`); False for one whose path the text can't settle."""
+    from scout.kb.trusted_scripts import trusted_script
+
+    if vault is None or where is None or re.search(r"[$`*?\[]", script):
+        return False
+    path = _cd(where, script, env, local)
+    return path is not None and trusted_script(path, Path(vault), env)
+
+
 def _judge_other(
     command: str, in_kb: bool, cwd: str | None, vault: str | None, env: Mapping[str, str], depth: int = 0
 ) -> bool:
@@ -1923,29 +2002,59 @@ def _judge_other(
                 in_kb = _names_kb(" ".join(args))
                 here = _cd(here, args[0] if args else "~", env, local)
                 continue
-            other = other_reads(name, args)
+            from scout.kb.program_reads import PIPED
+
+            # What an interpreter reading its program from stdin is fed: `echo` prints it; anything else is unseen.
+            echoed = upstream and re.match(r"\s*(?:echo|printf)\s", upstream)
+            fed = [] if not upstream else [upstream] if echoed else [PIPED + command]
+            other = other_reads(name, args, fed)
             if other is None:
                 continue
             seg_in_kb = in_kb if stripped.chdir is None else _names_kb(stripped.chdir)
             where = here if stripped.chdir is None else _cd(here, stripped.chdir, env, local)
+            if (
+                other.script is not None
+                and other.script_bare
+                and not upstream
+                and not any(n.startswith(("PYTHON", "LD_", "DYLD_")) or n == "PATH" for n, _v in stripped.assignments)
+                and not _copies_out_text(other, seg_in_kb)
+                and _scouts_own(other.script, where, vault, env, local)
+            ):
+                continue  # Scout's own script, run bare, as scoutctl (scout.kb.trusted_scripts; live_run._bare_run)
+            kb = _lands_in_kb(seg_in_kb)
+            if other.writes_something and _edits(other, kb, where):
+                # Writes only into the KB: an edit when it reads there (the gate records it), else no read at all.
+                if any(raw_kb_read(p, in_kb=seg_in_kb, cwd=where, vault=vault, env=env) for p in other.programs):
+                    return True
+                continue
+            if other.unaccounted:
+                return True  # it names the KB where no judged call spells a path
             dests = [*other.dests, *compressor_stdout_dests(name, args, _stdout_targets(piece))]
             relative = [d for d in dests if not d.startswith(("/", "~"))]
             into_kb = into_kb_counts(other) and (any(_names_kb(d) for d in dests) or (seg_in_kb and bool(relative)))
             reads = [] if into_kb else other.reads
-            if any(_names_kb(w) or _glob_names_kb(w) for w, _how in reads) or any(
+            spelled = [(p, how) for p, how, _live in other.spelled]  # a program's own paths
+            if any(_names_kb(w) or _glob_names_kb(w) for w, _how in [*reads, *spelled]) or any(
                 _names_kb(p) for p in [*other.literal, *other.folders]
             ):
                 return True
-            if seg_in_kb and any(not w.startswith(("/", "~")) for w in [*(w for w, _ in reads), *other.literal]):
+            near = [w for w in [*(w for w, _ in [*reads, *spelled]), *other.literal] if not w.startswith(("/", "~"))]
+            if seg_in_kb and near:
                 return True
             if other.stdin_list and not into_kb and _KB_SOURCE.search(upstream):
                 return True
-            if vault is not None and where is not None and _covers(reads, where, vault, env, local):
+            if vault is not None and where is not None and _covers([*reads, *spelled], where, vault, env, local):
                 return True
             for program in other.programs:
                 if raw_kb_read(program, in_kb=seg_in_kb, cwd=where, vault=vault, env=env):
                     return True
     return False
+
+
+def _lands_in_kb(seg_in_kb: bool) -> Callable[[str], bool]:
+    """Whether a path a program writes lands in the KB, by its spelling: it names a KB folder, or it's relative
+    and the command runs in one."""
+    return lambda word: _names_kb(word) or (seg_in_kb and not word.startswith(("/", "~")))
 
 
 _STDOUT_TO = re.compile(r"(?:^|(?<=\s))(?:1|&)?>>?\|?\s*([^\s;&|<>]+)")

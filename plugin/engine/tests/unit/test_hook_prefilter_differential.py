@@ -761,6 +761,33 @@ NOT_READERS = (
     # `find knowledge-base` does.)
 )
 
+# Interpreter one-liners that read a note, and moves and links out of the KB (scout.kb.program_reads, mv/ln in
+# scout.kb.other_reads). Each reads a note in a synthetic vault under zsh (tests/integration/test_kb_read_gate_zsh.py
+# runs them), and in a run every one must reach Python: python, ruby, node, php, deno, bun, perl, mv and ln are in the
+# pattern already (writers), and every other interpreter needs a `(` or a KB name (or a cd) to name a file.
+INTERPRETER_FORMS = (
+    """python3 -c 'print(open("knowledge-base/projects/a/a.md").read())'""",
+    "cd action-items; python3 -c 'print(open(\"context/x.md\").read())'",
+    'cd action-items; python3 -c \'from pathlib import Path; print(Path("context", "x.md").read_text())\'',
+    "cd action-items; python3 -c 'import sys; print(open(sys.argv[1]).read())' context/x.md",
+    'cd action-items; python3 -c \'import subprocess; subprocess.run(["cat", "context/x.md"])\'',
+    'python3 -c \'p = "kn" + "owledge-base/a.md"; print(open(p).read())\'',
+    "python3 -c 'import glob; [print(open(f).read()) for f in glob.glob(\"kn*/*.md\")]'",
+    "cd action-items; python3 - <<'EOF'\nprint(open('context/x.md').read())\nEOF",
+    "cd action-items; echo 'print(open(\"context/x.md\").read())' | python3",
+    "cd action-items; ruby -e 'puts File.read(\"context/x.md\")'",
+    "cd action-items; ruby -ne print context/x.md",
+    "cd action-items; ruby -pe '' con*/x.md",
+    'ruby -e \'puts File.read("kn" + "owledge-base/a.md")\'',
+    'cd action-items; node -e \'console.log(require("fs").readFileSync("context/x.md", "utf8"))\'',
+    'node -e \'console.log(require("fs").readFileSync("kn" + "owledge-base/a.md", "utf8"))\'',
+    "cd action-items; perl - context/x.md <<'EOF'\nprint while <>\nEOF",
+    "cd action-items; mv context ../docs/c; cat ../docs/c/x.md",
+    "cd action-items; ln context/x.md ../docs/h.md; cat ../docs/h.md",
+    "cd action-items; ln -s ../action-items/context ../docs/l; cat ../docs/l/x.md",
+    "mv kn*/a.md docs/m.md; cat docs/m.md",
+)
+
 RUN = {"SCOUT_MODE": "briefing"}
 READERS: tuple[dict[str, str], ...] = (
     {},
@@ -1051,7 +1078,7 @@ def test_bash_corpus_matches_the_old_pattern_plus_the_expansions_exactly() -> No
     The new pattern matches what the old one did and what the expansions add, nothing else: no old match
     is lost, and nothing beyond the expansions is gained."""
     known = [form for form, _ in KNOWN_MISSED_FORMS]
-    extra = [*EXPANSION_FORMS, *NOT_EXPANSIONS, *READER_FORMS, *NOT_READERS]
+    extra = [*EXPANSION_FORMS, *NOT_EXPANSIONS, *READER_FORMS, *NOT_READERS, *INTERPRETER_FORMS]
     corpus = list(dict.fromkeys([*DESCRIBED_FORMS, *known, *extra, *_harvested()]))
     assert len(corpus) > 1000
     values = ['"command": ' + json.dumps(c) for c in corpus]
@@ -1086,6 +1113,7 @@ def test_bash_forms_under_every_reader_shell_and_failure(world: World) -> None:
         *COMMAND_WORDS,
         *READER_FORMS,
         *NOT_READERS,
+        *INTERPRETER_FORMS,
     )
     for i, command in enumerate(forms):
         for j, env in enumerate(readers):
@@ -1275,6 +1303,11 @@ def test_harmless_neighbours_stay_in_the_shell(world: World) -> None:
 @pytest.mark.parametrize("shell", ["sh", "/bin/bash"])
 def test_every_reader_form_reaches_python_in_a_run(world: World, shell: str) -> None:
     assert [c for c in READER_FORMS if not _judged(world, c, shell)] == []
+
+
+@pytest.mark.parametrize("shell", ["sh", "/bin/bash"])
+def test_every_interpreter_form_reaches_python_in_a_run(world: World, shell: str) -> None:
+    assert [c for c in INTERPRETER_FORMS if not _judged(world, c, shell)] == []
 
 
 def test_the_reader_alternatives_are_what_sends_the_vault_root_forms(world: World) -> None:
