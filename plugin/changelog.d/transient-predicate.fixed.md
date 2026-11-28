@@ -1,0 +1,1 @@
+- A scheduled run retries after any `Unable to connect to API (…)` reason and any 5xx API error, not only the ones listed so far: an `EPIPE` disconnect or a `503` used to end the run unretried.
