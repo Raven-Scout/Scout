@@ -10,7 +10,7 @@ import Foundation
 //      when the file's bytes differ from what the page loaded: re-applying a
 //      full overwrite onto someone else's change would clobber it.
 //    - A *targeted* write (an action item addressed by its `[#TAG]`, one
-//      frontmatter field of a proposal or wishlist item, a Topics entry) is
+//      frontmatter field of a research item, a Topics entry) is
 //      re-applied onto the current file instead: scoutctl resolves the tag on
 //      the bytes it reads, and `GuardedFileWrite` re-reads and reapplies a field
 //      rewrite. Only a legacy action item with no tag is addressed by its text,

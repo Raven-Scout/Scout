@@ -23,7 +23,7 @@ struct HealthView: View {
 
     var body: some View {
         ScrollView {
-            // A plain VStack, like ProposalsView (#83): every row is materialised anyway.
+            // A plain VStack (#83): every row is materialised anyway.
             VStack(alignment: .leading, spacing: 18) {
                 header
                 switch ledgerService.state {

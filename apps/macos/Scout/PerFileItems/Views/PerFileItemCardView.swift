@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// One per-file Wishlist/Research item as an editorial card. Active items can
+/// One per-file Research item as an editorial card. Active items can
 /// change priority (pill menu), Start (→ in-progress), or resolve (Done/Drop);
 /// resolved items can Reopen (issue #41). Owns its busy + error state.
 struct PerFileItemCardView: View {

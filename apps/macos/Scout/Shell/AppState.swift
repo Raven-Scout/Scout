@@ -16,7 +16,7 @@ final class AppState: ObservableObject {
     /// cleared on the next successful fire (issue #45 — previously swallowed).
     @Published var fireNowError: String? = nil
 
-    /// A run another tab asked to open (the Wishlist/Research history pane).
+    /// A run another tab asked to open (the Research history pane).
     /// ControlCenterView opens its detail and clears this. (#43)
     @Published var pendingRunToOpen: Run.ID? = nil
 
@@ -81,6 +81,10 @@ final class AppState: ObservableObject {
     /// The run ledger (`scoutctl runs --json`): the Health page, and the
     /// Control Center's run statuses for runs the ledger records.
     let runLedgerService: RunLedgerService
+    /// The Changes tab: the changes map read through `scoutctl` (read-only), and the owner's decisions on it,
+    /// which are `scoutctl` calls too (`--surface app`).
+    let changesService: ChangesService
+    let changesDecisions: ChangesDecisions
     /// "Resolve with Claude" (`scoutctl health resolve-prompt`): the engine-built investigation
     /// prompt behind health, connector and run banners. Views read it from the environment.
     let resolvePromptService: ResolvePromptService
@@ -132,12 +136,7 @@ final class AppState: ObservableObject {
     /// the same store the rest of the app does, and tests can substitute one.
     private let defaults: UserDefaults
 
-    // Proposals (dreaming-proposals.md review)
-    let proposalsDocumentService: ProposalsDocumentService
-    let proposalsWriterBox: ProposalsWriterBox
-
-    // Per-file Wishlist + Research tabs
-    let wishlistDocumentService: PerFileDocumentService
+    // Per-file Research tab
     let researchDocumentService: PerFileDocumentService
     let perFileWriterBox: PerFileItemWriterBox
 
@@ -220,6 +219,10 @@ final class AppState: ObservableObject {
         )
 
         let git = GitService(repoURL: scoutDir, runner: runner)
+        // The git the app's writers commit through. Each successful commit counts as one app edit
+        // (engagement); `changesDecisions` is built further down, so the recorder is bound to it there.
+        let engagement = EngagementRecorder()
+        let appEditGit = EngagementRecordingGit(base: git, record: { await engagement.record() })
         let tracker = UsageTrackerService(
             trackerURL: scoutDir.appendingPathComponent(".scout-logs/usage-tracker.jsonl"),
             fileEvents: events
@@ -302,7 +305,7 @@ final class AppState: ObservableObject {
             actionItemsDirectory: actionItemsDir,
             scoutDirectory: scoutDir,
             runner: runner,
-            gitService: git
+            gitService: appEditGit
         )
         let boardWriter = BoardWriter(
             scoutctl: scoutctlExe,
@@ -310,32 +313,13 @@ final class AppState: ObservableObject {
             actionItemsDirectory: actionItemsDir,
             scoutDirectory: scoutDir,
             runner: runner,
-            git: git
+            git: appEditGit
         )
         let writerBox = ActionItemsWriterBox(writer: writerActor, boardWriter: boardWriter)
         let envState = ActionItemsEnvironmentState()
 
-        // Per-file proposals live in `dreaming-proposals/` (the sibling
-        // `dreaming-proposals.md` is just an index). The folder is overridable
-        // via the `dreamingProposalsPath` setting; takes effect on next launch.
-        let proposalsDirURL: URL = {
-            let override = defaults
-                .string(forKey: "dreamingProposalsPath")?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if let override, !override.isEmpty {
-                return URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
-            }
-            return scoutDir.appendingPathComponent("dreaming-proposals")
-        }()
-        let proposalsDoc = ProposalsDocumentService(directoryURL: proposalsDirURL, fileEvents: events)
-        let proposalsWriter = ProposalsWriter(
-            scoutDirectory: scoutDir,
-            gitService: git
-        )
-        let proposalsWriterBox = ProposalsWriterBox(writer: proposalsWriter)
-
-        // Per-file Wishlist + Research: resolve directory (override key or default
-        // relative path under scoutDir), matching the dreamingProposalsPath pattern.
+        // Per-file Research: resolve directory (override key or default
+        // relative path under scoutDir).
         func perFileDir(_ config: PerFileTabConfig) -> URL {
             let override = defaults
                 .string(forKey: config.pathOverrideKey)?
@@ -345,14 +329,13 @@ final class AppState: ObservableObject {
             }
             return scoutDir.appendingPathComponent(config.directoryDefaultRelative)
         }
-        let wishlistDoc = PerFileDocumentService(directoryURL: perFileDir(.wishlist), fileEvents: events)
         let researchDoc = PerFileDocumentService(directoryURL: perFileDir(.research), fileEvents: events)
-        let perFileWriter = PerFileItemWriter(scoutDirectory: scoutDir, gitService: git)
+        let perFileWriter = PerFileItemWriter(scoutDirectory: scoutDir, gitService: appEditGit)
         let perFileWriterBox = PerFileItemWriterBox(writer: perFileWriter)
 
         // Knowledge Base: tree service over `knowledge-base/` + whole-file writer.
         let kbService = KnowledgeBaseService(scoutDirectory: scoutDir, fileEvents: events)
-        let kbWriter = KnowledgeBaseFileWriter(scoutDirectory: scoutDir, gitService: git)
+        let kbWriter = KnowledgeBaseFileWriter(scoutDirectory: scoutDir, gitService: appEditGit)
         let kbWriterBox = KnowledgeBaseWriterBox(writer: kbWriter)
         let kbPrivacy = KBPrivacyLabelService(
             scoutctl: scoutctlExe,
@@ -380,9 +363,6 @@ final class AppState: ObservableObject {
         self.actionItemsDocumentService = docService
         self.actionItemsWriterBox = writerBox
         self.actionItemsEnvState = envState
-        self.proposalsDocumentService = proposalsDoc
-        self.proposalsWriterBox = proposalsWriterBox
-        self.wishlistDocumentService = wishlistDoc
         self.researchDocumentService = researchDoc
         self.perFileWriterBox = perFileWriterBox
         self.knowledgeBaseService = kbService
@@ -398,17 +378,35 @@ final class AppState: ObservableObject {
         self.engineHealth = engineHealth
         self.runProtection = runProtection
         self.delegateStatus = delegateStatus
-        // Settings ▸ Agent copies ▸ Review (#550 V4b3): the same engine, the same way.
+        // One engine gate for every service that follows the found engine and runs nothing while setup gates the
+        // tabs or the engine is broken: Settings ▸ Agent copies ▸ Review (#550 V4b3) and the Changes tab.
+        let gatedEngine: @MainActor () -> URL? = { [weak engineHealth] in
+            guard let state = engineHealth?.state, !state.gatesTabs else { return nil }
+            if case .broken = state { return nil }
+            return state.scoutctl
+        }
         self.inboxReview = InboxReviewService(
             runner: runner,
             environment: ["SCOUT_DATA_DIR": scoutDir.path],
-            scoutctl: { [weak engineHealth] in
-                guard let state = engineHealth?.state, !state.gatesTabs else { return nil }
-                if case .broken = state { return nil }
-                return state.scoutctl
-            }
+            scoutctl: gatedEngine
         )
         self.runLedgerService = runLedger
+        let changesService = ChangesService(
+            scoutctl: gatedEngine,
+            runner: runner,
+            environment: ["SCOUT_DATA_DIR": scoutDir.path],
+            logsDirectory: scoutDir.appendingPathComponent(".scout-logs"),
+            pendingDirectory: scoutDir.appendingPathComponent("governance-pending"),
+            fileEvents: events
+        )
+        self.changesService = changesService
+        let changesDecisions = ChangesDecisions(
+            runner: runner,
+            environment: ["SCOUT_DATA_DIR": scoutDir.path],
+            scoutctl: gatedEngine
+        )
+        self.changesDecisions = changesDecisions
+        engagement.bind(changesDecisions)
         self.resolvePromptService = resolvePrompt
         self.engineRelease = configuration.engineRelease
         self.engineTarballURL = configuration.engineTarballURL
@@ -416,13 +414,9 @@ final class AppState: ObservableObject {
         self.fileDownloader = configuration.fileDownloader
 
         // Forward child-service changes so AppState.objectWillChange fires when
-        // wishlist/research item counts update (drives sidebar badge reactivity).
+        // research item counts update (drives sidebar badge reactivity).
         // DispatchQueue.main avoids badge lag that can occur with RunLoop.main
         // during modal run-loop tracking.
-        wishlistDoc.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.objectWillChange.send() }
-            .store(in: &cancellables)
         researchDoc.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -447,6 +441,11 @@ final class AppState: ObservableObject {
         // while the state value doesn't.
         // The Health row's attention dot follows run health.
         runLedger.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        // The Changes row's badge counts what a loaded snapshot says needs you.
+        changesService.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
@@ -572,18 +571,18 @@ final class AppState: ObservableObject {
             _ = try? await connectorHealth.loadInitial()
             _ = try? await logs.loadInitial()
             await runLedger.refresh()
+            // The Changes reads can take a while on a big vault: they run on their own, so the scheduler,
+            // the run ledger and run notifications never wait on them.
+            Task { await changesService.refresh() }
             await MainActor.run {
                 runLedger.start()
+                changesService.start()
                 // Runs already on disk at launch never notify; only runs
                 // that finish (or first appear) from here on do.
                 self?.runNotificationsArmed = true
                 sched.start()
                 power.start()
-                // Load proposals at launch so the sidebar badge is populated
-                // before the user opens the Proposals section.
-                proposalsDoc.load()
-                // Load wishlist + research so their badges are ready on launch.
-                wishlistDoc.load()
+                // Load research so its badge is ready on launch.
                 researchDoc.load()
             }
             await self?.recomputeStatus()

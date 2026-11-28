@@ -3,7 +3,6 @@ import SwiftUI
 struct MainWindowView: View {
     @State private var selection: SidebarItem
     @EnvironmentObject var appState: AppState
-    @EnvironmentObject var proposalsService: ProposalsDocumentService
     @EnvironmentObject var updates: UpdateService
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
@@ -27,8 +26,7 @@ struct MainWindowView: View {
         NavigationSplitView {
             SidebarView(selection: $selection,
                         sessionsBadge: appState.sessionsNeedsYouCount,
-                        proposalsBadge: proposalsService.pendingCount,
-                        wishlistBadge: appState.wishlistDocumentService.activeCount,
+                        changesBadge: ChangesView.needsYouCount(appState.changesService.state),
                         researchBadge: appState.researchDocumentService.activeCount,
                         settingsBadge: updates.availableCount,
                         settingsAttention: appState.engineHealth.needsAttention,
@@ -138,14 +136,11 @@ struct MainWindowView: View {
             SchedulesView()
                 .environmentObject(appState.scheduleEditService)
                 .environmentObject(appState.modelSettingsService)
-        case .proposals:
-            ProposalsView()
-                .environmentObject(appState.proposalsDocumentService)
-                .environmentObject(appState.proposalsWriterBox)
-        case .wishlist:
-            PerFileListView(config: .wishlist)
-                .environmentObject(appState.wishlistDocumentService)
-                .environmentObject(appState.perFileWriterBox)
+        case .changes:
+            ChangesView(vaultDirectory: appState.scoutDirectory)
+                .environmentObject(appState.changesService)
+                .environmentObject(appState.changesDecisions)
+                .environment(\.openKBNote, StableAction { [appState] in appState.requestOpenKBNote($0) })
         case .research:
             PerFileListView(config: .research)
                 .environmentObject(appState.researchDocumentService)
@@ -163,7 +158,7 @@ struct MainWindowView: View {
 /// `nonisolated`: a plain value the pure dimming rule (`SidebarView.isDimmed`)
 /// compares off the main actor.
 nonisolated enum SidebarItem: Hashable, CaseIterable {
-    case controlCenter, health, sessions, actionItems, schedules, proposals, wishlist, research, knowledgeBase
+    case controlCenter, health, sessions, actionItems, schedules, changes, research, knowledgeBase
 
     /// Short label shown in the bottom status bar's "view" cell.
     var statusLabel: String {
@@ -173,8 +168,7 @@ nonisolated enum SidebarItem: Hashable, CaseIterable {
         case .sessions:      return "sessions"
         case .actionItems:   return "actions"
         case .schedules:     return "schedules"
-        case .proposals:     return "proposals"
-        case .wishlist:      return "wishlist"
+        case .changes:       return "changes"
         case .research:      return "research"
         case .knowledgeBase: return "knowledge"
         }

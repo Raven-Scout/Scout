@@ -33,8 +33,10 @@ _WISHLIST_PATH_RE = re.compile(r"docs/wishlist/([A-Za-z0-9._-]+?)(?:\.md)?(?=\s|
 _STATUS_DONE_RE = re.compile(r"^\+\s*status:\s*done\b", re.MULTILINE)
 _REVERTS_BODY_RE = re.compile(r"^This reverts commit ([0-9a-f]{40})", re.MULTILINE)
 _FULL_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
-# A governance change is the commit that moves an approved pending file into applied/ (scout.changes.actions); the
-# folder names are spelled out here because governance imports nothing from the scanner and vice versa.
+# A commit is a governance candidate when it moves a pending file into applied/ (what scout.changes.actions' apply
+# does); whether the owner approved it, and whether the commit holds that diff and nothing else, is checked at report
+# time (scout.changes.governance.approved_application). The folder names are spelled out here because the scanner
+# imports nothing from governance at module level.
 _PENDING_MD_RE = re.compile(r"^governance-pending/([a-z0-9][a-z0-9-]{0,60})\.md$")
 _RS, _US = "\x1e", "\x1f"
 
@@ -149,12 +151,23 @@ def _summary(subject: str, trailers: dict[str, str]) -> str:
     return text.strip()[:SUMMARY_MAX]
 
 
-def _git_raw(vault: Path, args: Sequence[str], stdin: bytes | None = None) -> bytes | None:
-    """The one git runner: stdout bytes, or None on a non-zero exit, a timeout or no git. ``stdin`` is fed to git
-    (``git apply`` reading a patch); without it git reads nothing."""
+_REPO_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY")
+
+
+def _run(
+    vault: Path, args: Sequence[str], stdin: bytes | None = None, *, outside_repo: bool = False
+) -> tuple[bytes | None, bool]:
+    """The one git runner: ``(stdout bytes, False)``, or ``(None, timed_out)`` on a non-zero exit, a timeout or no
+    git. ``stdin`` is fed to git (``git apply`` reading a patch); without it git reads nothing. ``outside_repo`` runs
+    git in a plain folder (a private temp one) as a patch tool: no repository is looked for above it, and none the
+    environment names is used."""
     # Never take the index lock: a read must not make a concurrent run's `git add` fail.
     # Replace refs, grafts and a planted .git/shallow are ignored: a run can't hide history from the scan with them.
     env = {**os.environ, **run_commits.HARDENED_GIT_ENV, "GIT_OPTIONAL_LOCKS": "0"}
+    if outside_repo:
+        for key in _REPO_ENV:
+            env.pop(key, None)
+        env["GIT_CEILING_DIRECTORIES"] = str(vault.parent)
     try:
         proc = subprocess.run(
             ["git", "-C", str(vault), "-c", "core.quotepath=false", *args],
@@ -164,22 +177,39 @@ def _git_raw(vault: Path, args: Sequence[str], stdin: bytes | None = None) -> by
             timeout=GIT_TIMEOUT_S,
             env=env,
         )
-    except (OSError, subprocess.SubprocessError):  # SubprocessError: the timeout
-        return None
-    return proc.stdout if proc.returncode == 0 else None
+    except subprocess.TimeoutExpired:
+        return None, True
+    except (OSError, subprocess.SubprocessError):
+        return None, False
+    return (proc.stdout if proc.returncode == 0 else None), False
 
 
-def _git(vault: Path, *args: str) -> str | None:
-    raw = _git_raw(vault, args)
-    if raw is None:
-        return None
+def _git_raw(
+    vault: Path, args: Sequence[str], stdin: bytes | None = None, *, outside_repo: bool = False
+) -> bytes | None:
+    """:func:`_run`'s stdout, or None however it failed."""
+    return _run(vault, args, stdin, outside_repo=outside_repo)[0]
+
+
+def _decode(raw: bytes) -> str:
     # What text mode gave before the bytes runner existed: UTF-8, bad bytes replaced, universal newlines.
     return raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _git_bytes(vault: Path, *args: str, stdin: bytes | None = None) -> bytes | None:
+def _git_timed(vault: Path, *args: str) -> tuple[str | None, bool]:
+    """:func:`_git`, and whether a failure was the timeout (so a reader can say so rather than read it as nothing)."""
+    raw, timed_out = _run(vault, args)
+    return (None if raw is None else _decode(raw)), timed_out
+
+
+def _git(vault: Path, *args: str) -> str | None:
+    raw = _git_raw(vault, args)
+    return None if raw is None else _decode(raw)
+
+
+def _git_bytes(vault: Path, *args: str, stdin: bytes | None = None, outside_repo: bool = False) -> bytes | None:
     """:func:`_git` without decoding: file content (``git show <rev>:<path>``) byte for byte."""
-    return _git_raw(vault, args, stdin)
+    return _git_raw(vault, args, stdin, outside_repo=outside_repo)
 
 
 _Commit = tuple[str, datetime, str, str, list[tuple[str, str]], list[tuple[str, str]]]

@@ -12,8 +12,7 @@ nonisolated extension SidebarItem {
         case .sessions:      return "Sessions"
         case .actionItems:   return "Action Items"
         case .schedules:     return "Schedules"
-        case .proposals:     return "Proposals"
-        case .wishlist:      return "Wishlist"
+        case .changes:       return "Changes"
         case .research:      return "Research"
         case .knowledgeBase: return "Knowledge Base"
         }
@@ -26,8 +25,7 @@ nonisolated extension SidebarItem {
         case .sessions:      return "rectangle.stack.badge.person.crop"
         case .actionItems:   return "checklist"
         case .schedules:     return "calendar.badge.clock"
-        case .proposals:     return "lightbulb"
-        case .wishlist:      return "star"
+        case .changes:       return "chart.xyaxis.line"
         case .research:      return "magnifyingglass"
         case .knowledgeBase: return "books.vertical"
         }
@@ -48,10 +46,9 @@ nonisolated extension SidebarItem {
         case .sessions:      return "3"
         case .actionItems:   return "4"
         case .schedules:     return "5"
-        case .proposals:     return "6"
-        case .wishlist:      return "7"
-        case .research:      return "8"
-        case .knowledgeBase: return "9"
+        case .changes:       return "6"
+        case .research:      return "7"
+        case .knowledgeBase: return "8"
         }
     }
 
@@ -63,8 +60,7 @@ nonisolated extension SidebarItem {
         case .sessions:      return "sidebar-sessions"
         case .actionItems:   return "sidebar-action-items"
         case .schedules:     return "sidebar-schedules"
-        case .proposals:     return "sidebar-proposals"
-        case .wishlist:      return "sidebar-wishlist"
+        case .changes:       return "sidebar-changes"
         case .research:      return "sidebar-research"
         case .knowledgeBase: return "sidebar-knowledge-base"
         }
@@ -73,9 +69,8 @@ nonisolated extension SidebarItem {
     /// How VoiceOver reads a row's badge ("3 need you", "1 update").
     func badgeDescription(_ count: Int) -> String {
         switch self {
-        case .sessions:  return "\(count) need\(count == 1 ? "s" : "") you"
-        case .proposals: return "\(count) awaiting a decision"
-        case .wishlist, .research: return "\(count) active"
+        case .sessions, .changes: return "\(count) need\(count == 1 ? "s" : "") you"
+        case .research:  return "\(count) active"
         default:         return "\(count)"
         }
     }
@@ -83,7 +78,7 @@ nonisolated extension SidebarItem {
 
 // MARK: - Go menu
 
-/// The Go menu: one item per page, ⌘1–⌘9 down the sidebar, like Finder's
+/// The Go menu: one item per page, ⌘1–⌘8 down the sidebar, like Finder's
 /// Go menu (Settings isn't a page: it is the app menu's ⌘, window). It
 /// fronts the main window (reopening it if it was closed) and switches the
 /// sidebar through `AppState.requestedSidebar`, the same path the menu-bar

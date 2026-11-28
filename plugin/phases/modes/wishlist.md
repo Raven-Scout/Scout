@@ -54,7 +54,7 @@ Select actionable items and push as far as possible. Don't artificially limit yo
 
 **Execution rules by item type:**
 
-- **Skill or documentation changes**: Edit the target file directly. Follow existing conventions and formatting in the file. Brain and script changes follow Step 1d: additive or corrective ones go in directly, each committed with the change trailers (`Scout-Change-Why: wishlist:<item file name without .md>`); large, structural or behavior-removing ones go to `dreaming-proposals.md`; a governance or safety-gating change goes to a `governance-pending/<slug>.md` file, for {{USER_NAME}}'s OK.
+- **Skill or documentation changes**: Edit the target file directly. Follow existing conventions and formatting in the file. Brain and script changes follow Step 1d: they go in directly, each committed with the change trailers (`Scout-Change-Why: wishlist:<item file name without .md>`); a governance or safety-gating change goes to a `governance-pending/<slug>.md` file, for {{USER_NAME}}'s OK.
 - **New files**: Create following the naming conventions and structure patterns established in the codebase. Link new files from their parent/index files.
 - **Configuration changes**: Edit the relevant config file. Test that the change is syntactically valid.
 - **Research items**: Do real research (check docs, test locally, query sources) — don't give superficial answers.

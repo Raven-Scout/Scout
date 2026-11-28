@@ -634,6 +634,53 @@ def cli_engagement(
     )
 
 
+@changes_app.command("digest")
+def cli_changes_digest(
+    json_out: bool = typer.Option(False, "--json", help="Emit the versioned JSON document the app reads."),
+) -> None:
+    """'What Scout is working on': this week's engagement, tests, shipped changes and what is next."""
+    import json as _json
+    import os
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from scout import paths as _paths
+    from scout.changes.digest import build_digest, render_text
+    from scout.changes.vault import installed_vault
+    from scout.config import resolve_timezone
+
+    try:
+        vault = _paths.data_dir()
+        owner = installed_vault(os.environ)
+    except ValueError as e:  # no home directory to find the vault from
+        typer.echo(f"scoutctl changes digest: {e}", err=True)
+        raise typer.Exit(code=2) from None
+    if not vault.is_dir():
+        typer.echo("scoutctl changes digest: vault directory missing", err=True)
+        raise typer.Exit(code=2)
+    doc = build_digest(vault, os.environ, now=_dt.now(UTC), tz=resolve_timezone(vault), owner_vault=owner)
+    typer.echo(_json.dumps(doc) if json_out else render_text(doc))
+
+
+@changes_app.command("diff")
+def cli_changes_diff(change_id: str = typer.Argument(..., metavar="CHG-ID", help="A change id, chg-<12 hex>.")) -> None:
+    """Print what a change's commit did to its own files (the diff the app's detail view shows)."""
+    from scout import paths as _paths
+    from scout.changes.report import change_diff
+
+    try:
+        vault = _paths.data_dir()
+    except ValueError as e:  # no home directory to find the vault from
+        typer.echo(f"scoutctl changes diff: {e}", err=True)
+        raise typer.Exit(code=2) from None
+    text = change_diff(vault, change_id) if vault.is_dir() else None
+    if text is None:
+        typer.echo(f"scoutctl changes diff: no such change {change_id}", err=True)
+        raise typer.Exit(code=2)
+    if text:  # a change with no own paths prints nothing, not a bare newline
+        typer.echo(text, nl=not text.endswith("\n"))
+
+
 @changes_app.command("scan")
 def cli_changes_scan(
     since: str | None = typer.Option(
@@ -820,7 +867,29 @@ def cli_changes_undo(
             err=True,
         )
         raise typer.Exit(2)
+    # Refuse now what the run would only flag later (spec §7.5): an undo that can't happen is never queued.
+    from scout.changes import actions
+    from scout.changes.models import Change
+
+    verified = doc["verified"]
+    problem = actions.rollback_problem(vault, Change.from_row(change), change["test"]) if verified else "git-unreadable"
+    if problem is not None:
+        typer.echo(f"scoutctl changes undo: {_UNDO_REFUSALS.get(problem, _UNDO_REFUSAL_OTHER)}", err=True)
+        raise typer.Exit(2)
     _record_decision("undo", "approval", f"undo:{change_id}", surface, installed, once=True)
+
+
+# What `changes undo` says when the run could not undo the change (scout.changes.actions.rollback_problem), in the
+# owner's words: the app shows the line as it is.
+_UNDO_REFUSALS = {
+    "edited-since": (
+        "Scout can't undo this change: its lines were edited after it, or its files have uncommitted edits. "
+        "Undo it by hand, or commit or drop those edits and try again."
+    ),
+    "root-commit": "Scout can't undo this change: it is the first commit in the vault's history.",
+    "git-unreadable": "Scout can't read the vault's history right now, so it can't undo this change. Try again later.",
+}
+_UNDO_REFUSAL_OTHER = "Scout can't undo this change automatically. Undo it by hand."
 
 
 @changes_app.command("wrong")
@@ -843,8 +912,9 @@ def cli_changes_wrong(
 def cli_changes_auto_rollback(
     mode: str = typer.Argument(..., help="off, targeted or one-at-a-time."),
 ) -> None:
-    """Set the auto-rollback mode (owner only). Only ``off`` for now: the automatic modes stay refused until the
-    rollback race and governance-approval gaps are closed."""
+    """Set the auto-rollback mode (owner only). Only ``off`` for now: the rollback race and governance-approval gaps
+    are closed, but the automatic modes stay refused until the calibration review (turning one on is a governance
+    change, spec §7a)."""
     import os
     from dataclasses import replace
 
@@ -855,8 +925,9 @@ def cli_changes_auto_rollback(
         raise typer.Exit(2)
     if mode != "off":
         typer.echo(
-            f"scoutctl changes auto-rollback: {mode} isn't available yet; automatic rollback stays off until two "
-            "known gaps are closed (an unapproved governance move, and a race between undo's check and its write). "
+            f"scoutctl changes auto-rollback: {mode} isn't available yet. The two known gaps are closed (an "
+            "unapproved governance move, and a race between undo's check and its write); turning a mode on waits for "
+            "the calibration review, and is itself a governance change. "
             "Undo a change yourself with `scoutctl changes undo <id>`.",
             err=True,
         )

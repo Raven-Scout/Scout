@@ -19,19 +19,9 @@ struct PerFileTabConfig: Sendable, Equatable {
     let priorities: [ItemPriority]
     let defaultPriority: ItemPriority
     let optionalField: OptionalField
-    let addNoun: String                  // commit message noun, e.g. "wishlist item"
+    let addNoun: String                  // commit message noun, e.g. "research topic"
     let directoryDefaultRelative: String // relative to scoutDir
     let pathOverrideKey: String          // UserDefaults override key
-
-    static let wishlist = PerFileTabConfig(
-        title: "Wishlist",
-        priorities: [.high, .medium, .low],
-        defaultPriority: .medium,
-        optionalField: .source(label: "Source"),
-        addNoun: "wishlist item",
-        directoryDefaultRelative: "docs/wishlist",
-        pathOverrideKey: "wishlistPath"
-    )
 
     static let research = PerFileTabConfig(
         title: "Research",

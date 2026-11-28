@@ -16,6 +16,7 @@ git call goes through ``scout.changes.scan``'s runner (``GIT_OPTIONAL_LOCKS=0``,
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import re
@@ -53,9 +54,11 @@ _BINARY_PROBE = 8000
 # <unistd.h>: the per-user temp folder macOS gives an account (Python doesn't name it).
 _CS_DARWIN_USER_TEMP_DIR = 65537
 _AUTO_KEYS = {"targeted": "targeted", "one-at-a-time": "one_at_a_time"}
-# The automatic rollback modes stay inert until the unapproved-governance-move and undo-race gaps are closed: `due`
-# lists no auto rollback whatever the owner's settings say (an older engine's `scoutctl changes auto-rollback`, or a
-# hand-edited settings.json), as the CLI refuses to set one. Verdicts still say what each mode would have done.
+# The automatic rollback modes stay inert. The two gaps that kept them off (an unapproved pending→applied move made a
+# commit governance; undo's check and its write could race) are closed, but turning a mode on waits for the
+# calibration review, and doing so is itself a governance change (spec §7a). Until then `due` lists no auto rollback
+# whatever the owner's settings say (an older engine's `scoutctl changes auto-rollback`, or a hand-edited
+# settings.json), as the CLI refuses to set one. Verdicts still say what each mode would have done.
 AUTO_ROLLBACK_LIVE = False
 
 
@@ -69,7 +72,8 @@ def auto_eligible(sha: str, ledger: Any = None) -> bool:
 
 
 class ActionRefused(Exception):  # noqa: N818 - the name the run instructions and the CLI use
-    """The action may not run; nothing was written. ``reason`` is the short why the CLI prints."""
+    """The action may not run; nothing was written (or, refused mid-write, what was written was put back). ``reason``
+    is the short why the CLI prints."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -152,14 +156,21 @@ class _Plan:
     steps: tuple[_Step, ...]
 
 
+_State = tuple[str, bytes, int]  # what :func:`_current` reads: (kind, bytes, permission bits)
+_ABSENT: _State = ("absent", b"", 0)
+_OTHER: _State = ("other", b"", 0)
+
+
 @dataclass(frozen=True)
 class _Op:
     """One write of a worked-out undo: ``data`` with permission bits ``mode`` at ``path``, or (``data`` None) remove
-    ``path``."""
+    ``path``. ``expect`` is what stood at ``path`` when the undo was worked out (:func:`_current`); :func:`_write`
+    reads it again just before it replaces or removes the file and refuses if it changed."""
 
     path: str
     data: bytes | None
     mode: int = 0o644
+    expect: _State = _ABSENT
 
 
 def _at_top(vault: Path) -> bool:
@@ -373,15 +384,16 @@ def _undo_step(vault: Path, step: _Step, current: _Reader) -> list[_Op] | str:
     after = _blob(vault, step.after)
     if before is None or after is None:
         return "git-unreadable"
-    kind, now, bits = current(step.read)
+    seen = current(step.read)
+    kind, now, bits = seen
     if step.after is None:  # the change deleted it: put it back, unless something stands there now
         if kind != "absent" or step.before is None:
             return "edited-since"
-        return [_Op(step.write, before, _file_mode(step.before.mode))]
+        return [_Op(step.write, before, _file_mode(step.before.mode), expect=_ABSENT)]
     if kind != ("link" if step.after.mode == _LINK_MODE else "file"):
         return "edited-since"
     if step.before is None:  # the change added it (a symlink: its target): remove it, unless edited since
-        return [_Op(step.read, None)] if now == after else "edited-since"
+        return [_Op(step.read, None, expect=seen)] if now == after else "edited-since"
     if step.read != step.write and current(step.write)[0] != "absent":
         # A rename whose old path was made again since, or can't be made (a file now stands where a folder on its way
         # was): either way the undo couldn't write it.
@@ -404,10 +416,10 @@ def _undo_step(vault: Path, step: _Step, current: _Reader) -> list[_Op] | str:
     # can't all differ.
     now_mode = _LINK_MODE if kind == "link" else ("100755" if bits & stat.S_IXUSR else "100644")
     mode = _file_mode(step.before.mode) if now_mode == step.after.mode != step.before.mode else bits
-    ops = [_Op(step.write, result, mode)]
-    if step.read != step.write:
-        ops.append(_Op(step.read, None))
-    return ops
+    if step.read == step.write:
+        return [_Op(step.write, result, mode, expect=seen)]
+    # A rename: the old path was absent (checked above), and the new path goes once the old one is back.
+    return [_Op(step.write, result, mode, expect=_ABSENT), _Op(step.read, None, expect=seen)]
 
 
 def _file_mode(mode: str) -> int:
@@ -504,13 +516,16 @@ _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 
 
-def _stage(target: Path, data: bytes, mode: int) -> Path:
-    """``data`` with bits ``mode`` in a fresh temp file beside ``target`` (``O_EXCL | O_NOFOLLOW``: never a name that
-    was already there), synced; its path."""
+_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+
+
+def _stage(folder: int, name: str, data: bytes, mode: int) -> str:
+    """``data`` with bits ``mode`` in a fresh temp file beside ``name`` in the folder open as ``folder`` (``O_EXCL |
+    O_NOFOLLOW``: never a name that was already there), synced; its name in that folder."""
     for _ in range(16):
-        tmp = target.with_name(f".{target.name}.{os.urandom(6).hex()}.scout-undo")
+        tmp = f".{name}.{os.urandom(6).hex()}.scout-undo"
         try:
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC, 0o600)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC, 0o600, dir_fd=folder)
         except FileExistsError:
             continue
         try:
@@ -521,11 +536,36 @@ def _stage(target: Path, data: bytes, mode: int) -> Path:
             os.fsync(fd)
         except BaseException:
             os.close(fd)
-            tmp.unlink(missing_ok=True)
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp, dir_fd=folder)
             raise
         os.close(fd)
         return tmp
-    raise FileExistsError(f"no free temporary name beside {target.name}")  # pragma: no cover - 16 collisions
+    raise FileExistsError(f"no free temporary name beside {name}")  # pragma: no cover - 16 collisions
+
+
+def _current_at(folder: int, name: str) -> _State:
+    """:func:`_current` for ``name`` in the folder open as ``folder``, never following a link; a regular file is read
+    through the descriptor it was opened as, so what is compared is what was there."""
+    try:
+        st = os.stat(name, dir_fd=folder, follow_symlinks=False)
+        if stat.S_ISLNK(st.st_mode):
+            return "link", os.readlink(os.fsencode(name), dir_fd=folder), 0
+        if not stat.S_ISREG(st.st_mode):
+            return _OTHER
+        fd = os.open(name, os.O_RDONLY | _NOFOLLOW | _NONBLOCK | _CLOEXEC, dir_fd=folder)
+        try:
+            st = os.fstat(fd)
+            chunks: list[bytes] = []
+            while stat.S_ISREG(st.st_mode) and (chunk := os.read(fd, 1 << 20)):
+                chunks.append(chunk)
+        finally:
+            os.close(fd)
+    except FileNotFoundError:
+        return _ABSENT
+    except OSError:
+        return _OTHER
+    return ("file", b"".join(chunks), stat.S_IMODE(st.st_mode)) if stat.S_ISREG(st.st_mode) else _OTHER
 
 
 # A temp file :func:`_stage` left behind (a crash between staging and renaming) is swept once it is this old, so a
@@ -550,92 +590,141 @@ def _sweep(vault: Path, rels: Sequence[str], *, now: datetime) -> None:
                     path.unlink()
 
 
-def _make_folders(vault: Path, folder: Path) -> list[Path]:
-    """Make ``folder`` and the missing folders above it (never above the vault); the ones made, outermost first."""
-    missing = []
-    while folder != vault and not os.path.lexists(folder):
-        missing.append(folder)
-        folder = folder.parent
-    made = []
-    for f in reversed(missing):
-        f.mkdir()
-        made.append(f)
-    return made
+_Parts = tuple[str, ...]  # a vault-relative folder, one name per component; () is the vault itself
 
 
-def _put_back(target: Path, was: tuple[str, bytes, int]) -> None:
-    """Best effort: make ``target`` what :func:`_current` read there before a write."""
-    from scout.safe_write import atomic_write_bytes
+class _Folders:
+    """Folder descriptors opened from the vault root one component at a time (``O_DIRECTORY | O_NOFOLLOW``, each
+    relative to its parent's descriptor), so a folder swapped for a symlink after the undo was checked is refused,
+    never followed out of the vault. Folders it makes are remembered so a failed write can remove them again."""
 
+    def __init__(self, vault: Path) -> None:
+        self._fds: dict[_Parts, int] = {
+            (): os.open(vault.resolve(), os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW | _CLOEXEC)
+        }
+        self.made: list[_Parts] = []
+
+    def fd(self, parts: _Parts, *, make: bool = False) -> int:
+        """The descriptor of folder ``parts``, opening (and with ``make``, making) the missing ones on the way. Raises
+        :class:`ActionRefused` (``edited-since``) when a component is a symlink or not a folder, or (without
+        ``make``) is gone: what the undo was worked out against is no longer there."""
+        if parts in self._fds:
+            return self._fds[parts]
+        parent = self.fd(parts[:-1], make=make)
+        name = parts[-1]
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW | _CLOEXEC, dir_fd=parent)
+        except FileNotFoundError:
+            if not make:
+                raise ActionRefused("edited-since") from None
+            os.mkdir(name, 0o777, dir_fd=parent)
+            self.made.append(parts)
+            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW | _CLOEXEC, dir_fd=parent)
+        except OSError as e:
+            if e.errno in (errno.ELOOP, errno.ENOTDIR):  # a symlink (O_NOFOLLOW) or a file stands there now
+                raise ActionRefused("edited-since") from None
+            raise
+        self._fds[parts] = fd
+        return fd
+
+    def unmake(self) -> None:
+        """Remove the folders this made, innermost first, each only while empty."""
+        for parts in reversed(self.made):
+            with contextlib.suppress(OSError):
+                os.rmdir(parts[-1], dir_fd=self._fds[parts[:-1]])
+
+    def prune(self, parts: _Parts) -> None:
+        """As git does when it deletes a file: folders left empty go, never the vault itself."""
+        while parts:
+            try:
+                os.rmdir(parts[-1], dir_fd=self._fds[parts[:-1]])
+            except OSError:
+                break
+            parts = parts[:-1]
+
+    def close(self) -> None:
+        for fd in self._fds.values():
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+def _put_back(folder: int, name: str, was: _State) -> None:
+    """Best effort: make ``name`` in the folder open as ``folder`` what :func:`_current_at` read there before a
+    write."""
     kind, data, bits = was
     with contextlib.suppress(OSError):
         if kind == "file":
-            atomic_write_bytes(target, data, mode=bits)
+            os.replace(_stage(folder, name, data, bits), name, src_dir_fd=folder, dst_dir_fd=folder)
         else:
-            target.unlink(missing_ok=True)
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(name, dir_fd=folder)
             if kind == "link":
-                os.symlink(data, target)
+                os.symlink(data, name, dir_fd=folder)
 
 
-def _unmake(made: Sequence[Path]) -> None:
-    """Remove the folders :func:`_make_folders` made, innermost first, each only while empty."""
-    for folder in reversed(made):
-        with contextlib.suppress(OSError):
-            folder.rmdir()
-
-
-def _prune(vault: Path, folder: Path) -> None:
-    """As git does when it deletes a file: folders left empty go, never the vault itself."""
-    while folder != vault:
-        try:
-            folder.rmdir()
-        except OSError:
-            break
-        folder = folder.parent
+def _check(folder: int, name: str, expect: _State) -> None:
+    """Refuse (``edited-since``) unless ``name`` is still what the undo was worked out against."""
+    if _current_at(folder, name) != expect:
+        raise ActionRefused("edited-since")
 
 
 def _write(vault: Path, ops: Sequence[_Op]) -> None:
-    """Write an undo worked out in full, all or nothing as far as the filesystem allows. First every new file is
-    written in full to a fresh temp file beside its target (making any folder it needs); a failure there removes the
-    temp files and those folders, so nothing changed. Then the temp files are renamed into place and the removals
-    done (a rename's old side is back before its new side goes); a failure there puts back what it had already
-    replaced or removed. Either way the error is raised. A symlink at a target is replaced, never written through."""
-    made: list[Path] = []
-    staged: list[tuple[Path, Path]] = []
+    """Write an undo worked out in full, all or nothing as far as the filesystem allows, through folder descriptors
+    opened from the vault root (:class:`_Folders`): a folder swapped for a symlink since the check is refused, never
+    followed. First every new file is written in full to a fresh temp file beside its target (making any folder it
+    needs); a failure there removes the temp files and those folders, so nothing changed. Then the temp files are
+    renamed into place and the removals done (a rename's old side is back before its new side goes), each target
+    read again just before and compared with what the undo was worked out against (``_Op.expect``): an edit made
+    since refuses as ``edited-since``. A failure or refusal there puts back what had already been replaced or
+    removed. Either way the error is raised. A symlink at a target is replaced, never written through."""
+    folders = _Folders(vault)
+    try:
+        _write_in(folders, ops)
+    finally:
+        folders.close()
+
+
+def _write_in(folders: _Folders, ops: Sequence[_Op]) -> None:
+    staged: list[tuple[int, str, str, _Op]] = []  # (folder fd, temp name, target name, op)
+
+    def drop_staged() -> None:
+        for folder, tmp, _, _ in staged:
+            with contextlib.suppress(FileNotFoundError):  # one already renamed into place
+                os.unlink(tmp, dir_fd=folder)
+
     try:
         for op in ops:
             if op.data is not None:
-                target = vault / op.path
-                made += _make_folders(vault, target.parent)
-                staged.append((_stage(target, op.data, op.mode), target))
+                parts = PurePosixPath(op.path).parts
+                folder = folders.fd(parts[:-1], make=True)
+                staged.append((folder, _stage(folder, parts[-1], op.data, op.mode), parts[-1], op))
     except BaseException:
-        for tmp, _ in staged:
-            tmp.unlink(missing_ok=True)
-        _unmake(made)
+        drop_staged()
+        folders.unmake()
         raise
-    done: list[tuple[Path, tuple[str, bytes, int]]] = []
-    removed: list[Path] = []
+    done: list[tuple[int, str, _State]] = []
+    removed: list[_Parts] = []
     try:
-        for tmp, target in staged:
-            was = _current(target)
-            os.replace(tmp, target)
-            done.append((target, was))
+        for folder, tmp, name, op in staged:
+            _check(folder, name, op.expect)
+            os.replace(tmp, name, src_dir_fd=folder, dst_dir_fd=folder)
+            done.append((folder, name, op.expect))
         for op in ops:
             if op.data is None:
-                target = vault / op.path
-                was = _current(target)
-                target.unlink()
-                done.append((target, was))
-                removed.append(target)
+                parts = PurePosixPath(op.path).parts
+                folder = folders.fd(parts[:-1])
+                _check(folder, parts[-1], op.expect)
+                os.unlink(parts[-1], dir_fd=folder)
+                done.append((folder, parts[-1], op.expect))
+                removed.append(parts[:-1])
     except BaseException:
-        for tmp, _ in staged:
-            tmp.unlink(missing_ok=True)  # the ones not renamed yet
-        for target, was in reversed(done):
-            _put_back(target, was)
-        _unmake(made)
+        drop_staged()
+        for folder, name, was in reversed(done):
+            _put_back(folder, name, was)
+        folders.unmake()
         raise
-    for target in removed:
-        _prune(vault, target.parent)
+    for parts in removed:
+        folders.prune(parts)
 
 
 def rollback_problem(vault: Path, change: Change, test: Mapping[str, Any]) -> str | None:
@@ -839,7 +928,9 @@ def rollback(
 
     Raises :class:`ActionRefused` unless the id is in ``due(...)["rollbacks"]``, and works the undo out again (the
     tree may have changed since ``due``). All or nothing: every file is worked out and every path checked before
-    anything is written, so a refusal (``edited-since``, ...) writes nothing."""
+    anything is written, so a refusal (``edited-since``, ...) writes nothing. The write re-reads each file through
+    folder descriptors just before replacing or removing it (:func:`_write`): an edit made after the check, or a
+    folder swapped for a symlink, refuses as ``edited-since`` and what was already written is put back."""
     doc, changes = _safe_compute(vault, env, now=now, tz=tz, owner_vault=owner_vault)
     if change_id not in {r["id"] for r in doc["rollbacks"]}:
         why = next((b["why_blocked"] for b in doc["blocked"] if b["id"] == change_id), "not-due")

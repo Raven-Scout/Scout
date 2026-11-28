@@ -62,10 +62,10 @@ struct InlineMarkdownTextTests {
     /// Notes escape the alias pipe inside table cells (`\|`); the backslash
     /// used to stay on the target, so the link resolved to nothing.
     @Test func escapedPipeAliasDropsTheBackslashFromTheTarget() {
-        let r = wikilinks(#"| [[docs/wishlist/progress/item\|Progress log]] |"#)
+        let r = wikilinks(#"| [[knowledge-base/research-queue/progress/item\|Progress log]] |"#)
         #expect(r.plain.contains("Progress log"))
         #expect(!r.plain.contains("[["))
-        #expect(r.links == ["scout-wiki://docs%2Fwishlist%2Fprogress%2Fitem"])
+        #expect(r.links == ["scout-wiki://knowledge-base%2Fresearch-queue%2Fprogress%2Fitem"])
     }
 
     @Test func anEscapedPipeInsideTheAliasIsUnescaped() {

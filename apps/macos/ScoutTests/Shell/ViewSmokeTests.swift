@@ -85,8 +85,8 @@ struct SmokeVault {
         self.root = root
 
         let fm = FileManager.default
-        for sub in ["action-items", "dreaming-proposals", "knowledge-base/people",
-                    "knowledge-base/projects", "wishlist", "research-queue",
+        for sub in ["action-items", "knowledge-base/people",
+                    "knowledge-base/projects", "research-queue",
                     ".scout-logs", ".scout-state", ".scout-cache"] {
             try fm.createDirectory(at: root.appendingPathComponent(sub),
                                    withIntermediateDirectories: true)
@@ -96,10 +96,6 @@ struct SmokeVault {
         // `action-items/action-items-<YYYY-MM-DD>.md`.
         try Self.write(Self.actionItems, to: root
             .appendingPathComponent("action-items/action-items-2026-06-15.md"))
-        try Self.write(Self.proposal, to: root
-            .appendingPathComponent("dreaming-proposals/2026-06-15-tighten-cadence.md"))
-        try Self.write(Self.wishlistItem, to: root
-            .appendingPathComponent("wishlist/2026-06-15-batch-the-digest.md"))
         try Self.write(Self.researchItem, to: root
             .appendingPathComponent("research-queue/2026-06-14-tracing-costs.md"))
         try Self.write("---\ntype: person\n---\n# Alex\nWorks on [[the-demo]].\n",
@@ -125,8 +121,6 @@ struct SmokeVault {
 
     /// Load the document services synchronously so views render with content.
     func loadDocuments() async {
-        state.proposalsDocumentService.load()
-        state.wishlistDocumentService.load()
         state.researchDocumentService.load()
         state.knowledgeBaseService.load()
         await state.knowledgeBaseService.reparseAndWait()
@@ -165,34 +159,6 @@ struct SmokeVault {
     - A digest line with a [link](https://github.com/example-org/app/pull/42).
     """
 
-    private static let proposal = """
-    ---
-    date: 2026-06-15
-    title: Tighten the consolidation cadence
-    status: Pending (auto-apply after 2026-06-20)
-    target: SKILL.md
-    ---
-
-    # 2026-06-15 — Tighten the consolidation cadence
-    **Trigger:** the demo kept timing out.
-
-    ```
-    cooldown_minutes: 30
-    ```
-    """
-
-    private static let wishlistItem = """
-    ---
-    title: Batch the digest
-    status: open
-    priority: high
-    date: 2026-06-15
-    ---
-
-    # Batch the digest
-    Group digest lines by source.
-    """
-
     private static let researchItem = """
     ---
     title: Tracing costs
@@ -224,15 +190,14 @@ struct ShellViewSmokeTests {
         ViewHost.render(
             MainWindowView()
                 .environmentObject(vault.state)
-                .environmentObject(vault.state.proposalsDocumentService)
                 .environmentObject(vault.updates))
     }
 
     @Test("every sidebar destination has a status label")
     func sidebarItemsHaveStatusLabels() {
         let labels = SidebarItem.allCases.map(\.statusLabel)
-        // Nine pages: Settings is the ⌘, window, not a page (UI audit #10).
-        #expect(labels.count == 9)
+        // Eight pages: Settings is the ⌘, window, not a page (UI audit #10).
+        #expect(labels.count == 8)
         #expect(Set(labels).count == labels.count)
         #expect(labels.allSatisfy { !$0.isEmpty })
     }

@@ -4,14 +4,6 @@ import Testing
 
 @Suite("PerFileTabConfig")
 struct PerFileTabConfigTests {
-    @Test func wishlistConfig() {
-        let c = PerFileTabConfig.wishlist
-        #expect(c.title == "Wishlist")
-        #expect(c.priorities == [.high, .medium, .low])    // no urgent
-        #expect(c.optionalField == .source(label: "Source"))
-        #expect(c.directoryDefaultRelative == "docs/wishlist")
-        #expect(c.pathOverrideKey == "wishlistPath")
-    }
     @Test func researchConfig() {
         let c = PerFileTabConfig.research
         #expect(c.priorities == [.urgent, .high, .medium, .low])
@@ -22,7 +14,5 @@ struct PerFileTabConfigTests {
     }
     @Test func priorityVocabPerTab() {
         #expect(PerFileTabConfig.research.priorities == [.urgent, .high, .medium, .low])
-        #expect(PerFileTabConfig.wishlist.priorities == [.high, .medium, .low])
-        #expect(!PerFileTabConfig.wishlist.priorities.contains(.urgent))  // wishlist has no urgent
     }
 }

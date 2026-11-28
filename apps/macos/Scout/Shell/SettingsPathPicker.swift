@@ -89,7 +89,7 @@ struct SettingsPathPicker: View {
     /// What blank means, shown dimmed while the setting is blank.
     let defaultLabel: String
     let kind: SettingsPathCheck.Kind
-    /// The open panel's prompt, e.g. "Choose the Wishlist folder".
+    /// The open panel's prompt, e.g. "Choose the Research queue folder".
     let panelMessage: String
     /// Where the open panel starts while the setting is blank.
     var defaultURL: URL? = nil

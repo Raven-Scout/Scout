@@ -1,7 +1,6 @@
 import SwiftUI
 
-/// A per-file item's lifecycle status as a design-system pill, toned like
-/// `ProposalStatusPill`.
+/// A per-file item's lifecycle status as a design-system pill.
 struct ItemStatusPill: View {
     let status: ItemStatus
 
@@ -27,7 +26,7 @@ struct ItemStatusPill: View {
         case .open:       return .accent
         case .inProgress: return .info
         case .done:       return .ok
-        case .dropped:    return .err  // terminal "decided against", like Proposals' rejected
+        case .dropped:    return .err  // terminal "decided against", like a rejected change
         case .unknown:    return .neutral
         }
     }

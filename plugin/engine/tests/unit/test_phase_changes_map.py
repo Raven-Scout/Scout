@@ -85,21 +85,28 @@ def test_step_1d_routes_governance_to_a_pending_file() -> None:
     # I3: a decision is bound to the file the owner saw, and the wrap says how to make it without an app tab.
     assert "Never edit a pending file once committed" in step_1d and "new slug" in step_1d
     assert "scoutctl changes approve gov-<slug> --diff-hash <its diff_hash>" in step_1d
-    assert "Changes tab" not in step_1d
-
-
-def test_step_1d_keeps_ordinary_proposals_until_the_app_can_show_changes() -> None:
-    """#747 review: only governance goes to governance-pending/; a large or uncertain change is still an opt-out
-    proposal in dreaming-proposals.md, which the app's Proposals tab reads, and approved or ripe ones are applied."""
-    step_1d = _step(_text(FEEDBACK), "### Step 1d")
-    assert "dreaming-proposals.md" in step_1d
-    assert "Pending (auto-apply after [today + 3 days])" in step_1d
-    assert "`Approved`" in step_1d and "not `Rejected`" in step_1d and "Applied — [today's date]" in step_1d
-    assert "**Before writing new ones, apply**" in step_1d
-    # The app's Proposals tab keeps per-file proposals in dreaming-proposals/: an apply commits every path main did.
-    assert "`<the brain file> dreaming-proposals.md dreaming-proposals/ dreaming-proposals-archive.md`" in step_1d
+    assert "approve or reject it in the Changes tab" in step_1d
+    # The fallback is the same pending file with `governance: false`, approved in the Changes tab (spec §11).
     fallback = step_1d[step_1d.index("**Harness fallback.**") :]
-    assert "opt-out `Pending` proposal" in fallback and "governance-pending" not in fallback
+    assert "`governance: false`" in fallback and "governance-pending/<slug>.md" in fallback
+    assert "proposal" not in fallback
+
+
+def test_step_1d_writes_no_new_proposals() -> None:
+    """Spec §11: a large, structural or uncertain change goes in directly, tested and undoable. Proposals already in
+    dreaming-proposals.md are still applied, by the one "Earlier proposals" line; none is written."""
+    step_1d = _step(_text(FEEDBACK), "### Step 1d")
+    assert "goes in directly too" in step_1d
+    mentions = [line for line in step_1d.splitlines() if "dreaming-proposals.md" in line]
+    assert len(mentions) == 1 and mentions[0].startswith("**Earlier proposals.**"), mentions
+    earlier = mentions[0]
+    # Every path main committed an apply with, so a per-file proposal and the archive move together.
+    assert "`<the brain file> dreaming-proposals.md dreaming-proposals/ dreaming-proposals-archive.md`" in earlier
+    assert "`Approved`" in earlier and "not `Rejected`" in earlier and "Applied — [today's date]" in earlier
+    assert "Write no new proposals" in earlier
+    assert "as an opt-out proposal" not in step_1d
+    hits = [str(p.relative_to(PHASES)) for p in sorted(PHASES.rglob("*.md")) if "Pending (auto-apply after" in _text(p)]
+    assert hits == []
 
 
 def test_step_1e_is_its_own_dreaming_fragment_with_no_connector() -> None:
@@ -138,8 +145,10 @@ def test_step_1e_acts_on_due() -> None:
     assert "at most one per run" in step_1e
     assert "Never edit a pending file once committed" in step_1e
     assert "Slack" not in step_1e.replace("with or without Slack", "")  # the wrap, whatever its channel
-    assert "To undo it, run `scoutctl changes undo <id>`" in step_1e
-    assert "Changes tab" not in step_1e
+    assert "Undo in the Changes tab, or run `scoutctl changes undo <id>`" in step_1e
+    assert "approve or reject it in the Changes tab" in step_1e
+    # A harness-fallback item (`governance: false`) is deleted on apply: its commit is an ordinary, undoable change.
+    assert "`governance: false`" in step_1e and "deleted instead of moved" in step_1e
     assert "scoutctl changes announced" in step_1e
     assert "engagement_tests_running" in step_1e
     assert "calibration_report_due" in step_1e and "docs/changes-calibration-report.md" in step_1e
@@ -180,14 +189,16 @@ def test_no_phase_tells_a_run_to_run_an_owner_only_command() -> None:
     assert not re.search(_OWNER_ONLY, "or run `scoutctl changes undo <id>`")
 
 
-def test_no_phase_points_at_a_changes_tab_the_app_does_not_have_yet() -> None:
-    hits = [str(p.relative_to(PHASES)) for p in sorted(PHASES.rglob("*.md")) if "Changes tab" in _text(p)]
-    assert hits == []
+def test_owner_lines_point_at_the_changes_tab() -> None:
+    hits = {str(p.relative_to(PHASES)) for p in sorted(PHASES.rglob("*.md")) if "Changes tab" in _text(p)}
+    assert hits == {"core/action-items.md", "modes/feedback-processing.md", "modes/follow-change-decisions.md"}
+    assert "waits in the Changes tab" in _text(PHASES / "core" / "action-items.md")
+    assert "dreaming-proposals" not in _text(PHASES / "modes" / "wishlist.md")
 
 
-def test_action_items_blocker_covers_proposals_and_governance() -> None:
+def test_action_items_blocker_covers_governance_only() -> None:
     text = _text(PHASES / "core" / "action-items.md")
-    assert "approved-but-unapplied proposal" in text
+    assert "approved-but-unapplied proposal" not in text and "dreaming-proposals" not in text
     assert "governance-pending/" in text
 
 

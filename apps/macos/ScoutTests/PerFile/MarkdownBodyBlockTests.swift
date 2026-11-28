@@ -123,12 +123,12 @@ struct MarkdownBodyBlockTests {
     }
 
     @Test func aTaskKeepsAnAliasedWikilinkForTheInlineRenderer() {
-        #expect(MarkdownBodyBlock.blocks(from: "- [ ] Read [[docs/wishlist/progress/item|Progress log]]")
-                == [.tasks([MarkdownTask(checked: false, text: "Read [[docs/wishlist/progress/item|Progress log]]")])])
+        #expect(MarkdownBodyBlock.blocks(from: "- [ ] Read [[knowledge-base/research-queue/progress/item|Progress log]]")
+                == [.tasks([MarkdownTask(checked: false, text: "Read [[knowledge-base/research-queue/progress/item|Progress log]]")])])
     }
 
-    /// The card shape the wishlist phase writes: request, status, open sub-tasks, a log link.
-    @Test func aWishlistCardRendersAsStructuredBlocks() {
+    /// The card shape the research phase writes: request, status, open sub-tasks, a log link.
+    @Test func aResearchCardRendersAsStructuredBlocks() {
         let body = """
         Add a template for architecture decisions.
 
@@ -137,7 +137,7 @@ struct MarkdownBodyBlockTests {
         - [ ] Link the template from the KB index
         - [ ] Backfill the three existing decisions
 
-        [[docs/wishlist/progress/2026-01-05-decision-template|Progress log]]
+        [[knowledge-base/research-queue/progress/2026-01-05-decision-template|Progress log]]
         """
         #expect(MarkdownBodyBlock.blocks(from: body) == [
             .prose("Add a template for architecture decisions."),
@@ -147,7 +147,7 @@ struct MarkdownBodyBlockTests {
                 MarkdownTask(checked: false, text: "Link the template from the KB index"),
                 MarkdownTask(checked: false, text: "Backfill the three existing decisions"),
             ]),
-            .prose("[[docs/wishlist/progress/2026-01-05-decision-template|Progress log]]"),
+            .prose("[[knowledge-base/research-queue/progress/2026-01-05-decision-template|Progress log]]"),
         ])
     }
 

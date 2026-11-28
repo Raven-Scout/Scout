@@ -67,23 +67,24 @@ struct AccessibilityFoundationTests {
         var selection = SidebarItem.schedules
         let binding = Binding(get: { selection }, set: { selection = $0 })
         let nodes = await AccessibilityTree.nodes(
-            of: SidebarView(selection: binding, proposalsBadge: 2, settingsBadge: 1, settingsAttention: true),
+            of: SidebarView(selection: binding, changesBadge: 2, settingsBadge: 1, settingsAttention: true),
             size: CGSize(width: 240, height: 700))
         let ids = Set(nodes.map(\.identifier))
         for item in SidebarItem.allCases {
             #expect(ids.contains(item.accessibilityIdentifier),
                     "missing \(item.accessibilityIdentifier) in:\n\(nodes.map(\.description).joined(separator: "\n"))")
         }
-        let proposals = nodes.first { $0.identifier == SidebarItem.proposals.accessibilityIdentifier }
-        #expect(proposals?.label == "Proposals")
-        #expect(proposals?.value == "2 awaiting a decision")
+        let changes = nodes.first { $0.identifier == SidebarItem.changes.accessibilityIdentifier }
+        #expect(changes?.label == "Changes")
+        #expect(changes?.value == "2 need you")
+        #expect(SidebarItem.changes.accessibilityIdentifier == "sidebar-changes")
         // Settings isn't a page (UI audit #10): its row opens the ⌘, window,
         // and still says why it needs a look.
         let settings = nodes.first { $0.identifier == SidebarView.settingsRowIdentifier }
         #expect(settings?.label == "Settings")
         #expect(settings?.value == "1 update available, needs attention")
         // The system badge must not be a second element saying "2" on top of
-        // the row's own "2 awaiting a decision".
+        // the row's own "2 need you".
         let strayBadges = nodes.filter { $0.label == "2" || $0.value == "2" }
         #expect(strayBadges.isEmpty, "badge read twice:\n\(nodes.map(\.description).joined(separator: "\n"))")
     }
@@ -100,6 +101,13 @@ struct AccessibilityFoundationTests {
         }
         // Settings isn't a page: it is the ⌘, window only (UI audit #10).
         #expect(!SidebarItem.allCases.map(\.title).contains("Settings"))
+        // Eight pages, keys 1…8; Changes sits at ⌘6.
+        #expect(SidebarItem.allCases.count == 8)
+        #expect(SidebarItem.changes.goShortcutKey == "6")
+        #expect(SidebarItem.research.goShortcutKey == "7")
+        #expect(SidebarItem.knowledgeBase.goShortcutKey == "8")
+        #expect(SidebarItem.changes.title == "Changes")
+        #expect(SidebarItem.changes.systemImage == "chart.xyaxis.line")
     }
 
     @Test("page titles and identifiers are unique and non-empty")
@@ -120,8 +128,9 @@ struct AccessibilityFoundationTests {
                 == "needs attention, unavailable until Scout is set up")
         #expect(SidebarView.settingsAccessibilityValue(updates: 2, attention: true) == "2 updates available, needs attention")
         #expect(SidebarView.settingsAccessibilityValue(updates: 0, attention: false) == "")
-        #expect(SidebarView.accessibilityValue(for: .wishlist, badge: 0, attention: false, tabsGated: true)
+        #expect(SidebarView.accessibilityValue(for: .research, badge: 0, attention: false, tabsGated: true)
                 == "unavailable until Scout is set up")
+        #expect(SidebarView.accessibilityValue(for: .changes, badge: 3, attention: false, tabsGated: false) == "3 need you")
     }
 
     @Test("the sidebar renders with the native list at every selection and while gated")
@@ -130,7 +139,7 @@ struct AccessibilityFoundationTests {
             var selection = item
             let binding = Binding(get: { selection }, set: { selection = $0 })
             ViewHost.render(SidebarView(selection: binding, sessionsBadge: 4, settingsBadge: 1,
-                                        settingsAttention: true, tabsGated: item == .wishlist),
+                                        settingsAttention: true, tabsGated: item == .research),
                             size: CGSize(width: 240, height: 700))
         }
     }

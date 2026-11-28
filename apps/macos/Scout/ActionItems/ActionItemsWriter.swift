@@ -239,7 +239,7 @@ actor ActionItemsWriter {
     private let actionItemsDirectory: URL
     private let scoutDirectory: URL
     private let runner: any ProcessRunner
-    private let gitService: GitService?
+    private let gitService: (any GitServiceProtocol)?
 
     /// Tail of the serial task chain. Each new submission awaits the previous
     /// task's completion before running, giving us a true serial queue on top
@@ -253,7 +253,7 @@ actor ActionItemsWriter {
         actionItemsDirectory: URL,
         scoutDirectory: URL,
         runner: any ProcessRunner,
-        gitService: GitService?
+        gitService: (any GitServiceProtocol)?
     ) {
         self.scoutctl = scoutctl
         self.argumentsPrefix = argumentsPrefix
@@ -312,7 +312,7 @@ actor ActionItemsWriter {
         actionItemsDirectory: URL,
         scoutDirectory: URL,
         runner: any ProcessRunner,
-        gitService: GitService?
+        gitService: (any GitServiceProtocol)?
     ) async throws -> WriteResult {
         let dateISO = ActionItemsDay.stem(for: displayedDate)
         let dailyFile = actionItemsDirectory.appendingPathComponent("action-items-\(dateISO).md")
@@ -376,7 +376,7 @@ actor ActionItemsWriter {
 
     /// Repo-relative path of `fileURL` under `repo`, falling back to the last
     /// path component if it isn't inside the repo. Mirrors the same helper in
-    /// PerFileItemWriter/ProposalsWriter so every writer commits scoped to the
+    /// PerFileItemWriter so every writer commits scoped to the
     /// single file it touched rather than `git add -A` (issue #44).
     private static func relativePathInRepo(fileURL: URL, repo: URL) -> String {
         let full = fileURL.standardizedFileURL.path

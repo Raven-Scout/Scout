@@ -2,8 +2,7 @@ import SwiftUI
 
 /// Renders a per-file item body as a vertical stack of headings, task lists,
 /// quotes and callouts, prose paragraphs (inline markdown) and verbatim code
-/// panels. Mirrors
-/// `ProposalBodyView` from the Proposals module.
+/// panels.
 struct MarkdownBodyView: View {
     let blocks: [MarkdownBodyBlock]
 

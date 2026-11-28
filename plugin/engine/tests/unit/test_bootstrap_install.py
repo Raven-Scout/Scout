@@ -57,6 +57,15 @@ def test_install_creates_layered_kb_dirs_and_seeds(tmp_path):
     assert "{{" not in log_index
 
 
+def test_install_seeds_no_dreaming_proposals(tmp_path):
+    """The Changes tab replaced proposals: a fresh vault no longer gets dreaming-proposals.md."""
+    plugin = Path(__file__).parent.parent.parent.parent
+    vault = tmp_path / "Scout"
+    install(_config(vault, plugin_root=plugin))
+    assert not (vault / "dreaming-proposals.md").exists()
+    assert not (plugin / "templates" / "dreaming-proposals.md.tmpl").exists()
+
+
 def test_install_never_overwrites_layered_kb_seeds(tmp_path, monkeypatch):
     from scout.scripts import bootstrap
 

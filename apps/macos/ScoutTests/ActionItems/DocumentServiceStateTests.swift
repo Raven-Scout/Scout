@@ -73,7 +73,7 @@ struct ActionItemsDocumentServiceStateTests {
     }
 }
 
-/// The Wishlist / Research tabs reload themselves off FSEvents; these cover
+/// The Research tab reloads itself off FSEvents; these cover
 /// the watch path and the state transitions the list chrome reads.
 @MainActor
 @Suite("PerFileDocumentService watching")

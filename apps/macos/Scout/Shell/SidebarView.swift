@@ -4,7 +4,7 @@ import SwiftUI
 /// style, so arrow keys move between pages, VoiceOver reads each row as a
 /// selectable item with its badge, and the row highlight follows the system.
 /// (It was a hand-built stack of buttons with none of that, C7.) The Go menu
-/// (`GoCommands`) reaches the same pages, ⌘1–⌘9 in this order.
+/// (`GoCommands`) reaches the same pages, ⌘1–⌘8 in this order.
 ///
 /// The last row, Settings, isn't a page: it opens the Settings window (⌘,),
 /// Scout's only Settings (UI audit #10), and keeps its update count and
@@ -16,11 +16,9 @@ struct SidebarView: View {
     /// Count of agent sessions that need you — drives the badge on the
     /// Sessions row. Hidden when zero.
     var sessionsBadge: Int = 0
-    /// Count of proposals awaiting a decision — drives the badge on the
-    /// Proposals row. Hidden when zero.
-    var proposalsBadge: Int = 0
-    /// Count of active wishlist items — drives the badge on the Wishlist row.
-    var wishlistBadge: Int = 0
+    /// Count of changes that need you (awaiting your OK, plus suspect and not yet
+    /// undone) — drives the badge on the Changes row. Hidden when zero.
+    var changesBadge: Int = 0
     /// Count of active research topics — drives the badge on the Research row.
     var researchBadge: Int = 0
     /// Number of update tracks (app, plugin) with an update available — drives
@@ -79,8 +77,7 @@ struct SidebarView: View {
     func badge(for item: SidebarItem) -> Int {
         switch item {
         case .sessions:  return sessionsBadge
-        case .proposals: return proposalsBadge
-        case .wishlist:  return wishlistBadge
+        case .changes:   return changesBadge
         case .research:  return researchBadge
         default:         return 0
         }

@@ -134,12 +134,14 @@ first.** The two have different languages, test runners, and release flows.
   `apps/macos/ScoutTests/Health/RunLedgerContractTests.swift` — all in one
   commit. A new ledger field or outcome goes into the test's vault builder, not
   the JSON.
-- **The changes map has two canonical copies:**
-  `plugin/engine/tests/fixtures/contract/changes.json` and `engagement.json`, the output of
-  `scoutctl changes --json` and `scoutctl engagement --json` (`scout/changes/report.py`, versioned by
-  `schema_version`). Generate them from `plugin/engine`:
+- **The changes map has three canonical copies:**
+  `plugin/engine/tests/fixtures/contract/changes.json`, `engagement.json` and `changes-digest.json`, the
+  output of `scoutctl changes --json`, `scoutctl engagement --json` and `scoutctl changes digest --json`
+  (`scout/changes/report.py` and `digest.py`, versioned by `schema_version`). Generate them from
+  `plugin/engine`:
   `env SCOUT_REGEN_CONTRACT=1 .venv/bin/python -m pytest tests/unit/test_changes_contract.py`.
-  The app's byte copies and the `contract.yml` comparison land with the first client (Plan 3).
+  The app's byte copies (`apps/macos/ScoutTests/Fixtures/`, read by `ChangesContractTests`) and the
+  `contract.yml` comparison have landed.
 - **The lab has two canonical copies:**
   `plugin/engine/tests/fixtures/contract/lab-list.json` and `lab-thread.json`, the output of
   `scoutctl lab list --json` and `scoutctl lab show --json` (`scout/lab/summary.py`, versioned by

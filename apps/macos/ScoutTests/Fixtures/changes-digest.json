@@ -1,0 +1,100 @@
+{
+  "days": [
+    {
+      "date": "2026-11-10",
+      "engagement": 2,
+      "noise": 0
+    },
+    {
+      "date": "2026-11-11",
+      "engagement": 2,
+      "noise": 0
+    },
+    {
+      "date": "2026-11-12",
+      "engagement": 2,
+      "noise": 0
+    },
+    {
+      "date": "2026-11-13",
+      "engagement": 0,
+      "noise": 1
+    },
+    {
+      "date": "2026-11-14",
+      "engagement": 2,
+      "noise": 0
+    },
+    {
+      "date": "2026-11-15",
+      "engagement": 0,
+      "noise": 1
+    },
+    {
+      "date": "2026-11-16",
+      "engagement": 0,
+      "noise": 0
+    }
+  ],
+  "engagement": {
+    "change_pct": null,
+    "feedback": 5,
+    "last_week": 0,
+    "reliance": 3,
+    "this_week": 8
+  },
+  "generated_at": "2026-11-16T12:00:00+00:00",
+  "learned": [
+    {
+      "id": "chg-000000000006",
+      "summary": "A wishlist-done change",
+      "suspect": true,
+      "verdict": "hurt"
+    }
+  ],
+  "needs_ok": 1,
+  "noise": {
+    "last_week": 0,
+    "this_week": 2
+  },
+  "schema_version": 1,
+  "shipped": [
+    {
+      "id": "chg-000000000004",
+      "summary": "A rollback change"
+    },
+    {
+      "id": "chg-000000000002",
+      "summary": "A kb-structure change"
+    },
+    {
+      "id": "chg-000000000005",
+      "summary": "A upgrade change"
+    }
+  ],
+  "testing": [
+    {
+      "days_left": 10,
+      "id": "chg-000000000003",
+      "summary": "A phase change"
+    },
+    {
+      "days_left": 12,
+      "id": "chg-000000000001",
+      "summary": "A driver change"
+    },
+    {
+      "days_left": 13,
+      "id": "chg-000000000000",
+      "summary": "A brain-edit change"
+    }
+  ],
+  "up_next": [
+    {
+      "slug": "gmail-empty-check",
+      "title": "Say so when a Gmail search finds nothing"
+    }
+  ],
+  "verified": false,
+  "week_of": "2026-11-16"
+}

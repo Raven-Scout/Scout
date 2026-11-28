@@ -103,17 +103,6 @@ struct WriteProblem: Equatable, Identifiable {
                                     message: "The file kept changing while Scout tried to save. A scheduled run is probably writing it; try again in a minute.",
                                     retryable: true)
             }
-        case let e as ProposalsWriterError:
-            switch e {
-            case .frontmatterNotFound(let f), .statusFieldNotFound(let f):
-                return WriteProblem(kind: .failed, title: title,
-                                    message: "\(f) has no status field Scout can set. Open the file and check its frontmatter.",
-                                    retryable: false)
-            case .readFailed(let m):
-                return WriteProblem(kind: .failed, title: title, message: "Scout couldn't read the proposal file.", details: m, retryable: true)
-            case .writeFailed(let m):
-                return writeFailure(title: title, details: m)
-            }
         case let e as PerFileItemWriterError:
             switch e {
             case .emptyTitle:

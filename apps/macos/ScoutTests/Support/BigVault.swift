@@ -4,8 +4,8 @@ import Foundation
 
 /// A synthetic vault at the scale of a real, long-used one (UI audit card C6):
 /// hundreds of action items with paragraph-length titles, hundreds of KB notes
-/// with long names, ~150 sessions across many projects, dozens of wishlist,
-/// research and proposal files, two weeks of run logs and many connectors with
+/// with long names, ~150 sessions across many projects, dozens of research
+/// files, two weeks of run logs and many connectors with
 /// long names. Layout problems only show at this size: clipped filter rows,
 /// wrapped titles, cards a screen tall.
 ///
@@ -26,9 +26,7 @@ struct BigVault {
         var kbNotes = 400
         var sessions = 150
         var projects = 14
-        var wishlist = 60
         var research = 40
-        var proposals = 24
         var runDays = 12
         var connectors = 36
         var slots = 14
@@ -36,8 +34,8 @@ struct BigVault {
         static let full = Scale()
         /// Enough to overflow every row and list, small enough for a test
         /// that renders many sizes.
-        static let layout = Scale(actionItems: 160, kbNotes: 160, sessions: 150, wishlist: 30,
-                                  research: 20, proposals: 12, runDays: 8, connectors: 36, slots: 14)
+        static let layout = Scale(actionItems: 160, kbNotes: 160, sessions: 150,
+                                  research: 20, runDays: 8, connectors: 36, slots: 14)
     }
 
     /// The action-items day the fixture writes.
@@ -88,8 +86,6 @@ struct BigVault {
         _ = try? await state.sessionLogService.loadInitial()
         await state.scheduleService.refresh()
         try? await state.scheduleEditService.loadAll()
-        state.proposalsDocumentService.load()
-        state.wishlistDocumentService.load()
         state.researchDocumentService.load()
         state.knowledgeBaseService.load()
         await state.knowledgeBaseService.reparseAndWait()
@@ -106,23 +102,15 @@ struct BigVault {
 
     private static func writeVault(at root: URL, scale: Scale, now: Date) throws {
         let fm = FileManager.default
-        for sub in ["action-items", "dreaming-proposals", PerFileTabConfig.wishlist.directoryDefaultRelative,
+        for sub in ["action-items",
                     PerFileTabConfig.research.directoryDefaultRelative, ".scout-logs", ".scout-state", ".scout-cache"] {
             try fm.createDirectory(at: root.appendingPathComponent(sub), withIntermediateDirectories: true)
         }
         try write(actionItems(scale: scale), to: root.appendingPathComponent("action-items/action-items-\(day).md"))
         try writeKB(at: root.appendingPathComponent("knowledge-base"), scale: scale)
-        for i in 0..<scale.wishlist {
-            try write(perFileItem(i, kind: "wishlist"), to: root.appendingPathComponent(
-                "\(PerFileTabConfig.wishlist.directoryDefaultRelative)/2026-06-\(String(format: "%02d", 1 + i % 28))-\(slug(longTitle(i), max: 70))-\(i).md"))
-        }
         for i in 0..<scale.research {
             try write(perFileItem(i, kind: "research"), to: root.appendingPathComponent(
                 "\(PerFileTabConfig.research.directoryDefaultRelative)/2026-06-\(String(format: "%02d", 1 + i % 28))-\(slug(longTitle(i + 7), max: 70))-\(i).md"))
-        }
-        for i in 0..<scale.proposals {
-            try write(proposal(i), to: root.appendingPathComponent(
-                "dreaming-proposals/2026-06-\(String(format: "%02d", 1 + i % 28))-\(slug(longTitle(i + 3), max: 60))-\(i).md"))
         }
         try writeLogs(at: root.appendingPathComponent(".scout-logs"), scale: scale, now: now)
         try write(sessionsIndex(scale: scale, now: now), to: root.appendingPathComponent("sessions-index.big.json"))
@@ -226,7 +214,7 @@ struct BigVault {
         }
     }
 
-    // MARK: - Wishlist, research, proposals
+    // MARK: - Research
 
     private static func perFileItem(_ i: Int, kind: String) -> String {
         let statuses = ["open", "in-progress", "blocked", "done"]
@@ -249,26 +237,6 @@ struct BigVault {
 
             ## Progress
             \(progress)
-            """
-    }
-
-    private static func proposal(_ i: Int) -> String {
-        let status = i % 3 == 0 ? "Applied" : "Pending (auto-apply after 2026-06-\(String(format: "%02d", 20 + i % 8)))"
-        return """
-            ---
-            date: 2026-06-\(String(format: "%02d", 1 + i % 28))
-            title: \(longTitle(i + 3))
-            status: \(status)
-            target: SKILL.md
-            ---
-
-            # 2026-06-\(String(format: "%02d", 1 + i % 28)) — \(longTitle(i + 3))
-            **Trigger:** \(tails[i % tails.count]).
-
-            ```
-            cooldown_minutes: \(30 + i)
-            a_very_long_configuration_key_that_does_not_wrap_on_its_own_and_runs_past_the_card_edge: true
-            ```
             """
     }
 

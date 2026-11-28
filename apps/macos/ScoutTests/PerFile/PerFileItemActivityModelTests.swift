@@ -20,19 +20,19 @@ struct PerFileItemActivityModelTests {
     }
 
     @Test func loadPublishesRevisions() async throws {
-        let out = "\u{1E}aaa\u{1F}aaa\u{1F}1776000000\u{1F}app: add wishlist item Example item\n\n+status: open\n"
+        let out = "\u{1E}aaa\u{1F}aaa\u{1F}1776000000\u{1F}app: add research topic Example item\n\n+status: open\n"
         let (m, runner) = model([ProcessResult(exitCode: 0, stdout: Data(out.utf8), stderr: Data())])
 
-        await m.load(item(at: "/tmp/Scout/docs/wishlist/2026-04-01-example-item.md"))
+        await m.load(item(at: "/tmp/Scout/knowledge-base/research-queue/2026-04-01-example-item.md"))
 
         guard case .loaded(let revs) = m.state else { Issue.record("got \(m.state)"); return }
         #expect(revs.map(\.id) == ["aaa"])
-        #expect(runner.calls.first?.arguments.last == "docs/wishlist/2026-04-01-example-item.md")
+        #expect(runner.calls.first?.arguments.last == "knowledge-base/research-queue/2026-04-01-example-item.md")
     }
 
     @Test func gitErrorIsSurfaced() async {
         let (m, _) = model([ProcessResult(exitCode: 128, stdout: Data(), stderr: Data())])
-        await m.load(item(at: "/tmp/Scout/docs/wishlist/x.md"))
+        await m.load(item(at: "/tmp/Scout/knowledge-base/research-queue/x.md"))
         if case .failed = m.state {} else { Issue.record("expected .failed, got \(m.state)") }
     }
 
@@ -44,13 +44,13 @@ struct PerFileItemActivityModelTests {
     }
 
     @Test func otherFilesExcludeTheItemAndLoadOnce() async {
-        let out = "docs/wishlist/x.md\nknowledge-base/example-topic.md\n"
+        let out = "knowledge-base/research-queue/x.md\nknowledge-base/example-topic.md\n"
         let hist = "\u{1E}aaa\u{1F}aaa\u{1F}1776000000\u{1F}research: example findings\n"
         let (m, runner) = model([
             ProcessResult(exitCode: 0, stdout: Data(hist.utf8), stderr: Data()),
             ProcessResult(exitCode: 0, stdout: Data(out.utf8), stderr: Data()),
         ])
-        await m.load(item(at: "/tmp/Scout/docs/wishlist/x.md"))
+        await m.load(item(at: "/tmp/Scout/knowledge-base/research-queue/x.md"))
         guard case .loaded(let revs) = m.state else { Issue.record("not loaded"); return }
 
         await m.loadOtherFiles(for: revs[0].commit)

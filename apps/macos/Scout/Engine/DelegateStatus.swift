@@ -52,12 +52,12 @@ nonisolated struct DelegateStatus: Equatable, Sendable, Decodable {
         let linkedAt: String?
         let lastPull: String?
         let refusal: Refusal?
-        /// Proposals that wait for the owner: observations to accept and held comments.
+        /// Pulled items that wait for the owner: observations to accept and held comments.
         let review: Int?
         let oldestReview: String?
         /// Taken, not settled yet (for the owner, or a retry).
         let waiting: Int?
-        /// Proposal files in the inbox folder no pull took: something else put them there.
+        /// Files in the inbox folder no pull took: something else put them there.
         let untaken: Int?
 
         private enum CodingKeys: String, CodingKey {

@@ -211,18 +211,6 @@ struct LeafSmokeTests {
         }
     }
 
-    @Test("the proposal status pill renders for every status")
-    func proposalStatusPillRenders() {
-        let statuses: [ProposalStatus] = [
-            .proposed, .pending(autoApplyDate: "2026-06-20"), .approved,
-            .rejected, .applied(date: "2026-06-16"), .closed("Superseded"), .unknown("Weird"),
-        ]
-        for status in statuses {
-            ViewHost.render(
-                ProposalStatusPill(status: status), size: CGSize(width: 140, height: 22))
-        }
-    }
-
     // MARK: - CardStyle bridge
 
     @Test("the legacy CardStyle bridge routes to the design system")

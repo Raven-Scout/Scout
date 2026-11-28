@@ -1,7 +1,7 @@
 // Scout/PerFileItems/Models/PerFileItem.swift
 import Foundation
 
-/// One per-file Wishlist/Research item: YAML frontmatter + markdown body.
+/// One per-file Research item: YAML frontmatter + markdown body.
 nonisolated struct PerFileItem: Identifiable, Equatable, Sendable {
     let fileURL: URL          // stable identity + the file the writer rewrites
     let date: String          // frontmatter date: or filename YYYY-MM-DD prefix
@@ -11,7 +11,7 @@ nonisolated struct PerFileItem: Identifiable, Equatable, Sendable {
     let displayTitle: String
     let status: ItemStatus
     let priority: ItemPriority
-    let source: String?       // wishlist provenance (optional)
+    let source: String?       // provenance (optional)
     let area: String?         // research grouping (optional)
     let bodyMarkdown: String
     /// `bodyMarkdown` split into blocks once, when the file is parsed — not

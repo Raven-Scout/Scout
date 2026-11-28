@@ -12,8 +12,10 @@ check: `/scout-status` reports green while every scheduled run fails.
 
 from __future__ import annotations
 
+import os
 import platform
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -290,3 +292,98 @@ def test_present_version_stamps_are_not_reported(vault: Path, tmp_path: Path) ->
     messages = _messages(run_doctor(vault=vault, check_jobs=False, home=tmp_path / "home"))
     assert "version_at_last_setup missing" not in messages
     assert "version_at_last_update missing" not in messages
+
+
+# --- leftover undo temp files ---------------------------------------------------------------------------------------
+
+
+def _undo_tmp(root: Path, rel: str, *, age_s: float, now: datetime) -> Path:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("x")
+    stamp = now.timestamp() - age_s
+    os.utime(path, (stamp, stamp))
+    return path
+
+
+def test_doctor_warns_about_old_undo_temp_files(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    old = _undo_tmp(tmp_path, "knowledge-base/projects/.a.0123456789ab.scout-undo", age_s=3600, now=now)
+    fresh = _undo_tmp(tmp_path, "knowledge-base/projects/.b.0123456789ab.scout-undo", age_s=5, now=now)
+    found = doc._check_undo_leftovers(vault=tmp_path, now=now)
+    assert len(found) == 1
+    assert found[0].startswith("1 ")
+    assert "delete" in found[0]
+    assert old.relative_to(tmp_path).as_posix() in found[0]
+    assert fresh.relative_to(tmp_path).as_posix() not in found[0]
+
+
+def test_doctor_is_quiet_without_undo_temp_files(tmp_path: Path) -> None:
+    (tmp_path / "knowledge-base").mkdir()
+    (tmp_path / "knowledge-base" / "note.md").write_text("x")
+    assert doc._check_undo_leftovers(vault=tmp_path) == []
+
+
+def test_undo_leftover_check_covers_each_folder_and_ignores_other_names(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    rels = [
+        ".r.0123456789ab.scout-undo",
+        "scripts/.s.0123456789ab.scout-undo",
+        "docs/wishlist/.w.0123456789ab.scout-undo",
+    ]
+    for rel in rels:
+        _undo_tmp(tmp_path, rel, age_s=3600, now=now)
+    _undo_tmp(tmp_path, "docs/other/.x.0123456789ab.scout-undo", age_s=3600, now=now)  # outside the folders
+    _undo_tmp(tmp_path, "knowledge-base/visible.scout-undo", age_s=3600, now=now)  # no leading dot
+    _undo_tmp(tmp_path, "knowledge-base/.hidden.txt", age_s=3600, now=now)  # wrong suffix
+    (tmp_path / "knowledge-base" / ".dir.scout-undo").mkdir()  # not a regular file
+    (tmp_path / "scripts" / ".link.scout-undo").symlink_to(tmp_path / "scripts" / ".s.0123456789ab.scout-undo")
+    found = doc._check_undo_leftovers(vault=tmp_path, now=now)
+    assert len(found) == 1
+    assert found[0].startswith("3 ")
+    for rel in rels:
+        assert rel in found[0]
+    assert "other" not in found[0] and "visible" not in found[0] and ".link" not in found[0]
+
+
+def test_undo_leftover_check_caps_the_paths_shown(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    for i in range(7):
+        _undo_tmp(tmp_path, f"knowledge-base/.f{i}.0123456789ab.scout-undo", age_s=3600, now=now)
+    found = doc._check_undo_leftovers(vault=tmp_path, now=now)
+    assert len(found) == 1
+    assert found[0].startswith("7 ")
+    assert found[0].count(".scout-undo") == 5
+    assert ".f0." in found[0] and ".f4." in found[0] and ".f5." not in found[0]
+
+
+def test_undo_leftover_check_does_not_follow_symlinked_folders_and_never_raises(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    outside = tmp_path / "elsewhere"
+    _undo_tmp(outside, ".o.0123456789ab.scout-undo", age_s=3600, now=now)
+    vault = tmp_path / "vault"
+    (vault / "knowledge-base").mkdir(parents=True)
+    (vault / "knowledge-base" / "linked").symlink_to(outside, target_is_directory=True)
+    assert doc._check_undo_leftovers(vault=vault, now=now) == []
+    # an unreadable folder is skipped, not raised
+    locked = vault / "knowledge-base" / "locked"
+    locked.mkdir()
+    locked.chmod(0)
+    try:
+        assert doc._check_undo_leftovers(vault=vault, now=now) == []
+    finally:
+        locked.chmod(0o755)
+
+
+def test_undo_leftover_check_deletes_nothing(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    old = _undo_tmp(tmp_path, "knowledge-base/.a.0123456789ab.scout-undo", age_s=3600, now=now)
+    assert doc._check_undo_leftovers(vault=tmp_path, now=now)
+    assert old.read_text() == "x"
+
+
+def test_run_doctor_reports_leftover_undo_temp_files(vault: Path, tmp_path: Path) -> None:
+    _seed_vault(vault, config="plugin: {}\n")
+    _undo_tmp(vault, "knowledge-base/.a.0123456789ab.scout-undo", age_s=3600, now=datetime.now(UTC))
+    report = run_doctor(vault=vault, check_jobs=False, home=tmp_path / "home")
+    assert [w for w in report.warnings if "knowledge-base/.a.0123456789ab.scout-undo" in w]

@@ -184,7 +184,7 @@ extension DS {
         /// purpose, and no ΔE test keeps them apart: both say "stop and look",
         /// as the urgent hue and the error red already did before v2, and a
         /// pill always names itself ("Urgent", "Dropped"), so colour is never
-        /// the only cue where they sit side by side on a wishlist card.
+        /// the only cue where they sit side by side on a per-file card.
         static let priorityUrgentInk = Swatch(name: "PriorityUrgentInk", light: RGB(0.640, 0.230, 0.130), dark: RGB(0.950, 0.600, 0.500))
 
         /// "In progress" / "pending": a calm steel blue for status pills. The

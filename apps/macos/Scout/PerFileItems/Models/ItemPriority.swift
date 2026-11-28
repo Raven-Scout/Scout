@@ -1,7 +1,7 @@
 // Scout/PerFileItems/Models/ItemPriority.swift
 import Foundation
 
-/// Priority of a per-file item. Wishlist uses high/medium/low; Research adds urgent.
+/// Priority of a per-file item. Research uses urgent, high, medium and low.
 nonisolated enum ItemPriority: String, Equatable, Sendable, Comparable, CaseIterable {
     case urgent, high, medium, low
 

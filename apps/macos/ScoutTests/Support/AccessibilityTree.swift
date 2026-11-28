@@ -26,6 +26,19 @@ enum AccessibilityTree {
         }
     }
 
+    // A process-wide async serial gate (FIFO), used from the main actor only.
+    private static var gateHeld = false
+    private static var gateWaiters: [CheckedContinuation<Void, Never>] = []
+
+    private static func acquireGate() async {
+        if !gateHeld { gateHeld = true; return }
+        await withCheckedContinuation { gateWaiters.append($0) }
+    }
+
+    private static func releaseGate() {
+        if gateWaiters.isEmpty { gateHeld = false } else { gateWaiters.removeFirst().resume() }
+    }
+
     private static let attributes = ["AXEnhancedUserInterface", "AXManualAccessibility"]
         .map { NSAccessibility.Attribute(rawValue: $0) }
 
@@ -38,6 +51,10 @@ enum AccessibilityTree {
     /// The switch is turned off again before returning, so other suites run
     /// with the host as they always did.
     static func nodes<V: View>(of view: V, size: CGSize = CGSize(width: 900, height: 700)) async -> [Node] {
+        // The switch is app-wide, so concurrent suites must queue: one caller's disable
+        // must never land in the middle of another caller's read.
+        await acquireGate()
+        defer { releaseGate() }
         for attribute in attributes { NSApp.accessibilitySetValue(true, forAttribute: attribute) }
         defer { for attribute in attributes { NSApp.accessibilitySetValue(false, forAttribute: attribute) } }
         try? await Task.sleep(for: .milliseconds(300))

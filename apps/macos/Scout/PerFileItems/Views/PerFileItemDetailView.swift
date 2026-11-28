@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The Wishlist/Research detail pane body (#43): an outcome line for resolved
+/// The Research detail pane body (#43): an outcome line for resolved
 /// items, then every commit that touched the item's file, newest first. Each
 /// row expands to this file's patch, the commit's other files, and (when
 /// linked) a jump to the run in Control Center.

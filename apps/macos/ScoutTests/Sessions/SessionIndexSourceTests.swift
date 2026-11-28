@@ -100,7 +100,7 @@ struct SessionIndexSourceTests {
     @Test("a test AppState reads its sessions from the injected source")
     func appStateWiresTheSource() async throws {
         let vault = try BigVault(scale: BigVault.Scale(actionItems: 4, kbNotes: 4, sessions: 30, projects: 3,
-                                                       wishlist: 1, research: 1, proposals: 1, runDays: 1,
+                                                       research: 1, runDays: 1,
                                                        connectors: 2, slots: 2))
         defer { vault.tearDown() }
 

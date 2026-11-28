@@ -1,7 +1,7 @@
 // Scout/PerFileItems/Models/ItemStatus.swift
 import Foundation
 
-/// Lifecycle of a per-file Wishlist/Research item (frontmatter `status:`).
+/// Lifecycle of a per-file Research item (frontmatter `status:`).
 nonisolated enum ItemStatus: Equatable, Sendable {
     case open, inProgress, done, dropped, unknown(String)
 

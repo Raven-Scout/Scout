@@ -1,0 +1,1 @@
+- **The Proposals and Wishlist tabs are gone.** The Changes tab replaces them: Scout no longer writes proposals for you to approve, and wishlist items show up as the reason behind the changes they led to. The `dreaming-proposals.md` file and the wishlist folder stay in your vault untouched.
