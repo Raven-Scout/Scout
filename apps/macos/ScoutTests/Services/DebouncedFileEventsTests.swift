@@ -65,9 +65,12 @@ struct DebouncedFileEventsTests {
     /// whether it held. Liveness only: the clock is frozen until a test
     /// advances it, so waiting longer cannot change what is delivered — it
     /// only lets a starved runner get there. A runner at 8x CPU
-    /// oversubscription needed several seconds for the 10 pump hops.
+    /// oversubscription needed several seconds for the 10 pump hops, and the
+    /// hosted CI runner already spends ~37 s on this suite's first test
+    /// while other suites hold the main actor (the debouncer is main-actor
+    /// isolated), so one wait passed 30 s there; 120 s is still only a bound.
     private static func waitUntil(
-        timeout: Duration = .seconds(30),
+        timeout: Duration = .seconds(120),
         _ condition: @Sendable () async -> Bool
     ) async throws -> Bool {
         let deadline = ContinuousClock.now + timeout

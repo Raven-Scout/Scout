@@ -6,6 +6,13 @@ struct NowStripView: View {
     @EnvironmentObject var state: AppState
 
     var body: some View {
+        // Follows exactly what the three columns read (AppState re-publishes none of it),
+        // plus `MinuteTick` for "started 5 minutes ago" and "next in…", and the day.
+        Observing(state.sessionLogService, state.scoutUsageService,
+                  state.budgetSettingsService, state.scheduleService, MinuteTick.shared) { strip }
+    }
+
+    private var strip: some View {
         // CC-Hero: previous HStack used the default `.center` alignment,
         // which let the column dividers (flexible-height Rectangles) stretch
         // the card to ~360 px while pushing the actual text content into

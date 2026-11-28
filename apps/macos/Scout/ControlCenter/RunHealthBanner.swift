@@ -14,11 +14,14 @@ struct RunHealthBanner: View {
     /// The clock the finding's age is read against; tests pin it.
     var now: Date = Date()
 
+    static let accessibilityIdentifier = "run-health-banner"
+
     var body: some View {
         if let problem = RunOutcomeDisplay.bannerProblem(health, firstSeen: firstSeen, now: now) {
             ProblemView(problem: problem,
                         actions: [ProblemAction("Open Health", perform: openHealth)],
                         style: .banner)
+                .accessibilityIdentifier(Self.accessibilityIdentifier)
                 .padding(.bottom, 16)
         }
     }

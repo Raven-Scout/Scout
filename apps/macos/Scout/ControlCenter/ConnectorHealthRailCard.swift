@@ -22,6 +22,12 @@ struct ConnectorHealthRailCard: View {
     private static let visibleSessionCount = 5
 
     var body: some View {
+        // The services this reads; AppState re-publishes none of their changes.
+        // `DayTick`: a column labelled "8 AM" today reads "Tue" tomorrow.
+        Observing(state.connectorHealthService, DayTick.shared) { observedBody }
+    }
+
+    @ViewBuilder private var observedBody: some View {
         let matrix = state.connectorHealthService.matrix
         let fallbackReason = state.connectorHealthService.rosterFallbackReason
         VStack(alignment: .leading, spacing: 0) {

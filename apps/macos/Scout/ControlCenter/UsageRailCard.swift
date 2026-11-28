@@ -21,6 +21,11 @@ struct UsageRailCard: View {
     @State private var loadingStats: Bool = false
 
     var body: some View {
+        // The services this reads; AppState re-publishes none of their changes.
+        Observing(state.scoutUsageService, state.sessionLogService) { observedBody }
+    }
+
+    @ViewBuilder private var observedBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             RailCardHeader(title: "Today's usage")
             usageSection

@@ -29,6 +29,21 @@ enum AccessibilityTree {
     private static let attributes = ["AXEnhancedUserInterface", "AXManualAccessibility"]
         .map { NSAccessibility.Attribute(rawValue: $0) }
 
+    /// How many readers want the tree built. The switch is app-wide and suites
+    /// run side by side, so one reader finishing must not turn it off under
+    /// another (`LiveAccessibilityTree` keeps it on for a whole test).
+    private static var readers = 0
+
+    fileprivate static func switchOn() {
+        readers += 1
+        if readers == 1 { for attribute in attributes { NSApp.accessibilitySetValue(true, forAttribute: attribute) } }
+    }
+
+    fileprivate static func switchOff() {
+        readers = max(0, readers - 1)
+        if readers == 0 { for attribute in attributes { NSApp.accessibilitySetValue(false, forAttribute: attribute) } }
+    }
+
     /// Every element under `view`, depth first.
     ///
     /// `async` because inside the running test-host app SwiftUI picks up the
@@ -38,8 +53,8 @@ enum AccessibilityTree {
     /// The switch is turned off again before returning, so other suites run
     /// with the host as they always did.
     static func nodes<V: View>(of view: V, size: CGSize = CGSize(width: 900, height: 700)) async -> [Node] {
-        for attribute in attributes { NSApp.accessibilitySetValue(true, forAttribute: attribute) }
-        defer { for attribute in attributes { NSApp.accessibilitySetValue(false, forAttribute: attribute) } }
+        switchOn()
+        defer { switchOff() }
         try? await Task.sleep(for: .milliseconds(300))
         let host = NSHostingView(rootView: view)
         host.frame = CGRect(origin: .zero, size: size)
@@ -66,7 +81,7 @@ enum AccessibilityTree {
         return out
     }
 
-    private static func collect(_ element: Any, into out: inout [Node], depth: Int) {
+    fileprivate static func collect(_ element: Any, into out: inout [Node], depth: Int) {
         guard depth < 40, let object = element as? NSObject else { return }
         // Modern elements answer the `accessibility…` methods; AppKit's table
         // and outline rows (a sidebar `List`) only answer the attribute API.
@@ -102,5 +117,85 @@ enum AccessibilityTree {
         for child in children {
             collect(child, into: &out, depth: depth + 1)
         }
+    }
+}
+
+/// A view kept hosted across reads, so a test can change the data under a
+/// page and see whether the page shows it — `AccessibilityTree.nodes(of:)`
+/// builds a fresh host per read, which proves a page renders a state but not
+/// that it follows a change. Accessibility stays switched on until `close()`.
+@MainActor
+final class LiveAccessibilityTree {
+    private let window: NSWindow
+    private let host: NSView
+    private static let readGap: Duration = .milliseconds(400)
+    /// How many times a read's own duration the main actor stays free after it.
+    private static let idleShare = 3
+
+    /// Waits for a `KeyWindowGate` turn first and holds it until `close()`, so
+    /// no keyboard-focus test runs while this window and the switch are on.
+    init<V: View>(_ view: V, size: CGSize = CGSize(width: 1280, height: 860)) async {
+        await KeyWindowGate.acquire()
+        AccessibilityTree.switchOn()
+        try? await Task.sleep(for: .milliseconds(300))
+        let host = NSHostingView(rootView: view)
+        host.frame = CGRect(origin: .zero, size: size)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.titled, .resizable],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        self.window = window
+        self.host = host
+    }
+
+    /// Reads the tree until `condition` holds, for up to `timeout`, yielding
+    /// the main actor between reads so SwiftUI applies pending changes.
+    /// Returns the last read either way; the caller checks it.
+    ///
+    /// A read walks the whole window's tree on the main actor in one
+    /// synchronous burst, so reads are spaced apart by at least `readGap` and
+    /// by `idleShare` times as long as the last read took: other suites share
+    /// the main actor, and one with a wall-clock wait
+    /// (`DebouncedFileEventsTests`, whose debouncer is main-actor isolated)
+    /// starved behind reads every 100 ms, and again behind reads every 400 ms
+    /// on a slow CI runner where one read took most of the gap. Keeping the
+    /// main actor idle three quarters of the time holds however slow a read
+    /// gets. The first read waits too, for the change to land.
+    @discardableResult
+    func nodes(until condition: ([AccessibilityTree.Node]) -> Bool = { _ in true },
+               timeout: Duration = .seconds(15)) async -> [AccessibilityTree.Node] {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        var out: [AccessibilityTree.Node] = []
+        var lastRead: Duration = .zero
+        repeat {
+            try? await Task.sleep(for: max(Self.readGap, lastRead * Self.idleShare))
+            let started = clock.now
+            host.layoutSubtreeIfNeeded()
+            host.display()
+            out = []
+            AccessibilityTree.collect(host, into: &out, depth: 0)
+            lastRead = clock.now - started
+            if out.count > 1 && condition(out) { return out }
+        } while clock.now < deadline
+        return out
+    }
+
+    func close() {
+        window.contentView = nil
+        AccessibilityTree.switchOff()
+        KeyWindowGate.release()
+    }
+}
+
+extension Array where Element == AccessibilityTree.Node {
+    /// Whether any element's label or value contains `text`.
+    func shows(_ text: String) -> Bool {
+        contains { $0.label.contains(text) || $0.value.contains(text) }
+    }
+
+    /// The element with this accessibility identifier.
+    func element(_ identifier: String) -> AccessibilityTree.Node? {
+        first { $0.identifier == identifier }
     }
 }

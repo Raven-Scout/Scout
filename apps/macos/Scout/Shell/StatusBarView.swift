@@ -20,9 +20,11 @@ struct StatusBarView: View {
             HStack(spacing: 14) {
                 health
                 spacer
-                nextRun
+                // The schedule and the usage summary, observed here: AppState
+                // re-publishes neither.
+                Observing(state.scheduleService) { nextRun }
                 spacer
-                todayCost
+                Observing(state.scoutUsageService) { todayCost }
                 Spacer()
                 viewItem
             }

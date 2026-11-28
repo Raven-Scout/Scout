@@ -29,8 +29,8 @@ struct SchedulesView: View {
     @ObservedObject private var drafts = SlotDraftStore.shared
 
     /// Run health's `slot.*` findings ("hasn't run for 3 days"), by slot
-    /// key. `AppState` re-publishes the run ledger's changes, so this page
-    /// redraws when they arrive.
+    /// key. Read inside `Observing(appState.runLedgerService)`: `AppState`
+    /// re-publishes none of the ledger's changes.
     private var slotWarnings: [String: [RunOutcomeDisplay.SlotWarning]] {
         RunOutcomeDisplay.slotWarnings(appState.runLedgerService.health)
     }
@@ -190,13 +190,17 @@ struct SchedulesView: View {
             switch viewMode {
             case .table, .cards:
                 // One list around both, so the picker keeps its focus.
-                SchedulesMasterList(
-                    cards: viewMode == .cards,
-                    slots: filteredSlots,
-                    newDraftSlot: newDraftSlot,
-                    selectedSlotKey: $selectedSlotKey,
-                    warnings: slotWarnings
-                )
+                // Observing redraws only the list when the run ledger changes
+                // (slot warnings), not the whole page.
+                Observing(appState.runLedgerService) {
+                    SchedulesMasterList(
+                        cards: viewMode == .cards,
+                        slots: filteredSlots,
+                        newDraftSlot: newDraftSlot,
+                        selectedSlotKey: $selectedSlotKey,
+                        warnings: slotWarnings
+                    )
+                }
             case .timeline:
                 SchedulesTimelineView(
                     slots: filteredSlots,

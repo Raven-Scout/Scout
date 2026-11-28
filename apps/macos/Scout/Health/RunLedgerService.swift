@@ -59,7 +59,13 @@ final class RunLedgerService: ObservableObject {
     var health: RunHealth? { ledger?.health }
 
     /// Red run health — the Health row's attention dot.
-    var needsAttention: Bool { health?.severity == .red }
+    var needsAttention: Bool { Self.attentionNeeded(state) }
+
+    /// `needsAttention` for a given state, so `AppState` can derive the dot from `$state`.
+    static func attentionNeeded(_ state: State) -> Bool {
+        guard case .loaded(let ledger) = state else { return false }
+        return ledger.health?.severity == .red
+    }
 
     func refresh() async {
         generation += 1

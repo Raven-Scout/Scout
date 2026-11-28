@@ -10,6 +10,11 @@ struct ConnectorAlertBanner: View {
     @State private var showPopover: Bool = false
 
     var body: some View {
+        // The services this reads; AppState re-publishes none of their changes.
+        Observing(state.connectorHealthService) { observedBody }
+    }
+
+    @ViewBuilder private var observedBody: some View {
         let alerts = state.connectorHealthService.activeAlerts
         if alerts.isEmpty {
             EmptyView()
