@@ -705,22 +705,35 @@ def test_the_regex_time_limit_leaves_no_alarm_behind() -> None:
 
 
 def test_a_callers_timer_is_put_back_with_the_time_it_had_left() -> None:
+    """A real 300 s timer: far longer than the op, so a loaded CI runner can't make it fire."""
     import signal
 
     fired: list[int] = []
     old = signal.signal(signal.SIGALRM, lambda *_: fired.append(1))
     try:
-        signal.setitimer(signal.ITIMER_REAL, 30, 5)
+        signal.setitimer(signal.ITIMER_REAL, 300, 5)
         apply_ops("abc\n", [{"op": "regex", "pattern": "b", "new": "x"}])
         left, interval = signal.getitimer(signal.ITIMER_REAL)
-        assert 25 < left <= 30 and interval == 5 and not fired
-        signal.setitimer(signal.ITIMER_REAL, 0.01)  # one that runs out during the op fires right after it
-        assert kb_edit._limited(1, "regex", "slow", lambda: time.sleep(0.05) or 7) == 7 and not fired
-        time.sleep(0.05)
-        assert fired == [1]
+        assert 200 < left <= 300 and interval == 5 and not fired
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, old)
+
+
+def test_a_callers_timer_that_ran_out_during_the_op_fires_right_after(monkeypatch) -> None:
+    """The timer calls are recorded, not run: the caller's timer had 0.01 s left, the op took at least 0.05 s."""
+    import signal
+
+    calls: list[tuple[float, ...]] = []
+
+    def setitimer(which: int, delay: float, interval: float = 0.0) -> tuple[float, float]:
+        calls.append((delay, interval))
+        return (0.01, 0.0) if len(calls) == 1 else (0.0, 0.0)
+
+    monkeypatch.setattr(signal, "setitimer", setitimer)
+    assert kb_edit._limited(1, "regex", "slow", lambda: time.sleep(0.05) or 7) == 7
+    # taken off, ours armed, ours cleared, the caller's put back to fire at once (1 µs) with its interval
+    assert calls == [(0, 0.0), (kb_edit.SEARCH_SECONDS, 0.0), (0, 0.0), (1e-6, 0.0)]
 
 
 def test_a_patch_hunk_search_over_repeated_lines_fails_in_time(monkeypatch) -> None:

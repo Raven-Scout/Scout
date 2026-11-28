@@ -260,9 +260,11 @@ def _limited(i: int, op: str, why: str, run: Callable[[], Any]) -> Any:
     def alarm(_sig: int, _frame: Any) -> None:
         raise _TimedOut
 
-    old = signal.signal(signal.SIGALRM, alarm)
-    left, interval = signal.getitimer(signal.ITIMER_REAL)
+    # Take the caller's timer off first, in one call that also says what it had left, and only then put our
+    # handler in: read with getitimer instead, it could fire into our handler before the try below.
+    left, interval = signal.setitimer(signal.ITIMER_REAL, 0)
     start = time.monotonic()
+    old = signal.signal(signal.SIGALRM, alarm)
     try:
         signal.setitimer(signal.ITIMER_REAL, SEARCH_SECONDS)
         try:
