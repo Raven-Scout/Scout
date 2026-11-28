@@ -62,15 +62,29 @@ WIN_TOKEN_RATIO = 1.10
 
 _DATED_MEETING_RE = re.compile(r"^knowledge-base/meetings/([^/]+)/(\d{4}-\d{2}-\d{2})\.md$")
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#\\]+)(#[^\]|\\]*)?(?:\\?\|([^\]]+))?\]\]")
-_ATTENDEES_RE = re.compile(r"^\*\*Attendees:\*\*\s*(.+)$", re.MULTILINE)
+_ATTENDEES_RE = re.compile(r"^[*_]*Attendees[*_]*:[*_]*\s*(.+)$", re.MULTILINE | re.IGNORECASE)
 _H1_RE = re.compile(r"^#\s+(.+)$", re.MULTILINE)
 _FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 _REL_ENTRY_RE = re.compile(
     r"^(  - type:\s*([A-Za-z_]+)\s*\n    target:\s*(.+?)\s*\n)",
     re.MULTILINE,
 )
-# Notes a run never rewrites or that are logs, not knowledge: never masked.
-_MASK_SKIP = ("knowledge-base/from-agents/", "knowledge-base/session-log/", "/archive/", "knowledge-base/archive")
+# Notes a run never rewrites, logs and housekeeping files, not knowledge: never masked.
+_MASK_SKIP = (
+    "knowledge-base/from-agents/",
+    "knowledge-base/session-log/",
+    "/archive/",
+    "knowledge-base/archive",
+    "knowledge-base/ontology/",
+    "knowledge-base/research-queue",
+    "knowledge-base/review-queue",
+    "knowledge-base/scout-mistake-audit",
+    "/templates/",
+    "/inbox",
+)
+# Link targets that are not notes: issue keys such as PROJ-1234, and placeholders in templates or examples.
+_ISSUE_KEY_RE = re.compile(r"[A-Z][A-Z0-9]+-\d+")
+_PLACEHOLDER_RE = re.compile(r"[<>{}]|\.\.\.|\b(?:example|placeholder|todo|tbd|xxx|foo|bar)\b", re.IGNORECASE)
 _DEPENDENCY_OUT = {"dependency_of", "blocks"}  # src -> dst: dst is affected when src slips
 _DEPENDENCY_IN = {"depends_on", "blocked_by"}  # src -> dst: src is affected when dst slips
 _DONE_STATUS = re.compile(r"(?i)\b(done|archived|complete|completed|closed|cancel+ed|retired)\b")
@@ -191,11 +205,20 @@ def summarize_set_items(items: Sequence[SetItem]) -> dict[str, Any]:
     by_family: dict[str, int] = dict.fromkeys(TRACK_S_FAMILIES, 0)
     for it in items:
         by_family[it.family] += 1
+    by_source: dict[str, int] = {}
+    for it in items:
+        by_source[it.source_kind] = by_source.get(it.source_kind, 0) + 1
     golds = [len(it.gold) for it in items]
     return {
         "total": len(items),
         "by_family": by_family,
+        "by_source_kind": by_source,
         "median_gold_size": statistics.median(golds) if golds else 0,
+        "median_gold_size_by_family": {
+            fam: statistics.median(len(it.gold) for it in items if it.family == fam)
+            for fam in TRACK_S_FAMILIES
+            if by_family[fam]
+        },
         "masked_edits": sum(len(it.mask_edits) for it in {it.mask_id: it for it in items if it.mask_id}.values()),
     }
 
@@ -277,14 +300,84 @@ def resolve_link(target: str, paths: Sequence[str], stems: Mapping[str, list[str
 
 # ----- builder 1: hindsight meeting prep --------------------------------------------
 
+# Where a vault keeps dated prep notes: meeting-prep.md's meetings/<slug>/YYYY-MM-DD.md (in the KB or at the
+# vault root), and the older flat action-items/meeting-prep/ files. Matched against every tracked file.
+DEFAULT_PREP_GLOBS = (
+    "knowledge-base/meetings/*/*.md",
+    "meetings/*/*.md",
+    "action-items/meeting-prep/**/*.md",
+)
+# Post-meeting sections, best first: notes linked here were what the meeting actually touched.
+_HINDSIGHT_SECTIONS = ("Synthesis", "Decisions", "Action Items", "Outcomes", "Follow-ups", "Notes")
+_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+_PREP_HOMES = ("knowledge-base/meetings/{slug}/{slug}.md", "meetings/{slug}/{slug}.md")
+
+
+def _glob_re(pattern: str) -> re.Pattern[str]:
+    """A path glob as a regex: ``*`` and ``?`` stay inside one folder, ``**/`` spans any number of them."""
+    out, i = "", 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out, i = out + "(?:.*/)?", i + 3
+        elif pattern[i] == "*":
+            out, i = out + "[^/]*", i + 1
+        elif pattern[i] == "?":
+            out, i = out + "[^/]", i + 1
+        else:
+            out, i = out + re.escape(pattern[i]), i + 1
+    return re.compile(out + r"\Z")
+
+
+def all_files_at(vault: Path, sha: str) -> list[str]:
+    return _git(vault, "ls-tree", "-r", "--name-only", sha).splitlines()
+
+
+def find_prep_notes(files: Iterable[str], globs: Sequence[str] = DEFAULT_PREP_GLOBS) -> list[tuple[str, str]]:
+    """``(path, meeting slug)`` for every prep note ``globs`` match, leaving out meeting home files."""
+    pats = [_glob_re(g) for g in globs]
+    out: list[tuple[str, str]] = []
+    for rel in files:
+        if not rel.endswith(".md") or not any(p.match(rel) for p in pats):
+            continue
+        parts = rel.split("/")
+        stem = parts[-1][:-3]
+        parent = parts[-2] if len(parts) >= 2 else ""
+        if stem == parent or stem in ("meetings", "README", "index"):
+            continue  # a meeting's home file or a folder index, not a session
+        if _DATE_RE.fullmatch(stem) and parent not in ("meeting-prep", "archive"):
+            slug = parent  # meetings/<slug>/YYYY-MM-DD.md
+        else:
+            slug = _DATE_RE.sub("", stem).strip("-_ .") or "meeting"
+        out.append((rel, slug))
+    return out
+
+
+def _added_in(vault: Path, rel: str, head: str) -> str | None:
+    """The commit on ``head`` that first added ``rel``, or None."""
+    shas = _git(vault, "log", "--format=%H", "--diff-filter=A", head, "--", rel).split()
+    return shas[-1] if shas else None
+
+
+def _commit_day(vault: Path, sha: str) -> dt.date:
+    return dt.date.fromisoformat(_git(vault, "show", "-s", "--format=%cs", sha).strip())
+
 
 def _section(text: str, heading: str) -> str:
-    m = re.search(rf"^##\s+{re.escape(heading)}\s*$", text, re.MULTILINE)
+    m = re.search(rf"^##\s+{re.escape(heading)}\s*$", text, re.MULTILINE | re.IGNORECASE)
     if not m:
         return ""
     rest = text[m.end() :]
     nxt = re.search(r"^##\s+\S", rest, re.MULTILINE)
     return rest[: nxt.start()] if nxt else rest
+
+
+def _hindsight_links(text: str) -> tuple[list[str], str]:
+    """Wikilink targets from the post-meeting sections, else every link in the note, with which it was."""
+    for heading in _HINDSIGHT_SECTIONS:
+        links = [m.group(1) for m in _WIKILINK_RE.finditer(_section(text, heading))]
+        if links:
+            return links, "hindsight"
+    return [m.group(1) for m in _WIKILINK_RE.finditer(text)], "prep_links"
 
 
 def build_meeting_prep_items(
@@ -295,51 +388,79 @@ def build_meeting_prep_items(
     until: dt.date | None = None,
     max_items: int = 40,
     min_gold: int = 2,
+    prep_globs: Sequence[str] = DEFAULT_PREP_GLOBS,
+    allow_prep_links: bool = True,
 ) -> list[SetItem]:
-    """Hindsight F1 items: one per dated meeting note whose Synthesis links at least ``min_gold`` notes."""
+    """F1 items: one per past prep note that links at least ``min_gold`` KB notes, asked of the vault before it.
+
+    The vault is checked out at the parent of the commit that first added the prep note. Gold is what the
+    note's post-meeting sections (Synthesis, Decisions, Action Items...) link, as ``source_kind="hindsight"``.
+    A prep note with none of those (the older ``action-items/meeting-prep/`` files) falls back to every link
+    it holds, as ``source_kind="prep_links"``: the notes an earlier prep drew on, a weaker gold, kept apart in
+    the report. ``allow_prep_links=False`` drops those items.
+    """
     head = resolve_sha(vault, ref)
-    head_files = kb_files_at(vault, head)
-    dated = sorted((m.group(2), m.group(1), p) for p in head_files if (m := _DATED_MEETING_RE.match(p)))
+    preps = find_prep_notes(all_files_at(vault, head), prep_globs)
+    dated: list[tuple[str, str, str, str]] = []  # (day, slug, rel, added-in sha)
+    for rel, slug in preps:
+        added = _added_in(vault, rel, head)
+        if added is None:
+            continue
+        m = _DATE_RE.search(rel.rsplit("/", 1)[-1])
+        day = m.group(1) if m else _commit_day(vault, added).isoformat()
+        dated.append((day, slug, rel, added))
+    dated.sort()
     items: list[SetItem] = []
-    for day_s, slug, rel in reversed(dated):  # newest first
+    seen_ids: set[str] = set()
+    for day_s, slug, rel, added in reversed(dated):  # newest first
         day = dt.date.fromisoformat(day_s)
         if (since and day < since) or (until and day > until):
             continue
-        text = file_at(vault, head, rel)
-        synthesis = _section(text, "Synthesis")
-        links = [m.group(1) for m in _WIKILINK_RE.finditer(synthesis)]
-        if not links:
+        parent = _git(vault, "rev-parse", "--verify", "--quiet", f"{added}^").strip() if added else ""
+        as_of = parent[:12] if parent else sha_before(vault, day, head)
+        if not as_of:
             continue
-        as_of = sha_before(vault, day, head)
-        if as_of is None:
+        text = file_at(vault, head, rel)
+        links, source_kind = _hindsight_links(text)
+        if source_kind == "prep_links" and not allow_prep_links:
             continue
         files_then = kb_files_at(vault, as_of)
         stems = _stem_index(files_then)
-        home = f"knowledge-base/meetings/{slug}/{slug}.md"
+        homes = {h.format(slug=slug) for h in _PREP_HOMES}
         gold: list[str] = []
         for target in links:
             path = resolve_link(target, files_then, stems)
-            if path and path not in gold and path != rel and path != home:
+            if path and path not in gold and path != rel and path not in homes:
                 gold.append(path)
         if len(gold) < min_gold:
             continue
+        # Prep reads the meeting's home file and its last session anyway: what they link is trivial.
         trivial: set[str] = set()
-        if home in files_then:
-            home_links = {m.group(1) for m in _WIKILINK_RE.finditer(file_at(vault, as_of, home))}
-            trivial |= {p for t in home_links if (p := resolve_link(t, files_then, stems))}
-        trivial |= {p for p in gold if _DATED_MEETING_RE.match(p) and p.startswith(f"knowledge-base/meetings/{slug}/")}
+        then_all = set(all_files_at(vault, as_of))
+        earlier = [r for d, s, r, _a in dated if s == slug and d < day_s and r in then_all]
+        for src in [h for h in homes if h in then_all] + earlier[-1:]:
+            trivial |= {
+                p
+                for t in _WIKILINK_RE.finditer(file_at(vault, as_of, src))
+                if (p := resolve_link(t.group(1), files_then, stems))
+            }
+            trivial.add(src)
         name_m = _H1_RE.search(text)
         name = (name_m.group(1).split(" — ")[0].strip() if name_m else slug.replace("-", " ")) or slug
         att_m = _ATTENDEES_RE.search(text)
-        attendees = att_m.group(1).strip() if att_m else "not listed"
+        attendees = att_m.group(1).strip().strip("*").strip() if att_m else "not listed"
         question = (
             f'Scout is preparing the {day_s} session of the meeting "{name}". Attendees: {attendees}. '
             "Using the vault as it stands now, list the notes this prep should draw on: the projects, people, "
             "decisions and open threads most likely to come up. List up to 15 notes, most important first."
         )
+        item_id = f"s-prep-{norm_name(slug).replace(' ', '-')}-{day_s}"
+        while item_id in seen_ids:
+            item_id += "-b"
+        seen_ids.add(item_id)
         items.append(
             SetItem(
-                id=f"s-prep-{slug}-{day_s}",
+                id=item_id,
                 family="meeting_prep",
                 question=question,
                 as_of_sha=as_of,
@@ -350,7 +471,7 @@ def build_meeting_prep_items(
                 context_hint=f"{name} {attendees}",
                 project=slug,
                 exclude_paths=(rel,),
-                source_kind="hindsight",
+                source_kind=source_kind,
             )
         )
         if len(items) >= max_items:
@@ -399,19 +520,39 @@ def _mask_candidates(rel: str, text: str) -> list[MaskEdit]:
     return out
 
 
+def _placeholder_target(target: str) -> bool:
+    """Link targets that aren't notes: issue keys, template placeholders and examples."""
+    t = target.strip()
+    return bool(_ISSUE_KEY_RE.fullmatch(t) or _PLACEHOLDER_RE.search(t))
+
+
 def select_mask(
     files: Mapping[str, str],
     *,
     fraction: float = 0.07,
     max_edits: int = 120,
     seed: int = 20261128,
+    notes: Sequence[str] | None = None,
 ) -> list[MaskEdit]:
-    """Pick a deterministic sample of maskable links across ``files`` ({rel: text})."""
+    """Pick a deterministic sample of maskable links across ``files`` ({rel: text}).
+
+    With ``notes`` (the vault paths the run's reader can see), a link is maskable only when both its own
+    note and the note it points to are among them, so no item rests on a link the reader couldn't follow.
+    """
+    stems = _stem_index(notes) if notes is not None else {}
+    visible = set(notes) if notes is not None else None
     cands: list[MaskEdit] = []
     for rel in sorted(files):
         if any(s in rel for s in _MASK_SKIP) or _DATED_MEETING_RE.match(rel):
             continue
-        cands.extend(_mask_candidates(rel, files[rel]))
+        if visible is not None and rel not in visible:
+            continue
+        for e in _mask_candidates(rel, files[rel]):
+            if _placeholder_target(e.target):
+                continue
+            if notes is not None and resolve_link(e.target, notes, stems) is None:
+                continue  # points at no note this reader can see (hidden, local-only, or not a note)
+            cands.append(e)
     if not cands:
         return []
     k = min(max_edits, max(1, round(len(cands) * fraction)))
@@ -462,10 +603,21 @@ def _mask_scope(rel: str) -> str:
     return "knowledge-base/"
 
 
+def visible_kb_notes(vault: Path, sha: str, reader: str) -> list[str]:
+    """The KB notes ``reader`` can see at ``sha``, by the same labels the run applies."""
+    from scout.kb.read import visibility_map
+
+    with tempfile.TemporaryDirectory(prefix="track-s-") as tmp:
+        root = export_tree(vault, sha, Path(tmp) / "vault")
+        labels = visibility_map(root, reader, ["knowledge-base/**"], who="track-s-build")
+    return sorted(p for p in labels if p.endswith(".md"))
+
+
 def build_link_recovery_items(
     vault: Path,
     *,
     ref: str = "HEAD",
+    reader: str = "autonomous",
     fraction: float = 0.07,
     max_edits: int = 120,
     seed: int = 20261128,
@@ -473,8 +625,9 @@ def build_link_recovery_items(
 ) -> list[SetItem]:
     """F3 items: one shared masked snapshot, one item per scope folder with at least ``min_gold`` masked links."""
     sha = resolve_sha(vault, ref)
-    files = {rel: file_at(vault, sha, rel) for rel in kb_files_at(vault, sha)}
-    edits = select_mask(files, fraction=fraction, max_edits=max_edits, seed=seed)
+    notes = visible_kb_notes(vault, sha, reader)
+    files = {rel: file_at(vault, sha, rel) for rel in notes}
+    edits = select_mask(files, fraction=fraction, max_edits=max_edits, seed=seed, notes=notes)
     mask_id = f"mask-{sha}-{seed}"
     by_scope: dict[str, list[MaskEdit]] = {}
     for e in edits:
@@ -575,6 +728,38 @@ def _people_of(graph: Any, ents: Mapping[str, _Ent]) -> dict[str, set[str]]:
     return out
 
 
+def find_hubs(
+    people_of: Mapping[str, set[str]],
+    active: set[str],
+    *,
+    hub_share: float = 0.25,
+    min_hub_projects: int = 4,
+    exclude_people: Sequence[str] = (),
+) -> tuple[set[str], int]:
+    """People linked to so many active projects that they connect everything, and the cutoff used.
+
+    A person on more than ``max(min_hub_projects, hub_share × active projects)`` active projects is a hub
+    (the vault's owner usually is); so is anyone named in ``exclude_people``.
+    """
+    cutoff = max(min_hub_projects, int(hub_share * len(active)))
+    degree: dict[str, int] = {}
+    for proj, people in people_of.items():
+        if proj in active:
+            for person in people:
+                degree[person] = degree.get(person, 0) + 1
+    named = {norm_name(p) for p in exclude_people}
+    hubs = {p for p, n in degree.items() if n > cutoff or norm_name(p) in named}
+    return hubs, cutoff
+
+
+def _hub_clause(hubs: set[str], cutoff: int) -> str:
+    if not hubs:
+        return ""
+    names = sorted(hubs)
+    shown = ", ".join(names[:6]) + (f" and {len(names) - 6} others" if len(names) > 6 else "")
+    return f" Count only people on {cutoff} or fewer active projects, which leaves out {shown}."
+
+
 def build_computed_items(
     vault: Path,
     *,
@@ -582,9 +767,16 @@ def build_computed_items(
     reader: str = "autonomous",
     max_per_family: int = 10,
     min_gold: int = 2,
+    max_gold: int = 12,
+    hub_share: float = 0.25,
+    exclude_people: Sequence[str] = (),
     seed: int = 20261128,
 ) -> list[SetItem]:
-    """F2 and F6 items whose gold is enumerated from the typed relationships the run's reader can see."""
+    """F2 and F6 items whose gold is enumerated from the typed relationships the run's reader can see.
+
+    Items whose answer has more than ``max_gold`` entries are dropped: a question whose answer is most of
+    the vault can't tell the arms apart. The people questions leave out hubs (:func:`find_hubs`) and say so.
+    """
     from scout.kb.read import load_graph
 
     sha = resolve_sha(vault, ref)
@@ -612,6 +804,9 @@ def build_computed_items(
             source_kind="computed",
         )
 
+    def fits(gold: Sequence[str]) -> bool:
+        return min_gold <= len(gold) <= max_gold
+
     # F2 blast radius: what a slip reaches, directly or through a dependency chain.
     blast: list[SetItem] = []
     for name in sorted(ents):
@@ -619,7 +814,7 @@ def build_computed_items(
             continue
         reach = _affected_by(graph, name)
         live = [n for n in reach if n in ents and not _DONE_STATUS.search(ents[n].status)]
-        if len(live) >= min_gold:
+        if fits(live):
             blast.append(
                 mk(
                     "blast_radius",
@@ -634,19 +829,22 @@ def build_computed_items(
     items.extend(blast[:max_per_family])
 
     active = {n for n, e in ents.items() if e.type == "project" and not _DONE_STATUS.search(e.status)}
-    # F6 shared stakeholder: other active projects that share a person with this one.
+    hubs, cutoff = find_hubs(people_of, active, hub_share=hub_share, exclude_people=exclude_people)
+    hub_note = _hub_clause(hubs, cutoff)
+    people = {p: s - hubs for p, s in people_of.items()}
+    # F6 shared stakeholder: other active projects that share a non-hub person with this one.
     shared: list[SetItem] = []
     for proj in sorted(active):
-        mine = people_of.get(proj, set())
+        mine = people.get(proj, set())
         if not mine:
             continue
-        others = sorted(p for p in active - {proj} if people_of.get(p, set()) & mine)
-        if len(others) >= min_gold:
+        others = sorted(p for p in active - {proj} if people.get(p, set()) & mine)
+        if fits(others):
             shared.append(
                 mk(
                     "shared_stakeholder",
                     proj,
-                    f"Which other active projects share at least one person with {proj}? List every one.",
+                    f"Which other active projects share at least one person with {proj}?{hub_note} List every one.",
                     others,
                     proj,
                 )
@@ -654,18 +852,18 @@ def build_computed_items(
     rng.shuffle(shared)
     items.extend(shared[:max_per_family])
 
-    # F6 touched both: people with a typed edge to both of two projects.
+    # F6 touched both: non-hub people with a typed edge to both of two projects.
     both: list[SetItem] = []
-    projs = sorted(people_of)
+    projs = sorted(people)
     for i, a in enumerate(projs):
         for b in projs[i + 1 :]:
-            common = sorted(people_of[a] & people_of[b])
-            if len(common) >= min_gold:
+            common = sorted(people[a] & people[b])
+            if fits(common):
                 both.append(
                     mk(
                         "touched_both",
                         f"{a}-{b}",
-                        f"Who has worked on both {a} and {b}? List every person.",
+                        f"Who has worked on both {a} and {b}?{hub_note} List every person.",
                         common,
                         a,
                     )
@@ -706,79 +904,160 @@ def build_track_s_prompt(item: SetItem, arm: ArmSpec) -> str:
     )
 
 
+_ITEMS_HEADER_RE = re.compile(r"^[\s#>*_`]*items[\s*_`]*:?[\s*_`]*$", re.IGNORECASE)
+_BULLET_RE = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s+(.+?)\s*$")
+_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)\s]+)\)")
+_ARROW_RE = re.compile(r"\s*(?:->|→|=>|⟶|—>)\s*")
+_TAIL_RE = re.compile(r"\s+[—–]\s+|\s+-\s+|:\s|\s+\(|\s+—|\s+–")
+
+
+def _clean(text: str) -> str:
+    t = _MD_LINK_RE.sub(lambda m: m.group(2), text)
+    t = re.sub(r"\*\*|__|`", "", t)
+    return t.strip().strip("*_").strip()
+
+
 def parse_listed(answer: str) -> list[str]:
-    """The ``- `` lines after the last ``Items:`` line, with any trailing explanation cut off."""
-    idx = answer.rfind("Items:")
-    block = answer[idx + len("Items:") :] if idx >= 0 else answer
+    """The bullet lines after the last ``Items:`` heading, cleaned of markdown and trailing explanations.
+
+    The heading may be bold or a markdown heading; bullets may be ``-``, ``*``, ``•`` or numbered; a pair
+    may use ``->``, ``→`` or ``=>``. Without a heading, every bullet in the answer counts.
+    """
+    lines = answer.splitlines()
+    start = max((i for i, ln in enumerate(lines) if _ITEMS_HEADER_RE.match(ln)), default=-1)
     out: list[str] = []
-    for line in block.splitlines():
-        m = re.match(r"^\s*(?:[-*]|\d+[.)])\s+(.+?)\s*$", line)
+    for line in lines[start + 1 :]:
+        m = _BULLET_RE.match(line)
         if not m:
             continue
-        text = m.group(1)
-        if " -> " not in text:
-            text = re.split(r"\s+[—–]\s+|\s+-\s+|:\s", text, maxsplit=1)[0]
-        out.append(text.strip().strip("`").strip())
+        text = _clean(m.group(1))
+        parts = _ARROW_RE.split(text, maxsplit=1)
+        if len(parts) == 2:
+            right = _TAIL_RE.split(parts[1], maxsplit=1)[0]
+            text = f"{_clean(parts[0])} -> {_clean(right)}"
+        else:
+            text = _clean(_TAIL_RE.split(text, maxsplit=1)[0])
+        out.append(text)
     return list(dict.fromkeys(t for t in out if t))
 
 
-def _norm_pair(text: str) -> tuple[str, str] | None:
-    if "->" not in text:
-        return None
-    left, right = text.split("->", 1)
-    return (left.strip().strip("`").strip(), norm_name(right))
+def _strip_kb(path: str) -> str:
+    p = path.strip().strip("/")
+    if p.startswith("[[") and p.endswith("]]"):
+        p = p[2:-2].split("|", 1)[0]
+    p = p.removeprefix("./").removeprefix("knowledge-base/")
+    return p if p.endswith(".md") else f"{p}.md"
+
+
+def _path_matches(listed: str, gold_paths: Sequence[str]) -> list[str]:
+    """Gold paths ``listed`` names: by path (with or without ``knowledge-base/`` and ``.md``) or by a stem
+    that only one gold path has."""
+    want = _strip_kb(listed)
+    by_path = [g for g in gold_paths if _strip_kb(g) == want or _strip_kb(g).endswith("/" + want)]
+    if by_path:
+        return by_path
+    stem = norm_name(listed)
+    by_stem = [g for g in gold_paths if norm_name(g) == stem]
+    return by_stem if len(by_stem) == 1 else []
+
+
+def _split_pair(text: str) -> tuple[str, str] | None:
+    parts = _ARROW_RE.split(text, maxsplit=1)
+    return (parts[0].strip(), parts[1].strip()) if len(parts) == 2 else None
 
 
 def match_listed(item: SetItem, listed: Sequence[str]) -> tuple[set[str], list[str]]:
-    """Which gold entries ``listed`` hit, and the listed lines that hit nothing (for judging)."""
+    """Which gold entries ``listed`` hit, and the listed lines that hit nothing."""
     hit: set[str] = set()
     extra: list[str] = []
-    if item.gold_kind == "pair":
-        gold = {g: _norm_pair(g) for g in item.gold}
-        for line in listed:
-            np = _norm_pair(line)
-            matched = [g for g, gp in gold.items() if np and gp and np[0] == gp[0] and np[1] == gp[1]]
-            hit.update(matched)
-            if not matched:
-                extra.append(line)
-        return hit, extra
-    if item.gold_kind == "path":
-        keys = {g: {g, norm_name(g)} for g in item.gold}
-    else:
-        keys = {g: {norm_name(g), *(norm_name(a) for a in item.aliases.get(g, ()))} for g in item.gold}
     for line in listed:
-        cand = {line.strip(), norm_name(line)}
-        matched = [g for g, ks in keys.items() if cand & ks]
+        matched: list[str] = []
+        if item.gold_kind == "pair":
+            lp = _split_pair(line)
+            if lp:
+                for g in item.gold:
+                    gp = _split_pair(g)
+                    if gp and _path_matches(lp[0], [gp[0]]) and norm_name(lp[1]) == norm_name(gp[1]):
+                        matched.append(g)
+        elif item.gold_kind == "path":
+            matched = _path_matches(line, item.gold)
+        else:
+            cand = norm_name(line)
+            matched = [g for g in item.gold if cand in {norm_name(g), *(norm_name(a) for a in item.aliases.get(g, ()))}]
         hit.update(matched)
         if not matched:
             extra.append(line)
     return hit, extra
 
 
-def score_set_answer(item: SetItem, answer: str, *, visible: Mapping[str, str] | None = None) -> dict[str, Any]:
-    """Gold recall, recall beyond the trivial notes, precision and leaks for one sample."""
+def _pair_extra_verdict(line: str, vault_root: Path) -> str:
+    """For a listed missing link that isn't in the mask: ``wrong`` or ``unverifiable``.
+
+    The vault already has real missing links the mask didn't make, so a pair is only *wrong* when its note
+    doesn't exist, already links the target, or never mentions it. A note that names the target without a
+    link may well be a real missing link: it's left out of precision rather than counted against it.
+    """
+    lp = _split_pair(line)
+    if not lp:
+        return "wrong"
+    rel = "knowledge-base/" + _strip_kb(lp[0])
+    note = vault_root / rel
+    if not note.is_file():
+        return "wrong"
+    text = note.read_text(encoding="utf-8", errors="replace")
+    target = norm_name(lp[1])
+    if not target or target in {norm_name(m.group(1)) for m in _WIKILINK_RE.finditer(text)}:
+        return "wrong"
+    flat = re.sub(r"[-_\s]+", " ", text.lower())
+    return "unverifiable" if target in flat else "wrong"
+
+
+def score_set_answer(
+    item: SetItem,
+    answer: str,
+    *,
+    visible: Mapping[str, str] | None = None,
+    vault_root: Path | None = None,
+) -> dict[str, Any]:
+    """Gold recall, recall beyond the trivial notes, precision and leaks for one sample.
+
+    For link recovery with ``vault_root`` (the masked worktree), listed links that may be real missing
+    links outside the mask are counted in ``n_unverifiable`` and left out of ``precision``;
+    ``precision_raw`` keeps the plain hits / listed.
+    """
     listed = parse_listed(answer)
     hit, extra = match_listed(item, listed)
     gold = set(item.gold)
     nontrivial = gold - set(item.trivial)
     recall = len(hit) / len(gold) if gold else 0.0
-    precision = len(hit) / len(listed) if listed else 0.0
+    unverifiable = (
+        [e for e in extra if _pair_extra_verdict(e, vault_root) == "unverifiable"]
+        if item.gold_kind == "pair" and vault_root is not None
+        else []
+    )
+    judged = len(listed) - len(unverifiable)
+    precision = len(hit) / judged if judged else 0.0
     leaks: list[str] = []
     if visible is not None:
         for line in listed:
-            path = line.split("->", 1)[0].strip()
-            if path.startswith("knowledge-base/") and path.endswith(".md") and path not in visible:
-                leaks.append(path)
+            left = _split_pair(line)
+            path = "knowledge-base/" + _strip_kb(left[0] if left else line)
+            if ("/" in line or line.endswith(".md")) and (vault_root is None or (vault_root / path).is_file()):
+                if path not in visible:
+                    leaks.append(path)
     return {
         "recall": round(recall, 4),
         "nontrivial_recall": round(len(hit & nontrivial) / len(nontrivial), 4) if nontrivial else None,
         "precision": round(precision, 4),
+        "precision_raw": round(len(hit) / len(listed), 4) if listed else 0.0,
         "f1": round(2 * recall * precision / (recall + precision), 4) if recall + precision else 0.0,
         "n_gold": len(gold),
         "n_listed": len(listed),
+        "n_unverifiable": len(unverifiable),
         "hits": sorted(hit),
         "missed": sorted(gold - hit),
         "extra": extra,
+        "unverifiable": unverifiable,
         "leaked_paths": leaks,
     }
 
@@ -896,10 +1175,15 @@ def run_track_s(
                             # A session that crashed or printed nothing is not a zero-recall answer.
                             aborted = {"reason": "empty answer"}
                         calls = metrics.calls if metrics is not None else ()
-                        grade = score_set_answer(item, ans, visible=visible) if aborted is None else {}
+                        grade = (
+                            score_set_answer(item, ans, visible=visible, vault_root=prep.path)
+                            if aborted is None
+                            else {}
+                        )
                         rec: dict[str, Any] = {
                             "id": item.id,
                             "family": item.family,
+                            "source_kind": item.source_kind,
                             "project": item.project,
                             "rep": rep,
                             "arm": arm.id,
@@ -958,6 +1242,9 @@ def _arm_summary(arm: ArmSpec, rows: Sequence[Mapping[str, Any]]) -> dict[str, A
                 "precision": _mean([float(r["precision"]) for r in fr]),
                 "median_tokens": float(statistics.median(int(r["total_tokens"]) for r in fr)),
             }
+    by_source: dict[str, float | None] = {}
+    for src in sorted({str(r.get("source_kind") or "") for r in scored}):
+        by_source[src] = _mean([float(r["recall"]) for r in scored if str(r.get("source_kind") or "") == src])
     verbs: dict[str, int] = {}
     for r in scored:
         for v, n in (r.get("graph_verb_breakdown") or {}).items():
@@ -977,6 +1264,7 @@ def _arm_summary(arm: ArmSpec, rows: Sequence[Mapping[str, Any]]) -> dict[str, A
         "verb_calls": verbs,
         "leaks": sum(len(r.get("leaked_paths") or ()) for r in scored),
         "by_family": by_family,
+        "recall_by_source_kind": by_source,
     }
 
 

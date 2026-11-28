@@ -484,6 +484,7 @@ def _cmd_track_s_build(args: argparse.Namespace) -> int:
     import json
 
     from .track_s import (
+        DEFAULT_PREP_GLOBS,
         build_computed_items,
         build_link_recovery_items,
         build_meeting_prep_items,
@@ -504,14 +505,28 @@ def _cmd_track_s_build(args: argparse.Namespace) -> int:
                 ref=args.ref,
                 since=date.fromisoformat(args.since) if args.since else None,
                 max_items=args.max_items,
+                prep_globs=tuple(args.prep_glob) if args.prep_glob else DEFAULT_PREP_GLOBS,
+                allow_prep_links=not args.hindsight_only,
             )
         if "mask" in families:
             items += build_link_recovery_items(
-                vault, ref=args.ref, fraction=args.fraction, max_edits=args.max_edits, seed=args.seed
+                vault,
+                ref=args.ref,
+                reader=args.reader,
+                fraction=args.fraction,
+                max_edits=args.max_edits,
+                seed=args.seed,
             )
         if "questions" in families:
             items += build_computed_items(
-                vault, ref=args.ref, reader=args.reader, max_per_family=args.max_items, seed=args.seed
+                vault,
+                ref=args.ref,
+                reader=args.reader,
+                max_per_family=args.max_items,
+                max_gold=args.max_gold,
+                hub_share=args.hub_share,
+                exclude_people=tuple(args.exclude_person or ()),
+                seed=args.seed,
             )
         written = write_set_items(Path(args.out), items)
     except (PermissionError, ValueError, subprocess.CalledProcessError) as exc:
@@ -911,7 +926,26 @@ def main(argv: list[str] | None = None) -> int:
     ts.add_argument("--fraction", type=float, default=0.07, help="mask: share of maskable links to hide")
     ts.add_argument("--max-edits", type=int, default=120, help="mask: cap on masked links")
     ts.add_argument("--seed", type=int, default=20261128, help="seed for masking and sampling")
-    ts.add_argument("--reader", default="autonomous", help="reader whose view the computed gold uses")
+    ts.add_argument("--reader", default="autonomous", help="reader whose view the masks and computed gold use")
+    ts.add_argument(
+        "--prep-glob",
+        action="append",
+        help="meeting prep: where dated prep notes live (repeatable; default meetings/*/, "
+        "knowledge-base/meetings/*/ and action-items/meeting-prep/**/)",
+    )
+    ts.add_argument(
+        "--hindsight-only",
+        action="store_true",
+        help="meeting prep: drop prep notes with no post-meeting section instead of using their own links as gold",
+    )
+    ts.add_argument("--max-gold", type=int, default=12, help="computed questions: drop items with a larger answer")
+    ts.add_argument(
+        "--hub-share",
+        type=float,
+        default=0.25,
+        help="people questions: leave out people on more than this share of active projects (default 0.25)",
+    )
+    ts.add_argument("--exclude-person", action="append", help="people questions: also leave out this person")
     ts.set_defaults(func=_cmd_track_s_build)
     ts_run = sub.add_parser(
         "track-s-run",

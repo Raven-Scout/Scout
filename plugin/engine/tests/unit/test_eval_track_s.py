@@ -425,3 +425,172 @@ def test_track_s_cli_builds_and_runs_end_to_end(tmp_path: Path, capsys: pytest.C
     links = next(r for r in report["items_by_arm"]["a"] if r["family"] == "link_recovery")
     assert links["recall"] == 1.0 and links["aborted"] is None
     assert not list((Path(report["run_dir"]) / "_worktrees").glob("wt-*"))
+
+
+# ----- fixes after the first build on a real vault ------------------------------------
+
+
+def _add_legacy_prep(vault: Path) -> tuple[str, str]:
+    """Two older flat prep notes: one with only prep links, one with a Decisions section."""
+    _write(
+        vault,
+        "action-items/meeting-prep/2026-10-10-billing-review.md",
+        "# Billing Review\nAttendees: Priya Shah\n\n## Context\n- [[billing]] status\n- [[widgets]] dependency\n",
+    )
+    _git(vault, "add", ".")
+    _git(vault, "commit", "-q", "-m", "prep 1", date="2026-10-10T08:00:00+00:00")
+    first_parent = _git(vault, "rev-parse", "--short=12", "HEAD~1")
+    _write(
+        vault,
+        "action-items/meeting-prep/2026-10-17-billing-review.md",
+        "# Billing Review\n**Attendees:** Priya Shah, Sam Lee\n\n## Context\n- [[billing]]\n\n"
+        "## Decisions\n- Wait on [[gateway]]; ask [[sam-lee]].\n",
+    )
+    _git(vault, "add", ".")
+    _git(vault, "commit", "-q", "-m", "prep 2", date="2026-10-17T08:00:00+00:00")
+    second_parent = _git(vault, "rev-parse", "--short=12", "HEAD~1")
+    return first_parent, second_parent
+
+
+def test_prep_notes_are_found_in_every_layout() -> None:
+    from tests.eval.harness.track_s import find_prep_notes
+
+    found = dict(
+        find_prep_notes(
+            [
+                "knowledge-base/meetings/widgets-sync/widgets-sync.md",
+                "knowledge-base/meetings/widgets-sync/2026-10-08.md",
+                "meetings/team-standup/2026-10-09.md",
+                "meetings/meetings.md",
+                "action-items/meeting-prep/2026-10-10-billing-review.md",
+                "action-items/meeting-prep/archive/billing_review_2026-09-01.md",
+                "action-items/action-items-2026-10-10.md",
+            ]
+        )
+    )
+    assert found == {
+        "knowledge-base/meetings/widgets-sync/2026-10-08.md": "widgets-sync",
+        "meetings/team-standup/2026-10-09.md": "team-standup",
+        "action-items/meeting-prep/2026-10-10-billing-review.md": "billing-review",
+        "action-items/meeting-prep/archive/billing_review_2026-09-01.md": "billing_review",
+    }
+    assert find_prep_notes(["notes/prep/2026-10-01-x.md"], ["notes/prep/*.md"]) == [("notes/prep/2026-10-01-x.md", "x")]
+
+
+def test_meeting_prep_reads_older_action_items_prep_notes(tmp_path: Path) -> None:
+    vault, _first, _head = _make_vault(tmp_path)
+    first_parent, second_parent = _add_legacy_prep(vault)
+    items = {it.id: it for it in build_meeting_prep_items(vault)}
+    # The newer note has a Decisions section: hindsight gold, and the earlier session is trivial.
+    newer = items["s-prep-billing-review-2026-10-17"]
+    assert newer.source_kind == "hindsight"
+    assert newer.as_of_sha == second_parent
+    assert newer.gold == ("knowledge-base/projects/gateway/gateway.md", "knowledge-base/people/sam-lee.md")
+    assert newer.exclude_paths == ("action-items/meeting-prep/2026-10-17-billing-review.md",)
+    assert "Priya Shah, Sam Lee" in newer.question
+    # The older note has prep only: its own links are the gold, marked as the weaker kind.
+    older = items["s-prep-billing-review-2026-10-10"]
+    assert older.source_kind == "prep_links" and older.as_of_sha == first_parent
+    assert set(older.gold) == {
+        "knowledge-base/projects/billing/billing.md",
+        "knowledge-base/projects/widgets/widgets.md",
+    }
+    assert "s-prep-widgets-sync-2026-10-08" in items
+    strict = {it.id for it in build_meeting_prep_items(vault, allow_prep_links=False)}
+    assert "s-prep-billing-review-2026-10-10" not in strict and "s-prep-billing-review-2026-10-17" in strict
+    only_legacy = build_meeting_prep_items(vault, prep_globs=["action-items/meeting-prep/**/*.md"])
+    assert {it.project for it in only_legacy} == {"billing-review"}
+
+
+def test_people_questions_leave_out_hub_people(tmp_path: Path) -> None:
+    from tests.eval.harness.track_s import find_hubs
+
+    people_of = {f"p{i}": {"Owner", f"Person {i}"} for i in range(10)}
+    people_of["p0"].add("Person 1")
+    hubs, cutoff = find_hubs(people_of, set(people_of), hub_share=0.25)
+    assert hubs == {"Owner"} and cutoff == 4
+    assert find_hubs(people_of, set(people_of), exclude_people=["person-3"])[0] == {"Owner", "Person 3"}
+
+    vault, _first, _head = _make_vault(tmp_path)
+    items = {it.id: it for it in build_computed_items(vault, exclude_people=["Sam Lee"])}
+    # Without Sam, widgets shares people with billing only: too small an answer to ask.
+    assert "s-shared-stakeholder-widgets" not in items
+    both = items["s-touched-both-billing-widgets"]
+    assert both.gold == ("Alex Chen", "Priya Shah") and "leaves out Sam Lee" in both.question
+    # A question whose answer is too large to tell arms apart is dropped.
+    assert not [it for it in build_computed_items(vault, max_gold=1) if it.family == "blast_radius"]
+
+
+def test_masks_skip_hidden_notes_issue_keys_and_placeholders(tmp_path: Path) -> None:
+    vault, _first, _head = _make_vault(tmp_path)
+    _write(
+        vault,
+        "knowledge-base/projects/widgets/knowledge/widgets-notes.md",
+        "# Widgets notes\nSee [[PROJ-1234]], [[<person>]], [[example-note]], [[missing-note]], "
+        "[[secret-plan]] and [[gateway]].\n",
+    )
+    _write(
+        vault,
+        "knowledge-base/projects/widgets/knowledge/secret-plan.md",
+        "---\nvisibility: private\n---\n# Secret plan\nSee [[billing]].\n",
+    )
+    _git(vault, "add", ".")
+    _git(vault, "commit", "-q", "-m", "notes", date="2026-10-20T08:00:00+00:00")
+
+    def targets(reader: str) -> set[str]:
+        items = build_link_recovery_items(vault, reader=reader, fraction=1.0, max_edits=100, seed=1, min_gold=1)
+        return {e.target for e in items[0].mask_edits if e.path.endswith("widgets-notes.md")} if items else set()
+
+    assert targets("autonomous") == {"secret-plan", "gateway"}
+    # A reader that can't see the private note gets no mask on it or in it.
+    elsewhere = build_link_recovery_items(vault, reader="elsewhere", fraction=1.0, max_edits=100, seed=1, min_gold=1)
+    edits = elsewhere[0].mask_edits
+    assert not any(e.target == "secret-plan" or e.path.endswith("secret-plan.md") for e in edits)
+    assert any(e.target == "gateway" and e.path.endswith("widgets-notes.md") for e in edits)
+
+
+def test_scoring_forgives_format_and_unverifiable_links(tmp_path: Path) -> None:
+    answer = (
+        "Here is what I found.\n\n**Items:**\n"
+        "1. **`projects/billing/billing.md`** (slipping)\n"
+        "• [gateway](knowledge-base/projects/gateway/gateway.md)\n"
+        "- widgets: the main project\n"
+    )
+    assert parse_listed(answer) == [
+        "projects/billing/billing.md",
+        "knowledge-base/projects/gateway/gateway.md",
+        "widgets",
+    ]
+    item = SetItem(
+        id="s-p",
+        family="meeting_prep",
+        question="q",
+        as_of_sha="abc",
+        gold=(
+            "knowledge-base/projects/billing/billing.md",
+            "knowledge-base/projects/gateway/gateway.md",
+            "knowledge-base/projects/widgets/widgets.md",
+        ),
+        gold_kind="path",
+    )
+    s = score_set_answer(item, answer)
+    assert s["recall"] == 1.0 and s["precision"] == 1.0
+
+    root = tmp_path / "wt"
+    _write(root, "knowledge-base/people/priya-shah.md", "# Priya\nWorks on billing with Alex Chen and [[widgets]].\n")
+    pair = SetItem("s-l", "link_recovery", "q", "abc", ("knowledge-base/people/priya-shah.md -> billing",), "pair")
+    links = (
+        "## Items\n"
+        "- people/priya-shah.md → [[billing]] (named in the text)\n"
+        "- knowledge-base/people/priya-shah.md => Alex Chen\n"
+        "- knowledge-base/people/priya-shah.md -> widgets\n"
+        "- knowledge-base/people/priya-shah.md -> Mars Base\n"
+        "- knowledge-base/people/ghost.md -> billing\n"
+    )
+    s = score_set_answer(pair, links, vault_root=root)
+    assert s["recall"] == 1.0
+    # Alex Chen is named but unlinked, so it may be a real missing link: left out of precision.
+    assert s["unverifiable"] == ["knowledge-base/people/priya-shah.md -> Alex Chen"]
+    # Already linked, never mentioned, and a missing note are all wrong: 1 hit of 4 judged.
+    assert s["precision"] == 0.25 and s["precision_raw"] == 0.2
+    assert s["leaked_paths"] == []
