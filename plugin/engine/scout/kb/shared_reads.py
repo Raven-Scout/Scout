@@ -206,6 +206,14 @@ class ExcerptIndex:
     def __init__(self, records: Mapping[str, Sequence[SharedRecord]]) -> None:
         self._notes = [_Indexed(key, group) for key, group in records.items()]
 
+    def digest(self) -> str:
+        """A hash of everything :meth:`hits` compares a text against: each shared note's key, words and sentences."""
+        h = hashlib.sha256()
+        for note in self._notes:
+            h.update(f"{note.key}\0{len(note.flat)}\0{note.lengths}\0".encode())
+            h.update(note.flat.tobytes())
+        return h.hexdigest()
+
     def hits(self, text: str) -> list[tuple[str, int, int]]:
         """``(record key, first line, last line)``, 0-based, of every quote and close rewording in ``text``."""
         if not self._notes:
