@@ -980,6 +980,28 @@ class Scanner:
         """Whether the path ``rel`` itself names a hidden file."""
         return bool(find_mentions(rel, self.terms, allow_markers=False))
 
+    def digest(self) -> str:
+        """A hash of everything :meth:`lines` and :meth:`names` read besides the text: every note's forms, link
+        keys and patterns, the pre-checks, the quotes of shared notes, and the hidden paths a link may not name.
+
+        So two scanners with the same digest find the same lines in every text (:func:`scan_fingerprint`). It is
+        worked out from what was derived, not from the hidden files: a hidden note's body counts only through what
+        it adds (a ``source:`` note's quotes), and a note edited without changing its names changes nothing here.
+        """
+
+        def src(pattern: re.Pattern[str] | None) -> list[Any] | None:
+            return None if pattern is None else [pattern.pattern, pattern.flags]
+
+        h = hashlib.sha256()
+        for n in self.terms.notes:
+            row: list[Any] = [n.path, n.slug, list(n.terms), sorted(n.link_keys), n.link_path, src(n.pattern)]
+            row += [src(n.bare_pattern), n.prefixes, n.bare_prefixes]
+            h.update(json.dumps(["note", *row]).encode() + b"\n")
+        excerpts = self.terms.excerpts.digest() if self.terms.excerpts is not None else None
+        h.update(json.dumps(["any", src(self.terms.any_term), src(self.terms.any_bare), excerpts]).encode() + b"\n")
+        h.update(json.dumps(["hidden", sorted(self.hidden)]).encode())
+        return h.hexdigest()
+
 
 # ----- redaction -----------------------------------------------------------------------------
 
@@ -1457,13 +1479,16 @@ def visibility(vault: Path, head: str, delegate: str, blobs: BlobReader) -> Visi
     return out
 
 
-def scan_fingerprint(vault: Path, policy: Policy, entries: Sequence[TreeEntry], hidden: Collection[str]) -> str:
+def scan_fingerprint(vault: Path, policy: Policy, scan: Scanner) -> str:
     """Everything a file's scan result depends on besides its own path and bytes.
 
-    The engine version and matcher settings, the delegate's policy, each hidden
-    file (path, blob, mode), the shared-reads ledger, and each hidden note on
-    disk (its ``source:`` adds shared notes). Equal fingerprints mean a file with
-    the same path and blob scans the same, so its result can be reused.
+    The engine version and matcher settings, the delegate's policy, what ``scan``
+    matches (:meth:`Scanner.digest`: the names, aliases, titles, link keys and
+    paths of the hidden files, and the quotes of shared notes), and the
+    shared-reads ledger. Equal fingerprints mean a file with the same path and
+    blob scans the same, so its result can be reused. A hidden note's body isn't
+    in it: editing a private daily note leaves every result usable, while a new
+    alias, title or hidden path changes it and every file is scanned again.
     """
     from scout.kb import outbound
 
@@ -1472,12 +1497,7 @@ def scan_fingerprint(vault: Path, policy: Policy, entries: Sequence[TreeEntry], 
     settings.append(outbound.UNACCENT_MULTI_WORD)
     h.update(json.dumps([*settings, MAX_PASSES, SCHEMA_VERSION]).encode())
     h.update(json.dumps(policy.to_json(), sort_keys=True, default=str).encode())
-    by_path = {e.path: e for e in entries}
-    for rel in sorted(hidden):
-        e = by_path[rel]
-        h.update(f"h\0{rel}\0{e.sha}\0{e.mode}\n".encode())
-        if rel.lower().endswith(".md"):
-            h.update(f"d\0{_stat_key(vault / rel)}\n".encode())
+    h.update(f"s\0{scan.digest()}\n".encode())
     ledger = vault / outbound.LEDGER_DIR
     with contextlib.suppress(OSError):
         for f in sorted(ledger.iterdir()):
@@ -1505,6 +1525,83 @@ def _stat_key(path: Path) -> str:
     except OSError:
         return "-"
     return f"{st.st_size}:{st.st_mtime_ns}"
+
+
+# ----- scanning across cores --------------------------------------------------------------------------------
+
+SCAN_WORKERS_ENV = "SCOUT_DELEGATE_SCAN_WORKERS"  # processes that scan text files; 0 or 1 scans in this one
+MAX_SCAN_WORKERS = 8
+# Below this many text files to scan, starting the processes costs more than they save: scan them here.
+PARALLEL_MIN_FILES = 200
+
+_WORKER_SCAN: Scanner | None = None  # the scanner a worker process scans with (_init_worker)
+
+
+def scan_workers() -> int:
+    """How many processes scan text files: :data:`SCAN_WORKERS_ENV` when set to a number, else one per core up to
+    :data:`MAX_SCAN_WORKERS`. 1 means no other process."""
+    raw = os.environ.get(SCAN_WORKERS_ENV, "").strip()
+    if raw.isdigit():
+        return max(int(raw), 1)
+    return max(min(os.cpu_count() or 1, MAX_SCAN_WORKERS), 1)
+
+
+def _text_scan(scan: Scanner, rel: str, text: str) -> tuple[str, int] | None | bool:
+    """The scan :func:`_mirror_file` and :func:`check_tree` run on a text file, and nothing else: for a note or a
+    line file :func:`redact_lines`, for any other text file whether a line names a hidden file."""
+    low = rel.lower()
+    markdown = low.endswith(".md")
+    if markdown or low.endswith(LINE_FILES):
+        return redact_lines(text, scan, markdown=markdown, rel=rel)
+    return bool(scan.lines(text, rel))
+
+
+def _init_worker(scan: Scanner) -> None:
+    global _WORKER_SCAN
+    _WORKER_SCAN = scan
+
+
+def _scan_batch(lines_only: bool, batch: list[tuple[str, str]]) -> list[tuple[str, int] | None | bool]:
+    assert _WORKER_SCAN is not None
+    if lines_only:
+        return [bool(_WORKER_SCAN.lines(text, rel)) for rel, text in batch]
+    return [_text_scan(_WORKER_SCAN, rel, text) for rel, text in batch]
+
+
+def _scan_texts(
+    scan: Scanner, files: list[tuple[str, str]], *, lines_only: bool = False
+) -> list[tuple[str, int] | None | bool] | None:
+    """:func:`_text_scan` of each ``(path, text)``, in order, on :func:`scan_workers` processes; with
+    ``lines_only``, whether :meth:`Scanner.lines` finds a line (what :func:`check_tree` asks).
+
+    None when it isn't worth it (one worker, or fewer than :data:`PARALLEL_MIN_FILES` files) or the processes
+    couldn't run: the caller then scans each file itself, as it always did. A worker scans with a copy of
+    ``scan`` and returns only what the scan decided, so the result is the same as scanning here, in the same
+    order; it only arrives sooner.
+    """
+    workers = min(scan_workers(), len(files))
+    if workers <= 1 or len(files) < PARALLEL_MIN_FILES:
+        return None
+    # About four batches a worker, so a slow file doesn't hold one worker up while the others wait.
+    size = -(-len(files) // (workers * 4))
+    batches = [files[i : i + size] for i in range(0, len(files), size)]
+    # spawn, not fork: a fork of a process that runs threads (git readers, the run's progress) can deadlock,
+    # and spawn is what macOS uses anyway.
+    import concurrent.futures
+    import multiprocessing
+
+    try:
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=multiprocessing.get_context("spawn"),
+            initializer=_init_worker,
+            initargs=(scan,),
+        ) as pool:
+            return [r for batch in pool.map(functools.partial(_scan_batch, lines_only), batches) for r in batch]
+    except (OSError, RuntimeError, ValueError, TypeError, AttributeError, ImportError, EOFError):
+        # BrokenProcessPool is a RuntimeError, a pickling failure a TypeError or AttributeError. Scanning here
+        # gives the same answer, only later (and raises again if a file's scan itself fails).
+        return None
 
 
 @dataclass
@@ -1580,8 +1677,9 @@ def plan(
     policy, rules = seen.policy, seen.rules
     out = Plan(delegate=delegate, hidden_paths=set(seen.hidden), vault=_vault_mark(vault))
     out.agent_files = sorted(seen.agent_files)
-    out.fingerprint = scan_fingerprint(vault, policy, seen.entries, seen.hidden)
     scan = hidden_terms(vault, seen.entries, sorted(seen.hidden), blobs)
+    out.fingerprint = scan_fingerprint(vault, policy, scan)
+    held, scanned = _prescan(seen.visible, out.fingerprint, memo, scan, blobs)
     kept: list[tuple[MirrorFile, Label, str | None]] = []  # file, label, its text when it is text
     config: TreeEntry | None = None
     for e, label in seen.visible:
@@ -1602,7 +1700,8 @@ def plan(
             if memo is not None:
                 memo.put(e.path, [e.sha, "drop", None, 0])
             continue
-        made = _mirror_file(e, label, blobs.read(e.sha), scan, policy, out)
+        data = held.pop(e.path) if e.path in held else blobs.read(e.sha)
+        made = _mirror_file(e, label, data, scan, policy, out, scanned.get(e.path, _UNSCANNED))
         if made is not None:
             kept.append(made)
         if memo is not None:
@@ -1674,6 +1773,39 @@ class _Miss:
     """A memoised result that can't be used: scan the file again."""
 
 
+_UNSCANNED: Any = object()  # _mirror_file's scan wasn't worked out ahead: run it
+
+
+def _prescan(
+    visible: Sequence[tuple[TreeEntry, Label]],
+    fingerprint: str,
+    memo: ScanMemo | None,
+    scan: Scanner,
+    blobs: BlobReader,
+) -> tuple[dict[str, bytes], dict[str, Any]]:
+    """The text files :func:`plan` will scan (no usable memo row), read, and their :func:`_text_scan` worked out
+    across cores: ``(path -> blob, path -> scan)``. Both empty with one worker, and the scans empty when
+    :func:`_scan_texts` declines, so plan scans each file itself, as it always did.
+
+    Reading only, deciding nothing: plan still takes every file in order and applies each scan as it would
+    its own, so what it builds doesn't depend on whether, or how, the scans ran ahead.
+    """
+    if scan_workers() <= 1:
+        return {}, {}
+    held: dict[str, bytes] = {}
+    todo: list[tuple[str, str]] = []
+    for e, _label in visible:
+        if e.path == paths.VAULT_MARKER or (memo is not None and memo.get(fingerprint, e.path, e.sha) is not None):
+            continue
+        data = blobs.read(e.sha)
+        text = _content(e.path, data)[1]
+        if text is not None:
+            held[e.path] = data
+            todo.append((e.path, text))
+    results = _scan_texts(scan, todo)
+    return held, ({} if results is None else {rel: r for (rel, _), r in zip(todo, results, strict=True)})
+
+
 def _reuse(
     e: TreeEntry, label: Label, hit: list[Any], blobs: BlobReader, policy: Policy, out: Plan
 ) -> tuple[MirrorFile, Label, str | None] | None | _Miss:
@@ -1702,9 +1834,13 @@ def _reuse(
 
 
 def _mirror_file(
-    e: TreeEntry, label: Label, data: bytes, scan: Scanner, policy: Policy, out: Plan
+    e: TreeEntry, label: Label, data: bytes, scan: Scanner, policy: Policy, out: Plan, scanned: Any = _UNSCANNED
 ) -> tuple[MirrorFile, Label, str | None] | None:
-    """What a visible file becomes in the mirror, or None (counted in ``out.left_out``) when it can't go."""
+    """What a visible file becomes in the mirror, or None (counted in ``out.left_out``) when it can't go.
+
+    ``scanned``: a text file's :func:`_text_scan` of ``data`` worked out ahead (:func:`_prescan`), used in place of
+    running it here.
+    """
     kind, text = _content(e.path, data)
     if text is None:
         why = binary_verdict(e.path, kind, data, scan, policy)
@@ -1716,11 +1852,11 @@ def _mirror_file(
     low = e.path.lower()
     markdown = low.endswith(".md")
     if not (markdown or low.endswith(LINE_FILES)):
-        if scan.lines(text, e.path):
+        if scan.lines(text, e.path) if scanned is _UNSCANNED else scanned:
             out.left_out += 1
             return None
         return MirrorFile(e.path, e.mode, None, e.sha), label, text
-    redacted = redact_lines(text, scan, markdown=markdown, rel=e.path)
+    redacted = redact_lines(text, scan, markdown=markdown, rel=e.path) if scanned is _UNSCANNED else scanned
     if redacted is None:
         out.left_out += 1
         return None
@@ -1875,8 +2011,8 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
     blobs = BlobReader(vault)
     try:
         seen = visibility(vault, head, delegate, blobs)
-        fingerprint = scan_fingerprint(vault, seen.policy, seen.entries, seen.hidden)
         scan = hidden_terms(vault, seen.entries, sorted(seen.hidden), blobs)
+        fingerprint = scan_fingerprint(vault, seen.policy, scan)
         checked: set[tuple[str, str]] = set()
         # TODO(#637, Phase 1c): this skip trusts the signed checked_fingerprint, which is sound only while runs
         # can't read ~/.scout-secrets (the signing key). Until #637 gates that folder and Phase 1c sandboxes a
@@ -1895,12 +2031,13 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
         folders = _folders([e.path for e in entries if e.mode != SYMLINK_MODE])
         tree_paths = {e.path for e in entries if e.path not in GENERATED}
         at_head = {e.path: e for e in seen.entries}
+        held, named_lines = _prescan_tree(entries, checked, scan, blobs)
         labels: list[Label] = []
         bad = 0
         for e in entries:
             if e.path in GENERATED:
                 continue
-            data = blobs.read(e.sha) if e.kind == "blob" else b""
+            data = held.pop(e.path) if e.path in held else (blobs.read(e.sha) if e.kind == "blob" else b"")
             named = e.path != paths.VAULT_MARKER and scan.names(e.path)
             if e.kind != "blob" or e.path not in allowed or _refused(seen.rules, e.path) or named:
                 bad += 1
@@ -1941,9 +2078,11 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
                 bad += 1
                 continue
             scanned_before = (e.path, e.sha) in checked
-            if text is not None and not scanned_before and scan.lines(text, e.path):
-                bad += 1
-                continue
+            if text is not None and not scanned_before:
+                hit = named_lines[e.path] if e.path in named_lines else bool(scan.lines(text, e.path))
+                if hit:
+                    bad += 1
+                    continue
             head_text = _note_head(e.path, data) if text is not None else None
             ours, mirrored = _classify(e.path, head_text, seen.policy), _classify(e.path, head_text, theirs)
             labels.append(mirrored)
@@ -1964,6 +2103,31 @@ def check_tree(vault: Path, rev: str, delegate: str, head: str, *, trusted: tupl
         return fingerprint
     finally:
         blobs.close()
+
+
+def _prescan_tree(
+    entries: Sequence[TreeEntry], checked: Collection[tuple[str, str]], scan: Scanner, blobs: BlobReader
+) -> tuple[dict[str, bytes], dict[str, bool]]:
+    """:func:`check_tree`'s :func:`_prescan`: its text files read, and whether :meth:`Scanner.lines` finds a line
+    in each one it will scan (not ``checked``), worked out across cores. Both empty with one worker; the scans
+    empty when :func:`_scan_texts` declines. check_tree still runs every check on every file in order."""
+    if scan_workers() <= 1:
+        return {}, {}
+    held: dict[str, bytes] = {}
+    todo: list[tuple[str, str]] = []
+    for e in entries:
+        if e.path in GENERATED or e.kind != "blob" or e.mode == SYMLINK_MODE:
+            continue
+        data = blobs.read(e.sha)
+        text = _content(e.path, data)[1]
+        if text is None:
+            continue
+        held[e.path] = data
+        if (e.path, e.sha) not in checked:
+            todo.append((e.path, text))
+    results = _scan_texts(scan, todo, lines_only=True)
+    found = {} if results is None else {rel: bool(r) for (rel, _), r in zip(todo, results, strict=True)}
+    return held, found
 
 
 # ----- link, sync, unlink --------------------------------------------------------------------

@@ -193,7 +193,9 @@ class PrivateTerms:
     """Every private note's terms and link keys (what :func:`find_mentions` consumes)."""
 
     notes: tuple[PrivateNote, ...]
-    any_term: re.Pattern[str] | None  # a fast pre-check: any note's term
+    # A pre-check that finds something wherever any note's pattern does (a superset is fine). :func:`_hits` only
+    # asks whether it is there: None means no note's pattern is searched.
+    any_term: re.Pattern[str] | None
     excerpts: ExcerptIndex | None = None  # quotes of notes shared with this person (with_shared)
     any_bare: re.Pattern[str] | None = None  # the same pre-check for the notes' bare_pattern
 
@@ -582,31 +584,178 @@ def _line(starts: list[int], origin: list[int] | None, pos: int) -> int:
 
 
 def _hits(text: str, terms: PrivateTerms) -> list[tuple[str, int, int]]:
-    """``(note path, first line, last line)`` (0-based lines of ``text``) of every term and link hit."""
+    """``(note path, first line, last line)`` (0-based lines of ``text``) of every term and link hit.
+
+    The same hits, in the same order, as trying every note's link keys and pattern in turn (each pattern's own
+    ``finditer``, under the pre-check ``any_term``/``any_bare``), but from :class:`_Index`: a wikilink's target is
+    looked up, and a pattern is tried only where one of its prefixes occurs, all prefixes found in one pass. A
+    pattern with no prefixes, or whose promise :func:`_keeps_promise` refuses, is searched whole every time.
+    The pre-check isn't run: it is a superset of the notes' patterns (``PrivateTerms.any_term``), so it finds
+    something whenever a note does; only a missing one (None) still skips that form.
+    """
     (folded, origin), bare = _folds(text)
     starts = [0] + [i + 1 for i, ch in enumerate(text) if ch == "\n"]
+    index = _index(terms)
+    notes = terms.notes
     found: list[tuple[str, int, int]] = []
-    targets = [(_line(starts, origin, m.start()), _link_target(m.group(1))) for m in _WIKILINK.finditer(folded)]
-    for n, target in targets:
+    for m in _WIKILINK.finditer(folded):
+        target = _link_target(m.group(1))
         if target:
-            found += [(note.path, n, n) for note in terms.notes if note.linked_by(target)]
-    for form, where, pre, attr, prefix_attr in (
-        (folded, origin, terms.any_term, "pattern", "prefixes"),
-        (bare[0], bare[1], terms.any_bare, "bare_pattern", "bare_prefixes"),  # accents ignored, where allowed
+            n = _line(starts, origin, m.start())
+            found += [(notes[k].path, n, n) for k in index.linked(target)]
+    for form, where, pre, side in (
+        (folded, origin, terms.any_term, index.term),
+        (bare[0], bare[1], terms.any_bare, index.bare),  # accents ignored, where allowed
     ):
-        if pre is None or not pre.search(form):
+        if pre is None:
             continue
-        seen: dict[str, list[int]] = {}
-        for note in terms.notes:
-            pattern = getattr(note, attr)
-            if pattern is not None:
-                found += [
-                    (note.path, _line(starts, where, m.start()), _line(starts, where, m.end() - 1))
-                    for m in _matches(pattern, getattr(note, prefix_attr), form, seen)
-                ]
+        occurs = side.occurrences(form)
+        candidates = set(side.whole)
+        for p in occurs:
+            candidates.update(side.by_prefix[p])
+        for k in sorted(candidates):
+            pattern, prefixes = side.slot(notes[k])
+            assert pattern is not None
+            if prefixes is None or k not in side.promised:
+                matches: Iterable[re.Match[str]] = pattern.finditer(form)
+            else:
+                matches = _matches_at(pattern, sorted({i for p in prefixes for i in occurs.get(p, ())}), form)
+            found += [
+                (notes[k].path, _line(starts, where, m.start()), _line(starts, where, m.end() - 1)) for m in matches
+            ]
     if terms.excerpts is not None:
         found += terms.excerpts.hits(text)
     return found
+
+
+class _Side:
+    """One of a :class:`_Index`'s two sides: the notes' ``pattern`` (folded text) or ``bare_pattern`` (bare text)."""
+
+    def __init__(self, notes: tuple[PrivateNote, ...], attr: str, prefix_attr: str, promise: Any) -> None:
+        self.attr, self.prefix_attr = attr, prefix_attr
+        whole: list[int] = []
+        by_prefix: dict[str, list[int]] = {}
+        self.promised: set[int] = set()
+        for k, note in enumerate(notes):
+            pattern, prefixes = getattr(note, attr), getattr(note, prefix_attr)
+            if pattern is None:
+                continue
+            if prefixes is None or not promise(pattern, prefixes):
+                whole.append(k)
+                continue
+            self.promised.add(k)
+            for p in prefixes:
+                by_prefix.setdefault(p, []).append(k)
+        self.whole = tuple(whole)
+        self.by_prefix = {p: tuple(ks) for p, ks in by_prefix.items()}
+        # Each prefix with every prefix it starts with (itself too). The scan below finds the longest prefix at each
+        # index; the others there are exactly its own prefixes in this set (both start at that index).
+        self.within = {p: tuple(p[:j] for j in range(1, len(p) + 1) if p[:j] in self.by_prefix) for p in self.by_prefix}
+        self.scan = _prefix_scan(self.by_prefix)
+
+    def slot(self, note: PrivateNote) -> tuple[re.Pattern[str] | None, tuple[str, ...] | None]:
+        return getattr(note, self.attr), getattr(note, self.prefix_attr)
+
+    def occurrences(self, form: str) -> dict[str, list[int]]:
+        """Every index each prefix starts at in ``form``, overlapping ones too (what :func:`_occurrences` finds),
+        not in order."""
+        if self.scan is None:
+            return {}
+        at: dict[str, list[int]] = {}
+        for m in self.scan.finditer(form):
+            at.setdefault(m.group(1), []).append(m.start())
+        out: dict[str, list[int]] = {}
+        for longest, where in at.items():
+            for p in self.within[longest]:
+                out.setdefault(p, []).extend(where)
+        return out
+
+
+def _prefix_scan(prefixes: Iterable[str]) -> re.Pattern[str] | None:
+    """One pattern that matches, empty, at every index where one of ``prefixes`` starts, capturing the longest.
+
+    The prefixes as a trie (a shared start is written once, a terminal's longer continuations tried first), inside a
+    lookahead: so ``finditer`` stops at every index, overlapping ones too, in one pass over the text.
+    """
+    trie: dict[str, Any] = {}
+    for p in prefixes:
+        node = trie
+        for ch in p:
+            node = node.setdefault(ch, {})
+        node[""] = True
+    if not trie:
+        return None
+
+    def regex(node: dict[str, Any]) -> str:
+        branches = []
+        for ch in sorted(k for k in node if k):
+            child, run = node[ch], re.escape(ch)
+            while "" not in child and len(child) == 1:  # a chain with no terminal inside: one literal
+                (nxt,) = child
+                run += re.escape(nxt)
+                child = child[nxt]
+            branches.append(run + regex(child))
+        if not branches:
+            return ""
+        body = branches[0] if len(branches) == 1 else "(?:" + "|".join(branches) + ")"
+        return ("(?:" + body + ")?") if "" in node else body
+
+    return re.compile("(?=(" + regex(trie) + "))")
+
+
+class _Index:
+    """What :func:`_hits` looks up instead of trying every note: link keys and path suffixes, and each side's
+    prefixes. Built once per :class:`PrivateTerms` (and per :func:`_keeps_promise`, which tests replace)."""
+
+    def __init__(self, terms: PrivateTerms, promise: Any) -> None:
+        self.promise = promise
+        keys: dict[str, list[int]] = {}
+        suffixes: dict[str, list[int]] = {}
+        for k, note in enumerate(terms.notes):
+            for key in note.link_keys:
+                keys.setdefault(key, []).append(k)
+            path = note.link_path
+            if path:  # PrivateNote.linked_by: the path itself, or what follows any "/" in it
+                for s in {path, *(path[i + 1 :] for i, ch in enumerate(path) if ch == "/")}:
+                    suffixes.setdefault(s, []).append(k)
+        self.keys, self.suffixes = keys, suffixes
+        self.term = _Side(terms.notes, "pattern", "prefixes", promise)
+        self.bare = _Side(terms.notes, "bare_pattern", "bare_prefixes", promise)
+
+    def linked(self, target: str) -> list[int]:
+        """The notes :meth:`PrivateNote.linked_by` ``target``, in order."""
+        found = set(self.keys.get(target, ()))
+        if "/" in target:
+            found.update(self.suffixes.get(target, ()))
+        return sorted(found)
+
+
+_INDEXES: dict[int, tuple[PrivateTerms, _Index]] = {}
+
+
+def _index(terms: PrivateTerms) -> _Index:
+    """``terms``' :class:`_Index`, kept for the last few :class:`PrivateTerms` this process used."""
+    held = _INDEXES.get(id(terms))
+    if held is not None and held[0] is terms and held[1].promise is _keeps_promise:
+        return held[1]
+    built = _Index(terms, _keeps_promise)
+    if len(_INDEXES) >= 16:
+        _INDEXES.pop(next(iter(_INDEXES)))
+    _INDEXES[id(terms)] = (terms, built)
+    return built
+
+
+def _matches_at(pattern: re.Pattern[str], starts: list[int], form: str) -> Iterator[re.Match[str]]:
+    """:func:`_matches` with its start indices already found (sorted): ``pattern.finditer(form)``, when every match
+    starts at one of them."""
+    pos = 0
+    for i in starts:
+        if i < pos:
+            continue
+        m = pattern.match(form, i)
+        if m is not None:
+            yield m
+            pos = m.end()
 
 
 def _occurrences(text: str, literal: str) -> list[int]:
