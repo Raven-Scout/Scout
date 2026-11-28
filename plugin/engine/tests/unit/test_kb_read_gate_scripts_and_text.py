@@ -31,6 +31,8 @@ from tests.unit.test_hooks_kb_read_gate import RUN, _denied
 
 PLUGIN = Path(scout.__file__).resolve().parents[2]
 PARSER = "knowledge-base/ontology/parser.py"
+# Where kb-read-gate keeps which scripts each run has had recorded: the owner's store, which runs can't write.
+SEEN = ".local/state/scout/scout-kb-read-gate-scripts.json"
 SHARDS = "scripts/kb-shard-log.py"
 
 
@@ -75,15 +77,16 @@ TRUSTED = [
     f"python3 {PARSER} knowledge-base/a.md",
     f"python3 {PARSER} knowledge-base/a.md --json 2>&1 | head -5",
     "cd knowledge-base/ontology && python3 parser.py ../a.md",
-    f"python3 {SHARDS} knowledge-base/a.md",
     f"python3 {PLUGIN}/templates/{SHARDS} knowledge-base/a.md",  # the plugin's own file
 ]
 
 
 @pytest.mark.parametrize("command", TRUSTED)
-def test_scouts_own_script_is_trusted_and_nothing_is_recorded(home: Path, command: str) -> None:
+def test_scouts_own_script_is_trusted_and_recorded_once_per_run(home: Path, command: str) -> None:
+    """Allowed as scoutctl is, but recorded: what a script reads isn't in the command."""
     assert _run(home, command) is None, command
-    assert _events(home) == []
+    assert _run(home, command) is None, command  # the same run: no second record
+    assert _categories(home) == [["program_path:trusted_script"]]
 
 
 @pytest.mark.parametrize("command", TRUSTED[:2])
@@ -95,12 +98,13 @@ def test_the_evals_judge_trusts_it_too(home: Path, command: str) -> None:
 def test_a_copy_an_older_engine_rendered_is_trusted(home: Path) -> None:
     """A vault an older engine upgraded: the copy matches what bootstrap last wrote, not this plugin's template."""
     v = home / "Vault"
+    (v / "scripts/mine.py").unlink()  # nothing of the vault's own beside it (scout.kb.trusted_scripts)
     (v / SHARDS).write_text("print('an older render')\n")
     rendered = v / ".scout-state/last-rendered" / SHARDS
     rendered.parent.mkdir(parents=True)
     rendered.write_text("print('an older render')\n")
     assert _run(home, f"python3 {SHARDS} knowledge-base/a.md") is None
-    assert _events(home) == []
+    assert _categories(home) == [["program_path:trusted_script"]]
 
 
 @pytest.mark.parametrize("edited", [SHARDS, PARSER])
@@ -137,7 +141,7 @@ def test_a_vault_script_is_recorded_once_per_run(home: Path) -> None:
     assert _run(home, "python3 scripts/mine.py", run="s2") is None  # another run records it again
     assert _run(home, "perl scripts/other.pl", run="s2") is None  # another script: its own record
     assert _categories(home) == [["program_path:vault_script"]] * 3
-    seen = json.loads((home / "Vault/.scout-logs/.kb-read-gate-scripts.json").read_text())
+    seen = json.loads((home / SEEN).read_text())
     assert set(seen["runs"]) == {"s1", "s2"}
     assert "mine" not in json.dumps(seen)  # names are hashed, never kept
 
@@ -160,9 +164,8 @@ def test_with_the_switch_on_a_script_that_isnt_scouts_own_is_denied(
 
 
 def test_the_record_survives_a_seen_file_it_cant_read(home: Path) -> None:
-    logs = home / "Vault/.scout-logs"
-    logs.mkdir(parents=True, exist_ok=True)
-    (logs / ".kb-read-gate-scripts.json").write_text("not json")
+    (home / SEEN).parent.mkdir(parents=True, exist_ok=True)
+    (home / SEEN).write_text("not json")
     assert _run(home, "python3 scripts/mine.py") is None
     assert _categories(home) == [["program_path:vault_script"]]
 
@@ -304,3 +307,11 @@ def test_code_in_an_f_string_that_opens_something_is_built() -> None:
     found = program_reads("python3", ["-c", "print(f\"{open(chr(107) + 'x').read()}\")"])
     assert found is not None and found.built
     assert program_reads("python3", ["-c", 'print(f"{len(x)} items")']) is None
+
+
+def test_a_vault_copy_is_trusted_only_with_nothing_of_the_vaults_own_beside_it(home: Path) -> None:
+    """scripts/ holds the vault's own mine.py: Python would import a module of that folder before the stdlib's."""
+    assert "knowledge-base/" in _denied(_run(home, f"python3 {SHARDS} knowledge-base/a.md"))
+    (home / "Vault/scripts/mine.py").unlink()
+    assert _run(home, f"python3 {SHARDS} knowledge-base/a.md") is None
+    assert _categories(home) == [["program_path:trusted_script"]]

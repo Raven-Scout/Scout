@@ -215,6 +215,14 @@ def _deny_git_dir(form: str) -> str:
     )
 
 
+def _deny_python_startup(form: str) -> str:
+    return (
+        f"{MARK} A scheduled run doesn't write {form} (Python's user site-packages: a usercustomize.py or .pth file "
+        "there runs in every python3, outside Scout's checks). Install nothing there; say in the run notes what you "
+        "need."
+    )
+
+
 def _deny_startup(form: str) -> str:
     return (
         f"{MARK} A scheduled run doesn't write {form} (the shell's login and rc files, LaunchAgents): they run "
@@ -266,11 +274,14 @@ DENY_INTERPRETER_KB_EDITS = False
 # What made a read unresolved, by the placeholder live_run left in its word.
 # program_path: a file a program's text opens by a path it builds at run time (awk, perl; scout.kb.other_reads), or a
 # script or module run from outside the vault that isn't Scout's own. program_path:vault_script: a script in the vault
-# that isn't Scout's own (scout.kb.trusted_scripts; a run may have written it), recorded once per script per run.
+# that isn't Scout's own (scout.kb.trusted_scripts; a run may have written it). program_path:trusted_script: a script
+# of Scout's own, allowed as scoutctl is but still recorded (what a script reads isn't in the command). Each script is
+# recorded once per run, as long as its content stays the same (_first_in_run).
 VAULT_SCRIPT = "program_path:vault_script"
-UNRESOLVED_CATEGORIES = ("xargs_input", "command_output", "unset_variable", "program_path", VAULT_SCRIPT)
-# Which vault scripts each recent run has had recorded (hashed): `program_path:vault_script` is once per run.
-_SCRIPTS_SEEN = ".kb-read-gate-scripts.json"
+TRUSTED_SCRIPT_RUN = "program_path:trusted_script"
+UNRESOLVED_CATEGORIES = (
+    "xargs_input", "command_output", "unset_variable", "program_path", VAULT_SCRIPT, TRUSTED_SCRIPT_RUN,
+)  # fmt: skip
 _SCRIPTS_SEEN_RUNS = 64
 
 
@@ -368,6 +379,8 @@ def _deny_skip_form(form: str) -> str:
         hp.AGENT_SETTINGS: _deny_agent_settings,
         hp.ENGINE: _deny_engine,
         hp.RUNNER_SCRIPTS: _deny_engine,
+        hp.INSTALLED_SCRIPTS: _deny_engine,
+        hp.PYTHON_STARTUP: _deny_python_startup,
         hp.STARTUP: _deny_startup,
         hp.HARD_LINK: _deny_hard_link,
         hp.GIT_DIR: _deny_git_dir,
@@ -390,37 +403,53 @@ def _record_unresolved_read(vault: Path, categories: list[str], mode: str | None
     _PENDING_AUDIT.append((vault, "kb_read_gate.unresolved_read", {"categories": categories, "mode": mode}))
 
 
-def _first_in_run(vault: Path, run: object, scripts: set[str]) -> bool:
-    """Whether a vault script in ``scripts`` has not been recorded in this run yet; marks them all recorded. Kept
-    as hashes in the vault's logs folder, for the last :data:`_SCRIPTS_SEEN_RUNS` runs. Without a run id, or when
-    the file can't be read or written, every call is recorded (best effort, never a deny)."""
+def _first_in_run(env: Mapping[str, str], run: object, scripts: dict[str, set[str]]) -> set[str]:
+    """The categories in ``scripts`` (category -> the scripts' resolved paths) with a script this run hasn't had
+    recorded yet, as it is now: keyed on the script's path and a hash of its content, so a script the run edits
+    after its first record is recorded again. Kept as hashes, never names, in the owner's store
+    (``~/.local/state/scout/``, :data:`scout.kb.hook_paths.KB_GATE_SCRIPTS_NAME`: protected, so a run can't
+    poison it), for the last :data:`_SCRIPTS_SEEN_RUNS` runs. Fails toward recording: without a run id, a file it
+    can't read, a script it can't hash, or a store it can't write, every category is recorded."""
     import hashlib
 
+    from scout.kb.hook_paths import KB_GATE_SCRIPTS_NAME
+
     if not isinstance(run, str) or not run:
-        return True
-    keys = {hashlib.sha256(rel.encode("utf-8", "surrogateescape")).hexdigest()[:16] for rel in scripts}
-    path = paths.logs_dir(vault) / _SCRIPTS_SEEN
+        return set(scripts)
+    keys: dict[str, set[str]] = {}
+    always: set[str] = set()
+    for category, found in scripts.items():
+        for script in found:
+            try:
+                content = hashlib.sha256(Path(script).read_bytes()).hexdigest()
+            except OSError:
+                always.add(category)  # one it can't hash: recorded every time
+                continue
+            key = hashlib.sha256(f"{category}\0{script}\0{content}".encode("utf-8", "surrogateescape"))
+            keys.setdefault(category, set()).add(key.hexdigest()[:24])
+    path = Path(env.get("HOME") or Path.home()) / ".local" / "state" / "scout" / KB_GATE_SCRIPTS_NAME
     try:
         loaded = json.loads(path.read_text(encoding="utf-8")) if path.is_file() and not path.is_symlink() else {}
     except (OSError, ValueError):
         loaded = {}
-    runs: dict[str, list[str]] = loaded.get("runs", {}) if isinstance(loaded, dict) else {}
+    runs = loaded.get("runs", {}) if isinstance(loaded, dict) else {}
     if not isinstance(runs, dict):
         runs = {}
     seen = set(runs.get(run) or [])
-    if keys <= seen:
-        return False
-    runs.pop(run, None)
-    runs[run] = sorted(seen | keys)
-    runs = dict(list(runs.items())[-_SCRIPTS_SEEN_RUNS:])
-    try:
-        from scout import safe_write
+    fresh = {category for category, ks in keys.items() if not ks <= seen}
+    every = set().union(*keys.values()) if keys else set()
+    if every - seen:
+        runs.pop(run, None)
+        runs[run] = sorted(seen | every)
+        runs = dict(list(runs.items())[-_SCRIPTS_SEEN_RUNS:])
+        try:
+            from scout import safe_write
 
-        path.parent.mkdir(parents=True, exist_ok=True)
-        safe_write.atomic_write_text(path, json.dumps({"runs": runs}, sort_keys=True) + "\n", fsync=False)
-    except Exception:  # noqa: BLE001, S110 - the record goes out either way
-        pass
-    return True
+            path.parent.mkdir(parents=True, exist_ok=True)
+            safe_write.atomic_write_text(path, json.dumps({"runs": runs}, sort_keys=True) + "\n", fsync=False)
+        except Exception:  # noqa: BLE001 - it can't keep what it recorded: record every one this time and next
+            return set(scripts)
+    return fresh | always
 
 
 def _record_kb_edit(vault: Path, targets: int, non_kb_targets: int, mode: str | None) -> None:
@@ -486,6 +515,7 @@ def decide(
             HOME_FORM,
             KB_READ,
             SCRIPT,
+            SCRIPT_PLAIN,
             TRUSTED_SCRIPT,
             UNRESOLVED_READ,
             even_dollar_escape,
@@ -550,8 +580,8 @@ def decide(
                     return None
                 rels = (_vault_rel(vault, paths.resolve_path(one)) for one in globs(target) or [target])
                 return KB_READ if any(rel is not None and rel != "." and is_kb_path(rel) for rel in rels) else None
-            if how == SCRIPT:  # the script file an interpreter runs (live_run.SCRIPT)
-                return _judge_script(target)
+            if how in (SCRIPT, SCRIPT_PLAIN):  # the script file an interpreter runs (live_run.SCRIPT)
+                return _judge_script(target, trustable=how == SCRIPT)
             if how == "kb_edit":  # an interpreter's edit of KB notes (live_run.KB_EDIT); ``raw``: how many it writes
                 if DENY_INTERPRETER_KB_EDITS:
                     return KB_READ
@@ -581,26 +611,29 @@ def decide(
                     return KB_READ
             return None
 
-        def _judge_script(target: str | None) -> str | None:
-            """TRUSTED_SCRIPT for Scout's own script (scout.kb.trusted_scripts); else None, noting the run of it:
-            one in the vault (not a KB file: that one's read is judged as a file) once per run, any other as a
-            program_path. DENY_UNRESOLVED_READS denies one that isn't Scout's own."""
+        def _judge_script(target: str | None, *, trustable: bool) -> str | None:
+            """TRUSTED_SCRIPT for Scout's own script run bare (``trustable``: live_run._bare_run;
+            scout.kb.trusted_scripts), noted as a trusted run; else None, noting the run of it: one in the vault (not a
+            KB file: that one's read is judged as a file) as a vault script, any other as a program_path.
+            DENY_UNRESOLVED_READS denies one that isn't Scout's own."""
             from scout.kb.trusted_scripts import trusted_script
 
-            if target is not None and trusted_script(target, vault, env):
+            here = None if target is None else paths.resolve_path(target)
+            if here is not None and trustable and trusted_script(here, vault, env):
+                scripts.setdefault(TRUSTED_SCRIPT_RUN, set()).add(str(here))
                 return TRUSTED_SCRIPT
             if DENY_UNRESOLVED_READS:
                 return UNRESOLVED_READ
-            rel = None if target is None else _vault_rel(vault, paths.resolve_path(target))
+            rel = None if here is None else _vault_rel(vault, here)
             if rel is None:
                 unresolved.add("program_path")
             elif rel != "." and not is_kb_path(rel):
-                scripts.add(rel)
+                scripts.setdefault(VAULT_SCRIPT, set()).add(str(here))
             return None
 
         memo: dict[str, list[str] | None] = {}
         unresolved: set[str] = set()
-        scripts: set[str] = set()  # the vault scripts it runs that aren't Scout's own (vault-relative)
+        scripts: dict[str, set[str]] = {}  # category -> the scripts it runs, resolved (_judge_script)
         # each interpreter edit of KB notes the command runs: how many KB files it writes, and how many files outside
         # the KB it rewrites in place alongside them
         edits: list[tuple[int, int]] = []
@@ -633,8 +666,8 @@ def decide(
         flagged = raw_kb_read(command, in_kb=_in_kb(cwd, vault), cwd=str(cwd), vault=str(vault), env=env)
         if flagged:
             return _deny_bash()
-        if scripts and _first_in_run(vault, payload.get("session_id"), scripts):
-            unresolved.add(VAULT_SCRIPT)
+        if scripts:
+            unresolved |= _first_in_run(env, payload.get("session_id"), scripts)
         if unresolved:
             _record_unresolved_read(vault, sorted(unresolved), mode)
         if edits:

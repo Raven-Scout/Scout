@@ -92,6 +92,9 @@ class ProgramReads:
     # The script file it runs (``python3 x.py``), as the shell hands it: what that reads isn't in the command, so
     # the gate judges the file (Scout's own scripts are trusted; any other is recorded). Also in ``reads``.
     script: str | None = None
+    # `python3 <script> args` with no interpreter flag: the only shape a script of Scout's own is trusted in (a flag
+    # like `-i`, `-m pdb` or `-X` runs other code around it).
+    script_bare: bool = False
 
     def __bool__(self) -> bool:
         return bool(
@@ -122,6 +125,7 @@ class _Call:
     in_place: bool = False  # ruby -i: the operands are rewritten
     piped: str | None = None  # its program comes down a pipe from a command the gate can't read: that text
     script: str | None = None  # the script file it runs (also in ``files``), as the shell hands it
+    bare: bool = False  # `python3 <script> args`: no interpreter flag before the script
 
 
 _PYTHON_VALUES = {"-W", "-X", "--check-hash-based-pycs"}
@@ -238,7 +242,14 @@ def _call(name: str, args: list[str], stdin: Sequence[str]) -> _Call | None:  # 
                 break
             if lang == "r" and a == "CMD":
                 return _Call(lexer, [], args[i + 1 :], files=args[i : i + 1], operands_read=True)  # R CMD BATCH x.R
-            return _Call(lexer, [], args[i:], files=[*files, a], operands_read=True, script=a)  # a script and its argv
+            bare = lang == "python" and i == 1 and not files
+            if lang == "python" and any(re.fullmatch(r"-[A-Za-z]*i[A-Za-z]*", x) for x in args[: i - 1]):
+                # `-i`: after the script, it runs what stdin holds (a here-string, `< file`) as a program too
+                texts = [_printed(t) for t in stdin]
+                piped = next((t[len(PIPED) :] for t in texts if t.startswith(PIPED)), "" if not texts else None)
+                texts = [t for t in texts if not t.startswith(PIPED)]
+                return _Call(lexer, texts, args[i:], files=[*files, a], operands_read=True, script=a, piped=piped)
+            return _Call(lexer, [], args[i:], files=[*files, a], operands_read=True, script=a, bare=bare)
         if a.startswith("--"):
             flag, eq, value = a.partition("=")
             if flag in takes and not eq and i < len(args):
@@ -344,11 +355,11 @@ def program_reads(name: str, args: list[str], stdin: Sequence[str] = ()) -> Prog
     if call.piped is not None:  # `cmd | python3`, `python3 < f`: a program the gate can't read
         out.built = True
         out.unaccounted = out.unaccounted or bool(_KB_NAME.search(call.piped))
-    if call.operands_read and not call.programs:  # a script, a module: what it reads isn't in the command
-        if call.script is not None:
-            out.script = call.script  # the gate judges the file: Scout's own, or one it records
-        else:
-            out.built = True
+    if call.script is not None:  # a script: what it reads isn't in the command, so the gate judges the file
+        out.script = call.script  # Scout's own, or one it records
+        out.script_bare = call.bare
+    elif call.operands_read and not call.programs:  # a module: what it reads isn't in the command either
+        out.built = True
     if re.search(r"\$__scout_\w+__", text):  # live_run's placeholder for what the shell fills in
         out.built = out.opaque = True
     if re.search(_RUNS_CODE.get(call.lang, r"(?!)"), scan.masked):  # code it builds or reads, then runs
@@ -674,6 +685,8 @@ _COPIES: dict[str, list[tuple[str, int, int]]] = {
     "lua": [(r"\bos\.rename", 0, 1)],
     "r": [(r"(?<![\w.])file\.(?:copy|rename|link|append)", 0, 1)],
 }
+# The read heads of each language, one pattern: a call to one is judged by its path.
+_READ_HEADS = {lang: "|".join(head for head, *_ in reads) or r"(?!)" for lang, reads in _READS.items()}
 # Listings: (call head, root argument, recursive?) — None for "recursive when its pattern has `**`".
 _LISTS: dict[str, list[tuple[str, int, bool | None]]] = {
     "python": [
@@ -761,6 +774,8 @@ _PY_HEADS = "|".join(
     ]
 )
 _PY_METHODS = r"\.(?:read_text|read_bytes|open|read|readlines|iterdir|glob|rglob)"
+# The dotted names of the calls the scan judges itself (reads, lists, copies, runs, folder changes, writes, tests).
+_JUDGED = re.compile("|".join([_PY_HEADS, *(h for h, _i in _WRITES["python"]), *(h for h, _i in _NAMES["python"])]))
 _ACTS = rf"(?:{_PY_HEADS}|{_PY_METHODS})\s*\(|{_RUNS_CODE['python']}"
 
 
@@ -770,6 +785,16 @@ class _Scan:
     def __init__(self, text: str, lang: str) -> None:
         self.text, self.lang = text, lang
         self.spans, self.masked = _spans(text, lang)
+        # pathlib's Path under another name: `from pathlib import Path as P`, `import pathlib as pl` (`pl.Path`)
+        self.path_names: set[str] = set()
+        if lang == "python":
+            for m in re.finditer(r"\bfrom\s+pathlib\s+import\s+([^\n;]+)", self.masked):
+                for part in m[1].strip("() ").split(","):
+                    got = re.fullmatch(r"\s*(?:Pure(?:Posix)?)?Path\s+as\s+([A-Za-z_]\w*)\s*", part)
+                    if got:
+                        self.path_names.add(got[1])
+            for m in re.finditer(r"\bimport\s+pathlib\s+as\s+([A-Za-z_]\w*)", self.masked):
+                self.path_names |= {f"{m[1]}.Path", f"{m[1]}.PurePath"}
         self.starts = {a: b for a, b in self.spans}
         self.argv_read = False
         self.chdirs: list[_Value] = []
@@ -859,7 +884,7 @@ class _Scan:
         if call is not None and _close(self.masked, a + call.end() - 1) == b:
             name = call[1]
             args = self.args(a + call.end() - 1)
-            if re.fullmatch(_JOINS[self.lang], name):
+            if re.fullmatch(_JOINS[self.lang], name) or name in self.path_names:
                 return self._combine([self.values(x, y, depth + 1) for x, y in args], "/") if args else [_BUILT]
             if re.fullmatch(_PASS[self.lang], name) and args:
                 return self.values(*args[0], depth + 1)
@@ -1157,8 +1182,10 @@ class _Scan:
                     reading, writing = self._mode(self.args(m.end() - 1), 0, "mode")
                 values = self.values(*receiver)
                 if not m[0].startswith((".read_text", ".read_bytes", ".open")):
-                    # `f.read()` on a file object: no new path, unless the receiver is a call naming one
-                    values = [v for v in values if v.kind != "built" or self._names_kb(*receiver)]
+                    # `f.read()` on a file object: no new path, unless the receiver is a call naming one that the
+                    # heads don't judge (`open("knowledge-base/a.md").read()` is judged as the open it is)
+                    judged = re.match(rf"(?:{_READ_HEADS[self.lang]})\s*\(", self.masked[receiver[0] : receiver[1]])
+                    values = [v for v in values if v.kind != "built" or (self._names_kb(*receiver) and not judged)]
                 paths += values if reading else []
                 writes += values if writing else []
             for m in re.finditer(_WRITE_METHODS, self.masked):
@@ -1236,6 +1263,12 @@ class _Scan:
             out.spelled += [(p, FILE, TILDE) for p in out.literal if p.startswith("~")]
         if self.lang == "python" and re.search(_ACTS, self._fstring_code()):
             out.built = True  # an f-string's `{…}` opens or runs something: code the scan doesn't follow
+        if self.lang == "python" and not out.built:
+            from scout.kb.python_text import text_checker
+
+            checker = text_checker(self.text)
+            if checker is not None and checker.hides_reads(lambda name: _JUDGED.fullmatch(name) is not None):
+                out.built = True  # a call that may open what it's handed, with what the scan can't spell out
         out.unaccounted = self._unaccounted(self._data_literals(out))
 
     def _is_module(self, a: int, b: int) -> bool:

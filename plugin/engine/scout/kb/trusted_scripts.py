@@ -10,7 +10,11 @@ A script is Scout's own when it is
   the same path), unchanged: the same bytes as the plugin's template, or as the render bootstrap last wrote
   (``.scout-state/last-rendered/<path>``, :mod:`scout.scripts.vault_drift`), for a vault an older engine upgraded.
 
-A copy the run edited, or any other script, is not: the gate judges its operands and records the run of it.
+A copy the run edited, or any other script, is not: the gate judges its operands and records the run of it. Nor is
+a vault copy with a module beside it that the plugin didn't put there (``scripts/json.py``, a package, a ``.pth``):
+Python looks in the script's own folder first, so that module would run in place of the one the script imports.
+Whether the run is one a trusted script may be run in (`python3 <script> args`, nothing that picks other code) is
+:func:`scout.kb.live_run._bare_run`'s call; the gate still records each trusted run.
 """
 
 from __future__ import annotations
@@ -23,6 +27,8 @@ from pathlib import Path
 _THIRD_PARTY = frozenset({".venv", "venv", "site-packages", "dist-packages", "node_modules", ".tox", ".eggs"})
 _MAX_BYTES = 4 * 1024 * 1024
 _RENDERED = Path(".scout-state") / "last-rendered"
+# What Python imports from a folder on sys.path, besides a package folder (one with an __init__).
+_MODULES = frozenset({".py", ".pyc", ".pyo", ".so", ".pyd", ".pth", ".zip", ".egg"})
 
 
 def plugin_roots(env: Mapping[str, str]) -> list[Path]:
@@ -70,4 +76,26 @@ def trusted_script(path: str | os.PathLike[str], vault: Path, env: Mapping[str, 
     shipped = [_bytes(root / "templates" / rel) for root in roots]
     if not any(t is not None for t in shipped):
         return False  # not a file the plugin installs
-    return live in shipped or _bytes(home / _RENDERED / rel) == live
+    if not (live in shipped or _bytes(home / _RENDERED / rel) == live):
+        return False
+    return not _foreign_modules(real.parent, home, roots)
+
+
+def _foreign_modules(folder: Path, vault: Path, roots: list[Path]) -> bool:
+    """Whether ``folder`` (in the vault) holds a module or package the plugin didn't install there."""
+    try:
+        entries = list(folder.iterdir())
+    except OSError:
+        return True  # a folder it can't list may hold anything
+    for entry in entries:
+        try:
+            package = entry.is_dir() and any((entry / f"__init__{x}").exists() for x in (".py", ".pyc"))
+            module = entry.suffix in _MODULES and not entry.is_dir()
+        except OSError:
+            return True
+        if not (package or module):
+            continue
+        rel = entry.relative_to(vault)
+        if not any((root / "templates" / rel).exists() for root in roots):
+            return True
+    return False

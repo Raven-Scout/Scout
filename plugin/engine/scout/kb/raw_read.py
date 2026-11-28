@@ -1926,7 +1926,12 @@ def _edits(other: OtherReads, kb: Callable[[str], bool], where: str | None) -> b
     if other.writes_built:
         return False
     if other.operand_writes:
-        return all(kb(w) for w, _how in other.reads)
+        if all(kb(w) for w, _how in other.reads):
+            return True
+        if other.built or other.spelled or other.unaccounted or other.writes:
+            return False
+        rewritten = {posixpath.normpath(w) for w, _how in other.reads}
+        return all(posixpath.normpath(p) in rewritten for p in other.literal if kb(p))
     if all(kb(w) for w in other.writes):
         return True
     if other.built or other.spelled or other.reads or other.unaccounted:
@@ -1937,6 +1942,13 @@ def _edits(other: OtherReads, kb: Callable[[str], bool], where: str | None) -> b
 
     read, written = {at(p) for p in other.literal}, {at(w) for w in other.writes}
     return all(kb(w) or at(w) in read for w in other.writes) and all(at(p) in written for p in other.literal if kb(p))
+
+
+def _copies_out_text(other: OtherReads, in_kb: bool) -> bool:
+    """Whether a script given a KB note also names a path outside the KB (live_run._copies_out, by spelling)."""
+    ops = [w for w, _how in other.reads if w != other.script and not w.startswith("-")]
+    kb = _lands_in_kb(in_kb)
+    return any(kb(w) for w in ops) and any(not kb(w) and ("/" in w or re.search(r"\.\w{1,8}$", w)) for w in ops)
 
 
 def _scouts_own(
@@ -1995,8 +2007,15 @@ def _judge_other(
                 continue
             seg_in_kb = in_kb if stripped.chdir is None else _names_kb(stripped.chdir)
             where = here if stripped.chdir is None else _cd(here, stripped.chdir, env, local)
-            if other.script is not None and _scouts_own(other.script, where, vault, env, local):
-                continue  # Scout's own script, as scoutctl (scout.kb.trusted_scripts)
+            if (
+                other.script is not None
+                and other.script_bare
+                and not upstream
+                and not any(n.startswith(("PYTHON", "LD_", "DYLD_")) or n == "PATH" for n, _v in stripped.assignments)
+                and not _copies_out_text(other, seg_in_kb)
+                and _scouts_own(other.script, where, vault, env, local)
+            ):
+                continue  # Scout's own script, run bare, as scoutctl (scout.kb.trusted_scripts; live_run._bare_run)
             kb = _lands_in_kb(seg_in_kb)
             if other.writes_something and _edits(other, kb, where):
                 # Writes only into the KB: an edit when it reads there (the gate records it), else no read at all.

@@ -552,6 +552,7 @@ KB_EDIT = "kb_edit"
 # is Scout's own (scout.kb.trusted_scripts), and nothing of the command is judged; else None, and the gate records
 # the run of it (kb_read_gate: `program_path:vault_script` once per run for a vault script, else `program_path`).
 SCRIPT = "script"
+SCRIPT_PLAIN = "script_plain"  # the same, for a run that isn't bare (_bare_run): never trusted
 TRUSTED_SCRIPT = "trusted_script"
 # What a lister prints (`$(find .)`, `rg --files | while read f`): paths under the folders it lists, so a reader
 # handed one reads below them. `$__scout_list_N__` names entry N of _STATE["lists"] (those folders); anything but
@@ -1730,7 +1731,9 @@ def _kb_read(
                     if listed and any(marker in o and o != marker for o in stripped.words[1:]):
                         operands.append(UNSEEN_INPUT)  # a listed path inside a longer word: not one the gate can judge
             targets += [(word, where, how) for word in operands]
-        targets += _other_targets(name, stripped, cwd, fed, oldpwd, stdin or [], words, segment, writes or [])
+        targets += _other_targets(
+            name, stripped, cwd, fed, oldpwd, stdin or [], words, segment, writes or [], redirected=bool(reads)
+        )
         if (name in raw_read._ARCHIVERS or name in raw_read._COMPRESSORS) and not raw_read._other_models(name):
             # What it archives or compresses, placed as a lister's root (`tar -cf - .`, `zip -r x.zip ~/link`).
             where = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
@@ -1755,6 +1758,8 @@ def _other_targets(
     words: list[str] | None = None,
     segment: str = "",
     writes: list[str] | None = None,
+    *,
+    redirected: bool = False,
 ) -> list[tuple[str, str, str]]:
     """What :mod:`scout.kb.other_reads` says the command reads beyond its operands, as ``_kb_read`` targets: a
     copy's sources (none when it copies into the KB), the files a stdin list names, the paths a program opens
@@ -1769,18 +1774,35 @@ def _other_targets(
     args = stripped.words[1:]
     if not INTERPRETER.fullmatch(raw_read.program_name(name)):  # a program's text keeps its braces
         args = _fed_operands(_brace_words(args), stripped, fed, words or [])
+    interpreter = INTERPRETER.fullmatch(raw_read.program_name(name)) is not None
     other = other_reads(name, args, stdin)  # the words as quoted: a quoted `*` in a copy's source is no glob
-    if other is None:
+    # A program's text as the shell passes it. For an interpreter it is the program: the quoted parse blanks its
+    # `[*?{}` (`f"{open(x).read()}"`, `s.split("/")[-1]`), so it may find nothing, or a program that doesn't parse.
+    unquoted = other_reads(name, [_unshield(w) for w in args], stdin) if interpreter or other else None
+    if interpreter:  # the program as it runs decides: one it finds nothing in reads nothing
+        if unquoted is None:
+            return []
+        other = other or unquoted
+        program = unquoted
+    elif other is None:
         return []
-    program = other_reads(name, [_unshield(w) for w in args], stdin) or other  # a program's text as the shell passes it
+    else:
+        program = unquoted or other
     where = cwd if stripped.chdir is None else _into(cwd, _substitute(stripped.chdir)[0])
     if other.script is not None:
-        verdict = _judge_read(other.script, where, SCRIPT, oldpwd)
-        if verdict == TRUSTED_SCRIPT:
-            return []  # Scout's own script, as scoutctl: what it reads is Scout's business
+        bare = _bare_run(other, stripped, words or [], segment, stdin, fed, redirected=redirected, where=where)
+        how = SCRIPT if bare else SCRIPT_PLAIN
+        verdict = _judge_read(other.script, where, how, oldpwd)
+        if verdict == TRUSTED_SCRIPT:  # Scout's own script, as scoutctl (the gate records the run of it)
+            if _copies_out(other, where, oldpwd, writes or []):
+                return [("", where, "deny")]
+            _STATE["trusted_now"] = True
+            return []
         if verdict is not None:
-            return [(other.script, where, SCRIPT)]  # denied (DENY_UNRESOLVED_READS): _kb_read hands that on
+            return [(other.script, where, how)]  # denied (DENY_UNRESOLVED_READS): _kb_read hands that on
     out: list[tuple[str, str, str]] = []
+    if any(n.startswith("PYTHON") for n, _v in stripped.assignments):  # PYTHONSTARTUP, PYTHONPATH…: code not here
+        out.append((PROGRAM_PATH, where, "file"))
     from scout.kb.raw_read import compressor_stdout_dests
 
     dests = [*other.dests, *compressor_stdout_dests(name, args, writes or [])]  # `gzip -c a > knowledge-base/a.gz`
@@ -1817,11 +1839,101 @@ def _other_targets(
     if count is not None and any(_judge_read(word, at, how, oldpwd) == KB_READ for word, at, how in out):
         kb, outside = count
         return [(f"{kb or 1}:{outside}", where, "kb_edit")]  # an edit of KB notes: recorded, not judged as a read
-    if program.unaccounted or other.unaccounted:
+    if program.unaccounted or (other.unaccounted and not interpreter):
         out.append(("", where, "deny"))
     elif program.opaque and re.search(r"knowledge[-_]base|action-items/context", _STATE.get("command", segment)):
         out.append(("", where, "deny"))  # `python3 -c "$(…knowledge-base…)"`: a program the shell builds
     return out
+
+
+# What may run before a script of Scout's own in the same command, and it still be trusted (_bare_run): nothing that
+# writes a file, sets the environment or runs a program.
+_TRUST_PRIOR = frozenset(
+    {"cd", "pushd", "popd", "true", ":", "echo", "printf", "test", "[", "[[", "pwd", "date", "sleep", "head", "tail",
+     "cut", "uniq", "wc", "tr", "grep", "egrep", "rg", "cat", "jq", "ls", "basename", "dirname", "=",
+     "for", "do", "done", "while", "until", "if", "then", "else", "elif", "fi", "case", "esac", "in", "{", "}", "!"}
+)  # fmt: skip
+# A command that may set the environment a trusted script would run in, read as text (_bare_run).
+_SETS_ENV = re.compile(
+    r"\b(?:PYTHON\w*|PATH|LD_\w+|DYLD_\w+|HOME|XDG_\w+)=|\b(?:export|env|source|alias)\b|(?:^|[;&|(\s])\.\s"
+)
+# Scout's own commands, which may run before it too: the vault's protected runner files that pick the engine.
+_TRUST_PRIOR_SCOUT = re.compile(r"(?:\.?/?(?:[^\s]*/)?scripts/|[^\s]*/bin/)?(?:scoutctl|scout-tz\.sh)")
+# The environment a prefix may not set for a trusted script: what decides the code Python loads.
+_LOADS_CODE = re.compile(r"PYTHON\w*|PATH|LD_\w+|DYLD_\w+|HOME|XDG_\w+")
+
+
+def _bare_run(
+    other: OtherReads,
+    stripped: _Stripped,
+    words: list[str],
+    segment: str,
+    stdin: list[str],
+    fed: str | None,
+    *,
+    redirected: bool,
+    where: str = "",
+) -> bool:
+    """Whether an interpreter runs its script file as nothing but `python3 <script> args`: the only shape a script of
+    Scout's own is trusted in (scout.kb.trusted_scripts). Not with an interpreter flag, a prefix (`env`, `uv run`) or
+    an environment that picks the code Python loads (`PYTHONPATH`, `PYTHONSTARTUP`, `PYTHONUSERBASE`…); not fed
+    anything on stdin (a here-document, a here-string, a pipe, `< file`: `-i` would run it); not with a substitution
+    the shell runs first; not inside another command (`bash -c`); and not after a part of the same command that may
+    have written the script or a module beside it: anything but `cd`, `echo`, a read-only filter, Scout's own
+    commands and scripts, or one of those writing the script, a module, or a file in the script's folder."""
+    from scout.kb import raw_read
+
+    if not other.script_bare or stdin or fed is not None or stripped.fed or redirected:
+        return False
+    if re.search(r"\$\(|`|<\(|>\(", segment) or SUBST in segment or any(SUBST in w for w in words):
+        return False  # a substitution the shell runs first
+    if _STATE.get("depth_now", 0) and _SETS_ENV.search(_STATE.get("command", "")):
+        return False  # inside a loop, a group or `bash -c`, where something may have set what Python reads
+    if any(_LOADS_CODE.fullmatch(name) for name, _value in stripped.assignments):
+        return False
+    lead = [w for w in words if not re.fullmatch(r"[A-Za-z_]\w*=.*", w)]
+    while lead and lead[0] in ("do", "then", "else", "elif", "{", "!", "("):  # a loop's or a group's body
+        lead = lead[1:]
+    if not lead or raw_read.program_name(raw_read._command_name(lead[0])) != raw_read.program_name(
+        raw_read._command_name(stripped.words[0])
+    ):
+        return False  # a prefix runs it: `env`, `nice`, `uv run`, `sudo`
+    script = posixpath.normpath(_into(where, other.script or ""))
+    folder = posixpath.dirname(script)
+
+    def harmless(target: str) -> bool:
+        target = posixpath.normpath(target)
+        module = re.search(r"\.(?:py[cdow]?|pth|so)$", target) is not None
+        return not (target == script or posixpath.dirname(target) == folder or module)
+
+    return all(
+        (name in _TRUST_PRIOR or name == TRUSTED_SCRIPT or _TRUST_PRIOR_SCOUT.fullmatch(name))
+        and not sets_code
+        and all(harmless(t) for t in targets)
+        for name, targets, sets_code in _STATE.get("prior", [])
+    )
+
+
+def _copies_out(other: OtherReads, where: str, oldpwd: str | None, writes: list[str]) -> bool:
+    """Whether a script of Scout's own given a KB note may write what it read outside the KB: another operand that
+    names a path outside it (`render.py <note> docs/out.html`), or its output sent to a file outside it."""
+    operands = []
+    for word, _how in other.reads:
+        if word == other.script:
+            continue
+        operands.append(word.split("=", 1)[1] if word.startswith("-") and "=" in word else word)
+    in_kb = [_judge_read(w, where, "dest", oldpwd) == KB_READ for w in operands]
+    if not any(in_kb):
+        return False
+    for word, kb in zip(operands, in_kb, strict=True):
+        if not kb and not word.startswith("-") and ("/" in word or re.search(r"\.\w{1,8}$", word)):
+            return True
+    return any(
+        w not in ("/dev/null", "/dev/stdout", "/dev/stderr")
+        and not re.fullmatch(r"&?\d+-?|&-", w)  # `2>&1`: a descriptor, not a file
+        and _judge_read(_shield_single(w), where, "dest", oldpwd) != KB_READ
+        for w in writes
+    )
 
 
 def _brace_words(args: list[str]) -> list[str]:
@@ -1860,10 +1972,17 @@ def _kb_edit_count(program: OtherReads, other: OtherReads, where: str, oldpwd: s
     reads in the KB and doesn't write is a copy out. One it builds is nowhere the gate can tell."""
     if program.writes_built:
         return None
-    if program.operand_writes:
-        if not all(_judge_read(word, where, "dest", oldpwd) == KB_READ for word, _how in other.reads):
+    if program.operand_writes:  # `perl -pi`, `ruby -i`: it rewrites each operand in place
+        ops = [_judge_read(word, where, "dest", oldpwd) == KB_READ for word, _how in other.reads]
+        if all(ops):
+            return len(program.writes) + len(ops), 0
+        if program.built or program.spelled or program.unaccounted or program.writes:
             return None
-        return len(program.writes) + len(other.reads), 0
+        rewritten = {posixpath.normpath(posixpath.join(where, w)) for w, _how in other.reads}
+        kb_reads = [p for p in program.literal if _judge_read(_shield_single(p), where, "file", oldpwd) == KB_READ]
+        if any(posixpath.normpath(posixpath.join(where, p)) not in rewritten for p in kb_reads):
+            return None  # a KB file it reads and doesn't rewrite: a copy out into the others
+        return sum(ops), len(ops) - sum(ops)
     in_kb = [_judge_read(_shield_single(w), where, "dest", oldpwd) == KB_READ for w in program.writes]
     if all(in_kb):
         return len(in_kb), 0
@@ -1904,7 +2023,7 @@ def _other_programs(words: list[str], stdin: list[str] | None = None) -> list[st
 # How a reader takes a path it's handed: "file" opens files (a folder only prints an error), "folder" also reads a
 # folder (``ls``, ``grep -r``), "covers" reads every file below it (the root an xargs lister lists). "dest" is no
 # read: it asks whether a copy's target is in the KB (KB_READ), and a path the gate can't work out is not.
-KB_READ_HOW = ("file", "folder", "covers", "dest", KB_EDIT, SCRIPT)
+KB_READ_HOW = ("file", "folder", "covers", "dest", KB_EDIT, SCRIPT, SCRIPT_PLAIN)
 
 
 def _judge_read(word: str, where: str, how: str, oldpwd: str | None = None) -> str | None:
@@ -2561,6 +2680,11 @@ def run_escape(
             parsing=False,
             expanded=set(),
             lists=[],
+            # each segment judged so far, for _bare_run: (its command's name, or TRUSTED_SCRIPT for a script of Scout's
+            # own; where it writes, resolved; whether it sets the environment Python reads)
+            prior=[],
+            trusted_now=False,
+            depth_now=0,
             command=command,  # as written: a program the shell builds is judged by it (_other_targets)
         )
     try:
@@ -2735,6 +2859,7 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
             found = _secret_read(literal_words, literal_reads, cwd)
             stdin = _stdin_for_reads(segment, strings, fed, command) if _KB_READ is not None else []
             if found is None and _KB_READ is not None:
+                _STATE["depth_now"] = depth
                 found = _kb_read(literal_words, literal_reads, cwd, fed, oldpwd, stdin, segment, targets)
             if found is None and _KB_READ is not None:
                 for program in _other_programs(words, stdin):  # awk's system("…"), perl's backticks: commands too
@@ -2747,6 +2872,12 @@ def _run_escape(command: str, depth: int, *, split: bool = True) -> str | None:
             return "env"
         results.append((here, found))
         previous = segment
+        assigned = [w.split("=", 1)[0] for w in words if re.fullmatch(r"[A-Za-z_]\w*=.*", w)]
+        lead = [w for w in words if not re.fullmatch(r"[A-Za-z_]\w*=.*", w)][:1]
+        sets_code = any(_LOADS_CODE.fullmatch(n) for n in assigned)  # `PYTHONPATH=x`: the environment Python reads
+        name = TRUSTED_SCRIPT if _STATE.get("trusted_now") else (lead[0] if lead else "=")
+        _STATE["trusted_now"] = False
+        _STATE["prior"].append((name, [_into(cwd, t) for t in targets], sets_code))  # for _bare_run
         if words[:1] in (["cd"], ["pushd"]):
             dests = [w for w in words[1:] if w not in ("-L", "-P", "-e", "-@", "--")]
             dest = _substitute(dests[0])[0] if dests else "~"

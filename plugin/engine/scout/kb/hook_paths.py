@@ -81,6 +81,13 @@ ENGINE = "Scout's engine"
 OWNER_STATE = "the owner's Scout settings"
 RUNNER_SCRIPTS = "Scout's runner scripts"
 STARTUP = "startup files"
+# The vault copies of the scripts the plugin installs (its templates/ .py files) and bootstrap's record of what it
+# last rendered (.scout-state/last-rendered/): what kb-read-gate trusts a script of Scout's own by
+# (scout.kb.trusted_scripts), so a run that could write both could make its own script trusted.
+INSTALLED_SCRIPTS = "Scout's installed scripts"
+# Python's user site-packages: a usercustomize.py or .pth file there runs in every `python3` a run starts, before
+# any program the gate judges.
+PYTHON_STARTUP = "Python's startup code"
 HARD_LINK = "a hard-linked file"
 # The owner's switch for the scheduled runs' OS write sandbox, in ~/.local/state/scout/ (scout.sandbox.switch).
 SANDBOX_SWITCH_NAME = "run-sandbox.json"
@@ -101,6 +108,9 @@ REVIEWED_WARNINGS_NAME = "scout-reviewed-warnings.json"
 # owner's reliance on its own work. Also a protected token, so the name is one no vault folder would carry: a
 # generic `change-map` denied a run's own `knowledge-base/change-map/` notes.
 CHANGES_OWNER_NAME = "scout-change-ledger-owner"
+# Which scripts each recent run has had recorded by kb-read-gate (scout.hooks.kb_read_gate._first_in_run), as hashes:
+# a run that could write it could silence the record of a script it planted. Also a protected token.
+KB_GATE_SCRIPTS_NAME = "scout-kb-read-gate-scripts.json"
 # Every owner-only file and folder in ~/.local/state/scout/ (see engine_roots), protected under each of homes().
 OWNER_STATE_NAMES: tuple[str, ...] = (
     SANDBOX_SWITCH_NAME,
@@ -109,6 +119,7 @@ OWNER_STATE_NAMES: tuple[str, ...] = (
     RUN_BROKERS_NAME,
     REVIEWED_WARNINGS_NAME,
     CHANGES_OWNER_NAME,
+    KB_GATE_SCRIPTS_NAME,
 )
 # Where an owner store goes when the account database has no home for this user: a root-owned folder no run can
 # create files in, so writes fail and reads find nothing. Never a path taken from the environment.
@@ -408,6 +419,25 @@ def secrets_dirs(env: Mapping[str, str]) -> list[Path]:
     return dirs
 
 
+# Plugin-installed files the vault is meant to grow (scout.scripts.bootstrap._CAT_MERGE_FILES): never protected. Not
+# trusted once a run changes one either (scout.kb.trusted_scripts: it then matches neither the template nor bootstrap's
+# protected record of what it rendered).
+VAULT_DEVELOPED = frozenset({"knowledge-base/ontology/parser.py"})
+
+
+def installed_scripts() -> list[str]:
+    """The vault paths of the scripts the plugin installs and runs may not change: each ``.py`` under its
+    ``templates/`` folder, but those the vault grows (:data:`VAULT_DEVELOPED`)."""
+    import scout
+
+    templates = Path(scout.__file__).resolve().parent.parents[1] / "templates"
+    try:
+        found = (p.relative_to(templates).as_posix() for p in templates.rglob("*.py") if p.is_file())
+        return sorted(rel for rel in found if rel not in VAULT_DEVELOPED)
+    except OSError:
+        return []
+
+
 def protected_specs(
     vault: Path | None, env: Mapping[str, str] | None = None, *, deadline: float | None = None
 ) -> list[Spec]:
@@ -441,6 +471,8 @@ def protected_specs(
             add(vault / name, AGENT_SETTINGS, tree=True)
         for rel in RUNNER_FILES:
             add(vault / rel, RUNNER_SCRIPTS, tree=False)
+        for rel in installed_scripts():
+            add(vault / rel, INSTALLED_SCRIPTS, tree=False)
         # Which delegates exist and what their mirrors may hold (#550): a run that wrote these could widen a
         # delegate's view of the vault.
         add(vault / ".scout-state" / "delegate-mirrors.json", DELEGATE_STATE, tree=False)
@@ -451,6 +483,8 @@ def protected_specs(
         add(vault.joinpath(*AGENT_NOTES_DIR), AGENT_NOTES, tree=True)
         # Which rewrites keep an item's stale clock (#708): only the owner's `action-items retitle` writes them.
         add(vault / ".scout-state" / "title-rewrites.jsonl", TITLE_REWRITES, tree=False)
+        # What bootstrap last rendered of each managed file: what a vault copy of Scout's scripts is trusted by.
+        add(vault / ".scout-state" / "last-rendered", INSTALLED_SCRIPTS, tree=True)
         engine = _precommit_engine(vault, hooks)
         if engine is not None:
             add(engine, ENGINE, tree=True)
@@ -480,6 +514,8 @@ def protected_specs(
         for name in SHELL_STARTUP:
             add(home / name, STARTUP, tree=False)
         add(home / "Library" / "LaunchAgents", STARTUP, tree=True)
+        add(home / "Library" / "Python", PYTHON_STARTUP, tree=True)  # macOS: ~/Library/Python/X.Y/lib/python/…
+        add(home / ".local" / "lib", PYTHON_STARTUP, tree=True)  # elsewhere: ~/.local/lib/pythonX.Y/site-packages
     for secrets in secrets_dirs(env):
         add(secrets, SECRETS, tree=True)
     for ssh in ssh_dirs(env):
@@ -754,6 +790,8 @@ PROTECTED_TOKENS: tuple[str, ...] = (
     RUN_BROKERS_NAME,
     REVIEWED_WARNINGS_NAME,
     CHANGES_OWNER_NAME,
+    KB_GATE_SCRIPTS_NAME,
+    "last-rendered",
     "hooks.json",
     "pyvenv.cfg",
     ".scout-secrets",

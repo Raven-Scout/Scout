@@ -231,7 +231,7 @@ MORE_FORMS = [
     "mv -t docs knowledge-base/a.md",
     "mv -f knowledge-base/a.md docs/",
     "mv knowledge-base/projects docs/",
-    "mv action-items /tmp/ai-old",
+    "cp -r action-items /tmp/ai-old",  # (mv takes Scout's installed action-items/render.py: a protected write)
     "mv kn*/a.md docs/y.md",
     "mv knowledge-base/a.md knowledge-base/projects/a/a.md docs/",
     "cd knowledge-base && mv a.md ../docs/y.md",

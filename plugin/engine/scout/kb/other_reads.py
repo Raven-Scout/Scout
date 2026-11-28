@@ -66,6 +66,7 @@ class OtherReads:
     # The script file an interpreter runs (`python3 x.py`, `perl x.pl`), as the shell hands it: what it reads isn't in
     # the command, so the gate judges the file itself (Scout's own scripts are trusted, any other recorded).
     script: str | None = None
+    script_bare: bool = False  # `python3 <script> args`, no interpreter flag (ProgramReads.script_bare)
 
     @property
     def writes_something(self) -> bool:
@@ -1166,6 +1167,7 @@ def _interpreter(name: str, args: list[str], stdin: Sequence[str]) -> OtherReads
         unaccounted=found.unaccounted,
         opaque=found.opaque,
         script=found.script,
+        script_bare=found.script_bare,
     )
 
 

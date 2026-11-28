@@ -146,8 +146,6 @@ NOT_EDITS = [
     H.format(P + "import sys\ns = open(p).read()\nopen(sys.argv[1], 'w').write(s)"),  # a target it builds
     H.format(P + "s = open(p).read()\nopen('/dev/stdout', 'w').write(s)"),
     'python3 -c \'import shutil; shutil.copy("knowledge-base/a.md", "docs/y.md")\'',
-    "ruby -i -pe 'gsub(/x/, \"y\")' knowledge-base/a.md docs/a.md",  # rewrites a file outside too
-    "perl -pi -e 's/x/y/' knowledge-base/a.md docs/a.md",
     "ruby -pe 'gsub(/x/, \"y\")' knowledge-base/a.md",  # no -i: it prints
     'node -e \'const fs=require("fs"); fs.writeFileSync("docs/y.md", fs.readFileSync("knowledge-base/a.md"))\'',
 ]
@@ -175,3 +173,33 @@ def test_a_write_into_the_kb_alone_is_allowed_and_not_recorded(home: Path, comma
     assert _run(home, command) is None, command
     assert _events(home, "kb_read_gate.kb_edit") == []
     assert _events(home, "kb_read_gate.unresolved_read") == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ruby -i -pe 'gsub(/x/, \"y\")' knowledge-base/a.md docs/a.md",
+        "perl -pi -e 's/x/y/' knowledge-base/a.md docs/a.md",
+    ],
+)
+def test_an_in_place_edit_of_a_kb_note_and_a_vault_file_counts_the_vault_file(home: Path, command: str) -> None:
+    """Each operand rewritten in place, one in the KB and one outside: an edit, recorded with the file outside the KB
+    counted apart (what it read in the KB may now be there). DENY_INTERPRETER_KB_EDITS denies it."""
+    assert _run(home, command) is None, command
+    (row,) = _events(home, "kb_read_gate.kb_edit")
+    assert row["payload"] == {"mode": RUN["SCOUT_MODE"], "targets": 1, "non_kb_targets": 1}
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ruby -i -pe 'gsub(/x/, \"y\")' knowledge-base/a.md docs/a.md",
+        """python3 -c 'p = "knowledge-base/a.md"; q = "docs/a.md"; a = open(p).read(); b = open(q).read(); """
+        """open(p, "w").write(a); open(q, "w").write(b + a)'""",
+    ],
+)
+def test_with_the_switch_on_an_edit_that_rewrites_a_vault_file_is_denied(
+    home: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    monkeypatch.setattr(gate, "DENY_INTERPRETER_KB_EDITS", True)
+    assert KB_DENY in _denied(_run(home, command)), command
