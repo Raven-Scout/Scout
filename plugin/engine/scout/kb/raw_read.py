@@ -86,6 +86,7 @@ _PREFIX_VALUE_FLAGS = {
     "caffeinate": {"-t", "-w"},
     "xcrun": {"--sdk", "-sdk", "--toolchain", "-toolchain"},
     "arch": {"-arch", "-e", "-d"},  # `arch -arm64 cmd` is a flag; `arch -arch arm64 cmd` takes one
+    "sandbox-exec": {"-f", "-n", "-p", "-D"},  # `sandbox-exec -n no-network cmd`
     **dict.fromkeys(("sh", "bash", "zsh", "dash", "ksh"), {"-o", "-O", "+o", "+O"}),
 }
 # A positional the prefix takes before the command (`timeout 10 cat …`).
@@ -197,6 +198,10 @@ def _strip(words: list[str]) -> _Stripped:
         elif pending and prefix is not None:
             pending -= 1
             words.pop(0)
+        elif word in ("always", "coproc"):
+            words.pop(0)  # zsh's `} always { cmd }`, `coproc cmd`: the command follows
+        elif word == "repeat" and len(words) > 1:
+            del words[:2]  # zsh's `repeat N cmd`
         elif _ASSIGNMENT.match(word) or word in _KEYWORDS:
             if word not in _KEYWORDS:
                 name, _eq, value = word.partition("=")

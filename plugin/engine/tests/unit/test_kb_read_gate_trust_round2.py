@@ -117,6 +117,24 @@ def test_the_vault_grows_its_parser_and_its_own_scripts(home: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    "command",
+    [  # the command word the shell builds (#823), then judged by the interpreter rules
+        """p=python3; $p -c 'print(open("knowledge-base/a.md").read())'""",
+        """$(which python3) -c 'print(open("knowledge-base/a.md").read())'""",
+        """`which python3` -c 'print(open("knowledge-base/a.md").read())'""",
+        """p=ruby; $p -e 'puts File.read("knowledge-base/a.md")'""",
+        "p=python3; $p - <<'EOF'\nprint(open('knowledge-base/a.md').read())\nEOF",
+    ],
+)
+def test_an_interpreter_named_by_a_built_command_word_is_judged(home: Path, command: str) -> None:
+    assert _run(home, command) is not None, command
+
+
+def test_a_built_command_word_running_harmless_code_is_allowed(home: Path) -> None:
+    assert _run(home, "p=python3; $p -c 'print(1+1)'") is None
+
+
+@pytest.mark.parametrize(
     "plant",
     ["json/__init__.py", "re.pyc", "x.pth", "helper.so"],  # a package, a compiled module, a path file, an extension
 )
