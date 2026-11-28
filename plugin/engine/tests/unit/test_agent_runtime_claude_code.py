@@ -157,6 +157,11 @@ def test_patterns_are_the_wrappers_own() -> None:
         # Anchored: a quoted auth error mid-line isn't one; a 5000-something isn't a 500.
         ("the log says: API Error: 401", FailureKind.OTHER),
         ("API Error: 5000 things", FailureKind.OTHER),
+        # Any reason token and any 5xx is transient, not only the ones seen so far: a
+        # vault bench caught EPIPE and 503 ending a run unretried.
+        ("API Error: Unable to connect to API (EPIPE)", FailureKind.TRANSIENT),
+        ("API Error: 503 Service Unavailable", FailureKind.TRANSIENT),
+        ("API Error: 502 Bad Gateway", FailureKind.TRANSIENT),
     ],
 )
 def test_classify_failure_patterns(tail: str, kind: FailureKind) -> None:
